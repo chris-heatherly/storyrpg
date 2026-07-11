@@ -123,12 +123,13 @@ export function countAuthoredLiteSceneBudget(turns: string[], standaloneEncounte
 export function countAuthoredLiteSceneBudgetFromSpine(
   units: Array<{ sceneKind?: string; kind?: string }>,
   standaloneEncounterCount: number,
+  coveredEncounterTurnCount = 0,
 ): {
   preThreatScenes: number;
   postThreatScenes: number;
   totalScenes: number;
 } {
-  const standardCount = units.filter((unit) => unit.sceneKind !== 'encounter').length;
+  const standardCount = Math.max(0, units.filter((unit) => unit.sceneKind !== 'encounter').length - coveredEncounterTurnCount);
   const encounterCount = Math.max(
     standaloneEncounterCount,
     units.filter((unit) => unit.sceneKind === 'encounter' || unit.kind === 'set_piece').length,

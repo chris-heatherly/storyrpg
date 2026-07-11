@@ -41,11 +41,11 @@ interface EncounterLike {
 
 interface EncounterBeatLike {
   text?: string;
-  textVariants?: TextVariantLike[];
+  textVariants?: TextVariantLike[] | Record<string, TextVariantLike>;
   setupText?: string;
   escalationText?: string;
-  setupTextVariants?: TextVariantLike[];
-  escalationTextVariants?: TextVariantLike[];
+  setupTextVariants?: TextVariantLike[] | Record<string, TextVariantLike>;
+  escalationTextVariants?: TextVariantLike[] | Record<string, TextVariantLike>;
   choices?: EncounterChoiceLike[];
 }
 
@@ -67,8 +67,10 @@ function pushReaderText(texts: string[], text: string | undefined): void {
   if (isReaderFacingText(text)) texts.push(text!.trim());
 }
 
-function collectVariants(texts: string[], variants: TextVariantLike[] | undefined): void {
-  for (const variant of variants ?? []) pushReaderText(texts, variant.text);
+function collectVariants(texts: string[], variants: TextVariantLike[] | Record<string, TextVariantLike> | undefined): void {
+  for (const variant of asObjectValues(variants)) {
+    if (variant && typeof variant === 'object') pushReaderText(texts, (variant as TextVariantLike).text);
+  }
 }
 
 function collectChoiceTreeTexts(texts: string[], choices: EncounterChoiceLike[] | undefined): void {
@@ -202,6 +204,43 @@ export function collectReaderFacingTextsForEncounterOutcomeTier(
     if (hasTierpecific) byTier.set(tier, texts);
   }
   return byTier;
+}
+
+/**
+ * Collect only terminal prose for one outcome tier. Shared phase setup is
+ * intentionally excluded: it may be authored once for every route and must
+ * never make a failed terminal route look realized merely because a sibling
+ * route contains the required payoff.
+ */
+export function collectReaderFacingTerminalTextsForEncounterOutcomeTier(
+  scene: Scene,
+  tier: string,
+): string[] {
+  const texts: string[] = [];
+  const encounter = scene.encounter as EncounterLike | undefined;
+  if (!encounter) return texts;
+  const storylets = encounter.storylets && typeof encounter.storylets === 'object'
+    ? encounter.storylets as Record<string, { beats?: unknown[] } | undefined>
+    : {};
+  const outcomes = encounter.outcomes ?? {};
+  const outcome = outcomes[tier]
+    || (tier === 'victory' ? outcomes.success : undefined)
+    || (tier === 'success' ? outcomes.victory : undefined)
+    || (tier === 'partialVictory' ? outcomes.complicated : undefined)
+    || (tier === 'complicated' ? outcomes.partialVictory : undefined)
+    || (tier === 'defeat' ? outcomes.failure : undefined)
+    || (tier === 'failure' ? outcomes.defeat : undefined);
+  collectOutcomeTexts(texts, outcome);
+  const storylet = storylets[tier]
+    || (tier === 'victory' ? storylets.success : undefined)
+    || (tier === 'success' ? storylets.victory : undefined)
+    || (tier === 'partialVictory' ? storylets.complicated : undefined)
+    || (tier === 'complicated' ? storylets.partialVictory : undefined)
+    || (tier === 'defeat' ? storylets.failure : undefined)
+    || (tier === 'failure' ? storylets.defeat : undefined)
+    || (tier === 'escape' ? storylets.escape : undefined);
+  for (const beat of storylet?.beats ?? []) collectBeatText(texts, beat);
+  return texts;
 }
 
 /**

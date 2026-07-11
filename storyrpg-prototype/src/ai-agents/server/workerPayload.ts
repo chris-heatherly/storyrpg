@@ -1,4 +1,5 @@
 import type { CompileEpisodeRequest } from '../pipeline/episodeCompiler';
+import { createHash } from 'node:crypto';
 
 type EndingMode = 'single' | 'multiple';
 
@@ -16,6 +17,8 @@ export type WorkerPayload = {
   friendlyName?: string;
   processTitle?: string;
   resultPath: string;
+  /** Immutable hash of hydrated provider/model/media/council settings. */
+  jobConfigHash?: string;
   resumeCheckpoint?: ResumeCheckpointPayload;
   analysisInput?: {
     sourceText: string;
@@ -73,6 +76,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function stableConfigJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableConfigJson).join(',')}]`;
+  if (!value || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableConfigJson(record[key])}`).join(',')}}`;
+}
+
+export function computeWorkerJobConfigHash(mode: WorkerMode, config: Record<string, unknown>): string {
+  return createHash('sha256').update(stableConfigJson({ mode, config })).digest('hex');
+}
+
+export function assertWorkerJobConfigHash(payload: WorkerPayload): void {
+  if (!payload.jobConfigHash) throw new Error('Worker payload is missing immutable jobConfigHash.');
+  const actual = computeWorkerJobConfigHash(payload.mode, payload.config);
+  if (actual !== payload.jobConfigHash) {
+    throw new Error(`Worker job config hash mismatch: expected ${payload.jobConfigHash}, received ${actual}.`);
+  }
+}
+
 function isResumeCheckpoint(value: unknown): value is ResumeCheckpointPayload | undefined {
   if (value == null) return true;
   if (!isRecord(value)) return false;
@@ -113,6 +135,9 @@ export function assertValidWorkerPayload(value: unknown): asserts value is Worke
   }
   if (typeof value.resultPath !== 'string' || value.resultPath.length === 0) {
     throw new Error('Worker payload is missing resultPath.');
+  }
+  if (value.jobConfigHash != null && (typeof value.jobConfigHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.jobConfigHash))) {
+    throw new Error('Worker payload jobConfigHash must be a SHA-256 hex string.');
   }
   if (!isResumeCheckpoint(value.resumeCheckpoint)) {
     throw new Error('Worker payload resumeCheckpoint is malformed.');

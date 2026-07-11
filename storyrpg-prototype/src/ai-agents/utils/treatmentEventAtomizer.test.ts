@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { atomizeTreatmentText } from './treatmentEventAtomizer';
+import { atomizeTreatmentText, extractPreservedMarkers } from './treatmentEventAtomizer';
 
 describe('treatmentEventAtomizer', () => {
   it('returns no atoms for missing or blank text instead of crashing', () => {
@@ -104,5 +104,10 @@ describe('treatmentEventAtomizer', () => {
       isPlayableEvent: true,
       ownershipIntent: 'must_stage',
     });
+  });
+
+  it('preserves explicit clock time without turning relative reveal language into a terminal marker', () => {
+    expect(extractPreservedMarkers('Keep their true identity linked for a later reveal.')).not.toContain('later');
+    expect(extractPreservedMarkers('At 4am, the first post goes live.')).toEqual(expect.arrayContaining(['At 4am', '4am']));
   });
 });

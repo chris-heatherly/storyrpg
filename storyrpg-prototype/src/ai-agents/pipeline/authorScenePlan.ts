@@ -43,7 +43,6 @@ import {
   toSceneEncounter,
   MIN_SCENES_PER_EPISODE,
   promoteCoveredAuthoredEncounters,
-  repairRouteCueSceneOrder,
   inferAuthoredLocationFromText,
 } from './seasonScenePlanBuilder';
 import { finalizeAuthoredLiteScenePlan, isAuthoredLiteEpisode, splitStackedSpatialScenes } from '../utils/authoredLiteScenePlan';
@@ -747,13 +746,6 @@ function normalizeEpisodeScenes(
   if (isAuthoredLiteEpisode(ep)) {
     splitStackedSpatialScenes(ep, built, inferAuthoredLocationFromText);
   }
-  // Route-cue chronology repair, same rung as the deterministic skeleton path
-  // (4357093a). The LLM-authored path missed it, so an inverted plan
-  // (socialMeet scene before the arrival scene) still hard-aborted at the
-  // SceneConstructionGate (bite-me 2026-07-03T20-10-04). PlannedScene[] is a
-  // linear order-based plan, so a standard↔standard swap is safe here; the
-  // blueprint built from these scenes inherits the repaired order.
-  repairRouteCueSceneOrder(built, ep.episodeNumber);
   const outgoingResidue = (seasonResiduePlan ?? []).filter(
     (obligation) => obligation.sourceEpisodeNumber === ep.episodeNumber,
   );

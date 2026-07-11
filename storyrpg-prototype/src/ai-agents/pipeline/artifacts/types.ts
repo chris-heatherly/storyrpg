@@ -1,4 +1,4 @@
-export type ArtifactStatus = 'draft' | 'valid' | 'invalid' | 'stale' | 'superseded';
+export type ArtifactStatus = 'draft' | 'valid' | 'invalid' | 'stale' | 'superseded' | 'migration_blocked';
 
 export type ArtifactKind =
   | 'source-analysis'
@@ -13,6 +13,8 @@ export type ArtifactKind =
   | 'thread-ledger'
   | 'callback-ledger'
   | 'information-ledger'
+  | 'narrative-contract-graph'
+  | 'narrative-realization-ledger'
   | 'context-in'
   | 'episode-blueprint'
   | 'scene-plan'
@@ -31,6 +33,8 @@ export interface ArtifactRef {
   revision: number;
   path: string;
   episodeNumber?: number;
+  /** `exact` pins an immutable historical snapshot even when a newer current revision exists. */
+  dependencyMode?: 'current' | 'exact';
 }
 
 export interface ArtifactValidationIssue {
@@ -74,9 +78,10 @@ export interface PipelineArtifact<T> {
 }
 
 export interface ArtifactCurrentIndex {
-  version: 1;
+  version: 2;
   updatedAt: string;
   artifacts: Partial<Record<ArtifactKind, ArtifactRef>>;
+  supersededArtifactIds?: string[];
 }
 
 export interface ArtifactStoreIO {
@@ -97,7 +102,7 @@ export interface SaveArtifactInput<T> {
   makeCurrent?: boolean;
 }
 
-export const ARTIFACT_SCHEMA_VERSION = 1;
+export const ARTIFACT_SCHEMA_VERSION = 2;
 
 export const defaultValidationSummary = (gate: string): ArtifactValidationSummary => ({
   passed: true,

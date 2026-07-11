@@ -129,13 +129,24 @@ function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, tok
   }
 
   function status() {
-    const count = (dir) => fs.readdirSync(dir).filter((file) => file.endsWith('.json')).length;
+    const entries = (dir) => fs.readdirSync(dir).filter((file) => file.endsWith('.json'));
+    const count = (dir) => entries(dir).length;
+    const oldestPendingAgeMs = (() => {
+      const pending = entries(pendingDir);
+      if (!pending.length) return null;
+      const oldest = pending.reduce((min, file) => {
+        const createdAt = Date.parse(JSON.parse(fs.readFileSync(path.join(pendingDir, file), 'utf8')).createdAt);
+        return Number.isFinite(createdAt) ? Math.min(min, createdAt) : min;
+      }, Date.now());
+      return Math.max(0, Date.now() - oldest);
+    })();
     return {
       pending: count(pendingDir),
       processing: count(processingDir),
       completed: count(completedDir),
       deadLetter: count(deadLetterDir),
       dirtyDatasets: loadDirtyDatasets().size,
+      oldestPendingAgeMs,
       draining,
       activeStoryWorkers: lifecycle.activeWorkers.size,
     };

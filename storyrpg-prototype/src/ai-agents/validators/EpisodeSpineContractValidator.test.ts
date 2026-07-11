@@ -134,6 +134,80 @@ describe('EpisodeSpineContractValidator', () => {
     expect(result.issues.some((issue) => /ep1-u2/.test(issue.message) && /no projected scene/i.test(issue.message))).toBe(true);
   });
 
+  it('accepts multiple canonical spine units projected onto one scene in event order', () => {
+    const contract = spine({
+      units: [
+        {
+          id: 'ep1-u1', order: 0, text: 'Kylie sees the rooftop.', kind: 'meet',
+          locationId: 'Rooftop', storyCircleFacets: ['you'], prerequisites: [], sceneKind: 'standard',
+        },
+        {
+          id: 'ep1-u2', order: 1, text: 'The charcoal-suited man catches her attention.', kind: 'meet',
+          locationId: 'Rooftop', storyCircleFacets: ['you'], prerequisites: ['ep1-u1'], sceneKind: 'standard',
+        },
+      ],
+    });
+    const result = new EpisodeSpineContractValidator().validate({
+      spine: contract,
+      episodeEventPlan: {
+        version: 2,
+        compilerVersion: 'test',
+        episodeNumber: 1,
+        sourceGraphHash: 'test',
+        orderedEventIds: ['event:ep1-u1', 'event:ep1-u2'],
+        assignments: [
+          { eventId: 'event:ep1-u1', sceneId: 's1-rooftop', order: 0 },
+          { eventId: 'event:ep1-u2', sceneId: 's1-rooftop', order: 1 },
+        ],
+        sceneOrder: ['s1-rooftop'],
+        sceneContexts: [],
+        dueDependencyIds: [],
+        activeDependencyIds: [],
+        characterPresenceContracts: [],
+        validation: { passed: true, issues: [] },
+      },
+      narrativeContractGraph: {
+        version: 2,
+        compilerVersion: 'test',
+        storyId: 'test',
+        sourceHash: 'test',
+        events: [
+          {
+            id: 'event:ep1-u1', episodeNumber: 1, sourceOrder: 0, sourceText: 'Kylie sees the rooftop.',
+            sourceContractIds: ['ep1-u1'], realizationMode: 'depiction', ownershipPolicy: 'exactly_one_scene',
+            prerequisiteEventIds: [], targetSceneIds: ['s1-rooftop'], targetSpineUnitIds: ['ep1-u1'], ownerSceneId: 's1-rooftop',
+            provenance: { source: 'episode_spine', confidence: 'authoritative' },
+          },
+          {
+            id: 'event:ep1-u2', episodeNumber: 1, sourceOrder: 1, sourceText: 'The charcoal-suited man catches her attention.',
+            sourceContractIds: ['ep1-u2'], realizationMode: 'depiction', ownershipPolicy: 'exactly_one_scene',
+            prerequisiteEventIds: ['event:ep1-u1'], targetSceneIds: ['s1-rooftop'], targetSpineUnitIds: ['ep1-u2'], ownerSceneId: 's1-rooftop',
+            provenance: { source: 'episode_spine', confidence: 'authoritative' },
+          },
+        ],
+        characterPresenceContracts: [],
+        dependencies: [],
+        validation: { passed: true, issues: [] },
+      },
+      scenes: [
+        {
+          id: 's1-rooftop', episodeNumber: 1, order: 0, kind: 'standard', title: 'Rooftop',
+          dramaticPurpose: 'Kylie sees the rooftop and the charcoal-suited man catches her attention.', narrativeRole: 'development',
+          locations: ['Rooftop'], npcsInvolved: [], setsUp: [], paysOff: [], requiredBeats: [], spineUnitId: 'ep1-u1',
+        },
+        {
+          // Legacy projection metadata still claims u2 here, but the canonical
+          // event plan assigns both units to the rooftop scene above.
+          id: 's1-stale', episodeNumber: 1, order: 1, kind: 'standard', title: 'Stale shell',
+          dramaticPurpose: 'A pressure shell with no canonical event owner.', narrativeRole: 'development',
+          locations: ['Rooftop'], npcsInvolved: [], setsUp: [], paysOff: [], requiredBeats: [], spineUnitId: 'ep1-u2',
+        },
+      ],
+    });
+
+    expect(result.valid).toBe(true);
+  });
+
   it('fails when bond projects before its test prerequisite scene', () => {
     const contract = spine({
       units: [

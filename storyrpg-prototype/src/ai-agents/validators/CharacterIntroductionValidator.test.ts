@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { CharacterIntroductionValidator } from './CharacterIntroductionValidator';
+import {
+  CharacterIntroductionValidator,
+  characterIntroductionIssueCleared,
+  parseCharacterIntroductionNpcId,
+} from './CharacterIntroductionValidator';
 import type { Scene, Story } from '../../types/story';
 
 function makeScene(overrides: Partial<Scene> & { id: string }): Scene {
@@ -447,5 +451,121 @@ describe('CharacterIntroductionValidator', () => {
       i.severity === 'error'
       && i.location?.includes('anonymous-plant-leak')
     )).toBe(true);
+  });
+
+  it('Stela-style: naming in a named-intro scene PASSES when plant set excludes her (schedule-aware)', () => {
+    const story = makeStory(
+      [
+        { id: 'char-stela', name: 'Stela Pavel' },
+        { id: 'char-victor', name: 'Victor Valcescu' },
+      ],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 's1-3',
+            charactersInvolved: ['char-stela'],
+            beats: [beat('She introduces herself as Stela Pavel, offering you a cup of herbal tea.')],
+          }),
+          makeScene({
+            id: 's1-6',
+            charactersInvolved: ['char-victor'],
+            beats: [beat('A stranger in a charcoal suit steps between you and the shadow.')],
+          }),
+        ],
+      }],
+    );
+    const result = validator.validate({
+      story,
+      treatmentSourced: true,
+      // Schedule-aware derivation would exclude Stela; only Victor is plant.
+      anonymousPlantNpcIds: new Set(['char-victor']),
+    });
+    expect(result.issues.some((i) =>
+      i.location?.includes('anonymous-plant-leak') && i.message.includes('Stela')
+    )).toBe(false);
+    expect(result.valid).toBe(true);
+  });
+
+  it('Victor-style: naming in an early scene FAILS when scheduled as anonymous plant', () => {
+    const story = makeStory(
+      [{ id: 'char-victor', name: 'Victor Valcescu' }],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 's1-1',
+            charactersInvolved: ['char-victor'],
+            beats: [beat('Impeccably tailored in a charcoal suit, Victor Valcescu radiates elegance.')],
+          }),
+          makeScene({
+            id: 's1-6',
+            charactersInvolved: ['char-victor'],
+            beats: [beat('A stranger in a charcoal suit intervenes when the shadow attacks.')],
+          }),
+        ],
+      }],
+    );
+    const result = validator.validate({
+      story,
+      treatmentSourced: true,
+      anonymousPlantNpcIds: new Set(['char-victor']),
+    });
+    expect(result.issues.some((i) =>
+      i.severity === 'error'
+      && i.location?.includes('s1-1')
+      && i.location?.includes('anonymous-plant-leak')
+    )).toBe(true);
+  });
+
+  it('Victor-style: anonymous stranger staging PASSES for plant schedule', () => {
+    const story = makeStory(
+      [{ id: 'char-victor', name: 'Victor Valcescu' }],
+      [{
+        number: 1,
+        scenes: [
+          makeScene({
+            id: 's1-6',
+            charactersInvolved: ['char-victor'],
+            beats: [beat('A stranger in a charcoal suit steps between you and the shadow and offers a hand.')],
+          }),
+        ],
+      }],
+    );
+    const result = validator.validate({
+      story,
+      treatmentSourced: true,
+      anonymousPlantNpcIds: new Set(['char-victor']),
+    });
+    expect(result.issues.filter((i) => i.location?.includes('anonymous-plant-leak'))).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('parseCharacterIntroductionNpcId reads npc id before :anonymous-plant-leak suffix', () => {
+    expect(
+      parseCharacterIntroductionNpcId(
+        'characterIntroduction:ep1:s1-1:char-victor-valcescu:anonymous-plant-leak',
+      ),
+    ).toBe('char-victor-valcescu');
+    expect(
+      parseCharacterIntroductionNpcId('characterIntroduction:ep1:enc-1-1:char-victor'),
+    ).toBe('char-victor');
+  });
+
+  it('characterIntroductionIssueCleared plant-leak requires name absent', () => {
+    const issue = {
+      message: '"Victor Valcescu" is named while scheduled as an anonymous plant',
+      location: 'characterIntroduction:ep1:s1-1:char-victor:anonymous-plant-leak',
+    };
+    const named = makeScene({
+      id: 's1-1',
+      beats: [beat('Victor Valcescu radiates elegance.')],
+    });
+    const cleared = makeScene({
+      id: 's1-1',
+      beats: [beat('A stranger in a charcoal suit offers a hand.')],
+    });
+    expect(characterIntroductionIssueCleared(named, issue)).toBe(false);
+    expect(characterIntroductionIssueCleared(cleared, issue)).toBe(true);
   });
 });

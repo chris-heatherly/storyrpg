@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { planAgentMemoryQueries, planValidatorMemoryQueries } from './memoryQueryPlanner';
 
 describe('MemoryQueryPlanner', () => {
-  it('plans granular facts-first SceneWriter queries', () => {
+  it('plans one bounded facts-first SceneWriter query with all relevant fact kinds', () => {
     const plans = planAgentMemoryQueries({
       agentRole: 'SceneWriter',
       lifecycle: 'scene-authoring',
@@ -13,7 +13,7 @@ describe('MemoryQueryPlanner', () => {
       artifactKinds: ['episode-blueprint', 'scene-content'],
     });
 
-    expect(plans.length).toBeGreaterThan(1);
+    expect(plans).toHaveLength(1);
     expect(plans.flatMap((plan) => plan.factKinds || [])).toEqual(expect.arrayContaining([
       'scene-canon',
       'episode-canon',

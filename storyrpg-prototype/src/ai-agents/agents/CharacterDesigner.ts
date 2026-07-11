@@ -1305,8 +1305,8 @@ Requirements:
     for (const character of input.charactersToCreate) {
       const summary = character.fashionStyle?.styleSummary?.trim();
       if (!summary) continue;
-      visualByName.set(character.name.toLowerCase().trim(), summary);
-      visualByName.set(character.id.toLowerCase().trim(), summary);
+      if (character.name) visualByName.set(character.name.toLowerCase().trim(), summary);
+      if (character.id) visualByName.set(character.id.toLowerCase().trim(), summary);
     }
 
     for (const character of bible.characters || []) {

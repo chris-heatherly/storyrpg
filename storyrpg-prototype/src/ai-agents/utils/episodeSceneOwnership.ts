@@ -358,6 +358,7 @@ function encounterBeatPlanFromAtom(atom: TreatmentEventAtom, scene: PlannedScene
 
 function ensureEncounterCapable(scene: PlannedScene, atom: TreatmentEventAtom): void {
   if (atom.sceneKindHint !== 'encounter' && !atom.eventCues?.includes('threatEncounter')) return;
+  const hadEncounterMetadata = scene.kind === 'encounter' || Boolean(scene.encounter);
   const blueprintLike = scene as PlannedScene & {
     isEncounter?: boolean;
     encounterDescription?: string;
@@ -395,6 +396,11 @@ function ensureEncounterCapable(scene: PlannedScene, atom: TreatmentEventAtom): 
         : ['notice', 'composure']);
   scene.encounter = {
     type: scene.encounter?.type ?? 'dramatic',
+    // Existing planned encounters may carry only author/source metadata at this
+    // stage. Do not turn that metadata into reader-facing prose; a newly
+    // promoted standard scene may use the deterministic event description as
+    // generator context until EncounterArchitect supplies playable copy.
+    description: scene.encounter?.description || (!hadEncounterMetadata ? blueprintLike.encounterDescription || atom.eventText : undefined),
     difficulty: scene.encounter?.difficulty ?? 'moderate',
     relevantSkills: coercedSkills,
     sourceSynopsis: scene.encounter?.sourceSynopsis || scene.encounter?.description || atom.eventText,

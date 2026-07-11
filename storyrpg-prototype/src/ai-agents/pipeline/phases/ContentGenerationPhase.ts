@@ -69,6 +69,7 @@ import {
   applySceneConstructionProfilesToScenes,
 } from '../../utils/sceneConstructionProfile';
 import { attachSceneEventOwnershipProfiles, repairCausalCueOwnershipOrder } from '../../utils/sceneEventOwnership';
+import { reprojectEpisodeEventPlan, validateCanonicalEpisodeBlueprintProjection } from '../narrativeContractCompiler';
 import { finalizeEpisodeSceneOwnership } from '../../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../../utils/relationshipPacingStagePolicy';
 import { detectBeatTenseDrift, isSceneWideTenseDrift, sceneTenseCensus } from '../../utils/proseTense';
@@ -108,6 +109,87 @@ import {
   type EncounterProseScanHit,
 } from '../../validators/EncounterQualityValidator';
 import { convertEncounterStructureToEncounter } from '../../converters/encounterConverter';
+
+function ensureCanonicalStateSetters(
+  choices: ChoiceSet['choices'],
+  requiredStateIds: string[] | undefined,
+): void {
+  for (const stateId of requiredStateIds ?? []) {
+    if (choices.some((choice) => (choice.consequences ?? []).some(
+      (consequence) => consequence.type === 'setFlag' && consequence.flag === stateId && consequence.value !== false,
+    ))) continue;
+    const stateTokens = stateId.split(/[^a-z0-9]+/i).filter((token) => token.length >= 4);
+    const candidate = [...choices]
+      .map((choice) => {
+        const surface = [choice.text, choice.outcomeTexts?.success, choice.outcomeTexts?.partial, choice.outcomeTexts?.failure]
+          .filter(Boolean).join(' ').toLowerCase();
+        return { choice, score: stateTokens.filter((token) => surface.includes(token)).length };
+      })
+      .sort((a, b) => b.score - a.score)[0];
+    // Do not attach an unrelated state to an option that does not stage a
+    // compatible action; the final contract should remain blocking in that case.
+    if (!candidate || candidate.score === 0) continue;
+    candidate.choice.consequences = [
+      ...(candidate.choice.consequences ?? []),
+      { type: 'setFlag', flag: stateId, value: true } as never,
+    ];
+  }
+}
+
+/**
+ * Keep pre-reveal identities anonymous even when an encounter model ignores a
+ * prompt-only naming prohibition. This is a provenance-preserving rewrite of
+ * generated encounter surfaces, not new story authorship: the canonical
+ * character remains linked by id while reader-facing names use the scheduled
+ * alias or a visual stranger reference.
+ */
+function scrubPreRevealIdentityReferences<T>(
+  value: T,
+  contracts: Array<{
+    canonicalName: string;
+    allowedAliases: string[];
+    firstNamedEpisode: number;
+  }> | undefined,
+  episodeNumber: number,
+): T {
+  const replacements = (contracts ?? [])
+    .filter((contract) => contract.firstNamedEpisode > episodeNumber && contract.canonicalName.trim())
+    .flatMap((contract) => {
+      const canonical = contract.canonicalName.trim();
+      const firstName = canonical.split(/\s+/)[0];
+      return [
+        { pattern: canonical, replacement: contract.allowedAliases[0]?.trim() || 'the stranger' },
+        ...(firstName.length >= 3 && firstName !== canonical
+          ? [{ pattern: firstName, replacement: contract.allowedAliases[0]?.trim() || 'the stranger' }]
+          : []),
+      ];
+    });
+  if (replacements.length === 0) return value;
+
+  const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const replaceText = (text: string): string => replacements.reduce(
+    (current, replacement) => current.replace(
+      new RegExp(`\\b${escapeRegExp(replacement.pattern)}\\b`, 'gi'),
+      replacement.replacement,
+    ),
+    text,
+  );
+  const walk = (input: unknown, key?: string): unknown => {
+    if (typeof input === 'string') {
+      if (key === 'id' || /(?:Id|ID)$/.test(key ?? '')) return input;
+      return replaceText(input);
+    }
+    if (Array.isArray(input)) return input.map((item) => walk(item));
+    if (!input || typeof input !== 'object') return input;
+    return Object.fromEntries(
+      Object.entries(input as Record<string, unknown>).map(([entryKey, entryValue]) => [
+        entryKey,
+        walk(entryValue, entryKey),
+      ]),
+    );
+  };
+  return walk(value) as T;
+}
 
 /**
  * Generation-time acceptance scan (no-boilerplate mandate): the
@@ -628,12 +710,27 @@ export class ContentGenerationPhase {
       episodeNumber: densityEpisodeNumber,
       storyCircleRole: brief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === densityEpisodeNumber)?.storyCircleRole,
     });
+    const canonicalPlan = blueprint.episodeEventPlan;
+    const canonicalGraph = brief.seasonPlan?.scenePlan?.narrativeContractGraph;
+    const canonicalProjectionIssues = canonicalPlan && canonicalGraph
+      ? reprojectEpisodeEventPlan(canonicalGraph, canonicalPlan, blueprint.scenes, densityEpisodeNumber)
+        .map((issue) => issue.message)
+      : [];
     const sceneConstruction = applySceneConstructionProfilesToScenes(blueprint.scenes, { episodeNumber: densityEpisodeNumber });
     const sceneConstructionIssues = sceneConstruction.diagnostics
       .filter((diagnostic) => diagnostic.severity === 'error')
       .map((diagnostic) => diagnostic.message);
-    const causalRepairDiagnostics = repairCausalCueOwnershipOrder(blueprint.scenes, { episodeNumber: densityEpisodeNumber });
-    const sceneEventOwnershipIssues = attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber: densityEpisodeNumber })
+    const causalRepairDiagnostics = canonicalPlan
+      ? []
+      : repairCausalCueOwnershipOrder(blueprint.scenes, { episodeNumber: densityEpisodeNumber });
+    const legacyOwnershipDiagnostics = canonicalPlan
+      ? []
+      : attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber: densityEpisodeNumber });
+    const canonicalOwnershipIssues = canonicalPlan
+      ? validateCanonicalEpisodeBlueprintProjection(canonicalPlan, blueprint.scenes, densityEpisodeNumber)
+        .map((issue) => issue.message)
+      : [];
+    const sceneEventOwnershipIssues = legacyOwnershipDiagnostics
       .filter((diagnostic) => diagnostic.severity === 'error')
       .map((diagnostic) => diagnostic.message);
     const causalRepairErrors = causalRepairDiagnostics
@@ -643,6 +740,7 @@ export class ContentGenerationPhase {
       episodeNumber: densityEpisodeNumber,
       storyCircleRole: brief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === densityEpisodeNumber)?.storyCircleRole,
       episodeSpine: brief.seasonPlan?.scenePlan?.episodeSpines?.[densityEpisodeNumber],
+      episodeEventPlan: canonicalPlan,
       scenes: blueprint.scenes,
     }).issues
       .filter((issue) => issue.severity === 'error')
@@ -665,8 +763,10 @@ export class ContentGenerationPhase {
     }
     const preProseConstructionIssues = [
       ...sceneConstructionIssues,
+      ...canonicalProjectionIssues,
       ...sceneEventOwnershipIssues,
       ...causalRepairErrors,
+      ...canonicalOwnershipIssues,
       ...sceneOwnershipPreflightIssues,
       ...routeCueIssueMessages,
     ];
@@ -686,6 +786,13 @@ export class ContentGenerationPhase {
           context: {
             episodeNumber: densityEpisodeNumber,
             issues: preProseConstructionIssues,
+          },
+          failure: {
+            code: 'scene_construction_conflict',
+            ownerStage: 'episode_plan',
+            retryClass: 'recompile_episode_plan',
+            issueCodes: preProseConstructionIssues.map((_, index) => `scene_construction_${index + 1}`),
+            repairTarget: 'episode-blueprint',
           },
         },
       );
@@ -1491,6 +1598,9 @@ export class ContentGenerationPhase {
           ),
           relevantFlags: blueprint.suggestedFlags,
           relevantScores: blueprint.suggestedScores,
+          premiseContracts: (brief.seasonPlan?.scenePlan?.narrativeContractGraph?.premiseContracts ?? [])
+            .filter((contract) => contract.targetSceneIds.includes(sceneBlueprint.id) || (!contract.targetSceneIds.length && contract.episodeNumber === brief.episode.number))
+            .map((contract) => ({ id: contract.id, fieldName: contract.fieldName, sourceText: contract.sourceText, evidencePatterns: contract.evidencePatterns, blocking: contract.blocking })),
           // Step 2 (info-ledger): resolve the INFO ids assigned to this scene to their
           // authored fact text so SceneWriter plants/reveals/pays off each phase on-page.
           setupDirectives: (sceneRealizationBlueprint.setsUpInfoIds ?? [])
@@ -2212,6 +2322,14 @@ export class ContentGenerationPhase {
               },
               npcsInScene: this.deps.buildChoiceAuthorNpcs(sceneRealizationBlueprint.npcsPresent, characterBible),
               availableFlags: blueprint.suggestedFlags,
+              authoredFlagContracts: (brief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === (episodeNumber ?? brief.episode.number))?.setsFlags ?? [])
+                .map((flag) => ({ name: flag.flag, description: flag.description || flag.flag })),
+              canonicalStateContracts: (brief.seasonPlan?.scenePlan?.narrativeContractGraph?.stateContracts ?? [])
+                .filter((state) => state.sourceEpisodeNumber === brief.episode.number || state.targetEpisodeNumbers.includes(brief.episode.number))
+                .map((state) => ({ canonicalStateId: state.canonicalStateId, aliases: state.aliases, sourceEpisodeNumber: state.sourceEpisodeNumber, targetEpisodeNumbers: state.targetEpisodeNumbers })),
+              requiredCanonicalStateIds: (brief.seasonPlan?.scenePlan?.narrativeContractGraph?.stateContracts ?? [])
+                .filter((state) => state.sourceEpisodeNumber === brief.episode.number && state.requiredSetterSurface === 'choice_consequence')
+                .map((state) => state.canonicalStateId),
               availableScores: blueprint.suggestedScores,
               availableTags: blueprint.suggestedTags,
               // B1: sealed canon as authoritative "do not contradict" context.
@@ -2392,6 +2510,7 @@ export class ContentGenerationPhase {
               if (fallbackChoiceSet) {
                 // Plant the on-page contracts on the deterministic fallback too — the
                 // success path is not the only place these obligations must be honored.
+                ensureCanonicalStateSetters(fallbackChoiceSet.choices, choiceAuthorInput.requiredCanonicalStateIds);
                 applyOnPageContracts(fallbackChoiceSet.choices);
                 choiceSets.push({ ...fallbackChoiceSet, sceneId: sceneBlueprint.id });
                 // Record the fallback's planted flags so later scenes can pay them off,
@@ -2400,6 +2519,7 @@ export class ContentGenerationPhase {
                 context.emit({ type: 'warning', phase: 'choices', message: `Inserted deterministic fallback choice set for ${sceneBlueprint.id} (${fallbackChoiceSet.choices.length} choice(s)) and planted its on-page contracts after ChoiceAuthor failed.` });
               }
             } else {
+            ensureCanonicalStateSetters(choiceResult.data.choices, choiceAuthorInput.requiredCanonicalStateIds);
             applyOnPageContracts(choiceResult.data.choices);
             // Branch fan-out repair: a multi-target branch point (leadsTo.size>1) whose
             // authored choices all route to ONE target leaves the other branch orphaned
@@ -2479,6 +2599,14 @@ export class ContentGenerationPhase {
                       },
                       npcsInScene: this.deps.buildChoiceAuthorNpcs(sceneRealizationBlueprint.npcsPresent, characterBible),
                       availableFlags: blueprint.suggestedFlags,
+                      authoredFlagContracts: (brief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === (episodeNumber ?? brief.episode.number))?.setsFlags ?? [])
+                        .map((flag) => ({ name: flag.flag, description: flag.description || flag.flag })),
+                      canonicalStateContracts: (brief.seasonPlan?.scenePlan?.narrativeContractGraph?.stateContracts ?? [])
+                        .filter((state) => state.sourceEpisodeNumber === brief.episode.number || state.targetEpisodeNumbers.includes(brief.episode.number))
+                        .map((state) => ({ canonicalStateId: state.canonicalStateId, aliases: state.aliases, sourceEpisodeNumber: state.sourceEpisodeNumber, targetEpisodeNumbers: state.targetEpisodeNumbers })),
+                      requiredCanonicalStateIds: (brief.seasonPlan?.scenePlan?.narrativeContractGraph?.stateContracts ?? [])
+                        .filter((state) => state.sourceEpisodeNumber === brief.episode.number && state.requiredSetterSurface === 'choice_consequence')
+                        .map((state) => state.canonicalStateId),
                       availableScores: blueprint.suggestedScores,
                       availableTags: blueprint.suggestedTags,
                       possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
@@ -2921,6 +3049,14 @@ export class ContentGenerationPhase {
                     },
                     npcsInScene: this.deps.buildChoiceAuthorNpcs(sceneRealizationBlueprint.npcsPresent, characterBible),
                     availableFlags: blueprint.suggestedFlags,
+                    authoredFlagContracts: (brief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === (episodeNumber ?? brief.episode.number))?.setsFlags ?? [])
+                      .map((flag) => ({ name: flag.flag, description: flag.description || flag.flag })),
+                    canonicalStateContracts: (brief.seasonPlan?.scenePlan?.narrativeContractGraph?.stateContracts ?? [])
+                      .filter((state) => state.sourceEpisodeNumber === brief.episode.number || state.targetEpisodeNumbers.includes(brief.episode.number))
+                      .map((state) => ({ canonicalStateId: state.canonicalStateId, aliases: state.aliases, sourceEpisodeNumber: state.sourceEpisodeNumber, targetEpisodeNumbers: state.targetEpisodeNumbers })),
+                    requiredCanonicalStateIds: (brief.seasonPlan?.scenePlan?.narrativeContractGraph?.stateContracts ?? [])
+                      .filter((state) => state.sourceEpisodeNumber === brief.episode.number && state.requiredSetterSurface === 'choice_consequence')
+                      .map((state) => state.canonicalStateId),
                     availableScores: blueprint.suggestedScores,
                     availableTags: blueprint.suggestedTags,
                     possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
@@ -3153,20 +3289,37 @@ export class ContentGenerationPhase {
           brief.protagonist,
         ).filter(isStageablePresent).filter(isAnonymousPlantRef);
 
+        const identityScheduleFor = (npcId: string) =>
+          sceneBlueprint.identityScheduleContracts?.find((contract) => contract.characterId === npcId);
+        const promptSafeIdentityText = (npcId: string, text: string, anonymous = false): string => {
+          const schedule = identityScheduleFor(npcId);
+          if (!schedule || (episodeNumber ?? brief.episode.number) >= schedule.firstNamedEpisode) return text;
+          const replacement = anonymous ? 'the stranger' : (schedule.allowedAliases[0] || 'the unnamed figure');
+          return [schedule.canonicalName, ...schedule.forbiddenBeforeNamedEpisode]
+            .filter(Boolean)
+            .reduce((value, forbidden) => value.replace(new RegExp(`\\b${forbidden.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'gi'), replacement), text);
+        };
+        const promptSafeNpcName = (npcId: string, fallback: string, anonymous = false): string => {
+          const schedule = identityScheduleFor(npcId);
+          if (!schedule || (episodeNumber ?? brief.episode.number) >= schedule.firstNamedEpisode) return fallback;
+          return anonymous ? 'the stranger' : (schedule.allowedAliases[0] || 'the unnamed figure');
+        };
+
         let npcsInvolved = [
           ...encounterRequiredNpcIds.map(npcId => {
             const profile = resolveCharacterProfile(characterBible.characters, npcId);
             const npcBrief = brief.npcs.find(n => n.id === npcId);
             const isFirst = !isIntroducedNpc(introducedBeforeEncounter, npcId);
+            const promptName = promptSafeNpcName(npcId, profile?.name || npcId);
             return {
               id: npcId,
-              name: profile?.name || npcId,
+              name: promptName,
               pronouns: (profile?.pronouns || 'they/them') as 'he/him' | 'she/her' | 'they/them',
               role: (npcBrief?.role === 'antagonist' ? 'enemy' :
                      npcBrief?.role === 'ally' || npcBrief?.role === 'love_interest' || npcBrief?.role === 'mentor' ? 'ally' :
                      npcBrief?.role === 'neutral' ? 'neutral' : 'obstacle') as 'ally' | 'enemy' | 'neutral' | 'obstacle',
-              description: profile?.overview || '',
-              physicalDescription: profile?.physicalDescription,
+              description: promptSafeIdentityText(npcId, profile?.overview || ''),
+              physicalDescription: promptSafeIdentityText(npcId, profile?.physicalDescription || ''),
               voiceNotes: profile?.voiceProfile?.writingGuidance || '',
               isFirstOnPageAppearance: isFirst,
               introMode: (isFirst ? 'named' : undefined) as 'named' | 'anonymous_plant' | undefined,
@@ -3177,13 +3330,13 @@ export class ContentGenerationPhase {
             const npcBrief = brief.npcs.find(n => n.id === npcId);
             return {
               id: npcId,
-              name: profile?.name || npcId,
+              name: promptSafeNpcName(npcId, profile?.name || npcId, true),
               pronouns: (profile?.pronouns || 'they/them') as 'he/him' | 'she/her' | 'they/them',
               role: (npcBrief?.role === 'antagonist' ? 'enemy' :
                      npcBrief?.role === 'ally' || npcBrief?.role === 'love_interest' || npcBrief?.role === 'mentor' ? 'ally' :
                      npcBrief?.role === 'neutral' ? 'neutral' : 'obstacle') as 'ally' | 'enemy' | 'neutral' | 'obstacle',
-              description: profile?.overview || profile?.physicalDescription || 'A stranger with distinctive visual cues',
-              physicalDescription: profile?.physicalDescription,
+              description: promptSafeIdentityText(npcId, profile?.overview || profile?.physicalDescription || 'A stranger with distinctive visual cues', true),
+              physicalDescription: promptSafeIdentityText(npcId, profile?.physicalDescription || '', true),
               voiceNotes: profile?.voiceProfile?.writingGuidance || '',
               isFirstOnPageAppearance: true,
               introMode: 'anonymous_plant' as const,
@@ -3212,7 +3365,7 @@ export class ContentGenerationPhase {
             pronouns: 'they/them' as const,
             role: 'enemy' as const,
             description: sceneBlueprint.encounterDescription || 'An opposing force',
-            physicalDescription: undefined,
+            physicalDescription: '',
             voiceNotes: '',
             isFirstOnPageAppearance: true,
             introMode: 'anonymous_plant' as const,
@@ -3300,6 +3453,7 @@ export class ContentGenerationPhase {
           : undefined;
 
         const encounterInput: EncounterArchitectInput = {
+          episodeNumber: episodeNumber ?? brief.episode.number,
           sceneId: sceneBlueprint.id,
           sceneName: sceneBlueprint.name,
           sceneDescription: sceneBlueprint.description,
@@ -3349,11 +3503,15 @@ export class ContentGenerationPhase {
             mustDepict: beat.mustDepict,
             tier: beat.tier,
           })),
+          canonicalEventEvidenceRequirements: sceneBlueprint.canonicalEvidenceRequirements,
           signatureMoment: sceneBlueprint.signatureMoment,
           centralConflict: sceneBlueprint.encounterCentralConflict || plannedEnc?.centralConflict,
           encounterSpineProfile: sceneBlueprint.encounterProfile
             || (plannedEnc as { encounterProfile?: string } | undefined)?.encounterProfile as EncounterArchitectInput['encounterSpineProfile'],
           encounterRequiredNpcIds,
+          characterPresenceContracts: sceneBlueprint.characterPresenceContracts,
+          identityScheduleContracts: sceneBlueprint.identityScheduleContracts,
+          characterRoleConstraints: sceneBlueprint.characterRoleConstraints,
           encounterRelevantSkills,
           encounterBeatPlan,
           difficulty: sceneBlueprint.encounterDifficulty || 'moderate',
@@ -3590,23 +3748,28 @@ export class ContentGenerationPhase {
               if (templateHits.length > 0) {
                 return `quarantine retry still contains ${templateHits.length} template-prose signature(s)`;
               }
-              plantEncounterInfoMarkers(structure);
-              encounters.set(sceneBlueprint.id, structure);
+              const sanitizedStructure = scrubPreRevealIdentityReferences(
+                structure,
+                sceneBlueprint.identityScheduleContracts,
+                episodeNumber ?? brief.episode.number,
+              );
+              plantEncounterInfoMarkers(sanitizedStructure);
+              encounters.set(sceneBlueprint.id, sanitizedStructure);
               this.deps.captureEncounterTelemetry(result.metadata, sceneBlueprint.id);
               if (this.deps.incrementalValidator) {
-                this.deps.trackEncounterFlagConsequences(structure);
+                this.deps.trackEncounterFlagConsequences(sanitizedStructure);
               }
               if (this.deps.generationPlan) {
                 setSceneBeats(
                   this.deps.generationPlan,
                   episodeNumber ?? brief.episode.number,
                   sceneBlueprint.id,
-                  structure.beats.length,
+                  sanitizedStructure.beats.length,
                 );
                 this.deps.emitPlanUpdate(`Encounter ${sceneBlueprint.id} recovered from quarantine`);
               }
               if (outputDirectory && episodeNumber) {
-                await this.deps.saveResumeUnit(outputDirectory, encounterUnitId, encounterCheckpointPath, structure);
+                await this.deps.saveResumeUnit(outputDirectory, encounterUnitId, encounterCheckpointPath, sanitizedStructure);
               }
               return null;
             },
@@ -3615,6 +3778,11 @@ export class ContentGenerationPhase {
 
         // Only register encounter + run validation if EncounterArchitect succeeded
         if (encounterResult?.success && encounterResult.data) {
+          encounterResult.data = scrubPreRevealIdentityReferences(
+            encounterResult.data,
+            sceneBlueprint.identityScheduleContracts,
+            episodeNumber ?? brief.episode.number,
+          );
           plantEncounterInfoMarkers(encounterResult.data);
           encounters.set(sceneBlueprint.id, encounterResult.data);
           this.deps.captureEncounterTelemetry(encounterResult.metadata, sceneBlueprint.id);
@@ -3830,8 +3998,13 @@ export class ContentGenerationPhase {
                         regenValidation.issues.length < encounterValidation.issues.length ||
                         regenCollisions.length < phase4Collisions.length ||
                         regenTemplateHits.length < templateHits.length) {
-                      plantEncounterInfoMarkers(regenEncounterResult.data);
-                      encounters.set(sceneBlueprint.id, regenEncounterResult.data);
+                      const sanitizedRegen = scrubPreRevealIdentityReferences(
+                        regenEncounterResult.data,
+                        sceneBlueprint.identityScheduleContracts,
+                        episodeNumber ?? brief.episode.number,
+                      );
+                      plantEncounterInfoMarkers(sanitizedRegen);
+                      encounters.set(sceneBlueprint.id, sanitizedRegen);
                       this.deps.captureEncounterTelemetry(regenEncounterResult.metadata, sceneBlueprint.id);
                       // overallPassed is driven only by the real validator —
                       // collisions never flip a passing scene to failed.

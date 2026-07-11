@@ -1,6 +1,8 @@
 services:
   cognee:
-    image: cognee/cognee:main
+    # Pinned to the image digest verified by memory:doctor on 2026-07-11.
+    # Update deliberately after running the Cognee provider-contract suite.
+    image: cognee/cognee@sha256:d7d9573fda89c85e54e8f325c2fc9071e1d2781b0cb4ba668515168dada41de6
     ports:
       - "8000:8000"
     restart: unless-stopped

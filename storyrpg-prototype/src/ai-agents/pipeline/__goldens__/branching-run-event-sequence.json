@@ -148,7 +148,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-1: 16390 -> 15664 bytes"
+      "message": "SceneWriter input compacted for scene-1: 16499 -> 15693 bytes"
     },
     {
       "type": "debug",
@@ -183,17 +183,17 @@
     {
       "type": "warning",
       "phase": "scenes",
-      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:you] \"In \"The Locked Wing\", establish the episode's known world or current normal before disruption: Mara finds the passage behind the library portrait and chooses between taking it alone or facing Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
+      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:you] \"In \"The Locked Wing\", establish the episode's known world or current normal before disruption: Mara finds the passage behind the library portrait and chooses between taking it alone or facing Edric\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
     },
     {
       "type": "warning",
       "phase": "scenes",
-      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:need] \"Name the episode want/lack that starts motion and makes the pressure active: Mara finds the passage behind the library portrait and chooses between taking it alone or facing Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
+      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:need] \"Name the episode want/lack that starts motion and makes the pressure active: Mara finds the passage behind the library portrait and chooses between taking it alone or facing Edric\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
     },
     {
       "type": "warning",
       "phase": "scenes",
-      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:go] \"Cross the episode threshold so old tactics stop working: Mara finds the passage behind the library portrait and chooses between taking it alone or facing Edric.\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
+      "message": "Scene scene-1 skipped deterministic authored-moment insertion for [storyCircle:go] \"Cross the episode threshold so old tactics stop working: Mara finds the passage behind the library portrait and chooses between taking it alone or facing Edric\": story-circle source text is an episode summary, not stageable prose — needs SceneWriter realization."
     },
     {
       "type": "warning",
@@ -263,7 +263,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-2a: 7980 -> 7917 bytes"
+      "message": "SceneWriter input compacted for scene-2a: 8014 -> 7951 bytes"
     },
     {
       "type": "agent_complete",
@@ -581,10 +581,13 @@
       "phase": "Scene Content",
       "requiresApproval": true,
       "dataKeys": [
+        "blueprintId",
         "choiceSets",
-        "encounterCount",
+        "contentContract",
         "encounters",
-        "sceneContents"
+        "episodeNumber",
+        "sceneContents",
+        "version"
       ]
     },
     {

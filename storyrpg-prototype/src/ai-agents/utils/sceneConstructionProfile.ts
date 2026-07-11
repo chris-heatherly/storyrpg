@@ -536,15 +536,18 @@ function initialObligations(scene: SceneConstructionSceneLike, primary: SceneCon
 
   for (const beat of scene.requiredBeats ?? []) {
     const hard = isHardRequiredBeat(beat);
+    const introductionBeat = /(?:^|-)intro-/.test(String(beat.id || ''));
     pushObligation(
       obligations,
       'requiredBeat',
       beat.id,
       beatText(beat),
-      hard ? 'must_stage' : 'texture',
-      hard ? 'Hard required beat must be dramatized if it belongs to this turn.' : 'Soft seed/connective beat may texture the turn.',
-      hard ? 1 : 0,
-      hard ? 0 : 0.5,
+      introductionBeat ? 'must_support' : hard ? 'must_stage' : 'texture',
+      introductionBeat
+        ? 'Character introduction should be realized as behavior inside the scene turn, not as a competing event.'
+        : hard ? 'Hard required beat must be dramatized if it belongs to this turn.' : 'Soft seed/connective beat may texture the turn.',
+      introductionBeat ? 0.75 : hard ? 1 : 0,
+      introductionBeat || !hard ? 0.5 : 0,
     );
   }
   if (scene.signatureMoment) {

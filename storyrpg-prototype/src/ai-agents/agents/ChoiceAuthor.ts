@@ -37,6 +37,7 @@ import {
 } from '../../types/sourceAnalysis';
 import type { SeasonResidueObligation } from '../../types/seasonPlan';
 import type { ConsequenceTier, MechanicPressureContract, RelationshipPacingContract } from '../../types/scenePlan';
+import type { NarrativeStateContract } from '../../types/narrativeContract';
 import { normalizeRelationshipKey } from '../utils/relationshipArcLedger';
 import {
   effectiveNpcDeltaCap,
@@ -137,6 +138,12 @@ export interface ChoiceAuthorInput {
 
   // Available state for conditions
   availableFlags: Array<{ name: string; description: string }>;
+  /** Authored flag contracts whose consequences must be earned by the option's action. */
+  authoredFlagContracts?: Array<{ name: string; description: string }>;
+  /** Canonical season state ids; aliases are diagnostic-only and must never be emitted. */
+  canonicalStateContracts?: Array<Pick<NarrativeStateContract, 'canonicalStateId' | 'aliases' | 'sourceEpisodeNumber' | 'targetEpisodeNumbers'>>;
+  /** Canonical states whose authored setter surface is required in this episode. */
+  requiredCanonicalStateIds?: string[];
   availableScores: Array<{ name: string; description: string }>;
   availableTags: Array<{ name: string; description: string }>;
 
@@ -565,6 +572,20 @@ Before finalizing:
 
       // Validate the choices (structural)
       this.validateChoices(choiceSet, input);
+      this.validateAuthoredFlagSemantics(choiceSet, input);
+
+      // Choice variants and residue fields are a separate producer surface
+      // from SceneWriter prose. Enforce relationship pacing here so a blocked
+      // label such as "friend" cannot be introduced by a choice author after
+      // the scene writer correctly staged a first meeting at spark.
+      const relationshipLabelIssues = this.collectBlockedRelationshipLabelIssues(choiceSet, input);
+      if (relationshipLabelIssues.length > 0) {
+        const revisionResult = await this.executeRevision(input, choiceSet, relationshipLabelIssues);
+        if (revisionResult.success && revisionResult.data && this.collectBlockedRelationshipLabelIssues(revisionResult.data, input).length < relationshipLabelIssues.length) {
+          choiceSet = revisionResult.data;
+          rawResponse = revisionResult.rawResponse ?? rawResponse;
+        }
+      }
 
       // For dilemma choices or choices that branch, run LLM quality validation with feedback loop
       const hasBranching = choiceSet.choices.some(c => c.nextSceneId);
@@ -615,6 +636,35 @@ Before finalizing:
         error: errorMsg,
       };
     }
+  }
+
+  private collectBlockedRelationshipLabelIssues(choiceSet: ChoiceSet, input: ChoiceAuthorInput): string[] {
+    const contracts = input.sceneBlueprint.relationshipPacing ?? [];
+    if (contracts.length === 0) return [];
+    const blocked = contracts.flatMap((contract) => contract.blockedLabels ?? []).filter(Boolean);
+    if (blocked.length === 0) return [];
+    const issues: string[] = [];
+    const surfaces = (choice: Choice): string[] => [
+      choice.text,
+      choice.lockedText,
+      choice.reactionText,
+      choice.feedbackCue?.echoSummary,
+      choice.feedbackCue?.progressSummary,
+      choice.reminderPlan?.immediate,
+      choice.reminderPlan?.shortTerm,
+      choice.reminderPlan?.later,
+      ...(choice.outcomeTexts ? Object.values(choice.outcomeTexts) : []),
+      ...(choice.residueHints ?? []).map((hint) => hint.description),
+    ].filter((value): value is string => typeof value === 'string');
+    for (const choice of choiceSet.choices ?? []) {
+      const text = surfaces(choice).join(' ');
+      for (const label of blocked) {
+        if (new RegExp(`\\b${label.replace(/[.*+?^${}()|[\\]\\]/g, '\\\\$&')}\\b`, 'i').test(text)) {
+          issues.push(`Choice "${choice.id}" uses blocked early relationship label "${label}". Rewrite it as provisional spark, guarded warmth, invitation, or testing at the current earned stage.`);
+        }
+      }
+    }
+    return issues;
   }
 
   /**
@@ -789,7 +839,7 @@ Return JSON only.`;
         }
       }
 
-      for (const consequenceIssue of this.collectConsequenceCompletenessIssues(choice, choiceId)) {
+      for (const consequenceIssue of this.collectConsequenceCompletenessIssues(choice, choiceId, input)) {
         issues.push(consequenceIssue);
       }
     });
@@ -801,7 +851,7 @@ Return JSON only.`;
     return typeof value === 'string' && value.trim().length > 0;
   }
 
-  private collectConsequenceCompletenessIssues(choice: GeneratedChoice, choiceId: string): string[] {
+  private collectConsequenceCompletenessIssues(choice: GeneratedChoice, choiceId: string, input: ChoiceAuthorInput): string[] {
     const issues: string[] = [];
     const consequences = Array.isArray(choice.consequences)
       ? choice.consequences
@@ -814,6 +864,16 @@ Return JSON only.`;
       issues.push(
         `Choice "${choiceId}" has malformed consequence #${rejected.index + 1}: ${rejected.reason}.`,
       );
+    }
+
+    const allowedScores = new Set((input.availableScores ?? []).map((score) => score.name));
+    for (const consequence of canonical.consequences) {
+      if (consequence.type !== 'changeScore') continue;
+      if (typeof consequence.score !== 'string' || !allowedScores.has(consequence.score)) {
+        issues.push(
+          `Choice "${choiceId}" changes unknown score "${String(consequence.score ?? '')}"; use one of ${Array.from(allowedScores).join(', ') || 'no canonical scores'}.`,
+        );
+      }
     }
 
     return issues;
@@ -1618,6 +1678,12 @@ ${due.map(describe).join('\n')}
     const flagList = input.availableFlags
       .map(f => `- ${f.name}: ${f.description}`)
       .join('\n');
+    const authoredFlagList = (input.authoredFlagContracts ?? [])
+      .map(f => `- ${f.name}: ${f.description}`)
+      .join('\n');
+    const canonicalStateList = (input.canonicalStateContracts ?? [])
+      .map(state => `- ${state.canonicalStateId}${state.aliases.length > 0 ? ` (registered aliases: ${state.aliases.join(', ')})` : ''} — source episode ${state.sourceEpisodeNumber}; future use in episode(s) ${state.targetEpisodeNumbers.join(', ')}`)
+      .join('\n');
     const routeFlags = input.availableFlags.filter(f => f.name.startsWith('route_'));
 
     const scoreList = input.availableScores
@@ -1738,6 +1804,21 @@ ${storyVerbList}
 ## Available State for Consequences
 **Flags**:
 ${flagList || 'None defined'}
+${authoredFlagList ? `
+## Authored Flag Contracts
+These flags represent authored story facts, not generic route labels. Only set a flag when the selected option's player-facing action and immediate outcome visibly perform the described fact. The choice text must make that action legible; do not attach a flag to a merely adjacent or thematic option.
+${authoredFlagList}
+` : ''}
+${canonicalStateList ? `
+## Canonical Narrative State Contracts
+These are the only canonical ids for season-spanning authored state. Emit the exact canonicalStateId in setFlag consequences. Do not invent a synonym or replace it with a prose-derived alias; aliases are accepted only when explicitly registered above.
+${canonicalStateList}
+` : ''}
+${input.requiredCanonicalStateIds?.length ? `
+## Required State Setters For This Episode
+At least one option in this choice set must visibly perform and set each state below. Use the exact id in a setFlag consequence; do not substitute a generic trust flag.
+${input.requiredCanonicalStateIds.map((id) => `- ${id}`).join('\n')}
+` : ''}
 ${routeFlags.length > 0 ? `
 ## Cross-Episode Route Branching
 These flags are route gates for scene-length branch episodes: ${routeFlags.map(f => f.name).join(', ')}
@@ -2432,6 +2513,48 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
             'Let this choice echo in later prose, relationship behavior, or recap language.',
         }];
         console.warn(`[ChoiceAuthor] Meaningful choice "${choice.id}" missing residueHints — added advisory fallback.`);
+      }
+    }
+  }
+
+  private validateAuthoredFlagSemantics(choiceSet: ChoiceSet, input: ChoiceAuthorInput): void {
+    const contracts = input.authoredFlagContracts ?? [];
+    if (contracts.length === 0) return;
+    const byName = new Map(contracts.map((contract) => [contract.name, contract.description]));
+    const canonicalByAlias = new Map<string, string>();
+    for (const state of input.canonicalStateContracts ?? []) {
+      for (const alias of state.aliases) canonicalByAlias.set(alias, state.canonicalStateId);
+    }
+    for (const choice of choiceSet.choices) {
+      for (const consequence of choice.consequences ?? []) {
+        if (consequence.type !== 'setFlag' || consequence.value === false || typeof consequence.flag !== 'string') continue;
+        const canonical = canonicalByAlias.get(consequence.flag);
+        if (canonical && canonical !== consequence.flag) {
+          throw new Error(`Choice "${choice.id}" emits registered state alias "${consequence.flag}"; use canonical state id "${canonical}".`);
+        }
+        const description = byName.get(consequence.flag);
+        if (!description) continue;
+        const surface = [
+          input.beatText,
+          choice.text,
+          choice.outcomeTexts?.success,
+          choice.outcomeTexts?.partial,
+          choice.outcomeTexts?.failure,
+          choice.reminderPlan?.immediate,
+          choice.reminderPlan?.shortTerm,
+        ].filter(Boolean).join(' ').toLowerCase();
+        const descriptionText = description.toLowerCase();
+        const semanticAction = /confid/.test(descriptionText)
+          ? /confid|open(?:s|ed)?\s+up|share|tell|admit|reveal/.test(surface)
+          : descriptionText.split(/[^a-z0-9]+/)
+            .filter((token) => token.length >= 5)
+            .filter((token) => !new Set(['player', 'episode', 'scene', 'early', 'later', 'with']).has(token))
+            .some((token) => surface.includes(token));
+        if (!semanticAction) {
+          throw new Error(
+            `Authored flag "${consequence.flag}" is set by choice "${choice.id}" without staging its contracted action: ${description}`,
+          );
+        }
       }
     }
   }

@@ -27,4 +27,38 @@ describe('TreatmentAtomCoverageValidator', () => {
       'missing_required_atom',
     ]);
   });
+
+  it('counts multi-beat and encounter surfaces as treatment evidence', () => {
+    const atoms = atomizeTreatmentText({
+      episodeNumber: 1,
+      text: 'Avery enters the bookshop owned by Mira and meets her. Avery is attacked in North Station and rescued by a stranger.',
+    });
+    const story = {
+      episodes: [{
+        id: 'ep1',
+        number: 1,
+        scenes: [
+          {
+            id: 's1',
+            beats: [
+              { id: 'b1', text: 'Avery enters the bookshop through a door opening onto a maze of shelves.' },
+              { id: 'b2', text: 'Mira, who owns the bookshop, steps from behind the counter and Avery meets her.' },
+            ],
+          },
+          {
+            id: 'encounter',
+            beats: [],
+            encounter: {
+              phases: [{ beats: [{ id: 'enc-b1', setupText: 'At North Station, two attackers close in before a stranger rescues you.' }] }],
+            },
+          },
+        ],
+      }],
+    } as any;
+
+    const report = new TreatmentAtomCoverageValidator().validate({ story, atoms });
+
+    expect(report.passed).toBe(true);
+    expect(report.ownership.every((item) => item.evidenceBeatIds.length > 0)).toBe(true);
+  });
 });

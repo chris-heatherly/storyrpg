@@ -7,7 +7,7 @@ import {
   type SceneEventOwnershipSceneLike,
 } from './sceneEventOwnership';
 import { SceneOwnershipPreflightValidator } from '../validators/SceneOwnershipPreflightValidator';
-import type { SceneConstructionObligation, SceneConstructionProfile } from '../../types/scenePlan';
+import type { PlannedScene, SceneConstructionObligation, SceneConstructionProfile } from '../../types/scenePlan';
 
 describe('sceneEventOwnership', () => {
   function constructionProfile(
@@ -96,7 +96,7 @@ describe('sceneEventOwnership', () => {
 
     expect(issues).toEqual([]);
     expect(scenes[0].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toContain('venueDoor');
-    expect(scenes[1].sceneEventOwnership?.incomingContext.map((event) => event.cue)).toContain('venueDoor');
+    expect(scenes[1].sceneEventOwnership?.priorEventsWithinEpisode?.map((event) => event.cue)).toContain('venueDoor');
     expect(scenes[1].sceneEventOwnership?.forbiddenRestageEvents.map((event) => event.cue)).toContain('venueDoor');
   });
 
@@ -193,7 +193,7 @@ describe('sceneEventOwnership', () => {
         kind: 'standard',
         requiredBeats: [{ id: 'bad', tier: 'authored', mustDepict: 'Kylie arrives in Bucharest with two suitcases.' }],
       },
-    ] as never;
+    ] as unknown as PlannedScene[];
     expect(stripRegressiveAuthoredBeats(scenes)).toBe(1);
     expect(scenes[1].requiredBeats).toHaveLength(0);
   });

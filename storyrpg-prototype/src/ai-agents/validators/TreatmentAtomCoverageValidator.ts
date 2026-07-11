@@ -1,4 +1,5 @@
 import type { Story, TreatmentEventAtom, TreatmentEventOwnership } from '../../types';
+import { collectReaderFacingTexts } from './encounterTextSurfaces';
 
 export interface TreatmentAtomCoverageIssue {
   validator: 'TreatmentAtomCoverageValidator';
@@ -32,8 +33,17 @@ export class TreatmentAtomCoverageValidator {
           evidenceBeatIds: scene.beats
             .filter((beat) => textMatchesAtom(beat.text, atom))
             .map((beat) => beat.id),
+          sceneText: collectReaderFacingTexts(scene.scene as never).join(' '),
         }))
-        .filter((candidate) => candidate.evidenceBeatIds.length > 0);
+        .map((candidate) => candidate.evidenceBeatIds.length > 0 || textMatchesAtom(candidate.sceneText, atom)
+          ? {
+              ...candidate,
+              evidenceBeatIds: candidate.evidenceBeatIds.length > 0
+                ? candidate.evidenceBeatIds
+                : [`${candidate.scene.scene.id}:reader-surface`],
+            }
+          : undefined)
+        .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
 
       const primary = matches[0];
       if (!primary) {

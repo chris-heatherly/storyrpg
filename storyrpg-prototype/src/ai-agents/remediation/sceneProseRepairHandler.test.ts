@@ -1223,4 +1223,28 @@ describe('characterIntroductionIssuesCleared', () => {
     } as unknown as Scene;
     expect(characterIntroductionIssuesCleared(firstContact as never, [offPageIssue])).toBe(true);
   });
+
+  it('plant-leak predicted-clear is false while roster name present, true when removed', () => {
+    const plantLeakIssue = {
+      validator: 'CharacterIntroductionValidator',
+      severity: 'error',
+      type: 'character_introduction',
+      message:
+        '"Victor Valcescu" is named in reader-facing prose of scene "s1-1" (episode 1) while scheduled as an anonymous plant — roster identity must stay hidden until the reveal scene.',
+      location: 'characterIntroduction:ep1:s1-1:char-victor-valcescu:anonymous-plant-leak',
+      suggestion:
+        'Keep Victor Valcescu anonymous on all reader surfaces until the planned reveal; use stranger/visual descriptors only.',
+    };
+    const named = {
+      id: 's1-1',
+      beats: [{ id: 'b1', text: 'A man in a charcoal suit, Victor Valcescu radiates elegance.' }],
+    } as unknown as Scene;
+    expect(characterIntroductionIssuesCleared(named as never, [plantLeakIssue])).toBe(false);
+
+    const anonymous = {
+      id: 's1-1',
+      beats: [{ id: 'b1', text: 'A stranger in a charcoal suit steps between you and the shadow and offers a hand.' }],
+    } as unknown as Scene;
+    expect(characterIntroductionIssuesCleared(anonymous as never, [plantLeakIssue])).toBe(true);
+  });
 });

@@ -17,6 +17,8 @@ export interface MemoryTelemetryEvent {
   queryCount: number;
   resultCount: number;
   emptyContext: boolean;
+  emptyReason?: 'provider_empty' | 'filter_eliminated' | 'no_local_context';
+  fallbackUsed?: boolean;
   latencyMs: number;
   status: MemoryTelemetryStatus;
   error?: string;
@@ -33,6 +35,8 @@ export interface MemoryRunSummary {
   writeFailureCount: number;
   cognifyFailureCount: number;
   circuitOpenSkipCount: number;
+  providerEmptyRecallCount: number;
+  filterFallbackCount: number;
   totalResultCount: number;
   totalLatencyMs: number;
   errors: string[];
@@ -57,6 +61,8 @@ export class MemoryTelemetryCollector {
       writeFailureCount: 0,
       cognifyFailureCount: 0,
       circuitOpenSkipCount: 0,
+      providerEmptyRecallCount: 0,
+      filterFallbackCount: 0,
       totalResultCount: 0,
       totalLatencyMs: 0,
       errors: [],
@@ -67,6 +73,8 @@ export class MemoryTelemetryCollector {
       if (event.operation === 'recall') {
         summary.recallCount += 1;
         if (event.status === 'empty' || event.emptyContext) summary.emptyRecallCount += 1;
+        if (event.emptyReason === 'provider_empty') summary.providerEmptyRecallCount += 1;
+        if (event.fallbackUsed) summary.filterFallbackCount += 1;
         if (event.status === 'failed') summary.recallFailureCount += 1;
       } else if (event.operation === 'write') {
         summary.writeCount += 1;

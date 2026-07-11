@@ -53,6 +53,35 @@ import { findSceneForChoiceSet } from '../choiceSetLookup';
 import { materializeFlagVariantCallbackHooks } from '../reconvergenceResidue';
 import { PipelineContext } from './index';
 
+function addEncounterContinuityContext(
+  sceneContents: SceneContent[],
+  encounters?: Map<string, EncounterStructure>,
+): SceneContent[] {
+  if (!encounters || encounters.size === 0) return sceneContents;
+  return sceneContents.map((scene) => {
+    const encounter = encounters.get(scene.sceneId) as (EncounterStructure & {
+      phases?: Array<{ beats?: Array<{ setupText?: string; escalationText?: string; text?: string }> }>;
+    }) | undefined;
+    if (!encounter) return scene;
+    const transitionTexts = (encounter.phases ?? []).flatMap((phase) =>
+      (phase.beats ?? []).flatMap((beat) => [beat.setupText, beat.escalationText, beat.text])
+        .filter((text): text is string => typeof text === 'string' && text.trim().length > 0),
+    );
+    if (transitionTexts.length === 0) return scene;
+    // QA gets a read-only continuity surface for encounter setup. The actual
+    // story content remains unchanged; this prevents cross-scene QA from
+    // treating a valid taxi/departure handoff as an unexplained jump simply
+    // because encounter prose lives outside SceneContent.beats.
+    return {
+      ...scene,
+      beats: [
+        ...scene.beats,
+        { id: `${scene.sceneId}-qa-encounter-context`, text: transitionTexts.join(' ') },
+      ],
+    };
+  });
+}
+
 // ========================================
 // INPUT, RESULT & DEPENDENCY TYPES
 // ========================================
@@ -145,6 +174,26 @@ function restoreMutableList<T>(target: T[], snapshot: T[]): void {
   target.splice(0, target.length, ...cloneMutableList(snapshot));
 }
 
+/**
+ * QA rewrites are prose revisions, not architecture revisions. Preserve the
+ * immutable realization metadata that travels with a scene so a good rewrite
+ * cannot accidentally erase treatment beats, relationship pacing, or the
+ * canonical turn and make the final gate judge an under-specified artifact.
+ */
+function preserveSceneContractMetadata(previous: SceneContent, candidate: SceneContent): SceneContent {
+  return {
+    ...candidate,
+    requiredBeats: previous.requiredBeats?.length ? previous.requiredBeats : candidate.requiredBeats,
+    signatureMoment: previous.signatureMoment || candidate.signatureMoment,
+    turnContract: previous.turnContract ?? candidate.turnContract,
+    relationshipPacing: previous.relationshipPacing?.length ? previous.relationshipPacing : candidate.relationshipPacing,
+    mechanicPressure: previous.mechanicPressure?.length ? previous.mechanicPressure : candidate.mechanicPressure,
+    storyCircleBeatContracts: previous.storyCircleBeatContracts?.length ? previous.storyCircleBeatContracts : candidate.storyCircleBeatContracts,
+    arcPressureContracts: previous.arcPressureContracts?.length ? previous.arcPressureContracts : candidate.arcPressureContracts,
+    incomingChoiceContext: previous.incomingChoiceContext || candidate.incomingChoiceContext,
+  };
+}
+
 function isUngroundedJudgeIssue(issue: any): boolean {
   return /evidence-ungrounded|ungrounded (?:claim|evidence)|quoted text not found/i
     .test(String(issue?.description ?? issue ?? ''));
@@ -232,7 +281,7 @@ function collectTargetedJudgeSceneRepairs(
         const routeChoices = (choiceSet.choices ?? []).filter((choice) => choice.nextSceneId === sceneId);
         const routeFlags = Array.from(new Set(routeChoices.flatMap((choice) =>
           (choice.consequences ?? [])
-            .filter((consequence) => consequence.type === 'setFlag' && consequence.value !== false)
+            .filter((consequence): consequence is Extract<typeof consequence, { type: 'setFlag' }> => consequence.type === 'setFlag' && consequence.value !== false)
             .map((consequence) => consequence.flag),
         )));
         const reconvergenceInstruction = routeChoices.length > 1 && routeFlags.length > 0
@@ -254,7 +303,7 @@ function incomingChoiceFlagsForScene(choiceSets: ChoiceSet[], sceneId: string): 
       .filter((choice) => choice.nextSceneId === sceneId)
       .flatMap((choice) =>
         (choice.consequences ?? [])
-          .filter((consequence) => consequence.type === 'setFlag' && consequence.value !== false)
+          .filter((consequence): consequence is Extract<typeof consequence, { type: 'setFlag' }> => consequence.type === 'setFlag' && consequence.value !== false)
           .map((consequence) => consequence.flag),
       ),
   )));
@@ -263,9 +312,12 @@ function incomingChoiceFlagsForScene(choiceSets: ChoiceSet[], sceneId: string): 
 function shouldAdoptQARepair(previous: QAReport, next: QAReport): boolean {
   const previousCritical = previous.criticalIssues?.length ?? 0;
   const nextCritical = next.criticalIssues?.length ?? 0;
+  const previousResponsiveness = previous.responsiveness?.overallScore ?? 100;
+  const nextResponsiveness = next.responsiveness?.overallScore ?? 100;
 
   if (previous.passesQA && !next.passesQA) return false;
   if (nextCritical > previousCritical) return false;
+  if (nextResponsiveness < previousResponsiveness) return false;
   if (next.passesQA && !previous.passesQA) return true;
   if (nextCritical < previousCritical) return next.overallScore >= previous.overallScore - 5;
   if (judgeRepairDeficit(next) < judgeRepairDeficit(previous)) {
@@ -343,7 +395,8 @@ export class QAPhase {
           choiceSets,
           characterBible,
           episodeBlueprint,
-          context
+          context,
+          encounters,
         ),
         context.config.validation.enabled
           ? this.deps.integratedValidator.runFullValidation(validationInput)
@@ -501,7 +554,7 @@ export class QAPhase {
               repairResult.data.branchType = sceneContents[sceneIdx].branchType;
               repairResult.data.isBottleneck = sceneContents[sceneIdx].isBottleneck;
               repairResult.data.isConvergencePoint = sceneContents[sceneIdx].isConvergencePoint;
-              sceneContents[sceneIdx] = repairResult.data;
+              sceneContents[sceneIdx] = preserveSceneContractMetadata(sceneContents[sceneIdx], repairResult.data);
               repairsMade++;
               repairedSceneIds.add(sceneId);
             }
@@ -585,7 +638,7 @@ export class QAPhase {
                 message: `Materialized ${callbackResidue} condition-gated opening callback variant(s) in ${sceneId}`,
               });
             }
-            sceneContents[sceneIdx] = repairResult.data;
+              sceneContents[sceneIdx] = preserveSceneContractMetadata(sceneContents[sceneIdx], repairResult.data);
             repairsMade++;
             repairedSceneIds.add(sceneId);
           }
@@ -671,7 +724,7 @@ export class QAPhase {
           });
 
           qaReport = await this.runQualityAssurance(
-            brief, sceneContents, choiceSets, characterBible, episodeBlueprint, context
+            brief, sceneContents, choiceSets, characterBible, episodeBlueprint, context, encounters,
           );
 
           const repairedReport = qaReport;
@@ -725,7 +778,8 @@ export class QAPhase {
     choiceSets: ChoiceSet[],
     characterBible: CharacterBible,
     blueprint: EpisodeBlueprint,
-    context: PipelineContext
+    context: PipelineContext,
+    encounters?: Map<string, EncounterStructure>,
   ): Promise<QAReport> {
     const qaStepTotal = 3;
     this.deps.emitPhaseProgress('qa', 0, qaStepTotal, 'qa:steps', 'Preparing quality assurance checks...');
@@ -823,7 +877,7 @@ export class QAPhase {
     const timelineEvents = this.deps.buildContinuityTimeline(blueprint);
 
     const report = await this.deps.qaRunner.runFullQA({
-      sceneContents,
+      sceneContents: addEncounterContinuityContext(sceneContents, encounters),
       choiceSets,
       characterProfiles: characterBible.characters.map(c => ({
         id: c.id,

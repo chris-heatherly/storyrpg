@@ -743,7 +743,7 @@ function ep1RelationshipChoiceSet(): Record<string, unknown> {
         consequences: [
           {
             type: 'relationship',
-            target: 'npc-1',
+            npcId: 'npc-1',
             dimension: 'trust',
             change: -10,
             description: 'Edric watches you choose the house over him.',
@@ -770,7 +770,7 @@ function ep1RelationshipChoiceSet(): Record<string, unknown> {
         consequences: [
           {
             type: 'relationship',
-            target: 'npc-1',
+            npcId: 'npc-1',
             dimension: 'trust',
             change: 5,
             description: 'Edric registers that you chose him over the door.',
@@ -865,7 +865,7 @@ function ep2RelationshipChoiceSet(): Record<string, unknown> {
         consequences: [
           {
             type: 'relationship',
-            target: 'npc-1',
+            npcId: 'npc-1',
             dimension: 'trust',
             change: 10,
             description: 'You hand the steward the one page that could ruin his employer.',
@@ -892,7 +892,7 @@ function ep2RelationshipChoiceSet(): Record<string, unknown> {
         consequences: [
           {
             type: 'relationship',
-            target: 'npc-1',
+            npcId: 'npc-1',
             dimension: 'trust',
             change: -5,
             description: 'Edric watches you lie to him with a steward\'s practiced eye.',
@@ -1101,8 +1101,8 @@ function twistPlanFixtureFor(episode: 1 | 2): string {
       episodeId: 'episode-1',
       headline: 'Edric has known about the passage all along',
       kind: 'revelation',
-      twistSceneId: 'scene-1',
-      twistBeatId: 'beat-2',
+      twistSceneId: 'scene-2',
+      twistBeatId: 'beat-1',
       foreshadowSceneId: 'scene-1',
       foreshadowBeatId: 'beat-1',
       rationale:
@@ -1117,11 +1117,11 @@ function twistPlanFixtureFor(episode: 1 | 2): string {
           hint: 'The hinge is oiled and silent — someone has kept this door working.',
         },
         {
-          sceneId: 'scene-1',
-          beatId: 'beat-2',
+          sceneId: 'scene-2',
+          beatId: 'beat-1',
           beatRole: 'reveal',
           twistKind: 'revelation',
-          hint: 'Edric\'s face shows no surprise at the open passage, only at being seen.',
+          hint: 'Edric admits he maintained the passage and waited for someone willing to ask why.',
         },
         {
           sceneId: 'scene-2',
@@ -1137,8 +1137,8 @@ function twistPlanFixtureFor(episode: 1 | 2): string {
     episodeId: 'episode-2',
     headline: 'The family\'s lawyer is the man who sealed the wing',
     kind: 'reframe',
-    twistSceneId: 'scene-4',
-    twistBeatId: 'beat-2',
+    twistSceneId: 'scene-5',
+    twistBeatId: 'beat-1',
     foreshadowSceneId: 'scene-4',
     foreshadowBeatId: 'beat-1',
     rationale:
@@ -1153,11 +1153,11 @@ function twistPlanFixtureFor(episode: 1 | 2): string {
         hint: 'The second hand in the margins is a professional\'s — precise, paid, not family.',
       },
       {
-        sceneId: 'scene-4',
-        beatId: 'beat-2',
+        sceneId: 'scene-5',
+        beatId: 'beat-1',
         beatRole: 'reveal',
         twistKind: 'reframe',
-        hint: 'The signature beside the seal makes the visit on the calendar a threat.',
+        hint: 'The lawyer arrives carrying the same precise hand and seal named in the ledger.',
       },
       {
         sceneId: 'scene-5',

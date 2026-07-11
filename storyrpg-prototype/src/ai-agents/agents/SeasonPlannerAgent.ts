@@ -99,6 +99,7 @@ import { clampSceneCount } from '../../constants/pipeline';
 import { isSceneFirstPlanningEnabled } from '../config/sceneFirstPlanning';
 import { buildSeasonScenePlan, scenesForEpisode, MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
 import { buildScenePlanPrompt, normalizeAuthoredScenePlan } from '../pipeline/authorScenePlan';
+import { compileAndApplyNarrativeContracts } from '../pipeline/narrativeContractCompiler';
 import { synthesizeTreatmentGuidance } from '../pipeline/synthesizeTreatmentGuidance';
 import { SceneSpineValidator } from '../validators/SceneSpineValidator';
 import { SeasonBudgetValidator } from '../validators/SeasonBudgetValidator';
@@ -329,12 +330,13 @@ Your plans must define:
         { minScenesPerEpisode: MIN_SCENES_PER_EPISODE },
       );
       if (authored) {
-        seasonPlan.scenePlan = authored;
+        const compiledAuthored = compileAndApplyNarrativeContracts(seasonPlan, authored);
+        seasonPlan.scenePlan = compiledAuthored;
         for (const ep of seasonPlan.episodes) {
-          ep.plannedScenes = scenesForEpisode(authored, ep.episodeNumber);
+          ep.plannedScenes = scenesForEpisode(compiledAuthored, ep.episodeNumber);
         }
         seasonPlan.notes.push(
-          `Scene-first planning: LLM-authored spine (${authored.scenes.length} scenes, ${authored.setupPayoffEdges.length} setup/payoff edges).`,
+          `Scene-first planning: canonically compiled LLM-authored spine (${compiledAuthored.scenes.length} scenes, ${compiledAuthored.setupPayoffEdges.length} setup/payoff edges, graph ${compiledAuthored.narrativeContractGraph?.sourceHash ?? 'missing'}).`,
         );
       }
     } else if (seasonPlan.scenePlan && (isTreatmentSourcedPlan || isAuthoredLitePlan)) {

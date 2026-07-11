@@ -40,6 +40,7 @@ import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
 import { hasDirectTreatmentEventRealization } from '../validators/TreatmentEventLedgerValidator';
 import {
   characterIntroductionIssueCleared,
+  parseCharacterIntroductionNpcId,
   scenePassesCharacterIntroductionOffPageCheck,
 } from '../validators/CharacterIntroductionValidator';
 import { collectReaderFacingTexts } from '../validators/encounterTextSurfaces';
@@ -75,11 +76,13 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
   // gives them a wider repair window when the issue is structural.
   'SceneTurnRealizationValidator',
   'SceneTransitionContinuityValidator',
+  'ContinuityChecker',
   'RelationshipArcLedgerValidator',
   'NarrativeMechanicPressureValidator',
   'TreatmentEventLedgerValidator',
   'ReferencedEventPresenceValidator',
   'CharacterIntroductionValidator',
+  'NarrativeContractValidator',
   'SentenceOpenerVarietyValidator',
   // R5 (2026-07-06) — router/handler consistency: these validators' scene-
   // localized findings route to same_scene_retry / scene_cluster_rewrite in
@@ -140,6 +143,7 @@ const SCENE_CLUSTER_REPAIRABLE_VALIDATORS = new Set([
   'SignatureDevicePresenceValidator',
   'TreatmentEventLedgerValidator',
   'SceneTurnRealizationValidator',
+  'ContinuityChecker',
   'SceneTransitionContinuityValidator',
   'RelationshipArcLedgerValidator',
   'NarrativeMechanicPressureValidator',
@@ -294,8 +298,17 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
       continue;
     }
     if (issue.validator === 'TreatmentEventLedgerValidator') {
+      const blogAftermath = /blogAftermath|gone viral|viral|readership|audience/i.test(issue.message ?? '');
       lines.push(
-        '  NON-NEGOTIABLE: this is an authoritative treatment event. Stage it as immediate reader-facing action in THIS scene. Do not satisfy it through memory, backstory, later recap, "weeks ago" phrasing, or a character recalling what had happened.',
+        blogAftermath
+          ? '  NON-NEGOTIABLE: this is the authored public blog aftermath. In THIS scene, explicitly show the published post going viral or its audience surging; preserve the source timing by saying "by evening" (or an unmistakable equivalent), include the literal word "viral" or an equally direct public-reach action, and show concrete reader/share/notification evidence. Do not satisfy it with metaphor alone, private reaction, memory, or a later recap.'
+          : '  NON-NEGOTIABLE: this is an authoritative treatment event. Stage it as immediate reader-facing action in THIS scene. Do not satisfy it through memory, backstory, later recap, "weeks ago" phrasing, or a character recalling what had happened.',
+      );
+      continue;
+    }
+    if (issue.validator === 'ContinuityChecker') {
+      lines.push(
+        '  NON-NEGOTIABLE: repair the exact knowledge gap in the flagged beat. If someone arrives at the protagonist\'s private address without an established route, add an in-world call, text, invitation, exchanged address, or the protagonist opening the door after contact before the arrival. Do not leave the arrival unexplained, and do not narrate validator or planning language.',
       );
       continue;
     }
@@ -307,16 +320,57 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
     }
     if (issue.validator === 'CharacterIntroductionValidator') {
       const offPage = /off-page familiarity|settled group belonging|back-reference/i.test(issue.message ?? '');
-      const anonymousPlant = /anonymous|stranger|first-contact plant|visual cues/i.test(
+      const metadataOnly = /first appears in the cast|metadata only|never names them/i.test(issue.message ?? '');
+      const namedCharacter = /"([^\"]+)"/.exec(issue.message ?? '')?.[1];
+      const plantLeak = /anonymous plant|scheduled as an anonymous plant|roster identity must stay hidden|anonymous-plant-leak/i.test(
+        `${issue.message || ''} ${issue.suggestion || ''}`,
+      );
+      const anonymousPlant = !plantLeak && /anonymous|stranger|first-contact plant|visual cues/i.test(
         `${issue.suggestion || ''} ${issue.message || ''}`,
       );
       lines.push(
         offPage
-          ? '  NON-NEGOTIABLE: this is the reader\'s FIRST on-page meeting with the named character(s). Rewrite every beat in second person ("you/your"). Stage the bookshop encounter as live first contact: how you notice them, how they name themselves or are named to you, one concrete identifying detail, and guarded/testing warmth — NOT summary prose ("She explores… Stela who befriends her"), NOT time-jump familiarity, NOT "the woman from the bookstore", NOT club belonging or "friends now" language. Mentioning a later club as an invitation is fine; treating them as already-known company is not.'
-          : anonymousPlant
-            ? '  NON-NEGOTIABLE: this is an ANONYMOUS PLANT. Stage first-contact with a stranger/anonymous figure and distinctive visual cues. Do NOT use their roster name yet. Keep identity linked for a later reveal.'
-            : '  NON-NEGOTIABLE: introduce the named character on-page before treating them as known. Add a brief concrete arrival, recognition, relationship cue, or identifying detail in the prose; keep the existing cast and plot intact.',
+          ? '  NON-NEGOTIABLE: this is the reader\'s FIRST on-page meeting with the named character(s). Rewrite every beat in second person ("you/your"). Stage the encounter as live first contact: how you notice them, how they name themselves or are named to you, one concrete identifying detail, and guarded/testing warmth. The character must not be described through a back-reference such as "from the shadows", "the man from...", "someone you met", or any unseen prior event; do not use time-jump familiarity, club belonging, or "friends now" language.'
+          : plantLeak
+            ? '  NON-NEGOTIABLE: ANONYMOUS-PLANT LEAK. Remove or replace every roster-name mention of this character on all reader surfaces (beats, encounter outcomes, storylets, aftermath). Stage them only as a stranger/anonymous figure with distinctive visual cues. Do NOT introduce them by roster name; do NOT keep the name and add staging beside it.'
+            : anonymousPlant
+              ? '  NON-NEGOTIABLE: this is an ANONYMOUS PLANT. Stage first-contact with a stranger/anonymous figure and distinctive visual cues. Do NOT use their roster name yet. Keep identity linked for a later reveal.'
+              : metadataOnly
+                ? `  NON-NEGOTIABLE: ${namedCharacter || 'this cast character'} is already assigned to this scene and must exist on-page, not only in metadata. Name ${namedCharacter || 'the character'} naturally in the live encounter and give the protagonist one concrete action, visual detail, or line that establishes who they are. Do not remove them from the cast, replace them with an unnamed figure, or satisfy the issue with a recap.`
+              : '  NON-NEGOTIABLE: introduce the named character on-page before treating them as known. Add a brief concrete arrival, recognition, relationship cue, or identifying detail in the prose; keep the existing cast and plot intact.',
       );
+      continue;
+    }
+    if (issue.validator === 'NarrativeContractValidator') {
+      if (/premise contract/i.test(issue.message ?? '')) {
+        lines.push(
+          '  NON-NEGOTIABLE: this is an authored premise obligation. Put the concrete identity/role/origin-pressure detail on the page in this scene through behavior, dialogue, an object, or a specific consequence. Do not satisfy it with a character sheet, scene title, synopsis, abstract adjective, or planning language; preserve second-person narration and all existing event ownership.',
+        );
+      } else if (/downstream seed/i.test(issue.message ?? '')) {
+        lines.push(
+          '  NON-NEGOTIABLE: carry the prior choice as residue in this scene. Show changed behavior, access, reputation, information, leverage, relationship posture, or an explicit callback. Do not replay the source event, mention the contract, expose a flag name, or invent a new event.',
+        );
+      } else if (/transition metadata|canonical transition/i.test(issue.message ?? '')) {
+        lines.push(
+          '  NON-NEGOTIABLE: keep the arriving scene in the canonical location and time. Add a natural bridge or arrival acknowledgment that makes the move legible, while preserving the scene\'s assigned event and avoiding a second location or a metadata explanation in reader prose.',
+        );
+      } else if (/scheduled (?:twist|revelation|payoff)|twist contract/i.test(issue.message ?? '')) {
+        lines.push(
+          '  NON-NEGOTIABLE: realize the scheduled turn in this scene with fair setup and concrete on-page evidence. Do not introduce an unrelated twist, move the reveal to another scene, or write an authorial explanation of the schedule.',
+        );
+      } else if (/viral blog payoff/i.test(issue.message ?? '')) {
+        lines.push(
+          '  NON-NEGOTIABLE: the authored blog aftermath must show concrete public reach in this scene. Keep the post publication and add visible audience consequence — readers, shares, notifications, local recognition, or a changed public position. A single private comment is insufficient. Do not write the phrase "the validator requires" or other planning language.',
+        );
+      } else if (/canonical identity|identity .* before/i.test(issue.message ?? '')) {
+        lines.push(
+          '  NON-NEGOTIABLE: preserve the visual/codename plant but remove the character\'s canonical name and first name from every reader-facing surface in this scene. Use only the allowed codename or distinctive visual description. Do not compensate by adding a recap or metadata name.',
+        );
+      } else if (/forbidden early role|forbidden.*role/i.test(issue.message ?? '')) {
+        lines.push(
+          '  NON-NEGOTIABLE: preserve the character\'s scheduled early role. Rewrite the scene so this character is a witness, visual plant, or romantic-pressure presence rather than an attacker or antagonist; move the threat to the authored anonymous danger without changing scene topology.',
+        );
+      }
       continue;
     }
     if (issue.validator === 'SentenceOpenerVarietyValidator') {
@@ -685,7 +739,7 @@ export function characterIntroductionIssuesCleared(
   const introIssues = issues.filter((issue) => issue.validator === 'CharacterIntroductionValidator');
   if (introIssues.length === 0) return true;
   return introIssues.every((issue) => {
-    const location = String(issue.location || '');
+    const location = String((issue as RepairableIssue & { location?: unknown }).location || '');
     const message = String(issue.message || '');
     const isOffPage = location.includes(':offpage-familiarity')
       || location.includes(':offpage-backreference')
@@ -697,17 +751,24 @@ export function characterIntroductionIssuesCleared(
         name ? [name] : [],
       );
     }
+    const isPlantLeak = location.includes(':anonymous-plant-leak')
+      || /anonymous plant|scheduled as an anonymous plant|roster identity must stay hidden/i.test(message);
+    const npcId = parseCharacterIntroductionNpcId(location);
     // Metadata-only / never-names: require the name in prose, OR anonymous-plant
-    // first-contact staging (detected from issue suggestion / message cues).
-    const anonymousHint = /anonymous|stranger|first-contact plant|visual cues/i.test(
+    // first-contact staging. Plant-leak: name must be ABSENT (handled inside
+    // characterIntroductionIssueCleared — do not pass a bogus pop()'d suffix).
+    const anonymousHint = !isPlantLeak && /anonymous|stranger|first-contact plant|visual cues/i.test(
       `${issue.suggestion || ''} ${message}`,
     );
     return characterIntroductionIssueCleared(
       scene as unknown as import('../../types').Scene,
       issue,
-      anonymousHint
-        ? { anonymousPlantNpcIds: new Set([location.split(':').pop() || ''].filter(Boolean)) }
-        : undefined,
+      {
+        npcId,
+        ...(anonymousHint || isPlantLeak
+          ? { anonymousPlantNpcIds: new Set([npcId || ''].filter(Boolean)) }
+          : {}),
+      },
     );
   });
 }

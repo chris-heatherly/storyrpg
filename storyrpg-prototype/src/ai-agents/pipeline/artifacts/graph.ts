@@ -26,6 +26,9 @@ export function evaluateArtifactStatus(
   if (artifact.status === 'invalid' || artifact.validation.passed === false) {
     return { ref, status: 'invalid', reasons: ['artifact validation failed'] };
   }
+  if (artifact.status === 'migration_blocked') {
+    return { ref, status: 'blocked', reasons: ['legacy artifact migration requires explicit repair'] };
+  }
   if (artifact.status === 'stale') {
     return { ref, status: 'stale', reasons: ['artifact was explicitly marked stale'] };
   }
@@ -39,7 +42,10 @@ export function evaluateArtifactStatus(
       continue;
     }
     const current = store.loadCurrentRef(upstream.kind, upstream.episodeNumber);
-    if (loaded.payloadHash !== upstream.payloadHash || (current && current.artifactId !== upstream.artifactId)) {
+    if (
+      loaded.payloadHash !== upstream.payloadHash
+      || (upstream.dependencyMode !== 'exact' && current && current.artifactId !== upstream.artifactId)
+    ) {
       changed.push(`${upstream.kind}:${upstream.revision}`);
     }
   }

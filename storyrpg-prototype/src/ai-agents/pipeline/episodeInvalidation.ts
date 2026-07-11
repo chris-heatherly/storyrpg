@@ -32,6 +32,7 @@ import {
   episodeCompleteArtifact,
   loadCompletedEpisode,
 } from './episodeCheckpoints';
+import type { NarrativeContractGraph } from '../../types/narrativeContract';
 
 export interface EpisodeInvalidationTombstone {
   version: 0;
@@ -49,6 +50,49 @@ export interface EpisodeInvalidationPlan {
   invalidated: number[];
   /** Completed episodes left intact (upstream of the target), ascending. */
   kept: number[];
+}
+
+export interface DependencyAwareForwardRepairPlan {
+  revalidate: number[];
+  regenerate: number[];
+  reasonsByEpisode: Record<number, string[]>;
+}
+
+/** Marks all later episodes for revalidation but regenerates only changed dependency/context projections. */
+export function planDependencyAwareForwardRepair(options: {
+  changedEpisode: number;
+  totalEpisodes: number;
+  graph?: NarrativeContractGraph;
+  changedEventIds?: string[];
+  contextHashesBefore?: Record<number, string | undefined>;
+  contextHashesAfter?: Record<number, string | undefined>;
+}): DependencyAwareForwardRepairPlan {
+  const revalidate = Array.from(
+    { length: Math.max(0, options.totalEpisodes - options.changedEpisode) },
+    (_, index) => options.changedEpisode + index + 1,
+  );
+  const changedEvents = new Set(options.changedEventIds ?? options.graph?.events
+    .filter((event) => event.episodeNumber === options.changedEpisode)
+    .map((event) => event.id) ?? []);
+  const reasonsByEpisode: Record<number, string[]> = {};
+  const regenerate = new Set<number>();
+  for (const dependency of options.graph?.dependencies ?? []) {
+    if (!changedEvents.has(dependency.fromEventId)) continue;
+    for (const target of dependency.targetEpisodeNumbers) {
+      if (target <= options.changedEpisode || target > options.totalEpisodes) continue;
+      regenerate.add(target);
+      reasonsByEpisode[target] = [...(reasonsByEpisode[target] ?? []), `dependency:${dependency.id}`];
+    }
+  }
+  for (const episode of revalidate) {
+    const before = options.contextHashesBefore?.[episode];
+    const after = options.contextHashesAfter?.[episode];
+    if (before != null && after != null && before !== after) {
+      regenerate.add(episode);
+      reasonsByEpisode[episode] = [...(reasonsByEpisode[episode] ?? []), 'context-in-hash-changed'];
+    }
+  }
+  return { revalidate, regenerate: [...regenerate].sort((a, b) => a - b), reasonsByEpisode };
 }
 
 /**

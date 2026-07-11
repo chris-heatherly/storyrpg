@@ -14,11 +14,11 @@ import {
   type StoryPackage,
 } from '../codec/storyCodec';
 import { runImageGenerationBatch, runStoryAnalysis, runStoryGeneration } from '../services/storyGenerationService';
-import { WorkerPayload, assertValidWorkerPayload } from './workerPayload';
+import { WorkerPayload, assertValidWorkerPayload, assertWorkerJobConfigHash } from './workerPayload';
 import { resolveMemoryConfig } from '../config';
 import { compileEpisode } from '../pipeline/episodeCompiler';
 import { isProviderQuotaError, PROVIDER_QUOTA_FAILURE_KIND } from '../utils/providerErrors';
-import { anthropicCreditPreflight } from './providerPreflight';
+import { narrativeProviderPreflight, validateNarrativeJobContract } from './providerPreflight';
 import { installResilientHttp } from './resilientHttp';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { Story } from '../../types';
@@ -170,6 +170,12 @@ function buildFailurePayload(error: unknown): Record<string, unknown> {
       failurePhase: error.phase,
       failureStepId: typeof context.stepId === 'string' ? context.stepId : error.phase,
       failureKind: quotaKind ?? (typeof context.failureKind === 'string' ? context.failureKind : 'pipeline'),
+      failureCode: error.code,
+      failureOwnerStage: error.ownerStage,
+      retryClass: error.retryClass,
+      issueCodes: error.issueCodes,
+      artifactRefs: error.artifactRefs,
+      repairTarget: error.repairTarget,
       failureArtifactKey: typeof context.failureArtifactKey === 'string' ? context.failureArtifactKey : undefined,
       resumeFromStepId: typeof context.resumeFromStepId === 'string' ? context.resumeFromStepId : error.phase,
       resumePatchableInputs: Array.isArray(context.resumePatchableInputs) ? context.resumePatchableInputs : ['settings'],
@@ -509,6 +515,7 @@ async function main() {
   const payloadRaw = await fs.readFile(payloadPath, 'utf8');
   const payload = JSON.parse(payloadRaw) as unknown;
   assertValidWorkerPayload(payload);
+  assertWorkerJobConfigHash(payload);
 
   // Memory (Cognee / file) is a server-only concern: the client bundle that
   // builds `payload.config` only carries EXPO_PUBLIC_* env, so its memory block
@@ -547,21 +554,31 @@ async function main() {
     status: latestWorkerStatus,
   });
 
-  // WS1b preflight: 1-token ping so an exhausted account pauses the job before
-  // any generation spend. Fail-open — only a definitive billing error throws
-  // (LLMQuotaError → failureKind 'provider-quota' → job status 'paused').
-  const agentConfigs = Object.values(payload.config?.agents ?? {}) as Array<{ provider?: string; apiKey?: string; model?: string }>;
-  const anthropicConfig = agentConfigs.find((c) => c?.provider === 'anthropic' && c?.apiKey);
-  if (payload.mode !== 'compile-episode' && anthropicConfig) {
-    const preflight = await anthropicCreditPreflight({
-      apiKey: anthropicConfig.apiKey,
-      model: anthropicConfig.model,
+  if (payload.mode === 'analysis' || payload.mode === 'generation') {
+    const config = payload.config as Record<string, any>;
+    const jobContract = config.jobContract ?? config.generation?.jobContract ?? {};
+    validateNarrativeJobContract(config, {
+      geminiOnly: jobContract.geminiOnly === true,
+      textOnly: jobContract.textOnly === true,
+      qualityCouncilEnabled: config.qualityCouncil?.enabled !== false,
     });
-    if (preflight.skipped) {
-      emit('pipeline_event', { eventType: 'debug', phase: 'preflight', message: `Credit preflight skipped: ${preflight.reason}` });
-    } else {
-      emit('pipeline_event', { eventType: 'debug', phase: 'preflight', message: 'Credit preflight OK' });
-    }
+    const preflight = await narrativeProviderPreflight({
+      agents: config.agents ?? {},
+      qualityCouncilEnabled: config.qualityCouncil?.enabled !== false,
+      imageGenerationEnabled: config.imageGen?.enabled === true,
+    });
+    emit('pipeline_event', {
+      eventType: 'debug',
+      phase: 'preflight',
+      message: `Provider/job preflight OK (${preflight.checked.length} provider-model route(s), config ${payload.jobConfigHash?.slice(0, 12)}).`,
+      data: {
+        jobConfigHash: payload.jobConfigHash,
+        checked: preflight.checked,
+        skipped: preflight.skipped,
+        imageGenerationEnabled: config.imageGen?.enabled === true,
+        qualityCouncilEnabled: config.qualityCouncil?.enabled === true,
+      },
+    });
   }
 
   if (payload.mode === 'analysis') {

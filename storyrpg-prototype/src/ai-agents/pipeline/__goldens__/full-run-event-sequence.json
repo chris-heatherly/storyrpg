@@ -148,7 +148,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-1: 16848 -> 15944 bytes"
+      "message": "SceneWriter input compacted for scene-1: 16977 -> 15972 bytes"
     },
     {
       "type": "debug",
@@ -223,7 +223,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-2: 7981 -> 7918 bytes"
+      "message": "SceneWriter input compacted for scene-2: 8015 -> 7952 bytes"
     },
     {
       "type": "agent_complete",
@@ -481,10 +481,13 @@
       "phase": "Scene Content",
       "requiresApproval": true,
       "dataKeys": [
+        "blueprintId",
         "choiceSets",
-        "encounterCount",
+        "contentContract",
         "encounters",
-        "sceneContents"
+        "episodeNumber",
+        "sceneContents",
+        "version"
       ]
     },
     {

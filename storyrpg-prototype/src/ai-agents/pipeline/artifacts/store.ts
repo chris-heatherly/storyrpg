@@ -8,6 +8,7 @@ import {
   SaveArtifactInput,
   defaultValidationSummary,
 } from './types';
+import { migrateArtifactEnvelope, migrateCurrentIndex } from './migrations';
 
 export function episodeArtifactDir(episodeNumber: number): string {
   return `artifacts/episodes/${String(episodeNumber).padStart(3, '0')}`;
@@ -60,21 +61,39 @@ export function stableHash(value: unknown): string {
   return `${(h2 >>> 0).toString(16).padStart(8, '0')}${(h1 >>> 0).toString(16).padStart(8, '0')}`;
 }
 
+function clonePayload<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+export interface MutableArtifactSession<T> {
+  readonly source: ArtifactRef;
+  readonly sourceHash: string;
+  readonly value: T;
+  commit(input: Omit<SaveArtifactInput<T>, 'payload'>): Promise<PipelineArtifact<T>>;
+}
+
 function emptyCurrentIndex(): ArtifactCurrentIndex {
   return {
-    version: 1,
+    version: 2,
     updatedAt: new Date().toISOString(),
     artifacts: {},
+    supersededArtifactIds: [],
   };
+}
+
+function deepFreeze<T>(value: T): T {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
+  return value;
 }
 
 export class ArtifactRevisionStore {
   constructor(private readonly io: ArtifactStoreIO) {}
 
   loadCurrentIndex(episodeNumber?: number): ArtifactCurrentIndex {
-    const current = this.io.load<ArtifactCurrentIndex>(currentIndexPath(episodeNumber));
-    if (!current || current.version !== 1 || !current.artifacts) return emptyCurrentIndex();
-    return current;
+    const current = this.io.load<unknown>(currentIndexPath(episodeNumber));
+    return migrateCurrentIndex(current) ?? emptyCurrentIndex();
   }
 
   loadCurrentRef(kind: ArtifactKind, episodeNumber?: number): ArtifactRef | null {
@@ -87,9 +106,42 @@ export class ArtifactRevisionStore {
   }
 
   loadRef<T>(ref: ArtifactRef): PipelineArtifact<T> | null {
-    const artifact = this.io.load<PipelineArtifact<T>>(ref.path);
-    if (!artifact || artifact.artifactId !== ref.artifactId || artifact.payloadHash !== ref.payloadHash) return null;
-    return artifact;
+    const artifact = migrateArtifactEnvelope<T>(this.io.load<unknown>(ref.path), ref);
+    return artifact ? deepFreeze(artifact) : null;
+  }
+
+  loadMutable<T>(ref: ArtifactRef): PipelineArtifact<T> | null {
+    const artifact = this.loadRef<T>(ref);
+    if (!artifact) return null;
+    const mutable = clonePayload(artifact);
+    mutable.payload = clonePayload(artifact.payload);
+    return mutable;
+  }
+
+  loadCurrentMutable<T>(kind: ArtifactKind, episodeNumber?: number): PipelineArtifact<T> | null {
+    const ref = this.loadCurrentRef(kind, episodeNumber);
+    return ref ? this.loadMutable<T>(ref) : null;
+  }
+
+  openMutableSession<T>(ref: ArtifactRef): MutableArtifactSession<T> | null {
+    const artifact = this.loadMutable<T>(ref);
+    if (!artifact) return null;
+    const sourceHash = artifact.payloadHash;
+    return {
+      source: ref,
+      sourceHash,
+      value: artifact.payload,
+      commit: (input) => {
+        if (input.kind !== artifact.kind || input.episodeNumber !== artifact.episodeNumber) {
+          throw new Error('Mutable artifact sessions must commit the same kind and episode scope as their source.');
+        }
+        return this.saveRevision({
+          ...input,
+          payload: artifact.payload,
+          upstream: [...(input.upstream ?? []), ref],
+        });
+      },
+    };
   }
 
   async saveRevision<T>(input: SaveArtifactInput<T>): Promise<PipelineArtifact<T>> {
@@ -119,7 +171,10 @@ export class ArtifactRevisionStore {
       episodeNumber: input.episodeNumber,
       revision,
       status,
-      upstream: input.upstream ?? [],
+      // Do not retain the caller's mutable array. The committed artifact is
+      // recursively frozen below, and freezing an aliased input array would
+      // make the producer fail when it appends the next upstream revision.
+      upstream: [...(input.upstream ?? [])],
       provenance: input.provenance,
       validation: input.validation ?? defaultValidationSummary(input.kind),
       payloadHash,
@@ -133,23 +188,42 @@ export class ArtifactRevisionStore {
       await this.setCurrent(this.refFor(artifact));
     }
 
-    return artifact;
+    return deepFreeze(artifact);
   }
 
   async setCurrent(ref: ArtifactRef): Promise<ArtifactCurrentIndex> {
-    const current = this.loadCurrentIndex(ref.episodeNumber);
+    return this.commitCurrentSet([ref]);
+  }
+
+  /** Atomically advances all refs sharing an index after validating every payload. */
+  async commitCurrentSet(refs: ArtifactRef[]): Promise<ArtifactCurrentIndex> {
+    if (refs.length === 0) return emptyCurrentIndex();
+    const scope = refs[0].episodeNumber;
+    if (refs.some((ref) => ref.episodeNumber !== scope)) {
+      throw new Error('Atomic artifact commit cannot span global and episode current indexes.');
+    }
+    for (const ref of refs) {
+      const artifact = this.loadRef(ref);
+      if (!artifact) throw new Error(`Cannot commit missing or hash-mismatched artifact ${ref.artifactId}.`);
+      if (artifact.status !== 'valid' || artifact.validation.passed === false) {
+        throw new Error(`Cannot commit non-valid artifact ${ref.artifactId}.`);
+      }
+    }
+    const current = this.loadCurrentIndex(scope);
     current.updatedAt = new Date().toISOString();
-    current.artifacts[ref.kind] = ref;
-    await this.io.save(currentIndexPath(ref.episodeNumber), current);
+    for (const ref of refs) current.artifacts[ref.kind] = ref;
+    await this.io.save(currentIndexPath(scope), current);
     return current;
   }
 
   async markSuperseded(ref: ArtifactRef): Promise<PipelineArtifact<unknown> | null> {
     const artifact = this.loadRef(ref);
     if (!artifact) return null;
-    const next = { ...artifact, status: 'superseded' as const };
-    await this.io.save(ref.path, next);
-    return next;
+    const current = this.loadCurrentIndex(ref.episodeNumber);
+    current.updatedAt = new Date().toISOString();
+    current.supersededArtifactIds = Array.from(new Set([...(current.supersededArtifactIds ?? []), ref.artifactId]));
+    await this.io.save(currentIndexPath(ref.episodeNumber), current);
+    return artifact;
   }
 
   refFor<T>(artifact: PipelineArtifact<T>): ArtifactRef {

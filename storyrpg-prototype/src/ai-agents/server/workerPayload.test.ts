@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { assertValidWorkerPayload } from './workerPayload';
+import {
+  assertValidWorkerPayload,
+  assertWorkerJobConfigHash,
+  computeWorkerJobConfigHash,
+} from './workerPayload';
 
 describe('assertValidWorkerPayload', () => {
+  it('freezes hydrated job settings with a deterministic hash', () => {
+    const config = { imageGen: { enabled: false }, agents: { writer: { provider: 'gemini', model: 'gemini-2.5-pro', apiKey: 'secret' } } };
+    const hash = computeWorkerJobConfigHash('generation', config);
+    const payload = { mode: 'generation', config, jobConfigHash: hash, resultPath: '/tmp/result.json', generationInput: { brief: {} } } as const;
+    expect(() => assertWorkerJobConfigHash(payload)).not.toThrow();
+    expect(() => assertWorkerJobConfigHash({ ...payload, config: { ...config, imageGen: { enabled: true } } })).toThrow(/hash mismatch/i);
+  });
+
   it('accepts a valid generation payload', () => {
     const payload = {
       mode: 'generation',

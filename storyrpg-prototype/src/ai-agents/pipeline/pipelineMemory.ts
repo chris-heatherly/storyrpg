@@ -46,6 +46,10 @@ export interface PipelineMemoryPacket {
     resultCount: number;
     datasets?: string[];
     nodeNames?: string[];
+    /** Why this provider query had no snippets, when that can be determined. */
+    emptyReason?: 'provider_empty' | 'filter_eliminated';
+    /** True when the unfiltered compatibility retry supplied the result. */
+    fallbackUsed?: boolean;
   }>;
   warnings: string[];
 }
@@ -68,6 +72,10 @@ export interface PipelineMemoryRecord {
 }
 
 export interface PipelineMemoryRecallRequest {
+  /** Scope the in-process fact store before falling back to Cognee. */
+  storyId?: string;
+  episodeNumber?: number;
+  sceneId?: string;
   queries?: string[];
   datasets?: string[];
   nodeNames?: string[];
@@ -320,6 +328,21 @@ function agentNodeNames(request: AgentMemoryRequest): string[] {
     ...(request.factKinds || []).map((kind) => `fact-kind:${kind}`),
     ...(request.factIds || []).map((id) => `fact-id:${slugifyMemoryKey(id)}`),
     ...(request.nodeNames || []),
+  ]);
+}
+
+/**
+ * Cognee's node-name list is a restrictive graph filter. Agent and lifecycle
+ * labels describe who is asking, not how persisted records are indexed, and
+ * including them made valid corpus searches return no rows. Keep those labels
+ * in local provenance, but only send stable content facets to the provider.
+ */
+function providerNodeNames(request: Pick<PipelineMemoryRecallRequest, 'nodeNames' | 'artifactKinds' | 'artifactIds' | 'factKinds' | 'factIds'>): string[] {
+  return uniqueStrings([
+    ...(request.nodeNames || []).filter((node) => !node.startsWith('agent:') && !/^[a-z]+(?:-[a-z]+)*$/.test(node)),
+    ...(request.artifactKinds || []).flatMap((kind) => [`artifact:${kind}`, `artifact-kind:${kind}`]),
+    ...(request.artifactIds || []).flatMap((id) => [`artifact:${slugifyMemoryKey(id)}`, `artifact-id:${slugifyMemoryKey(id)}`]),
+    ...factNodeNames(request.factKinds, request.factIds),
   ]);
 }
 
@@ -765,38 +788,58 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
     const topK = request.topK || DEFAULT_TOP_K;
     const maxPromptChars = request.maxPromptChars || defaults.maxPromptChars;
     const searchType = request.searchType || 'GRAPH_COMPLETION';
-    const nodeNames = uniqueStrings([
-      ...(request.nodeNames || []),
-      ...(request.artifactKinds || []).flatMap((kind) => [`artifact:${kind}`, `artifact-kind:${kind}`]),
-      ...(request.artifactIds || []).flatMap((id) => [`artifact:${slugifyMemoryKey(id)}`, `artifact-id:${slugifyMemoryKey(id)}`]),
-      ...factNodeNames(request.factKinds, request.factIds),
-    ]);
+    const nodeNames = providerNodeNames(request);
     const packet = emptyPacket();
     packet.datasetNames = datasets;
 
     for (const query of queries) {
-      const response = await fetchWithTimeout(this.endpoint('search'), {
-        method: 'POST',
-        headers: this.headers(true),
-        body: JSON.stringify({
-          searchType,
+      const search = async (nodes: string[]) => {
+        const response = await fetchWithTimeout(this.endpoint('search'), {
+          method: 'POST',
+          headers: this.headers(true),
+          body: JSON.stringify({
+            searchType,
+            query,
+            datasets,
+            topK,
+            onlyContext: true,
+            // The deployed Cognee search API declares `nodeName` as a LIST field;
+            // sending a scalar 400'd every recall (15 failures/run, bite-me
+            // 2026-07-04), silently disabling memory-graph recall. Send the list
+            // under both keys for version compatibility.
+            ...(nodes.length ? { nodeNames: nodes, nodeName: nodes } : {}),
+          }),
+        }, this.timeoutMs());
+        if (!response.ok) throw new Error(`Cognee search failed: ${response.status} ${await response.text()}`);
+        return normalizeSearchResults(await response.json());
+      };
+      let snippets = await search(nodeNames);
+      // Node sets vary across Cognee versions and older indexed corpora. A
+      // semantic retry is preferable to treating memory as absent; provenance
+      // retains that the strict facet filter was not usable.
+      if (!snippets.length && nodeNames.length) {
+        snippets = await search([]);
+        packet.queryLog.push({
           query,
-          datasets,
+          searchType,
           topK,
-          onlyContext: true,
-          // The deployed Cognee search API declares `nodeName` as a LIST field;
-          // sending a scalar 400'd every recall (15 failures/run, bite-me
-          // 2026-07-04), silently disabling memory-graph recall. Send the list
-          // under both keys for version compatibility.
-          ...(nodeNames.length ? { nodeNames, nodeName: nodeNames } : {}),
-        }),
-      }, this.timeoutMs());
-      if (!response.ok) {
-        throw new Error(`Cognee search failed: ${response.status} ${await response.text()}`);
+          resultCount: snippets.length,
+          datasets,
+          nodeNames,
+          emptyReason: snippets.length ? undefined : 'provider_empty',
+          fallbackUsed: true,
+        });
+      } else {
+        packet.queryLog.push({
+          query,
+          searchType,
+          topK,
+          resultCount: snippets.length,
+          datasets,
+          nodeNames,
+          emptyReason: snippets.length ? undefined : 'provider_empty',
+        });
       }
-      const payload = await response.json();
-      const snippets = normalizeSearchResults(payload);
-      packet.queryLog.push({ query, searchType, topK, resultCount: snippets.length, datasets, nodeNames });
       packet.sourceSnippets.push(...snippets);
     }
 
@@ -931,6 +974,8 @@ export class PipelineMemory {
       queryCount: number;
       resultCount: number;
       emptyContext: boolean;
+      emptyReason: 'provider_empty' | 'filter_eliminated' | 'no_local_context';
+      fallbackUsed: boolean;
       latencyMs: number;
       status: MemoryTelemetryStatus;
       error: string;
@@ -950,6 +995,8 @@ export class PipelineMemory {
       queryCount: details.queryCount || 0,
       resultCount: details.resultCount || 0,
       emptyContext: details.emptyContext === true,
+      emptyReason: details.emptyReason,
+      fallbackUsed: details.fallbackUsed,
       latencyMs: details.latencyMs || 0,
       status: details.status || (details.error ? 'failed' : 'success'),
       error: details.error,
@@ -1060,6 +1107,12 @@ export class PipelineMemory {
       queryCount: result?.queryLog.length || (request.queries?.length || 1),
       resultCount: result?.sourceSnippets.length || 0,
       emptyContext: !result || result.sourceSnippets.length === 0,
+      emptyReason: !result
+        ? 'no_local_context'
+        : result.sourceSnippets.length === 0
+          ? (result.queryLog.find((entry) => entry.emptyReason)?.emptyReason || 'provider_empty')
+          : undefined,
+      fallbackUsed: result?.queryLog.some((entry) => entry.fallbackUsed) || false,
       latencyMs: Date.now() - started,
       status: attempt.status === 'success' && (!result || result.sourceSnippets.length === 0) ? 'empty' : attempt.status,
       error: attempt.error,
@@ -1075,6 +1128,9 @@ export class PipelineMemory {
     const roleDefaults = roleRecallDefaults[request.agentRole];
     const packets = await Promise.all(plannedQueries.map((plan) => this.recallPacket({
       queries: [plan.query],
+      storyId: request.storyId,
+      episodeNumber: request.episodeNumber,
+      sceneId: request.sceneId,
       datasets,
       nodeNames: uniqueStrings([
         ...nodeNames,
@@ -1119,6 +1175,8 @@ export class PipelineMemory {
     );
     const packets = await Promise.all(plannedQueries.map((plan) => this.recallPacket({
       queries: [plan.query],
+      storyId: request.storyId,
+      episodeNumber: request.episodeNumber,
       datasets,
       nodeNames: uniqueStrings([
         ...nodeNames,

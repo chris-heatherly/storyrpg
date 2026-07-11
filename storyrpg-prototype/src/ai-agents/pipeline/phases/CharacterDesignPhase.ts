@@ -15,6 +15,7 @@
 
 import { CharacterBible, CharacterDesigner } from '../../agents/CharacterDesigner';
 import { WorldBible } from '../../agents/WorldBuilder';
+import type { CharacterFashionStyle } from '../../../types/sourceAnalysis';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
 import { PipelineError } from '../errors';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
@@ -67,7 +68,7 @@ export class CharacterDesignPhase {
       .filter(npc => npc.id !== protId && npc.name?.toLowerCase() !== protName)
       .map(npc => {
         const treatmentVisual = npcVisualByName.get(npc.name.toLowerCase().trim());
-        const fashionStyle = npc.fashionStyle
+        const fashionStyle: CharacterFashionStyle | undefined = npc.fashionStyle
           || (treatmentVisual
             ? {
                 styleSummary: treatmentVisual,

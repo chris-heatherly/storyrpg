@@ -10,9 +10,15 @@ const passingValidation = {
 
 function makeEpisode(): Episode {
   return {
+    id: 'episode-2',
     number: 2,
     title: 'Two',
-    scenes: [{ id: 's2-1', name: 'Opening' }],
+    scenes: [{
+      id: 's2-1',
+      name: 'Opening',
+      beats: [{ id: 's2-1-b1', text: 'The episode begins.' }],
+      startingBeatId: 's2-1-b1',
+    }],
   } as unknown as Episode;
 }
 

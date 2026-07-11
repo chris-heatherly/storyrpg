@@ -633,7 +633,7 @@ describe('RelationshipArcLedgerValidator merged pacing checks', () => {
     const result = new RelationshipArcLedgerValidator().validate({
       story: {
         ...story(scene),
-        npcs: [{ id: 'char-stela-pavel', name: 'Stela Pavel' }],
+        npcs: [{ id: 'char-stela-pavel', name: 'Stela Pavel', description: 'A patient bookseller.' }],
       },
       treatmentSourced: true,
     });

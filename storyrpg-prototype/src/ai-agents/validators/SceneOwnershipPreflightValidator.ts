@@ -37,6 +37,11 @@ export interface SceneOwnershipPreflightInput {
   episodeNumber?: number;
   storyCircleRole?: StoryCircleRoleAssignment[];
   episodeSpine?: EpisodeSpineContract;
+  /** Canonical event order permits multiple causal events in one scene. */
+  episodeEventPlan?: {
+    orderedEventIds: string[];
+    assignments: Array<{ eventId: string; sceneId: string }>;
+  };
   scenes: SceneOwnershipPreflightScene[];
 }
 
@@ -132,6 +137,33 @@ function isAbstractEncounterShell(scene: SceneOwnershipPreflightScene): boolean 
   const cues = detectPrimaryStoryEventCues(text);
   if (cues.size > 0) return false;
   return isQuestionOnlyText(text) || !/\b(?:arrives?|meets?|enters?|attacks?|confronts?|escapes?|discovers?|takes?|gives?|hands?|walks?|writes?|publishes?|reveals?|refuses?|chooses?|finds?|follows?)\b/i.test(text);
+}
+
+function sameSceneCausalPrerequisiteIsOrdered(
+  scene: SceneOwnershipPreflightScene,
+  dependentCue: string,
+  prerequisiteCue: string,
+  episodeEventPlan: SceneOwnershipPreflightInput['episodeEventPlan'],
+): boolean {
+  if (!episodeEventPlan) return false;
+  const orderByEventId = new Map(episodeEventPlan.orderedEventIds.map((eventId, index) => [eventId, index]));
+  const eventIdsForScene = new Set(
+    episodeEventPlan.assignments
+      .filter((assignment) => assignment.sceneId === scene.id)
+      .map((assignment) => assignment.eventId),
+  );
+  const owned = scene.sceneEventOwnership?.ownedEvents ?? [];
+  const prerequisiteOrders = owned
+    .filter((event) => event.cue === prerequisiteCue && eventIdsForScene.has(event.eventContractId ?? event.key))
+    .map((event) => orderByEventId.get(event.eventContractId ?? event.key))
+    .filter((order): order is number => order != null);
+  const dependentOrders = owned
+    .filter((event) => event.cue === dependentCue && eventIdsForScene.has(event.eventContractId ?? event.key))
+    .map((event) => orderByEventId.get(event.eventContractId ?? event.key))
+    .filter((order): order is number => order != null);
+  return prerequisiteOrders.some((prerequisiteOrder) =>
+    dependentOrders.some((dependentOrder) => prerequisiteOrder < dependentOrder),
+  );
 }
 
 function sceneHasRole(scene: SceneOwnershipPreflightScene, beat: string): boolean {
@@ -254,6 +286,12 @@ export class SceneOwnershipPreflightValidator extends BaseValidator {
         for (const prerequisiteCue of prerequisiteCues) {
           const prerequisiteIndices = ownedCueIndices.get(prerequisiteCue) ?? [];
           if (prerequisiteIndices.some((index) => index < cueIndex)) continue;
+          if (sameSceneCausalPrerequisiteIsOrdered(
+            scenes[cueIndex],
+            cue,
+            prerequisiteCue,
+            input.episodeEventPlan,
+          )) continue;
           const sceneId = scenes[cueIndex]?.id ?? 'scene';
           issues.push(this.error(
             `Scene "${sceneId}" owns ${cue} before its prerequisite event ${prerequisiteCue} has an earlier owner.`,
@@ -266,18 +304,36 @@ export class SceneOwnershipPreflightValidator extends BaseValidator {
 
     if (input.episodeSpine) {
       const ownerByUnit = new Map<string, { scene: SceneOwnershipPreflightScene; index: number }>();
-      scenes.forEach((scene, index) => {
-        if (!scene.spineUnitId) return;
-        const prior = ownerByUnit.get(scene.spineUnitId);
-        if (prior && prior.scene.id !== scene.id) {
-          issues.push(this.error(
-            `ESC unit "${scene.spineUnitId}" has multiple scene owners: "${prior.scene.id ?? 'scene'}" and "${scene.id ?? 'scene'}".`,
-            scene.id,
-            'Assign each ESC event unit to exactly one scene before prose generation.',
-          ));
-          return;
+      const canonicalOwnerByUnit = new Map<string, string>();
+      for (const assignment of input.episodeEventPlan?.assignments ?? []) {
+        const unitId = assignment.eventId
+          .replace(/^event:/, '')
+          .replace(/:aftermath$/, '');
+        if (input.episodeSpine.units.some((unit) => unit.id === unitId)) {
+          canonicalOwnerByUnit.set(unitId, assignment.sceneId);
         }
-        ownerByUnit.set(scene.spineUnitId, { scene, index });
+      }
+      scenes.forEach((scene, index) => {
+        const canonicalUnitIds = [...canonicalOwnerByUnit.entries()]
+          .filter(([, sceneId]) => sceneId === scene.id)
+          .map(([unitId]) => unitId);
+        const unitIds = input.episodeEventPlan && canonicalUnitIds.length > 0
+          ? canonicalUnitIds
+          : scene.spineUnitId
+            ? [scene.spineUnitId]
+            : [];
+        for (const unitId of unitIds) {
+          const prior = ownerByUnit.get(unitId);
+          if (prior && prior.scene.id !== scene.id) {
+            issues.push(this.error(
+              `ESC unit "${unitId}" has multiple scene owners: "${prior.scene.id ?? 'scene'}" and "${scene.id ?? 'scene'}".`,
+              scene.id,
+              'Assign each ESC event unit to exactly one scene before prose generation.',
+            ));
+            continue;
+          }
+          ownerByUnit.set(unitId, { scene, index });
+        }
       });
       for (const unit of input.episodeSpine.units) {
         const owner = ownerByUnit.get(unit.id);
@@ -297,7 +353,10 @@ export class SceneOwnershipPreflightValidator extends BaseValidator {
               owner.scene.id,
               'Project the prerequisite unit before its dependent event.',
             ));
-          } else if (prerequisiteOwner.index >= owner.index) {
+          } else if (
+            prerequisiteOwner.index > owner.index
+            || (prerequisiteOwner.index === owner.index && !input.episodeEventPlan)
+          ) {
             issues.push(this.error(
               `ESC causal inversion: "${unit.id}" (${unit.kind}) is owned by "${owner.scene.id ?? 'scene'}" before prerequisite "${prerequisiteId}" owned by "${prerequisiteOwner.scene.id ?? 'scene'}".`,
               owner.scene.id,

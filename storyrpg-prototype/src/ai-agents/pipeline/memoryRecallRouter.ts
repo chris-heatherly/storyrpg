@@ -157,9 +157,9 @@ async function recallLiveFacts(
   maxPromptChars: number,
 ): Promise<PipelineMemoryPacket | null> {
   const facts = deps.factMemory!.queryLiveFacts({
-    storyId: undefined,
-    episodeNumber: undefined,
-    sceneId: undefined,
+    storyId: request.storyId,
+    episodeNumber: request.episodeNumber,
+    sceneId: request.sceneId,
     factKinds: request.factKinds,
     factIds: request.factIds,
     artifactIds: request.artifactIds,

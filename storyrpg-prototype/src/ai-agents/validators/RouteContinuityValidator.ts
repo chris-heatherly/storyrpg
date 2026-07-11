@@ -108,9 +108,10 @@ const ROUTE_CUE_PATTERNS: Record<'walkHome', RegExp[]> = {
 };
 
 const RECAP_MARKERS = /\b(?:after|aftermath|earlier|remember|recap|blog|post|comments|viral|told|story about|write(?:s|ing)? about)\b/i;
-const SUMMARY_MEMORY_MARKERS = /\b(?:after|aftermath|earlier|before|remember(?:s|ed|ing)?|remind(?:s|ed|er|ers|ing)?|phantom|recall(?:s|ed|ing)?|memory|memories|replay(?:s|ed)?|bruise|backstory|told|story about|write(?:s|ing)? about|fever\s+dream|write\s+(?:it|that|this|the\s+story)\s+down|the\s+(?:attack|rescue|threat|danger|walk\s+home)|turn(?:s|ed|ing)?\s+(?:terror|fear|danger|the\s+night)\s+into\s+(?:story|prose|material)|had\s+(?:been|happened|come|gone|left|met|found|started|attacked|rescued|saved))\b/i;
+const SUMMARY_MEMORY_MARKERS = /\b(?:after|aftermath|earlier|before|remember(?:s|ed|ing)?|remind(?:s|ed|er|ers|ing)?|phantom|ghost|silhouette|vanished|recall(?:s|ed|ing)?|memory|memories|replay(?:s|ed)?|bruise|backstory|told|story about|write(?:s|ing)? about|fever\s+dream|still\s+(?:feel|hear|see)|the\s+one\s+who|what\s+(?:happened|occurred)|write\s+(?:it|that|this|the\s+story)\s+down|the\s+(?:attack|rescue|threat|danger|walk\s+home)|turn(?:s|ed|ing)?\s+(?:terror|fear|danger|the\s+night)\s+into\s+(?:story|prose|material)|had\s+(?:been|happened|come|gone|left|met|found|started|attacked|rescued|saved))\b/i;
 const ACTIVE_RESTAGE_MARKERS = /\b(?:attacks?|rescues?|saves?|pulls?|drags?|carries|blocks?|lunges?|strikes?|chases?|grabs?|hands?|offers?|presses?|meets?|introduces?|arrives?|walks?)\b/i;
 const ACTIVE_ARRIVAL_MARKERS = /\b(?:arriv(?:e|es|ed|ing)|lands?|landed|unpacks?|unpacked|taxi\s+(?:leaves?|drops?)|cab\s+(?:leaves?|drops?)|steps?\s+(?:off|out)|airport|station|dock)\b/i;
+const ARRIVAL_RECAP_MARKERS = /\b(?:plane|flight|wheels?\s+(?:of\s+the\s+)?(?:plane|aircraft)|touched\s+down|landed|since\s+(?:the\s+)?(?:flight|plane)|back\s+home|newly\s+arrived)\b/i;
 
 const UNSAFE_ROUTE_FALLBACK_PATTERNS: Array<{ label: string; pattern: RegExp; suggestion: string }> = [
   // Synthetic filler/scaffold sentences from removed pipeline producers —
@@ -277,7 +278,6 @@ function sceneCueHits(scene: Scene, sceneIndex: number): CueHit[] {
     scene.timeline?.timeOfDay,
     scene.timeline?.transitionIn,
     ...collectReaderFacingTexts(scene),
-    ...collectEncounterMetaTexts(scene),
   ].filter((text): text is string => typeof text === 'string' && text.trim().length > 0).join('\n');
 
   const hits: CueHit[] = [];
@@ -364,17 +364,27 @@ function isRecapOnlyCue(scene: Scene, cue: RouteCue): boolean {
   if (cue === 'arrival' && windows.every((window) => !ACTIVE_ARRIVAL_MARKERS.test(window))) {
     return true;
   }
+  if (cue === 'arrival' && windows.every((window) =>
+    ARRIVAL_RECAP_MARKERS.test(window) && !ACTIVE_ARRIVAL_MARKERS.test(window)
+  )) {
+    return true;
+  }
   return windows.every((window) =>
     (RECAP_MARKERS.test(window) || SUMMARY_MEMORY_MARKERS.test(window))
     && !(ACTIVE_RESTAGE_MARKERS.test(window) && !SUMMARY_MEMORY_MARKERS.test(window))
   );
 }
 
-function ownershipEventsFor(scene: Scene, key: 'ownedEvents' | 'incomingContext' | 'forbiddenRestageEvents'): SceneOwnedEvent[] {
+function ownershipEventsFor(scene: Scene, key: 'ownedEvents' | 'priorEventsWithinEpisode' | 'forbiddenRestageEvents'): SceneOwnedEvent[] {
+  if (key === 'priorEventsWithinEpisode') {
+    return scene.sceneEventOwnership?.priorEventsWithinEpisode
+      ?? scene.sceneEventOwnership?.incomingContext
+      ?? [];
+  }
   return scene.sceneEventOwnership?.[key] ?? [];
 }
 
-function ownershipHasCue(scene: Scene, key: 'ownedEvents' | 'incomingContext' | 'forbiddenRestageEvents', cue: RouteCue): boolean {
+function ownershipHasCue(scene: Scene, key: 'ownedEvents' | 'priorEventsWithinEpisode' | 'forbiddenRestageEvents', cue: RouteCue): boolean {
   return ownershipEventsFor(scene, key).some((event) => event.cue === cue);
 }
 
@@ -391,7 +401,7 @@ function hasEventOwnershipProfile(scene: Scene): boolean {
 }
 
 function isIncomingContextOnly(scene: Scene, cue: RouteCue): boolean {
-  return ownershipHasCue(scene, 'incomingContext', cue) && !isOwnedByThisScene(scene, cue);
+  return ownershipHasCue(scene, 'priorEventsWithinEpisode', cue) && !isOwnedByThisScene(scene, cue);
 }
 
 function extractRequiredRescuer(obligationText: string): string | undefined {

@@ -128,7 +128,19 @@ export function planAgentMemoryQueries(request: AgentMemoryRequest): PlannedMemo
     return request.queries.map((query) => ({ query, factKinds: request.factKinds, topK: request.topK }));
   }
   const plans = rolePlans[request.agentRole] || [{ factKinds: request.factKinds || [], text: 'relevant StoryRPG generation facts' }];
-  return plans.map((plan) => q(request, request.factKinds?.length ? request.factKinds : plan.factKinds, plan.text, plan.topK));
+  // A single role-level query is deliberate. The former per-fact-bucket fanout
+  // produced 74–87 provider searches in ordinary runs, even when every search
+  // was empty. The live fact store can answer this aggregate request exactly;
+  // Cognee gets one semantic fallback with the same bounded context budget.
+  const factKinds = request.factKinds?.length
+    ? request.factKinds
+    : Array.from(new Set(plans.flatMap((plan) => plan.factKinds)));
+  return [q(
+    request,
+    factKinds,
+    plans.map((plan) => plan.text).join('; '),
+    Math.max(...plans.map((plan) => plan.topK || 4)),
+  )];
 }
 
 export function planValidatorMemoryQueries(request: ValidatorEvidenceRequest): PlannedMemoryQuery[] {

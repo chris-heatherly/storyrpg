@@ -77,6 +77,7 @@ import {
 import { normalizeChoiceSetStatChecks, normalizeStoryStatChecks } from '../utils/statCheckNormalization';
 import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
 import { PipelineError } from './errors';
+import type { NarrativeContractGraph } from '../../types/narrativeContract';
 import type { PipelineEvent } from './events';
 // Type-only import — erased at runtime, so no runtime cycle with the monolith.
 import type { FullCreativeBrief } from './FullStoryPipeline';
@@ -84,6 +85,61 @@ import type { SeasonScenePlan } from '../../types/scenePlan';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 
 type FinalContractWarning = NonNullable<FinalStoryContractReport['warnings']>[number];
+
+/** Re-apply pre-reveal identity policy after any LLM repair pass. */
+function scrubPreRevealSceneIdentityReferences(story: Story, graph: NarrativeContractGraph | undefined): number {
+  const replacements = (graph?.identityScheduleContracts ?? [])
+    .filter((contract) => contract.firstNamedEpisode > 1 && contract.canonicalName.trim())
+    .flatMap((contract) => {
+      const replacement = contract.allowedAliases[0]?.trim() || 'the stranger';
+      const canonical = contract.canonicalName.trim();
+      const firstName = canonical.split(/\s+/)[0];
+      return [
+        { pattern: canonical, replacement },
+        ...(firstName.length >= 3 && firstName !== canonical ? [{ pattern: firstName, replacement }] : []),
+      ];
+    });
+  if (replacements.length === 0) return 0;
+  const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const replaceValue = (value: unknown, key?: string): [unknown, number] => {
+    if (typeof value === 'string') {
+      if (key === 'id' || /(?:Id|ID)$/.test(key ?? '')) return [value, 0];
+      let next = value;
+      for (const replacement of replacements) {
+        next = next.replace(new RegExp(`\\b${escapeRegExp(replacement.pattern)}\\b`, 'gi'), replacement.replacement);
+      }
+      return [next, next === value ? 0 : 1];
+    }
+    if (Array.isArray(value)) {
+      let count = 0;
+      const next = value.map((item) => {
+        const [replaced, changed] = replaceValue(item);
+        count += changed;
+        return replaced;
+      });
+      return [next, count];
+    }
+    if (!value || typeof value !== 'object') return [value, 0];
+    let count = 0;
+    const next: Record<string, unknown> = {};
+    for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
+      const [replaced, changed] = replaceValue(entryValue, entryKey);
+      next[entryKey] = replaced;
+      count += changed;
+    }
+    return [next, count];
+  };
+  let count = 0;
+  for (const episode of story.episodes ?? []) {
+    if ((episode.number ?? 0) >= 2) continue;
+    for (let index = 0; index < episode.scenes.length; index += 1) {
+      const [scene, changed] = replaceValue(episode.scenes[index]);
+      episode.scenes[index] = scene as typeof episode.scenes[number];
+      count += changed;
+    }
+  }
+  return count;
+}
 
 function plannedMomentSourcesFromScenePlan(scenePlan: SeasonScenePlan | undefined) {
   if (!scenePlan?.scenes?.length) return undefined;
@@ -863,6 +919,17 @@ export class FinalContract {
     // re-validate a repaired story with identical inputs.
     const plannedMomentSourcesForStrip = plannedMomentSourcesFromScenePlan(input.brief.seasonPlan?.scenePlan);
     const runValidation = async (story: Story): Promise<FinalStoryContractReport> => {
+      const identityRepairs = scrubPreRevealSceneIdentityReferences(
+        story,
+        input.brief.seasonPlan?.scenePlan?.narrativeContractGraph,
+      );
+      if (identityRepairs > 0) {
+        this.deps.emit({
+          type: 'debug',
+          phase: input.phase,
+          message: `Pre-reveal identity policy normalized ${identityRepairs} scene surface(s) before validation.`,
+        } as any);
+      }
       const diceMetaphorRepairs = repairDiceMetaphorMechanicsLeakage(story);
       if (diceMetaphorRepairs > 0) {
         this.deps.emit({
@@ -1401,6 +1468,26 @@ export class FinalContract {
         `Final story contract failed with ${report.blockingIssues.length} blocking issue(s)`,
         input.phase,
         {
+          failure: (() => {
+            const presenceIssues = report.blockingIssues.filter((issue) =>
+              String((issue as { validator?: string }).validator || '').toLowerCase() === 'characterintroductionvalidator'
+              || /first appears in the cast|metadata only|never names them|anonymous plant/i.test(issue.message),
+            );
+            return presenceIssues.length > 0
+              ? {
+                  code: 'character_presence_contract_failed' as const,
+                  ownerStage: 'scene_content' as const,
+                  retryClass: 'repair_scene_prose' as const,
+                  issueCodes: presenceIssues.map((issue) => issue.type),
+                  repairTarget: presenceIssues[0]?.type,
+                }
+              : {
+                  code: 'final_contract_drift' as const,
+                  ownerStage: 'final_contract' as const,
+                  retryClass: 'repair_final_contract' as const,
+                  issueCodes: report.blockingIssues.map((issue) => issue.type),
+                };
+          })(),
           context: {
             failureKind: 'final_story_contract',
             blockingIssues: report.blockingIssues.slice(0, 10),

@@ -245,6 +245,7 @@ function realizedOwnedCues(scene: Scene): Set<StoryEventCue> {
 }
 
 function ownedCueMissing(event: SceneOwnedEvent, realized: Set<StoryEventCue>): boolean {
+  if (event.cue === 'storyTurn') return false;
   if (!ENFORCED_OWNERSHIP_CUES.has(event.cue)) return false;
   return !realized.has(event.cue);
 }

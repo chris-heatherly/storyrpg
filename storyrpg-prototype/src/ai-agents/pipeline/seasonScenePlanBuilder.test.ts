@@ -1264,6 +1264,35 @@ describe('projectSpineOntoScenes', () => {
     }
   });
 
+  it('keeps the opening scene mapped to the first ESC unit after authored turn binding', () => {
+    const ep = episode(1, ['you'], {
+      locations: ['Bucharest', 'Lumina Books', 'Vâlcescu Club', 'Cișmigiu Gardens', "Kylie's Apartment"],
+      treatmentGuidance: {
+        sourceKind: 'authored_lite',
+        episodeTurns: [
+          "Kylie arrives in Bucharest with two suitcases and her grandmother's address.",
+          'She explores the streets of Bucharest.',
+          'She wanders into a bookshop owned by Stela who befriends her.',
+          'After testing Kylie, the three become friends and form the Dusk Club.',
+          'At a rooftop bar she catches the attention of a man in a charcoal suit.',
+          'Walking home through Cismigiu Gardens, Kylie is attacked and Victor rescues her.',
+          'At 4am she writes the first Dating After Dusk post.',
+          'By evening the post has gone viral.',
+        ],
+      },
+    });
+    const scenePlan = buildSeasonScenePlan(plan([ep]));
+    const spine = scenePlan.episodeSpines?.[1];
+    const scenes = scenesForEpisode(scenePlan, 1).filter((scene) => scene.spineUnitId);
+
+    expect(scenes[0]).toMatchObject({ id: 's1-1', spineUnitId: spine?.units[0]?.id, order: 0 });
+    expect(scenes.map((scene) => scene.spineUnitId)).toEqual(
+      spine?.units
+        .filter((unit) => scenes.some((scene) => scene.spineUnitId === unit.id))
+        .map((unit) => unit.id),
+    );
+  });
+
   it('keeps a projected scene for every ESC bond/test unit after surplus trim (Bite Me ep1)', () => {
     const ep = episode(1, ['you'], {
       estimatedSceneCount: 6,

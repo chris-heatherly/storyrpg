@@ -17,6 +17,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { publicCheckpoint, publicJobState, sanitizeJobState } = require('./sanitizeJobState');
 const { spawnTsNodeWorker } = require('./tsNodeSpawn');
 
@@ -140,6 +141,16 @@ function buildWorkerConfigSnapshot(config) {
     } : undefined,
     agents: agents && Object.keys(agents).length > 0 ? agents : undefined,
   }, 200);
+}
+
+function stableConfigJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableConfigJson).join(',')}]`;
+  if (!value || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableConfigJson(value[key])}`).join(',')}}`;
+}
+
+function computeWorkerJobConfigHash(mode, config) {
+  return crypto.createHash('sha256').update(stableConfigJson({ mode, config })).digest('hex');
 }
 
 function buildDefaultWorkerStoryTitle(mode) {
@@ -385,6 +396,10 @@ function normalizeResumeStepsForOutputs(steps, outputs, now = new Date().toISOSt
   }
 
   return normalized;
+}
+
+function didWorkerStepSucceed(event) {
+  return event?.success !== false && event?.output?.success !== false;
 }
 
 function normalizePipelineOutputDir(cfg, { storiesDir, runtimeRoot, appRoot }) {
@@ -1384,7 +1399,8 @@ function createWorkerLifecycle({
             updateCheckpoint(workerJob.id, checkpointPatch);
             syncGenerationMirrorFromWorker(loadWorkerJobs().find((j) => j.id === workerJob.id) || currentJob);
           } else if (evt.type === 'step_complete') {
-            let persistedOutput = evt.output || true;
+            const stepSucceeded = didWorkerStepSucceed(evt);
+            let persistedOutput = evt.output ?? (stepSucceeded ? true : { success: false });
             if (evt.output && typeof evt.output === 'object') {
               const checkpointFile = persistCheckpointOutput(workerJob.id, evt.step || 'unknown', evt.output);
               persistedOutput = {
@@ -1397,13 +1413,15 @@ function createWorkerLifecycle({
               steps: {
                 [evt.step || 'unknown']: {
                   stepId: evt.step || 'unknown',
-                  status: 'completed',
+                  status: stepSucceeded ? 'completed' : 'failed',
                   updatedAt: new Date().toISOString(),
                   idempotencyKey: `${workerJob.id}:${evt.step || 'unknown'}`,
                 },
               },
             });
-            markArtifactCommitted(workerJob.id, `step:${evt.step || 'unknown'}`, { source: 'worker-step' });
+            if (stepSucceeded) {
+              markArtifactCommitted(workerJob.id, `step:${evt.step || 'unknown'}`, { source: 'worker-step' });
+            }
           } else if (evt.type === 'heartbeat') {
             if (active) {
               active.lastHeartbeatAt = eventAt;
@@ -1784,7 +1802,17 @@ function createWorkerLifecycle({
           return res.status(400).json({ error: error.message });
         }
       }
+      const jobConfigHash = computeWorkerJobConfigHash(mode, hydratedPayload.config || {});
+      const priorConfigHash = resumeCheckpoint?.jobConfigHash;
+      if (priorConfigHash && priorConfigHash !== jobConfigHash) {
+        return res.status(409).json({
+          error: 'Resume job settings differ from the frozen job config. Use the explicit resume endpoint with a payloadPatch to change settings.',
+          failureCode: 'job_config_mismatch',
+        });
+      }
+      hydratedPayload.jobConfigHash = jobConfigHash;
       const requestSnapshot = buildWorkerRequestSnapshot(mode, hydratedPayload, storyTitle);
+      requestSnapshot.jobConfigHash = jobConfigHash;
       const friendlyName = buildWorkerFriendlyName(mode, hydratedPayload, storyTitle, episodeCount, { resumeFromJobId });
       const processTitle = buildWorkerProcessTitle(mode, friendlyName);
       const resumeOutputs = priorOutputDir
@@ -1802,6 +1830,7 @@ function createWorkerLifecycle({
         idempotencyKey: idempotencyKey || `${mode}:${Date.now()}`,
         resumeFromJobId: resumeFromJobId || undefined,
         requestSnapshot,
+        jobConfigHash,
         resumeCheckpoint,
         resumeContext: {
           mode,
@@ -1819,6 +1848,7 @@ function createWorkerLifecycle({
 
       updateCheckpoint(jobId, {
         idempotencyKey: workerJob.idempotencyKey,
+        jobConfigHash,
         steps: {
           queued: {
             stepId: 'queued',
@@ -2045,10 +2075,14 @@ function createWorkerLifecycle({
       };
 
       const mode = sourceJob.mode || resumeContext.mode || 'generation';
+      const previousJobConfigHash = hydratedCheckpoint?.jobConfigHash || sourceJob.jobConfigHash || basePayload.jobConfigHash;
+      const jobConfigHash = computeWorkerJobConfigHash(mode, patchedPayload.config || {});
+      patchedPayload.jobConfigHash = jobConfigHash;
       const storyTitle = body.storyTitle || resumeContext.storyTitle || sourceJob.storyTitle;
       const episodeCount = body.episodeCount || resumeContext.episodeCount || sourceJob.episodeCount;
       const idempotencyKey = body.idempotencyKey || `${sourceJob.id}:resume:${Date.now()}`;
       const requestSnapshot = buildWorkerRequestSnapshot(mode, patchedPayload, storyTitle);
+      requestSnapshot.jobConfigHash = jobConfigHash;
       const jobId = `worker-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       const projectId = sourceJob.projectId
         || sourceJob.resumeFromJobId
@@ -2074,6 +2108,7 @@ function createWorkerLifecycle({
         idempotencyKey,
         resumeFromJobId: sourceJob.id,
         requestSnapshot,
+        jobConfigHash,
         ...(priorOutputDir ? { outputDirectory: priorOutputDir, outputDir: priorOutputDir } : {}),
         resumeContext: {
           mode,
@@ -2086,6 +2121,8 @@ function createWorkerLifecycle({
           resumedAt: new Date().toISOString(),
           changedInputs: Object.keys(payloadPatch),
           changedOutputs: Object.keys(outputsPatch),
+          previousJobConfigHash,
+          jobConfigHash,
           ...(priorOutputDir ? { outputDirectory: priorOutputDir } : {}),
         },
         resumeCheckpoint,
@@ -2093,6 +2130,7 @@ function createWorkerLifecycle({
 
       updateCheckpoint(jobId, {
         idempotencyKey,
+        jobConfigHash,
         steps: {
           queued: {
             stepId: 'queued',
@@ -2113,6 +2151,8 @@ function createWorkerLifecycle({
           resumedAt: new Date().toISOString(),
           changedInputs: Object.keys(payloadPatch),
           changedOutputs: Object.keys(outputsPatch),
+          previousJobConfigHash,
+          jobConfigHash,
           ...(priorOutputDir ? { outputDirectory: priorOutputDir } : {}),
         },
       });
@@ -2167,6 +2207,8 @@ module.exports = {
   createWorkerLifecycle,
   __test__: {
     isArchitectureResumeFailure,
+    didWorkerStepSucceed,
     normalizeResumeStepsForOutputs,
+    computeWorkerJobConfigHash,
   },
 };

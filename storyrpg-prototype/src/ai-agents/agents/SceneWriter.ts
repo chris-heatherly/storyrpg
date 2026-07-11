@@ -218,6 +218,14 @@ export interface SceneWriterInput {
   // State context (for conditional content)
   relevantFlags?: Array<{ name: string; description: string }>;
   relevantScores?: Array<{ name: string; description: string }>;
+  /** Canonical opening premise facts assigned by the season contract compiler. */
+  premiseContracts?: Array<{
+    id: string;
+    fieldName: string;
+    sourceText: string;
+    evidencePatterns: string[];
+    blocking: boolean;
+  }>;
 
   // Step 2 (info ledger): authored facts this scene must plant/reveal/pay off on-page (assigned by
   // StoryArchitect from the season INFO ledger). When present, the prompt instructs the
@@ -1737,12 +1745,27 @@ Return exactly one complete SceneContent JSON object with:
   - Pronouns: ${npc.pronouns}
   - Description: ${npc.description}${npc.physicalDescription ? `\n  - Physical Appearance (CANONICAL — use these exact details): ${npc.physicalDescription}` : ''}
   - Voice: ${npc.voiceNotes}
-  ${npc.currentMood ? `- Current Mood: ${npc.currentMood}` : ''}${npc.isFirstOnPageAppearance ? `\n  - **FIRST APPEARANCE (CRITICAL)**: the reader has NEVER met ${npc.name}. Before they drive the action, INTRODUCE them on-page: show who they are and what the protagonist notices about them — through action and dialogue, not a bio dump. Do NOT write them as already-familiar, and NEVER invent an off-page prior meeting the reader did not see (no "the woman from the bookstore", "the man from the train" appositives unless that meeting happened in an earlier scene or is authored backstory). If they are a stranger, meet them as a stranger.` : ''}`)
+      ${npc.currentMood ? `- Current Mood: ${npc.currentMood}` : ''}${npc.isFirstOnPageAppearance ? `\n  - **FIRST APPEARANCE (CRITICAL)**: the reader has NEVER met ${npc.name}. Before they drive the action, INTRODUCE them on-page: show who they are and what the protagonist notices about them — through action and dialogue, not a bio dump. Do NOT write them as already-familiar, and NEVER invent an off-page prior meeting the reader did not see (no "the woman from the bookstore", "the man from the train" appositives unless that meeting happened in an earlier scene or is authored backstory). If they are a stranger, meet them as a stranger.` : ''}`)
+      .join('\n');
+
+    const presenceContracts = (input.sceneBlueprint.characterPresenceContracts ?? [])
+      .map((contract) => contract.mode === 'anonymous_plant'
+        ? `- ${contract.characterName}: ANONYMOUS PLANT. Stage distinctive first-contact visual or behavioral evidence. Do not use the roster name or first name: ${contract.forbiddenEvidence.join(', ')}.`
+        : contract.mode === 'offscreen_reference'
+          ? `- ${contract.characterName}: OFFSCREEN ONLY. Do not place this character in scene prose or cast metadata.`
+          : `- ${contract.characterName}: NAMED INTRODUCTION. Name them naturally on-page and show how the protagonist learns who they are.`)
+      .join('\n');
+    const identitySchedule = (input.sceneBlueprint.identityScheduleContracts ?? [])
+      .filter((contract) => contract.firstNamedEpisode > input.sceneBlueprint.episodeNumber)
+      .map((contract) => `- ${contract.canonicalName}: canonical name forbidden until episode ${contract.firstNamedEpisode}; allowed aliases: ${contract.allowedAliases.join(', ') || 'visual description only'}`)
       .join('\n');
 
     const flagContext = input.relevantFlags
       ? input.relevantFlags.map(f => `- ${f.name}: ${f.description}`).join('\n')
       : 'None specified';
+    const premiseContracts = (input.premiseContracts ?? [])
+      .map((contract) => `- ${contract.fieldName}: ${contract.sourceText} (concrete evidence: ${contract.evidencePatterns.join(', ')})${contract.blocking ? ' [required]' : ''}`)
+      .join('\n');
 
     const sourceContextStr = buildSourceMaterialFidelitySection(input.sourceAnalysis);
 
@@ -1764,6 +1787,9 @@ ${structuralContext}
 - **Tone**: ${input.storyContext.tone}
 - **World**: ${input.storyContext.worldContext}
 ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.storyContext.userPrompt}\n` : ''}${input.memoryContext ? `\n## Pipeline Memory (Insights from Prior Generations)\n${input.memoryContext}\n` : ''}${input.establishedCanon ? `\n## ${input.establishedCanon}\n(Treat the above as fixed truth — your prose must not contradict it.)\n` : ''}
+${presenceContracts ? `\n### Canonical Character Presence Contracts\nThese are immutable generator contracts for this scene. They control whether a character is named, planted anonymously, or kept offscreen. Never change the policy to satisfy prose convenience.\n${presenceContracts}\n` : ''}
+${identitySchedule ? `\n### Canonical Identity Schedule\nDo not reveal any canonical name before its scheduled episode. The protagonist may observe the person, use an allowed codename, or describe them visually, but must not disclose the forbidden identity through prose, dialogue, metadata, or recap.\n${identitySchedule}\n` : ''}
+${premiseContracts ? `\n### Canonical Premise Contracts\nThese authored premise facts must become concrete reader-facing evidence in this scene. Use behavior, dialogue, a specific object, or a consequence; do not mention contracts or paste planning text. For every contract marked [required], include at least two distinctive evidence phrases naturally in the reader-facing prose, prefer the listed phrases over vague implication, and verify each required contract before returning.\n${premiseContracts}\n` : ''}
 > Continuity (#26C): only name characters, factions, and props already established in this
 > story. Do not invent a named character or object the reader hasn't met; reference the
 > existing cast/world instead.
@@ -1847,6 +1873,11 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 - **Sequence Intent**: ${this.formatSequenceIntent(input.sceneBlueprint.sequenceIntent)}
 ${buildSceneConstructionProfileSection(input.sceneBlueprint)}
 ${buildSceneEventOwnershipPromptSection(input.sceneBlueprint)}
+${input.sceneBlueprint.canonicalEvidenceRequirements?.length ? `
+### Canonical Reader-Facing Evidence (binding)
+These requirements belong to this scene's assigned event contracts. Realize them in the stated surface; evidence in another scene, metadata, or a sibling encounter route does not count. Keep the wording natural and fiction-first.
+${input.sceneBlueprint.canonicalEvidenceRequirements.map((requirement) => `- ${requirement.eventId} / ${requirement.kind}: use one of [${requirement.acceptedPatterns.join(', ')}] on ${requirement.requiredSurface || 'the owner scene'}.`).join('\n')}
+` : ''}
 ${input.sceneBlueprint.turnContract ? `
 ### Scene Turn Contract
 - **Central turn**: ${input.sceneBlueprint.turnContract.centralTurn}
@@ -2103,6 +2134,11 @@ ${input.priorEncounterOutcomes!.flatMap(e => e.outcomeFlags.map(o => `  - { "typ
 ${input.priorEncounterOutcomes!.some(e => e.goalPressure || e.threatPressure) ? `- The encounter ran under pressure the aftermath must still carry — ${input.priorEncounterOutcomes!.filter(e => e.goalPressure || e.threatPressure).map(e => [e.goalPressure ? `what was at stake: ${e.goalPressure}` : '', e.threatPressure ? `the rising danger: ${e.threatPressure}` : ''].filter(Boolean).join('; ')).join('; ')}. Let the prose show its residue (time lost, danger nearer, cost paid) in fiction-first terms — never name clocks, segments, or mechanics.` : ''}
 ` : ''}
 ${input.sceneBlueprint.choicePoint ? '- Mark the final beat as isChoicePoint: true for the Choice Author to add options' : ''}
+${input.sceneBlueprint.relationshipPacing?.some((contract) => (contract.blockedLabels ?? []).length > 0) ? `
+## FINAL RELATIONSHIP LABEL CHECK (before returning JSON)
+Do not use any blocked relationship label in beat text, textVariants, dialogue, choices, outcome text, reminders, or residue. Keep the relationship at the exact earned stage and express warmth as invitation, curiosity, testing, guarded care, or provisional connection instead.
+Blocked labels: ${Array.from(new Set(input.sceneBlueprint.relationshipPacing.flatMap((contract) => contract.blockedLabels ?? []))).join(', ')}
+` : ''}
 ${input.nextSceneContext?.isEncounter && !input.sceneBlueprint.choicePoint ? `
 ## PRE-ENCOUNTER HANDOFF (CRITICAL)
 This scene leads directly into an encounter scene: "${input.nextSceneContext.name}".
@@ -2127,6 +2163,15 @@ Use one or more opening beats as needed to pay off this choice. Do not delay, he
 - If the player chose to kiss someone, show the kiss. If they chose to dance, show them dancing. If they chose to fight, show the fight. If they chose to laugh wildly and spin, show wild laughter and spinning.
 - Do NOT generalize the choice into a mood or atmosphere shot. The image must show the SPECIFIC ACTION the player selected.
 - Do NOT show or name a major NPC as familiar until the story has introduced them on the active path.
+` : ''}
+${premiseContracts ? `
+### FINAL PREMISE EVIDENCE CHECK (before returning JSON)
+For every required premise below, the reader-facing beat text must contain at
+least two concrete evidence patterns from that contract. Prefer natural wording
+that preserves the fact, but do not replace a specific fact with a vague mood.
+This is a hard content requirement, not metadata. Re-read the beat text before
+returning and revise it if any checklist item is absent:
+${(input.premiseContracts ?? []).filter((contract) => contract.blocking).map((contract) => `- ${contract.fieldName}: include at least two of: ${contract.evidencePatterns.join(' | ')}`).join('\n')}
 ` : ''}
 
 Create the scene content following the SceneContent schema. Include:

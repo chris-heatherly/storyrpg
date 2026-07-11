@@ -63,6 +63,22 @@ describe('buildRequiredBeatsSection', () => {
     expect(out.toLowerCase().replace(/\s+/g, ' ')).toContain('never expose this list');
   });
 
+  it('renders identity constraints as reveal guidance instead of a literal depiction checklist item', () => {
+    const out = buildRequiredBeatsSection({
+      requiredBeats: [{
+        id: 'anonymous-victor',
+        sourceTurn: 'Anonymous first contact.',
+        mustDepict: 'Stage a stranger without using Victor\'s roster name; save the reveal for later.',
+        tier: 'authored',
+        contractKind: 'identity_constraint',
+      }],
+    });
+
+    expect(out).toContain('IDENTITY AND REVEAL CONSTRAINTS');
+    expect(out).toContain('save the reveal for later');
+    expect(out).not.toContain('[authored] Stage a stranger');
+  });
+
   it('frames coldopen beats as focused Story Circle hooks instead of ensemble checklists', () => {
     const out = buildRequiredBeatsSection({
       requiredBeats: [

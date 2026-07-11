@@ -195,10 +195,11 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     cues.add('antagonistContact');
   }
 
+  const directViralAftermath = /\b(?:goes?|gone|has gone|went|becomes?)\s+viral\b/.test(text);
   const publicBlogAftermath = (/\b(?:readership|viral|views?|comments?|dashboard|profile|public pressure|public signal|broke the internet|audience growth|attention spike)\b/.test(text)
     || /\b\d[\d,]*\s+reads?\b/.test(text))
     && !/\b(?:could|might|may|has to|need(?:s)? to|going to|will)\s+(?:go\s+)?viral\b/.test(text)
-    && !/\b(?:[234]\s*a\s*m|[234]\s*am|draft|cursor|blank page|publish button|write|writing|writes?|publishes|published)\b/.test(text);
+    && (directViralAftermath || !/\b(?:[234]\s*a\s*m|[234]\s*am|draft|cursor|blank page|publish button|write|writing|writes?|publishes|published)\b/.test(text));
   if (publicBlogAftermath) {
     cues.add('blogAftermath');
   }

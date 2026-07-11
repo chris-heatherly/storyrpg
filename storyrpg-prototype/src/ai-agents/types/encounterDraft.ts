@@ -24,6 +24,8 @@ export interface StoryletBeatDraft {
 export interface GeneratedStoryletDraft {
   id: string;
   name: string;
+  /** Legacy test/package alias retained at the generator boundary. */
+  title?: string;
   triggerOutcome: 'victory' | 'partialVictory' | 'defeat' | 'escape';
   tone: 'triumphant' | 'bittersweet' | 'tense' | 'desperate' | 'relieved' | 'somber';
   narrativeFunction: string;

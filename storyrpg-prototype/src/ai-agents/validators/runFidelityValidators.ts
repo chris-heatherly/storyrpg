@@ -56,6 +56,7 @@ import { SceneCharacterAvailabilityValidator } from './SceneCharacterAvailabilit
 import { SceneTransitionContinuityValidator } from './SceneTransitionContinuityValidator';
 import { SceneTurnRealizationValidator } from './SceneTurnRealizationValidator';
 import { CharacterIntroductionValidator } from './CharacterIntroductionValidator';
+import { NarrativeContractValidator } from './NarrativeContractValidator';
 import { SceneSpatialUnitValidator } from './SceneSpatialUnitValidator';
 import { RelationshipArcLedgerValidator } from './RelationshipArcLedgerValidator';
 import { ThematicSquareTurnValidator } from './ThematicSquareTurnValidator';
@@ -63,7 +64,11 @@ import { classifyTreatmentObligation } from './treatmentObligationClassifier';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { isGateEnabledAt } from '../remediation/gateRegistry';
 import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
-import { resolveCharacterIntroMode } from '../utils/npcIntroductionLedger';
+import {
+  deriveAnonymousPlantNpcIds,
+  sanitizePlantStagingText,
+  type AnonymousPlantSceneStaging,
+} from '../utils/npcIntroductionLedger';
 import { rebindPlannedSceneObligations } from '../remediation/plannedSceneObligationBinder';
 import {
   StoryCircleAnchorConformanceValidator,
@@ -233,45 +238,88 @@ function plannedSceneContractTextFromScenePlan(
   if (!scenePlan?.scenes?.length) return undefined;
   const out = new Map<string, string>();
   for (const scene of scenePlan.scenes) {
-    if (!scene.id) continue;
+    const sceneId = String(scene.id || (scene as { sceneId?: string }).sceneId || '').trim();
+    if (!sceneId) continue;
     const view = buildSceneConstructionPromptView(scene);
-    const text = [
-      ...(view.requiredBeats ?? []).flatMap((beat) => [
+    // Exclude seed/connective beats — info-ledger titles ("Victor's True Nature")
+    // pollute plant-staging detection when folded into the haystack.
+    const authoredBeats = (view.requiredBeats ?? []).filter(
+      (beat) => beat?.tier !== 'seed' && beat?.tier !== 'connective',
+    );
+    const raw = [
+      ...authoredBeats.flatMap((beat) => [
         beat?.mustDepict,
         (beat as { sourceTurn?: string } | undefined)?.sourceTurn,
       ]),
       ...(view.storyCircleBeatContracts ?? []).map((contract) => contract?.sourceText),
       (view as { signatureMoment?: string }).signatureMoment,
-      scene.title,
       scene.dramaticPurpose,
       scene.turnContract?.turnEvent,
       scene.turnContract?.centralTurn,
-      scene.encounterDescription,
-      ...(scene.encounterBeatPlan ?? []),
+      (scene as PlannedScene & { encounterDescription?: string }).encounterDescription,
+      ...((scene as PlannedScene & { encounterBeatPlan?: string[] }).encounterBeatPlan ?? []),
     ].filter(Boolean).join(' ');
-    if (text) out.set(scene.id, text);
+    const text = sanitizePlantStagingText(raw);
+    if (text) out.set(sceneId, text);
   }
   return out;
 }
 
-/** Roster ids whose planned contract text is an anonymous plant (stranger/suit/rescuer). */
+/**
+ * Schedule-aware plant set: NPCs whose *first* linked staging is anonymous_plant.
+ * Never season-wide OR over unbound stranger blobs (Stela FP / full-roster plant).
+ */
 function anonymousPlantNpcIdsFromScenePlan(
   story: Story,
+  scenePlan: SeasonScenePlan | undefined,
   plannedSceneContractText: ReadonlyMap<string, string> | undefined,
 ): Set<string> | undefined {
   if (!plannedSceneContractText?.size) return undefined;
   const roster = (story.npcs || []).map((npc) => ({ id: npc.id, name: npc.name }));
   if (roster.length === 0) return undefined;
-  const out = new Set<string>();
-  for (const npc of roster) {
-    for (const text of plannedSceneContractText.values()) {
-      if (resolveCharacterIntroMode({ characterName: npc.name, stagingText: text }) === 'anonymous_plant') {
-        out.add(npc.id);
-        break;
-      }
+
+  const scenes: AnonymousPlantSceneStaging[] = [];
+  const planScenes = [...(scenePlan?.scenes ?? [])].sort(
+    (a, b) => (a.episodeNumber - b.episodeNumber) || (a.order - b.order),
+  );
+  if (planScenes.length > 0) {
+    for (const scene of planScenes) {
+      const sceneId = String(scene.id || (scene as { sceneId?: string }).sceneId || '').trim();
+      if (!sceneId) continue;
+      const contractText = plannedSceneContractText.get(sceneId) ?? '';
+      if (!contractText) continue;
+      scenes.push({
+        sceneId,
+        contractText,
+        candidateIds: [...(scene.npcsInvolved ?? [])],
+      });
+    }
+  } else {
+    // Contract map only (no plan cast): still require per-scene walk so a later
+    // stranger blob cannot plant NPCs named earlier; candidates stay empty so
+    // unbound descriptors never attribute a plant.
+    for (const [sceneId, contractText] of plannedSceneContractText) {
+      scenes.push({ sceneId, contractText, candidateIds: [] });
     }
   }
-  return out.size > 0 ? out : undefined;
+
+  const plantIds = deriveAnonymousPlantNpcIds({ roster, scenes });
+  return plantIds.size > 0 ? plantIds : undefined;
+}
+
+function characterIntroModesFromScenePlan(
+  scenePlan: SeasonScenePlan | undefined,
+): ReadonlyMap<string, 'named' | 'anonymous_plant'> | undefined {
+  const contracts = Object.values(scenePlan?.episodeEventPlans ?? {})
+    .flatMap((plan) => plan.characterPresenceContracts ?? []);
+  if (contracts.length === 0) return undefined;
+  const modes = new Map<string, 'named' | 'anonymous_plant'>();
+  for (const contract of contracts) {
+    if (!modes.has(contract.characterId)) {
+      modes.set(contract.characterId, contract.mode === 'anonymous_plant' ? 'anonymous_plant' : 'named');
+    }
+  }
+  return modes;
 }
 
 function scopedScenePlan(scenePlan: SeasonScenePlan | undefined, active: Set<number> | undefined): SeasonScenePlan | undefined {
@@ -571,6 +619,12 @@ const FIDELITY_POLICY_BY_VALIDATOR: Record<string, Partial<FidelityFinding>> = {
     findingClass: 'repairable_contract',
     sourceKind: 'story',
   },
+  NarrativeContractValidator: {
+    gateId: TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance,
+    findingClass: 'authored_contract',
+    sourceKind: 'treatment',
+    hasConcreteObligation: true,
+  },
 };
 
 function policyForFinding(validator: string, issue: ValidationIssue): Partial<FidelityFinding> {
@@ -677,6 +731,7 @@ export const FIDELITY_VALIDATOR_FLAGS: Record<string, string> = {
   SeasonPromiseRealizationValidator: 'GATE_SEASON_PROMISE_REALIZATION',
   CharacterTreatmentRealizationValidator: 'GATE_CHARACTER_TREATMENT_REALIZATION',
   NarrativeFailureModeValidator: 'GATE_FAILURE_MODE_AUDIT_REALIZATION',
+  NarrativeContractValidator: TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance,
 };
 
 /**
@@ -708,6 +763,17 @@ function collectFidelityFindings(
       // backstops layered on top of the contract's own checks). Degrade to no findings.
     }
   };
+
+  if (treatmentSourced && scenePlan?.narrativeContractGraph) {
+    guard(() => toFindings(
+      'NarrativeContractValidator',
+      new NarrativeContractValidator().validate({
+        story,
+        scenePlan,
+        graph: scenePlan.narrativeContractGraph,
+      }).issues,
+    ));
+  }
 
   // 4.1 — authored episode identity (count/order/title/anchor). Needs the treatment + plan.
   if (!sliceOnlyValidation && isEnabled(TREATMENT_FIDELITY_GATE_FLAGS.authoredEpisodeConformance) && unscopedSourceAnalysis && unscopedSeasonPlan) {
@@ -944,7 +1010,12 @@ function collectFidelityFindings(
         characterIntroductions: seasonPlan?.characterIntroductions,
         plannedSceneContractText,
         treatmentSourced,
-        anonymousPlantNpcIds: anonymousPlantNpcIdsFromScenePlan(story, plannedSceneContractText),
+        anonymousPlantNpcIds: anonymousPlantNpcIdsFromScenePlan(
+          story,
+          scenePlan,
+          plannedSceneContractText,
+        ),
+        characterIntroModes: characterIntroModesFromScenePlan(scenePlan),
       });
       return toFindings('CharacterIntroductionValidator', result.issues);
     });

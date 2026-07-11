@@ -86,6 +86,7 @@ function concreteTurnMoment(contract: SceneTurnContract | undefined): string {
 function concreteRequiredBeatMoments(beats: RequiredBeat[] | undefined): Array<{ label: string; moment: string }> {
   const out: Array<{ label: string; moment: string }> = [];
   for (const beat of beats ?? []) {
+    if (beat.contractKind === 'identity_constraint') continue;
     if (beat.tier === 'connective' || beat.tier === 'seed') continue;
     const moment = cleanText(beat.mustDepict || beat.sourceTurn);
     if (!moment || isGenericScenePlannerText(moment)) continue;

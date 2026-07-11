@@ -677,6 +677,9 @@ export class GateRepairRouter {
     }
 
     if (validator === 'ContinuityChecker') {
+      if (/(?:impossible_knowledge|timeline_error)/i.test(issueText)) {
+        return directive('scene_cluster_rewrite', issue, 'The knowledge gap is localized to the flagged beat and must be repaired in scene prose.');
+      }
       if (/\b(?:authored|required|order|timeline|sequence|before|after|night)\b/i.test(issueText)) {
         return directive('blueprint_rebalance', issue, 'Continuity contradiction appears to come from authored beat ordering.');
       }
@@ -776,6 +779,28 @@ export class GateRepairRouter {
       // scene-prose handler deliberately excludes this validator). Classified
       // explicitly so it never falls to the unclassified diagnostic_stop.
       return directive('blueprint_rebalance', issue, 'Episode-list conformance is season architecture (split/merged/dropped/re-titled episodes), not prose.');
+    }
+
+    if (validator === 'NarrativeContractValidator') {
+      if (/episode topology|planned scenes|generic pressure/i.test(issueText)) {
+        return directive('episode_replan', issue, 'Canonical authored topology is invalid; rebuild the episode scene plan before prose generation.');
+      }
+      if (/canonical state|state contract|no authored choice|unregistered alias/i.test(issueText)) {
+        return directive('blueprint_rebalance', issue, 'Canonical state vocabulary is an authoring contract; repair the choice/encounter consequence projection before prose repair.');
+      }
+      if (/transition metadata|canonical transition/i.test(issueText)) {
+        return directive('scene_cluster_rewrite', issue, 'Transition metadata belongs to the arriving scene and its neighboring seam; repair the cluster so time/place and bridge prose stay aligned.');
+      }
+      if (/scheduled (?:twist|revelation|payoff)|twist contract/i.test(issueText) && !issue.sceneId) {
+        return directive('episode_replan', issue, 'A scheduled twist without an owning scene is architecture drift; recompile the episode plan before prose authoring.');
+      }
+      if (/downstream seed|premise contract/i.test(issueText) && !issue.sceneId) {
+        return directive('episode_replan', issue, 'The authored premise or cross-episode seed has no safe scene-local owner; repair its canonical projection before rewriting prose.');
+      }
+      if (issue.sceneId) {
+        return directive('same_scene_retry', issue, 'Canonical identity or authored payoff is localized to the owning scene and must be rewritten without changing topology.');
+      }
+      return directive('episode_replan', issue, 'Canonical narrative contract has no safe scene-local repair target.');
     }
 
     if (
@@ -1005,6 +1030,16 @@ export class GateRepairRouter {
       const obligation = classifyTreatmentObligation({ validator, message: issueText, severity: classifierSeverity(issue.severity) });
       if (validator === 'SignatureDevicePresenceValidator' && !obligation.blocksFinalProse) {
         return directive('partial_scope_defer', issue, obligation.reason);
+      }
+      // A metadata-only first appearance is a scene-local prose defect. Even
+      // when the encounter is dense, route the missing name to SceneCritic so
+      // the cast is actually introduced on-page; density repair must not turn
+      // a simple character-introduction miss into an architecture retry.
+      if (
+        validator === 'CharacterIntroductionValidator'
+        && /first appears in the cast|metadata only|never names them|never stages them/i.test(issueText)
+      ) {
+        return directive('same_scene_retry', issue, 'Character is present in metadata but missing from the owning scene prose; repair the local introduction without changing scene topology.');
       }
       if (unsafeDensity) return directive('blueprint_rebalance', issue, `Localized fidelity issue sits on overloaded scene: ${density?.overloadReasons.join('; ')}`);
       if (hasTimeOrOrderCue) return directive('scene_cluster_rewrite', issue, 'Localized fidelity issue includes time/order cues.');

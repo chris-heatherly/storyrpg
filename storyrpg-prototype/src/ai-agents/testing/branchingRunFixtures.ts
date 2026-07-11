@@ -721,6 +721,7 @@ function encounterPhase1Fixture(): string {
   return JSON.stringify({
     sceneId: 'scene-2b',
     encounterType: 'stealth',
+    description: 'You cross the rotten gallery while Edric\'s lantern climbs toward the forbidden wing below.',
     goalClock: {
       name: 'The Garden Door',
       segments: 6,
@@ -1119,6 +1120,7 @@ function encounterLeanStructureFixture(): string {
     sceneId: 'scene-2b',
     encounterType: 'stealth',
     encounterStyle: 'stealth',
+    description: 'You cross the rotten gallery while Edric\'s lantern climbs toward the forbidden wing below.',
     goalClock: {
       name: 'The Garden Door',
       segments: 6,

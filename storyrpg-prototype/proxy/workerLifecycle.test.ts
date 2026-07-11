@@ -30,6 +30,17 @@ function makeLifecycle() {
 }
 
 describe('workerLifecycle resume checkpoint normalization', () => {
+  it('hashes worker settings deterministically and changes on media/council changes', () => {
+    const base = { agents: { writer: { provider: 'gemini', model: 'gemini-2.5-pro', apiKey: 'key' } }, imageGen: { enabled: false }, qualityCouncil: { enabled: false } };
+    expect(__test__.computeWorkerJobConfigHash('generation', base)).toBe(__test__.computeWorkerJobConfigHash('generation', { qualityCouncil: { enabled: false }, imageGen: { enabled: false }, agents: base.agents }));
+    expect(__test__.computeWorkerJobConfigHash('generation', base)).not.toBe(__test__.computeWorkerJobConfigHash('generation', { ...base, imageGen: { enabled: true } }));
+  });
+
+  it('keeps failed worker steps out of the completed checkpoint path', () => {
+    expect(__test__.didWorkerStepSucceed({ type: 'step_complete', success: false, output: { success: false } })).toBe(false);
+    expect(__test__.didWorkerStepSucceed({ type: 'step_complete', success: true, output: { success: true } })).toBe(true);
+  });
+
   it('does not classify architecture craft gate messages as scene-content resume failures', () => {
     expect(__test__.isArchitectureResumeFailure(
       'Architecture craft gate(s) failed after retries: [SceneTurnContract] Scene s2-2-late-night-writing lacks a power-dynamic shift.',

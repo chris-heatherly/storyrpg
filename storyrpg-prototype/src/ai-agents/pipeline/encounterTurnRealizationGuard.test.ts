@@ -138,7 +138,7 @@ describe('assessEncounterTurnRealization', () => {
           text: 'At the threshold, he kisses your hand, declines to come in, and vanishes into the fog.',
         }],
       },
-    };
+    } as never;
     enc.outcomes = {
       victory: { outcomeText: 'You survive. The stranger nods and is gone.' },
     } as never;
@@ -184,7 +184,7 @@ describe('assessEncounterTurnRealization', () => {
         title: 'Aftermath',
         beats: [{ id: 'defeat-b1', text: 'The park goes quiet. You limp home alone without a vow.' }],
       },
-    };
+    } as never;
     enc.outcomes = {
       victory: { outcomeText: 'He walks you home and whispers "threshold vow" before he vanishes.' },
       defeat: { outcomeText: 'You escape the shadow but the night ends without a walk home.' },
@@ -217,6 +217,24 @@ describe('assessEncounterTurnRealization', () => {
       miss.outcomeTier === 'defeat'
       && /threshold vow|signature atom/i.test(`${miss.label} ${miss.moment}`)
     )).toBe(true);
+  });
+
+  it('does not convert anonymous identity presentation into a per-terminal encounter obligation', () => {
+    const result = assessEncounterTurnRealization(
+      blueprint({
+        requiredBeats: [{
+          id: 'anonymous-victor',
+          tier: 'authored',
+          contractKind: 'identity_constraint',
+          sourceTurn: 'Anonymous first contact.',
+          mustDepict: 'Keep their true identity linked for a later reveal.',
+        }],
+      }),
+      encounter(),
+    );
+
+    expect(result.misses.map((miss) => miss.label)).not.toContain('required beat anonymous-victor');
+    expect(result.misses.some((miss) => /signature atom.*later/i.test(`${miss.label} ${miss.moment}`))).toBe(false);
   });
 
   it('ignores generic planner turns but still enforces concrete required beats', () => {

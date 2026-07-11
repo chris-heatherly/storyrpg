@@ -298,6 +298,62 @@ function stagingNamesCharacter(characterName: string, stagingText: string): bool
 }
 
 /**
+ * True when staging text is a real named *introduction* or on-page named
+ * staging (meet / first meeting / self-naming / named intervention), not a
+ * glimpse name-drop ("sees Victor") or ledger title.
+ */
+export function isNamedIntroductionStaging(opts: {
+  characterName: string;
+  stagingText: string;
+}): boolean {
+  if (!stagingNamesCharacter(opts.characterName, opts.stagingText)) return false;
+  const haystack = normalizeIntroText(opts.stagingText);
+  const fullName = normalizeIntroText(opts.characterName);
+  const first = fullName.split(' ')[0] ?? '';
+  if (!first || first.length < 3) return false;
+  const escaped = first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const introCue = new RegExp(
+    `\\b(?:` +
+      `(?:you\\s+)?meet(?:s|ing)?\\s+${escaped}` +
+      `|first\\s+meeting\\s+with\\s+${escaped}` +
+      `|introduce(?:s|d)?\\s+(?:herself|himself|themselves\\s+as\\s+)?${escaped}` +
+      `|introduces?\\s+[^.]{0,40}\\b${escaped}\\b` +
+      `|i['']?m\\s+${escaped}` +
+      `|${escaped}\\s+(?:says?|offers?\\s+(?:a\\s+)?hand|looks?\\s+up|greets?|interven(?:es|ed|ing)?|rescues?|saves?|steps?|pulls?|arrives?|appears?)` +
+      `|before\\s+${escaped}\\s+interven` +
+      `|owned\\s+by\\s+${escaped}` +
+      `|befriends?\\s+[^.]{0,40}\\b${escaped}\\b` +
+      `|\\b${escaped}\\b[^.]{0,40}\\bbefriends?` +
+    `)\\b`,
+    'i',
+  );
+  if (introCue.test(haystack)) return true;
+  // Full-name self-ID in dialogue-ish staging still counts.
+  if (haystack.includes(fullName) && /\b(?:i['']?m|my name is|calls?\s+(?:herself|himself)|named)\b/i.test(haystack)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * True when the only name use is a glimpse/sighting ("sees Victor"), not an
+ * on-page introduction or intervention beat.
+ */
+export function isGlimpseNameDrop(opts: {
+  characterName: string;
+  stagingText: string;
+}): boolean {
+  if (!stagingNamesCharacter(opts.characterName, opts.stagingText)) return false;
+  if (isNamedIntroductionStaging(opts)) return false;
+  const haystack = normalizeIntroText(opts.stagingText);
+  const fullName = normalizeIntroText(opts.characterName);
+  const first = fullName.split(' ')[0] ?? '';
+  if (!first || first.length < 3) return false;
+  const escaped = first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b(?:sees?|spots?|notices?|glimpses?)\\s+${escaped}\\b`, 'i').test(haystack);
+}
+
+/**
  * True when planned/staging text describes the character via anonymous
  * descriptors WITHOUT using the roster full name or unique first name as an
  * on-page identity. False when staging clearly names them for introduction.
@@ -323,6 +379,11 @@ export function resolveCharacterIntroMode(opts: {
 /**
  * Collect roster NPC ids whose staging text for a scene is an anonymous plant.
  * Content-agnostic: driven only by descriptor language vs roster naming.
+ *
+ * When `candidateIds` is provided, ONLY those NPCs (scene cast / npcsInvolved /
+ * linked intro) are tested — unbound stranger text must not plant the full roster.
+ * When omitted, returns [] (callers must scope candidates; never scan the full
+ * roster against an anonymous descriptor blob).
  */
 export function anonymousPlantNpcIdsFromStaging(opts: {
   roster: Array<{ id: string; name: string }>;
@@ -331,22 +392,120 @@ export function anonymousPlantNpcIdsFromStaging(opts: {
 }): string[] {
   const staging = String(opts.stagingText || '').trim();
   if (!staging) return [];
-  const candidates = opts.candidateIds?.length
-    ? opts.roster.filter((npc) => {
-        const slugs = new Set([
-          normalizeCharacterSlug(npc.id),
-          normalizeCharacterSlug(npc.name),
-        ]);
-        return opts.candidateIds!.some((ref) => {
-          const resolved = resolveRosterCharacter(ref, opts.roster);
-          const slug = normalizeCharacterSlug(resolved?.id || ref);
-          return slugs.has(slug) || normalizeCharacterSlug(ref) === normalizeCharacterSlug(npc.id);
-        });
-      })
-    : opts.roster;
+  // Require an explicit candidate scope — full-roster scans against stranger
+  // descriptors falsely plant every unnamed NPC (Stela FP from Victor plant text).
+  if (!opts.candidateIds?.length) return [];
+  const candidates = opts.roster.filter((npc) => {
+    const slugs = new Set([
+      normalizeCharacterSlug(npc.id),
+      normalizeCharacterSlug(npc.name),
+    ]);
+    return opts.candidateIds!.some((ref) => {
+      const resolved = resolveRosterCharacter(ref, opts.roster);
+      const slug = normalizeCharacterSlug(resolved?.id || ref);
+      return slugs.has(slug) || normalizeCharacterSlug(ref) === normalizeCharacterSlug(npc.id);
+    });
+  });
   return candidates
     .filter((npc) => detectAnonymousPlantStaging({ characterName: npc.name, stagingText: staging }))
     .map((npc) => npc.id);
+}
+
+/** One planned scene's contract text + the NPCs linked to that scene for plant detection. */
+export interface AnonymousPlantSceneStaging {
+  sceneId: string;
+  /** Authored staging / contract text for this scene (seed/info titles stripped by caller). */
+  contractText: string;
+  /**
+   * NPCs linked to this scene (cast / npcsInvolved / intro-beat targets).
+   * Required to attribute anonymous descriptors to a character.
+   */
+  candidateIds?: string[];
+}
+
+/**
+ * Schedule-aware anonymous-plant derivation.
+ *
+ * For each roster NPC, walk scenes in order and find their *first* staging:
+ * - named in that scene's contract → `named` (never plant)
+ * - linked via candidates + anonymous descriptors, name absent → `anonymous_plant`
+ * - unbound stranger text with no candidate link → ignored (does not plant anyone)
+ *
+ * Only NPCs whose first staging is `anonymous_plant` enter the plant set. A later
+ * charcoal-suit blob cannot override an earlier named intro (Stela-style FP).
+ */
+export function deriveAnonymousPlantNpcIds(opts: {
+  roster: Array<{ id: string; name: string }>;
+  scenes: AnonymousPlantSceneStaging[];
+}): Set<string> {
+  const plantIds = new Set<string>();
+  if (!opts.roster.length || !opts.scenes.length) return plantIds;
+
+  const npcLinkedToScene = (
+    npc: { id: string; name: string },
+    scene: AnonymousPlantSceneStaging,
+  ): boolean => {
+    const refs = scene.candidateIds ?? [];
+    if (refs.length === 0) return false;
+    return refs.some((ref) => {
+      const resolved = resolveRosterCharacter(ref, opts.roster);
+      const slug = normalizeCharacterSlug(resolved?.id || ref);
+      return slug === normalizeCharacterSlug(npc.id)
+        || slug === normalizeCharacterSlug(npc.name)
+        || normalizeCharacterSlug(ref) === normalizeCharacterSlug(npc.id);
+    });
+  };
+
+  for (const npc of opts.roster) {
+    let firstMode: CharacterIntroMode | undefined;
+    for (const scene of opts.scenes) {
+      const text = String(scene.contractText || '').trim();
+      if (!text) continue;
+      // Strong named introduction OR non-glimpse on-page naming wins (Stela /
+      // "before Victor intervenes"). Glimpse-only ("sees Victor") does not.
+      if (isNamedIntroductionStaging({ characterName: npc.name, stagingText: text })) {
+        firstMode = 'named';
+        break;
+      }
+      if (
+        stagingNamesCharacter(npc.name, text)
+        && !isGlimpseNameDrop({ characterName: npc.name, stagingText: text })
+      ) {
+        firstMode = 'named';
+        break;
+      }
+      const linked = npcLinkedToScene(npc, scene);
+      if (!linked) continue;
+      if (detectAnonymousPlantStaging({ characterName: npc.name, stagingText: text })) {
+        firstMode = 'anonymous_plant';
+        break;
+      }
+    }
+    if (firstMode === 'anonymous_plant') plantIds.add(npc.id);
+  }
+  return plantIds;
+}
+
+/**
+ * Strip seed / information-ledger title noise from plant-staging haystacks.
+ * Titles like "Victor's True Nature" or "Mika's Contract" are ledger labels, not
+ * on-page staging, and must not drive intro-mode detection.
+ */
+export function sanitizePlantStagingText(text: string): string {
+  return String(text || '')
+    .split(/(?<=[.!?])\s+|\n+/)
+    .filter((chunk) => {
+      const t = chunk.trim().replace(/[.!?]+$/g, '').trim();
+      if (!t) return false;
+      // Short title-case ledger labels: "Victor's True Nature", "Mika's Contract".
+      if (/^[A-Z][\w'’\-]*(?:\s+[A-Z][\w'’\-]*){1,5}$/.test(t) && t.length < 60) {
+        if (/\b(?:true nature|contract|secret|identity|reveal|ledger|info)\b/i.test(t)) return false;
+      }
+      if (/\b(?:INFO[-_\s]*[A-Z0-9]+|information\s+ledger)\b/i.test(t)) return false;
+      return true;
+    })
+    .join(' ')
+    .trim();
 }
 
 /** Collective / multi-party staging cues that obligate an ensemble cast. */

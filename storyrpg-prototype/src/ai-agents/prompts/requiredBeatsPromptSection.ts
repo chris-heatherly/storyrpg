@@ -35,7 +35,7 @@ import type { ColdOpenProfile, RequiredBeat } from '../../types/scenePlan';
  */
 export interface RequiredBeatsSource {
   /** Authored units the scene must depict (ordered). */
-  requiredBeats?: Array<Partial<RequiredBeat> | { tier?: string; mustDepict?: string }>;
+  requiredBeats?: Array<Partial<RequiredBeat> | { tier?: string; mustDepict?: string; contractKind?: RequiredBeat['contractKind'] }>;
   /** A single staged signature device/image the prose MUST show. */
   signatureMoment?: string;
   /** Generator-only compiled cold-open brief. */
@@ -97,10 +97,12 @@ ${supportingConcepts.length ? `- Supporting pressure, not extra scene turns: ${s
  */
 export function buildRequiredBeatsSection(scene: RequiredBeatsSource | undefined): string {
   if (!scene) return '';
-  const beats = (scene.requiredBeats ?? []).filter((b) => b && typeof b.mustDepict === 'string' && b.mustDepict.trim().length > 0);
+  const allBeats = (scene.requiredBeats ?? []).filter((b) => b && typeof b.mustDepict === 'string' && b.mustDepict.trim().length > 0);
+  const identityConstraints = allBeats.filter((beat) => beat.contractKind === 'identity_constraint');
+  const beats = allBeats.filter((beat) => beat.contractKind !== 'identity_constraint');
   const signatureMoment = typeof scene.signatureMoment === 'string' ? scene.signatureMoment.trim() : '';
 
-  if (beats.length === 0 && signatureMoment.length === 0) return '';
+  if (beats.length === 0 && identityConstraints.length === 0 && signatureMoment.length === 0) return '';
 
   const signatureLine = signatureMoment
     ? `**Signature moment (MUST be depicted, never inverted):** ${signatureMoment}\n\n`
@@ -116,6 +118,12 @@ export function buildRequiredBeatsSection(scene: RequiredBeatsSource | undefined
         .join('\n')
     : '';
 
+  const identitySection = identityConstraints.length
+    ? `\n### IDENTITY AND REVEAL CONSTRAINTS\n${identityConstraints
+      .map((beat, index) => `${index + 1}. ${beat.mustDepict!.trim()}`)
+      .join('\n')}\nHonor these constraints through the scene's action and wording. They control identity presentation and reveal timing; do not treat their planning language as dialogue or narration.\n`
+    : '';
+
   return `
 ### REQUIRED BEATS — depict each, in order; do not drop, re-order, or invert
 This scene dramatizes an already-authored episode. The beats below are FIXED.
@@ -126,6 +134,6 @@ then show its immediate aftermath or handoff before routing onward. Do NOT add, 
 re-order, or re-interpret a required beat. (Authoring guidance only — never
 expose this list, its labels, or any system framing in player-facing prose.)
 
-${signatureLine}${checklist}
+${signatureLine}${checklist}${identitySection}
 `.trimEnd() + '\n';
 }

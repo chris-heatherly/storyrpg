@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { invalidateEpisodes, planEpisodeInvalidation } from './episodeInvalidation';
+import { invalidateEpisodes, planDependencyAwareForwardRepair, planEpisodeInvalidation } from './episodeInvalidation';
 import {
   type ArtifactLoader,
   type ArtifactSaver,
@@ -34,6 +34,24 @@ async function completeEpisodes(io: ReturnType<typeof makeRunDir>, numbers: numb
 }
 
 describe('planEpisodeInvalidation', () => {
+  it('revalidates all later episodes but regenerates only explicit dependency targets', () => {
+    const repair = planDependencyAwareForwardRepair({
+      changedEpisode: 1,
+      totalEpisodes: 4,
+      graph: {
+        version: 1, compilerVersion: 'test', storyId: 'story', sourceHash: 'hash', validation: { passed: true, issues: [] },
+        events: [
+          { id: 'ep1-rescue', episodeNumber: 1, sourceOrder: 0, sourceText: 'rescue', sourceContractIds: [], realizationMode: 'depiction', ownershipPolicy: 'exactly_one_scene', prerequisiteEventIds: [], targetSceneIds: ['s1'], targetSpineUnitIds: [], ownerSceneId: 's1', provenance: { source: 'season_plan', confidence: 'deterministic' } },
+          { id: 'ep3-reveal', episodeNumber: 3, sourceOrder: 0, sourceText: 'reveal', sourceContractIds: [], realizationMode: 'depiction', ownershipPolicy: 'exactly_one_scene', prerequisiteEventIds: [], targetSceneIds: ['s3'], targetSpineUnitIds: [], ownerSceneId: 's3', provenance: { source: 'season_plan', confidence: 'deterministic' } },
+        ],
+        dependencies: [{ id: 'rescue-reveal', fromEventId: 'ep1-rescue', toEventId: 'ep3-reveal', relation: 'pays_off', sourceEpisodeNumber: 1, targetEpisodeNumbers: [3], targetSceneIds: ['s3'], branchConditionKeys: [], requiredSurfaces: ['scene_turn'], priority: 'major', sourceContractIds: [] }],
+        characterPresenceContracts: [],
+      },
+    });
+    expect(repair.revalidate).toEqual([2, 3, 4]);
+    expect(repair.regenerate).toEqual([3]);
+  });
+
   it('covers the target and all later completed episodes by default', async () => {
     const io = makeRunDir();
     await completeEpisodes(io, [1, 2, 3]);

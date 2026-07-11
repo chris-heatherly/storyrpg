@@ -173,7 +173,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-1: 16848 -> 15944 bytes"
+      "message": "SceneWriter input compacted for scene-1: 16977 -> 15972 bytes"
     },
     {
       "type": "debug",
@@ -248,7 +248,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-2: 7983 -> 7920 bytes"
+      "message": "SceneWriter input compacted for scene-2: 8017 -> 7954 bytes"
     },
     {
       "type": "agent_complete",
@@ -377,6 +377,11 @@
     },
     {
       "type": "debug",
+      "phase": "content",
+      "message": "Materialized planned twist markers on beat-1 → beat-1"
+    },
+    {
+      "type": "debug",
       "phase": "episode_1_obligations",
       "message": "Obligation ledger: 1 thread(s) registered (1 paid), 0 seed(s) registered (0 paid)."
     },
@@ -396,9 +401,9 @@
       "message": "Narrative diagnostics: reached (pre-image-gen)."
     },
     {
-      "type": "warning",
+      "type": "debug",
       "phase": "episode_1_narrative_diagnostics",
-      "message": "Narrative diagnostics warning: twist_quality:warning(80), arc_delta:skipped, divergence:passed(100), failure_modes:passed(100), intensity_distribution:passed(100), prop_introduction:passed(100), choice_coverage:passed(100)"
+      "message": "Narrative diagnostics passed: twist_quality:passed(100), arc_delta:skipped, divergence:passed(100), failure_modes:passed(100), intensity_distribution:passed(100), prop_introduction:passed(100), choice_coverage:passed(100)"
     },
     {
       "type": "debug",
@@ -438,27 +443,32 @@
     {
       "type": "debug",
       "phase": "incremental_contract_ep_1",
-      "message": "Final contract repair will defer LLM prose/outcome repair while 24 blocker(s) require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract repair will defer LLM prose/outcome repair while 24 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
     },
     {
       "type": "debug",
       "phase": "incremental_contract_ep_1",
-      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
     },
     {
       "type": "debug",
       "phase": "incremental_contract_ep_1",
-      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
     },
     {
       "type": "debug",
       "phase": "incremental_contract_ep_1",
-      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
     },
     {
       "type": "debug",
       "phase": "incremental_contract_ep_1",
-      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
+    },
+    {
+      "type": "debug",
+      "phase": "incremental_contract_ep_1",
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
     },
     {
       "type": "checkpoint",
@@ -548,7 +558,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-4: 17069 -> 16108 bytes"
+      "message": "SceneWriter input compacted for scene-4: 17211 -> 16145 bytes"
     },
     {
       "type": "warning",
@@ -628,7 +638,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-5: 8537 -> 8474 bytes"
+      "message": "SceneWriter input compacted for scene-5: 8573 -> 8510 bytes"
     },
     {
       "type": "agent_complete",
@@ -757,6 +767,11 @@
     },
     {
       "type": "debug",
+      "phase": "content",
+      "message": "Materialized planned twist markers on beat-1 → beat-1"
+    },
+    {
+      "type": "debug",
       "phase": "episode_2_obligations",
       "message": "Obligation ledger: 2 thread(s) registered (2 paid), 0 seed(s) registered (0 paid)."
     },
@@ -776,9 +791,9 @@
       "message": "Narrative diagnostics: reached (pre-image-gen)."
     },
     {
-      "type": "warning",
+      "type": "debug",
       "phase": "episode_2_narrative_diagnostics",
-      "message": "Narrative diagnostics warning: twist_quality:warning(80), arc_delta:skipped, divergence:passed(100), failure_modes:passed(100), intensity_distribution:passed(100), prop_introduction:passed(100), choice_coverage:passed(100)"
+      "message": "Narrative diagnostics passed: twist_quality:passed(100), arc_delta:skipped, divergence:passed(100), failure_modes:passed(100), intensity_distribution:passed(100), prop_introduction:passed(100), choice_coverage:passed(100)"
     },
     {
       "type": "debug",
@@ -813,27 +828,32 @@
     {
       "type": "debug",
       "phase": "incremental_contract_ep_2",
-      "message": "Final contract repair will defer LLM prose/outcome repair while 24 blocker(s) require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract repair will defer LLM prose/outcome repair while 24 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
     },
     {
       "type": "debug",
       "phase": "incremental_contract_ep_2",
-      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
     },
     {
       "type": "debug",
       "phase": "incremental_contract_ep_2",
-      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
     },
     {
       "type": "debug",
       "phase": "incremental_contract_ep_2",
-      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
     },
     {
       "type": "debug",
       "phase": "incremental_contract_ep_2",
-      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first."
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
+    },
+    {
+      "type": "debug",
+      "phase": "incremental_contract_ep_2",
+      "message": "Final contract LLM repair skipped this round because all 14 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
     },
     {
       "type": "checkpoint",

@@ -40,6 +40,7 @@ export interface RunArtifactRuntime {
     runId?: string;
   }) => Promise<PipelineArtifact<T>>;
   refFor: <T>(artifact: PipelineArtifact<T>) => ArtifactRef;
+  commitCurrentSet: (refs: ArtifactRef[]) => Promise<void>;
   setGlobalUpstreamRefs: (refs: ArtifactRef[]) => void;
   getGlobalUpstreamRefs: () => ArtifactRef[];
   setEpisodeUpstreamRefs: (episodeNumber: number, refs: ArtifactRef[]) => void;
@@ -90,6 +91,9 @@ export class RunArtifactPhase implements PipelinePhase<RunArtifactPhaseInput, Ru
         runId: artifactInput.runId ?? runId,
       }),
       refFor: (artifact) => artifactStore.refFor(artifact),
+      commitCurrentSet: async (refs) => {
+        await artifactStore.commitCurrentSet(refs);
+      },
       setGlobalUpstreamRefs: (refs) => {
         globalUpstreamRefs = [...refs];
       },
@@ -102,7 +106,9 @@ export class RunArtifactPhase implements PipelinePhase<RunArtifactPhaseInput, Ru
         runId,
         load,
         upstream: [
-          ...globalUpstreamRefs,
+          ...globalUpstreamRefs.map((ref) => ref.kind === 'narrative-realization-ledger'
+            ? artifactStore.loadCurrentRef('narrative-realization-ledger') ?? ref
+            : ref),
           ...(episodeUpstreamRefs.get(episodeNumber) ?? []),
         ],
         onError: (error) => context.emit({

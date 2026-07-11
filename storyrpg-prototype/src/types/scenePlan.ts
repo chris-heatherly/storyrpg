@@ -32,6 +32,11 @@ import type {
 } from './sourceAnalysis';
 import type { ChoiceType } from './choice';
 import type { TreatmentEventAtom } from './treatmentEvent';
+import type {
+  EpisodeEventPlan,
+  NarrativeContractGraph,
+  NarrativeEventCue,
+} from './narrativeContract';
 
 // ========================================
 // SCENE PLAN CORE TYPES
@@ -90,6 +95,14 @@ export type SceneNarrativeRole =
  *  - `connective` — tissue the model may freely author around the fixed beats
  *                   (the band that preserves legitimate inference).
  */
+/**
+ * Whether a required-beat entry is an on-page dramatic event or a generator-only
+ * constraint on how that event is presented. Identity constraints guide the
+ * writer and dedicated introduction validation, but must not become literal
+ * realization obligations for every outcome branch.
+ */
+export type RequiredBeatContractKind = 'depiction' | 'identity_constraint';
+
 export interface RequiredBeat {
   /** Stable id, unique within the scene (e.g. `s2-3-rb1`). */
   id: string;
@@ -97,6 +110,8 @@ export interface RequiredBeat {
   sourceTurn: string;
   /** What the generated prose must depict to honor this beat. */
   mustDepict: string;
+  /** Defaults to `depiction` for existing plans. */
+  contractKind?: RequiredBeatContractKind;
   /** How fixed this beat is — see {@link RequiredBeat}. `coldopen` is the episode-opening
    * cold open — a high-priority, always-due seed split out from generic `seed` plants so it
    * can be enforced (low false-positive: an episode opener is reliably present) without the
@@ -298,22 +313,12 @@ export interface SceneConstructionProfile {
   promptGuidance: string[];
 }
 
-export type SceneEventOwnershipCue =
-  | 'arrival'
-  | 'venueDoor'
-  | 'objectHandoff'
-  | 'socialMeet'
-  | 'threatEncounter'
-  | 'roadBreakdown'
-  | 'friendDebrief'
-  | 'lateNightWriting'
-  | 'antagonistContact'
-  | 'blogAftermath'
-  | 'endingAftermath'
-  | 'walkHome';
+export type SceneEventOwnershipCue = NarrativeEventCue;
 
 export interface SceneOwnedEvent {
   key: string;
+  /** Stable canonical contract identity. Legacy artifacts omit this field. */
+  eventContractId?: string;
   cue: SceneEventOwnershipCue;
   text: string;
   sourceContractIds: string[];
@@ -331,8 +336,12 @@ export interface SceneEventOwnershipProfile {
   episodeNumber?: number;
   sceneId: string;
   ownedEvents: SceneOwnedEvent[];
-  incomingContext: SceneOwnedEvent[];
-  outgoingResidue: SceneOwnedEvent[];
+  priorEventsWithinEpisode?: SceneOwnedEvent[];
+  localAftermathEvents?: SceneOwnedEvent[];
+  /** Schema-v1 compatibility; new runtime code reads priorEventsWithinEpisode. */
+  incomingContext?: SceneOwnedEvent[];
+  /** Schema-v1 compatibility; new runtime code reads localAftermathEvents. */
+  outgoingResidue?: SceneOwnedEvent[];
   forbiddenRestageEvents: SceneOwnedEvent[];
   sourceContractIds: string[];
   diagnostics: string[];
@@ -1036,6 +1045,12 @@ export interface PlannedScene {
 
   /** What's narratively at stake in this scene. */
   stakes?: string;
+  /**
+   * Pressure, theme, or dramatic-question constraints merged from a removed
+   * non-event scene shell. These annotate an existing event-bearing scene and
+   * never grant event ownership or require a separate scene.
+   */
+  narrativeConstraints?: string[];
 
   /**
    * Present iff `kind === 'encounter'`. Carries the encounter-specific plan.
@@ -1081,6 +1096,12 @@ export interface PlannedScene {
   sceneConstructionProfile?: SceneConstructionProfile;
   /** Generator-only event ownership profile compiled from existing contracts. */
   sceneEventOwnership?: SceneEventOwnershipProfile;
+  /** Canonical narrative events this scene is permitted to depict. */
+  narrativeEventIds?: string[];
+  /** Stable event-plan order used instead of prose-derived chronology. */
+  narrativeEventOrder?: number;
+  /** Compiler version proving ownership came from the canonical event plan. */
+  narrativeEventPlanVersion?: number;
 
   /**
    * Relationship pacing contracts for NPC/group bonds this scene is allowed to
@@ -1243,6 +1264,10 @@ export interface SeasonScenePlan {
   byEpisode: Record<number, string[]>;
   /** Resolved setup -> payoff edges across the whole season. */
   setupPayoffEdges: SetupPayoffEdge[];
+  /** Canonical source of event identity, chronology, and cross-episode obligations. */
+  narrativeContractGraph?: NarrativeContractGraph;
+  /** Immutable episode-local ownership projections keyed by episode number. */
+  episodeEventPlans?: Record<number, EpisodeEventPlan>;
   /** Parsed treatment-field obligations assigned across the scene plan. */
   authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
   /** Top-level season-promise obligations assigned across the scene plan. */

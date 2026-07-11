@@ -199,6 +199,7 @@ function collectStandardBeats(plan: SeasonScenePlan, tier: RequiredBeat['tier'])
     const scene = buildSceneConstructionPromptView(rawScene);
     if (scene.kind === 'encounter') continue;
     for (const beat of scene.requiredBeats || []) {
+      if (beat.contractKind === 'identity_constraint') continue;
       if (beat.tier !== tier || !beat.mustDepict?.trim()) continue;
       const mustDepict = beat.mustDepict.trim();
       const sourceTurn = beat.sourceTurn?.trim();

@@ -42,9 +42,9 @@
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 import type { Scene, Story } from '../../types/story';
 import {
+  deriveAnonymousPlantNpcIds,
   ensembleObligationsFromContractText,
   normalizeCharacterSlug,
-  resolveCharacterIntroMode,
   resolveRosterCharacter,
   type CharacterIntroMode,
   type EnsembleCastObligation,
@@ -137,6 +137,8 @@ export function sceneNamesAnyCharacter(scene: Scene, npcNames: string[]): boolea
 
 /**
  * Predicted-clear for CharacterIntroductionValidator issues.
+ * - anonymous-plant-leak: clear ONLY when roster name is absent (and first-contact
+ *   staging present). Do NOT treat "name still present" as success.
  * - off-page-familiarity / offpage-backreference: existing off-page check.
  * - metadata-only / never-names: require naming OR (anonymous_plant) first-contact staging.
  */
@@ -147,24 +149,50 @@ export function characterIntroductionIssueCleared(
 ): boolean {
   const location = String(issue.location || '');
   const message = String(issue.message || '');
+  const name = /"([^"]+)"/.exec(message)?.[1];
+
+  // Class-5 plant leak: location ends with :anonymous-plant-leak; npc id is the
+  // segment before that suffix (never location.split(':').pop()).
+  const isPlantLeak = location.includes(':anonymous-plant-leak')
+    || /anonymous plant|scheduled as an anonymous plant|roster identity must stay hidden/i.test(message);
+  if (isPlantLeak) {
+    if (name && sceneNamesAnyCharacter(scene, [name])) return false;
+    return sceneHasFirstContactStaging(scene);
+  }
+
   const isOffPage = location.includes(':offpage-familiarity')
     || location.includes(':offpage-backreference')
     || /off-page familiarity|settled group belonging|back-reference/i.test(message);
-  const name = /"([^"]+)"/.exec(message)?.[1];
   if (isOffPage) {
     if (!name) return scenePassesCharacterIntroductionOffPageCheck(scene, []);
     return scenePassesCharacterIntroductionOffPageCheck(scene, [name]);
   }
   // Metadata-only / never-names class.
   if (name && sceneNamesAnyCharacter(scene, [name])) return true;
-  const npcId = opts?.npcId
-    || location.split(':').slice(-1)[0]?.replace(/:offpage.*$/, '');
+  const npcId = opts?.npcId || parseCharacterIntroductionNpcId(location);
   const isAnonymous = (npcId && opts?.anonymousPlantNpcIds?.has(npcId))
     || (npcId && opts?.anonymousPlantNpcIds?.has(normalizeCharacterSlug(npcId)))
     || (name && opts?.anonymousPlantNpcIds && [...opts.anonymousPlantNpcIds].some((id) =>
       normalizeCharacterSlug(id) === normalizeCharacterSlug(name || '')));
   if (isAnonymous) return sceneHasFirstContactStaging(scene);
   return false;
+}
+
+/** Parse roster npc id from `characterIntroduction:epN:sceneId:npcId[:suffix]`. */
+export function parseCharacterIntroductionNpcId(location: string): string | undefined {
+  const parts = String(location || '').split(':');
+  // characterIntroduction : epN : sceneId : npcId [ : suffix ]
+  if (parts[0] !== 'characterIntroduction' || parts.length < 4) return undefined;
+  const suffix = parts[parts.length - 1];
+  if (
+    suffix === 'anonymous-plant-leak'
+    || suffix === 'offpage-familiarity'
+    || suffix === 'offpage-backreference'
+    || suffix === 'ensemble-obligation'
+  ) {
+    return parts[parts.length - 2] || undefined;
+  }
+  return suffix || undefined;
 }
 
 function impliesOffPageFamiliarityOnFirstAppearance(rawProse: string, newNamesInScene: number): boolean {
@@ -290,14 +318,20 @@ export class CharacterIntroductionValidator extends BaseValidator {
       }
     }
     // Derive from planned contract text when callers don't pass an explicit set.
+    // Schedule-aware: first named staging wins; unbound stranger text does not
+    // plant the full roster (requires candidate linkage — empty here without
+    // per-scene cast, so only explicit named→skip / no false plants).
     if (anonymousPlantIds.size === 0 && input.plannedSceneContractText) {
-      for (const npc of roster) {
-        for (const text of input.plannedSceneContractText.values()) {
-          if (resolveCharacterIntroMode({ characterName: npc.name, stagingText: text }) === 'anonymous_plant') {
-            addAnonymous(npc.id);
-            break;
-          }
-        }
+      const scenes = [...input.plannedSceneContractText.entries()].map(([sceneId, contractText]) => ({
+        sceneId,
+        contractText,
+        candidateIds: [] as string[],
+      }));
+      for (const id of deriveAnonymousPlantNpcIds({
+        roster: roster.map((n) => ({ id: n.id, name: n.name })),
+        scenes,
+      })) {
+        addAnonymous(id);
       }
     }
     const isAnonymousPlant = (npc: RosterEntry): boolean =>

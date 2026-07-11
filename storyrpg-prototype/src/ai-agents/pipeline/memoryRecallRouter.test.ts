@@ -75,4 +75,37 @@ describe('memoryRecallRouter', () => {
     expect(recall).not.toHaveBeenCalled();
     expect(packet?.sourceSnippets.some((snippet) => snippet.includes('choice-consequence'))).toBe(true);
   });
+
+  it('scopes live facts to the requesting story before provider fallback', async () => {
+    const recall = vi.fn(async () => null);
+    const memory = {
+      writeArtifactSnapshot: async () => undefined,
+      writeFactSnapshot: async () => undefined,
+      cognifyDatasets: async () => undefined,
+    } as unknown as PipelineMemory;
+    const artifactMemory = new ArtifactMemoryService(memory);
+    const factMemory = new FactMemoryService(memory);
+    const envelope = await artifactMemory.writeArtifact({
+      artifactKind: 'choice-set',
+      storyId: 'Other Story',
+      lifecycle: 'choice-authoring',
+      payload: { sceneId: 'scene-1', choices: [{ id: 'c1', text: 'Stay', consequences: [{ type: 'flag', name: 'stayed', value: true }] }] },
+    });
+    await factMemory.writeFactsForArtifact(envelope);
+
+    await executeRecall({
+      recallMode: 'facts-first',
+      storyId: 'This Story',
+      factKinds: ['choice-consequence'],
+    }, {
+      provider: { name: 'cognee', remember: async () => undefined, recall, readCharacterMemory: async () => null },
+      artifactMemory,
+      factMemory,
+      defaultDatasets: ['storyrpg-project'],
+      validatorDataset: 'storyrpg-validator-history',
+      projectDataset: 'storyrpg-project',
+    });
+
+    expect(recall).toHaveBeenCalledTimes(1);
+  });
 });

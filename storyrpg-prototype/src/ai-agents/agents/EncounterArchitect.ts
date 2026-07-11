@@ -29,6 +29,7 @@ import {
   buildEncounterStoryletDraftJsonSchema,
   buildEncounterStructureJsonSchema,
 } from '../schemas/encounterSchemas';
+import type { NarrativeCharacterPresenceContract } from '../../types/narrativeContract';
 
 /**
  * Distinctive, non-interpolated fragments of the deterministic fallback prose
@@ -145,6 +146,7 @@ export type EscalationPhase = 'setup' | 'rising' | 'peak' | 'resolution';
 // ========================================
 
 export interface EncounterArchitectInput {
+  episodeNumber?: number;
   // Scene context
   sceneId: string;
   sceneName: string;
@@ -202,6 +204,13 @@ export interface EncounterArchitectInput {
    * (G12 endsong: the siege's poison/evacuation beat was never passed in).
    */
   requiredBeats?: Array<{ id: string; mustDepict: string; tier: 'signature' | 'authored' | 'seed' | 'coldopen' | 'connective' }>;
+  /** Blocking evidence projected from canonical event contracts for this encounter. */
+  canonicalEventEvidenceRequirements?: Array<{
+    eventId: string;
+    kind: string;
+    acceptedPatterns: string[];
+    requiredSurface?: string;
+  }>;
   /** A single staged signature device/image the encounter must show. */
   signatureMoment?: string;
   /**
@@ -345,6 +354,10 @@ export interface EncounterArchitectInput {
 
   /** G12: season ledger facts still withheld at this episode — must not be revealed/confirmed. */
   forbiddenReveals?: import('../utils/forbiddenReveals').ForbiddenReveal[];
+  /** Immutable first-contact policy for encounter cast and outcome surfaces. */
+  characterPresenceContracts?: NarrativeCharacterPresenceContract[];
+  identityScheduleContracts?: import('../../types/narrativeContract').NarrativeIdentityScheduleContract[];
+  characterRoleConstraints?: import('../../types/narrativeContract').NarrativeCharacterRoleConstraint[];
 }
 
 // ========================================
@@ -1007,6 +1020,8 @@ export interface EncounterStructure {
     defeat: GeneratedStorylet;
     escape?: GeneratedStorylet;
   };
+  /** Legacy generator-only outcome alias; reader playback uses storylets. */
+  outcomes?: Record<string, { outcomeText: string }>;
   partialVictoryCost?: EncounterCost;
   
   // NEW: Environmental elements
@@ -1138,7 +1153,8 @@ export class EncounterArchitect extends BaseAgent {
     const beats = (input.requiredBeats ?? []).filter(
       (beat) => beat.tier !== 'connective' && beat.mustDepict?.trim(),
     );
-    if (!input.centralConflict?.trim() && !input.signatureMoment?.trim() && beats.length === 0) {
+    const evidence = input.canonicalEventEvidenceRequirements ?? [];
+    if (!input.centralConflict?.trim() && !input.signatureMoment?.trim() && beats.length === 0 && evidence.length === 0) {
       return '';
     }
     const lines: string[] = [
@@ -1158,6 +1174,18 @@ export class EncounterArchitect extends BaseAgent {
     beats.forEach((beat, index) => {
       lines.push(`- REQUIRED BEAT ${index + 1} (${beat.tier}): ${beat.mustDepict.trim()}`);
     });
+    if (evidence.length > 0) {
+      lines.push(
+        '',
+        '## CANONICAL EVENT EVIDENCE (BLOCKING)',
+        'These signatures are assigned to this encounter by the canonical narrative contract.',
+        'They must be realized in the terminal route surfaces named below. Shared setup prose does',
+        'not satisfy a route-specific requirement, and one successful branch cannot cover another.',
+      );
+      for (const requirement of evidence) {
+        lines.push(`- ${requirement.eventId} / ${requirement.kind}: ${requirement.acceptedPatterns.join(', ')} (${requirement.requiredSurface || 'owner scene'})`);
+      }
+    }
     if (this.isSustainedSetPieceInput(input)) {
       lines.push(
         'This is a SUSTAINED SET PIECE: dramatize it as at least 3 escalating top-level beats',
@@ -4145,6 +4173,11 @@ ${input.episodeSoFarSummary}
 
 The encounter CONTINUES from the last scene above. Do NOT reset the timeline, re-introduce the protagonist's arrival, or treat characters the protagonist has already met as strangers. The protagonist is the player ("you") — never an NPC in this encounter.
 ` : ''}${formatForbiddenRevealsSection(input.forbiddenReveals ?? [])}
+${input.characterPresenceContracts?.length ? `
+## Canonical Character Presence Contracts
+These policies are immutable across encounter setup, phases, choices, victory, partial victory, defeat, and escape. Named introductions must name the character naturally. Anonymous plants must use distinctive visual or behavioral evidence and must not use the roster name or first name. Offscreen references must not appear.
+${input.characterPresenceContracts.map((contract) => `- ${contract.characterName}: ${contract.mode}; required evidence: ${contract.requiredEvidence.join('; ')}; forbidden evidence: ${contract.forbiddenEvidence.join(', ') || 'none'}`).join('\n')}
+` : ''}
 
 ## Scene Context
 - **Scene ID**: ${input.sceneId}
@@ -4205,6 +4238,7 @@ ${input.priorStateContext ? (() => {
     flagSection += `### Flags ALREADY SET by Prior Scenes (safe for \`conditions\`, \`setupTextVariants\`, \`statBonus\`)
 ${alreadySetFlags.map(f => `- \`${f.name}\`: ${f.description}`).join('\n')}`;
   }
+
   if (futureFlags.length > 0) {
     if (flagSection) flagSection += '\n\n';
     flagSection += `### Flags Set by LATER Scenes (use ONLY in \`setupTextVariants\` or \`statBonus\` — do NOT use in choice \`conditions\`)
@@ -5252,6 +5286,25 @@ CRITICAL RULES:
 
   // ---- Phase 1: Opening Beat ----
 
+  private formatCharacterPresenceContracts(input: EncounterArchitectInput): string {
+    const presence = input.characterPresenceContracts?.length
+      ? `\n${input.characterPresenceContracts.map((contract) => `- ${contract.characterName}: ${contract.mode}; required evidence: ${contract.requiredEvidence.join('; ')}; forbidden evidence: ${contract.forbiddenEvidence.join(', ') || 'none'}`).join('\n')}`
+      : '';
+    const identity = (input.identityScheduleContracts ?? [])
+      .filter((contract) => contract.firstNamedEpisode > (input.episodeNumber ?? 1))
+      .map((contract) => `- ${contract.canonicalName}: canonical name forbidden until episode ${contract.firstNamedEpisode}; allowed aliases: ${contract.allowedAliases.join(', ') || 'visual description only'}`)
+      .join('\n');
+    const roles = (input.characterRoleConstraints ?? [])
+      .map((constraint) => `- ${constraint.characterName}: allowed functions ${constraint.allowedFunctions.join(', ')}; forbidden functions ${constraint.forbiddenFunctions.join(', ')}`)
+      .join('\n');
+    if (!presence && !identity && !roles) return '';
+    return `
+## Canonical Character Presence Contracts
+Apply these immutable policies to every generated encounter surface. Named characters must be named naturally and grounded as people. Anonymous plants must be shown through distinctive visual or behavioral evidence without using the roster name or first name. Offscreen references must not appear in reader-facing prose.
+${presence}${identity ? `\n## Canonical Identity Schedule\n${identity}` : ''}${roles ? `\n## Canonical Role Constraints\n${roles}` : ''}
+`;
+  }
+
   /**
    * Run one encounter phase with a real timeout (withTimeoutAbort cancels the
    * in-flight fetch and halts retries on timeout) plus a retry with a FRESH
@@ -5356,6 +5409,7 @@ The prior Gemini attempt exhausted its structured output budget. Keep this answe
 ${this.formatEncounterStoryCircleTarget(input)}
 - Skills: ${skillsList}
 - NPCs: ${npcNames || 'None'}${continuity}
+${this.formatCharacterPresenceContracts(input)}
 ${authoredBeats ? `\n## Must Touch These Beats\n${authoredBeats}\n` : ''}${formatForbiddenRevealsSection(input.forbiddenReveals ?? [])}
 ## Required JSON Shape (no extra fields)
 {
@@ -5576,6 +5630,7 @@ Return ONLY valid JSON.${compactDirective}
 - Story: ${input.storyContext.title} (${input.storyContext.genre}, ${input.storyContext.tone})
 ${this.formatEncounterStoryCircleTarget(input)}
 - NPCs: ${npcsList}
+${this.formatCharacterPresenceContracts(input)}
 ## Genre-Aware Jeopardy
 ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 ${relationshipSection}
@@ -5674,6 +5729,7 @@ Return ONLY valid JSON.
 
 ## Scene: ${input.sceneName}
 ${this.formatEncounterStoryCircleTarget(input)}
+${this.formatCharacterPresenceContracts(input)}
 ## Opening choices: ${choiceIds}
 ## Opening setupText: "${phase1.openingBeat.setupText}"
 

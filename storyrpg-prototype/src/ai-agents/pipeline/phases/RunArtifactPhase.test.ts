@@ -112,7 +112,7 @@ describe('RunArtifactPhase', () => {
     expect(store.files.has('generated-stories/run/artifacts/source-analysis.rev1.json')).toBe(true);
     expect(store.files.has('generated-stories/run/artifacts/season-plan.rev1.json')).toBe(true);
     expect(store.files.get('generated-stories/run/artifacts/current.json')).toMatchObject({
-      version: 1,
+      version: 2,
       artifacts: {
         'source-analysis': { revision: 1 },
         'season-plan': { revision: 1 },

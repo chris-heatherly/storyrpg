@@ -186,6 +186,8 @@ export function buildSeasonPlanDirectives(
       ? edgesForEpisode(plan.scenePlan, epNum)
       : undefined,
     episodeSpine: plan.scenePlan?.episodeSpines?.[epNum],
+    episodeEventPlan: plan.scenePlan?.episodeEventPlans?.[epNum],
+    narrativeContractGraph: plan.scenePlan?.narrativeContractGraph,
   };
 }
 

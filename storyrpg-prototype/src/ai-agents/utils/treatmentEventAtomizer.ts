@@ -4,6 +4,7 @@ import {
   STORY_EVENT_CUE_ORDER,
   type StoryEventCue,
 } from '../remediation/storyEventCues';
+import { splitSentencesPreservingAbbreviations } from './treatmentSentenceSegmentation';
 
 export interface TreatmentAtomizerInput {
   episodeNumber: number;
@@ -51,6 +52,10 @@ const ACTION_PATTERNS: Array<{ type: TreatmentEventType; pattern: RegExp }> = [
 ];
 
 const TIME_CUE_PATTERN = /\b(?:dawn|morning|midday|afternoon|dusk|evening|night|midnight|later|afterward|the next day|next morning|same night|earlier|before|after|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i;
+// Relative chronology is useful planning context, but it is not an invariant
+// phrase every branch must repeat. Only explicit clock time is a preserved
+// marker; the wider TIME_CUE_PATTERN remains available for event ordering.
+const CONCRETE_TIME_MARKER_PATTERN = /\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)\b/i;
 const LOCATION_PATTERN = /\b(?:at|in|inside|outside|on|near|through|to|from)\s+((?:the\s+)?[A-Z][A-Za-z0-9'’-]*(?:\s+[A-Z][A-Za-z0-9'’-]*){0,3})/g;
 const ENTITY_PATTERN = /\b[A-Z][A-Za-z0-9'’-]*(?:\s+[A-Z][A-Za-z0-9'’-]*){0,2}\b/g;
 const CONNECTOR_SPLIT = /\s+(?:and then|but then|then|afterward|afterwards|before|while|as)\s+/i;
@@ -102,8 +107,7 @@ export function isPlayableTreatmentEvent(text: string): boolean {
 }
 
 export function splitTreatmentSentences(text: string): string[] {
-  return normalizeWhitespace(text)
-    .split(/(?<=[.!?])\s+|\n+/)
+  return splitSentencesPreservingAbbreviations(normalizeWhitespace(text))
     .map((part) => part.trim().replace(/^[-*]\s+/, ''))
     .filter(Boolean);
 }
@@ -185,7 +189,7 @@ function extractTimeCue(text: string): string | undefined {
 /** Times, numbers, and quoted codenames that must survive paraphrase. */
 export function extractPreservedMarkers(text: string): string[] {
   const markers = new Set<string>();
-  const time = extractTimeCue(text);
+  const time = text.match(CONCRETE_TIME_MARKER_PATTERN)?.[0];
   if (time) markers.add(time);
   for (const match of text.matchAll(/\b\d{1,3}(?:,\d{3})*(?:\+|k|K)?\b/g)) {
     if (match[0]) markers.add(match[0]);

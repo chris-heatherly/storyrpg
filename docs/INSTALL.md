@@ -414,6 +414,14 @@ Proxy-spawned generation workers also enqueue Cognee writes through a
 proxy-owned durable outbox. The outbox drains and cognifies only after active
 story workers are idle, so a busy Cognee writer cannot block scene generation.
 
+Cognee recall is scoped by stable content facets (artifact/fact IDs and kinds),
+not by the requesting agent's name. The pipeline first uses current in-process
+typed facts, then makes one bounded semantic Cognee query per agent phase. If
+an older graph's facet filter is empty, it retries once without that filter and
+records the fallback in memory telemetry. A non-empty health check alone does
+not prove useful recall: inspect the generation quality ledger for recall and
+empty-recall counts after a test run.
+
 ### 4.d) Optional — LoRA Auto-Training Sidecar
 
 Stable Diffusion is the only provider that can consume LoRAs, so the

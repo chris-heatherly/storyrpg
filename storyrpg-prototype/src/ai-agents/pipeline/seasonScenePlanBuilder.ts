@@ -76,7 +76,6 @@ import { attachSceneConstructionProfiles } from '../utils/sceneConstructionProfi
 import {
   attachSceneEventOwnershipProfiles,
   eventOrder,
-  repairCausalCueOwnershipOrder,
   stripRegressiveAuthoredBeats,
 } from '../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
@@ -90,6 +89,7 @@ import {
 } from '../utils/compileEpisodeSpine';
 import type { EpisodeSpineContract, EpisodeSpineUnit } from '../../types/episodeSpine';
 import { EpisodeSpineContractValidator } from '../validators/EpisodeSpineContractValidator';
+import { compileAndApplyNarrativeContracts, NARRATIVE_CONTRACT_COMPILER_VERSION } from './narrativeContractCompiler';
 
 export const MIN_SCENES_PER_EPISODE = 3;
 const MAX_SCENES_PER_EPISODE = 8;
@@ -1758,7 +1758,12 @@ export function bindAuthoredTurnsToScenes(
   );
   const visualAnchor = explicitVisualAnchor || (fallbackAnchorAlreadyCovered ? undefined : fallbackEncounterAnchor);
 
-  if (isAuthoredLiteEpisode(ep)) {
+  // When an Episode Spine Contract is present, its unit order is the sole
+  // chronology authority. The legacy route-cue sort can move the opening scene
+  // behind later authored scenes before positional ESC projection, causing
+  // scene IDs to receive the wrong spine units. Keep that heuristic only for
+  // authored-lite plans that have no ESC.
+  if (isAuthoredLiteEpisode(ep) && !episodeSpine) {
     sortPlannedScenesByChronologyCue(scenes);
   }
 
@@ -1976,6 +1981,13 @@ export function buildEpisodeScenes(
       .filter((enc) => encounterIsCoveredByAuthoredTurns(enc, turns))
       .map((enc) => enc.id),
   );
+  // An authored-lite treatment may describe the attack/rescue as an episode
+  // turn while the planner also emits a dedicated encounter scene. That turn
+  // is the encounter's authored unit, not an additional standard scene.
+  const coveredThreatEncounterCount = Math.min(
+    encounters.filter((enc) => !coveredEncounterIds.has(enc.id)).length,
+    turns.filter(isThreatEncounterTurn).length,
+  );
   const locations = ep.locations ?? [];
   const npcs = ep.mainCharacters ?? [];
 
@@ -1983,16 +1995,22 @@ export function buildEpisodeScenes(
   // episode that authored more turns than its estimate gets enough scenes to land
   // every turn as a required beat instead of starving turns (§3.2, §6).
   const turnCount = turns.length;
-  const standaloneEncounterCount = encounters.filter((enc) => !coveredEncounterIds.has(enc.id)).length;
+  const standaloneEncounterCount = Math.max(
+    0,
+    encounters.filter((enc) => !coveredEncounterIds.has(enc.id)).length - coveredThreatEncounterCount,
+  );
   const liteBudget = isAuthoredLiteEpisode(ep)
     ? (
       episodeSpine?.units?.length
-        ? countAuthoredLiteSceneBudgetFromSpine(episodeSpine.units, standaloneEncounterCount)
+        ? countAuthoredLiteSceneBudgetFromSpine(episodeSpine.units, standaloneEncounterCount, coveredThreatEncounterCount)
         : countAuthoredLiteSceneBudget(turns, standaloneEncounterCount)
     )
     : undefined;
   // ESC may decompose compound turns into more standard units than raw turn budget.
-  const escStandardFloor = (episodeSpine?.units ?? []).filter((unit) => unit.sceneKind !== 'encounter').length;
+  const escStandardFloor = Math.max(
+    0,
+    (episodeSpine?.units ?? []).filter((unit) => unit.sceneKind !== 'encounter').length - coveredThreatEncounterCount,
+  );
   const escEncounterFloor = (episodeSpine?.units ?? []).filter((unit) =>
     unit.sceneKind === 'encounter' || unit.kind === 'set_piece'
   ).length;
@@ -2232,11 +2250,6 @@ export function buildEpisodeScenes(
     splitStackedSpatialScenes(ep, scenes, inferAuthoredLocationFromText);
   }
   projectSpineOntoScenes(scenes, episodeSpine);
-  // ESC lockdown: heuristic chronology repair corrupts unit.order → leadsTo.
-  // When ESC is present, positional projection + reconcile is the only authority.
-  if (!episodeSpine) {
-    repairRouteCueSceneOrder(scenes, ep.episodeNumber);
-  }
   const outgoingResidue = (seasonResiduePlan ?? []).filter(
     (obligation) => obligation.sourceEpisodeNumber === ep.episodeNumber,
   );
@@ -2586,10 +2599,6 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
   compileAuthoredRelationshipMilestones(scenes, plan.protagonist);
   normalizeRelationshipPacingStages(scenes);
   attachSceneConstructionProfiles(scenes);
-  attachSceneEventOwnershipProfiles(scenes);
-  for (const ep of episodes) {
-    repairCausalCueOwnershipOrder(scenes, { episodeNumber: ep.episodeNumber });
-  }
 
   const spineValidator = new EpisodeSpineContractValidator();
   for (const ep of episodes) {
@@ -2606,9 +2615,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
       throw new Error(`Episode ${ep.episodeNumber} spine contract failed: ${blockers}`);
     }
   }
-  syncGenericSceneTitlesFromAuthoredBeats(scenes);
-
-  return {
+  const compiled = compileAndApplyNarrativeContracts(plan, {
     scenes,
     byEpisode,
     setupPayoffEdges: edges,
@@ -2624,7 +2631,13 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
     worldTreatmentContracts,
     episodeSpines: seasonSpine.episodeSpines,
     sourceHash: seasonScenePlanSourceHash(seasonSpine.episodeSpines),
-  };
+  });
+  // Canonical compilation may refine a split scene's primary turn and order.
+  // Rebuild construction profiles once from that immutable event assignment.
+  attachSceneConstructionProfiles(compiled.scenes);
+  syncGenericSceneTitlesFromAuthoredBeats(scenes);
+
+  return compiled;
 }
 
 /**
@@ -2645,9 +2658,29 @@ export function rebuildTreatmentSeasonScenePlan(plan: SeasonPlan): SeasonPlan {
         seasonStoryCircle: plan.storyCircle,
         seasonArcs: plan.arcs,
       }).episodeSpines,
-    );
-    if (freshHash && freshHash === existing.sourceHash) {
-      return plan;
+      );
+      if (freshHash && freshHash === existing.sourceHash) {
+        if (existing.narrativeContractGraph?.validation.passed
+          && existing.narrativeContractGraph.compilerVersion === NARRATIVE_CONTRACT_COMPILER_VERSION
+          && existing.episodeEventPlans) {
+          // Artifact revisions are recursively frozen when rehydrated. The
+          // episode compiler still performs runtime-only projection repairs on
+          // its working plan, so hand it a clone without mutating the committed
+          // season-plan payload.
+          const rehydratedArtifactPlan = Object.isFrozen(plan)
+            || Object.isFrozen(existing)
+            || Object.isFrozen(existing.scenes)
+            || Object.isFrozen(existing.scenes?.[0])
+            || Object.isFrozen(existing.episodeSpines)
+            || Object.isFrozen(plan.episodes)
+            || Object.isFrozen(plan.episodes?.[0])
+            || Object.isFrozen(plan.episodes?.[0]?.plannedScenes)
+            || Object.isFrozen(plan.episodes?.[0]?.plannedScenes?.[0]);
+          return rehydratedArtifactPlan
+            ? JSON.parse(JSON.stringify(plan)) as SeasonPlan
+            : plan;
+        }
+      return migrateLegacySeasonNarrativeContracts(plan);
     }
   }
 
@@ -2659,6 +2692,22 @@ export function rebuildTreatmentSeasonScenePlan(plan: SeasonPlan): SeasonPlan {
   return {
     ...plan,
     episodes,
+    scenePlan,
+  };
+}
+
+/** Deterministically upgrades a schema-v1 scene plan without regenerating source analysis or prose. */
+export function migrateLegacySeasonNarrativeContracts(plan: SeasonPlan): SeasonPlan {
+  const existing = plan.scenePlan;
+  if (!existing) return rebuildTreatmentSeasonScenePlan({ ...plan, scenePlan: undefined });
+  const cloned = JSON.parse(JSON.stringify(existing)) as SeasonScenePlan;
+  const scenePlan = compileAndApplyNarrativeContracts(plan, cloned);
+  return {
+    ...plan,
+    episodes: (plan.episodes ?? []).map((episode) => ({
+      ...episode,
+      plannedScenes: scenesForEpisode(scenePlan, episode.episodeNumber),
+    })),
     scenePlan,
   };
 }

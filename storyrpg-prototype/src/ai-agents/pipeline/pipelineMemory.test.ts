@@ -154,13 +154,37 @@ describe('CogneeHttpMemoryProvider', () => {
       query: 'branching failures',
       topK: 3,
       onlyContext: true,
-      // The deployed Cognee search API declares nodeName as a LIST field —
-      // a scalar 400'd every recall (bite-me 2026-07-04).
-      nodeNames: ['agent:StoryArchitect'],
-      nodeName: ['agent:StoryArchitect'],
+      // Agent/lifecycle labels are provenance, not Cognee record facets.
+      // With no stable content facet, search remains semantic and unfiltered.
     });
     expect(packet?.sourceSnippets).toEqual(['Prior failure: branch fan-out collapsed.']);
     expect(packet?.queryLog[0]).toMatchObject({ query: 'branching failures', resultCount: 1 });
+  });
+
+  it('retries once without restrictive graph facets when a filtered Cognee search is empty', async () => {
+    let searchCount = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/api/v1/search')) {
+        searchCount += 1;
+        return okResponse(searchCount === 1 ? [] : [{ search_result: 'Indexed source obligation.' }]);
+      }
+      return okResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = new CogneeHttpMemoryProvider(makeConfig().memory!);
+    const packet = await provider.recall({
+      datasets: ['storyrpg-project'],
+      queries: ['source obligations'],
+      nodeNames: ['agent:StoryArchitect', 'episode-architecture', 'fact-kind:source-obligation'],
+    });
+
+    const searchCalls = callsTo(fetchMock, '/api/v1/search');
+    expect(searchCalls).toHaveLength(2);
+    expect(JSON.parse(searchCalls[0][1].body).nodeNames).toEqual(['fact-kind:source-obligation']);
+    expect(JSON.parse(searchCalls[1][1].body).nodeNames).toBeUndefined();
+    expect(packet?.sourceSnippets).toEqual(['Indexed source obligation.']);
+    expect(packet?.queryLog[0]).toMatchObject({ fallbackUsed: true, resultCount: 1 });
   });
 });
 
@@ -291,7 +315,6 @@ describe('PipelineMemory', () => {
       'storyrpg-agent-history',
     ]));
     expect(body.nodeNames).toEqual(expect.arrayContaining([
-      'agent:SceneWriter',
       'episode:3',
       'scene:scene-2',
       'character:mara-voss',

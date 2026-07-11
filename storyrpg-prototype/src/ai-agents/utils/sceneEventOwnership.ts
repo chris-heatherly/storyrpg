@@ -36,6 +36,11 @@ export interface SceneEventOwnershipSceneLike {
   authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
   sceneConstructionProfile?: SceneConstructionProfile;
   ownedChronologyKeys?: string[];
+  narrativeEventIds?: string[];
+  narrativeEventOrder?: number;
+  narrativeEventPlanVersion?: number;
+  spineUnitId?: string;
+  planningOrigin?: { kind?: string; splitKind?: string; parentSceneId?: string; reason?: string };
   sceneEventOwnership?: SceneEventOwnershipProfile;
 }
 
@@ -315,6 +320,25 @@ export function compileSceneEventOwnershipProfile<T extends SceneEventOwnershipS
   previousOwnedEvents: SceneOwnedEvent[],
   options: { episodeNumber?: number } = {},
 ): SceneEventOwnershipProfile {
+  const canonical = scene.narrativeEventPlanVersion != null && scene.sceneEventOwnership;
+  if (canonical) {
+    const allowed = new Set(scene.narrativeEventIds ?? []);
+    const ownedEvents = canonical.ownedEvents.filter((event) =>
+      allowed.has(event.eventContractId ?? event.key),
+    );
+    const priorEventsWithinEpisode = mergeEvents(previousOwnedEvents);
+    return {
+      ...canonical,
+      episodeNumber: scene.episodeNumber ?? options.episodeNumber,
+      ownedEvents,
+      priorEventsWithinEpisode,
+      localAftermathEvents: ownedEvents,
+      incomingContext: undefined,
+      outgoingResidue: undefined,
+      forbiddenRestageEvents: priorEventsWithinEpisode.filter((event) => DUPLICATE_SENSITIVE_CUES.has(event.cue)),
+      diagnostics: [],
+    };
+  }
   const sourceTexts = contractTexts(scene);
   const primaryCues = primaryCuesForScene(scene, sourceTexts);
   const owned: SceneOwnedEvent[] = [];
@@ -326,14 +350,14 @@ export function compileSceneEventOwnershipProfile<T extends SceneEventOwnershipS
   }
 
   const ownedEvents = mergeEvents(owned);
-  const incomingContext = mergeEvents(previousOwnedEvents);
-  const forbiddenRestageEvents = incomingContext.filter((event) => DUPLICATE_SENSITIVE_CUES.has(event.cue));
+  const priorEventsWithinEpisode = mergeEvents(previousOwnedEvents);
+  const forbiddenRestageEvents = priorEventsWithinEpisode.filter((event) => DUPLICATE_SENSITIVE_CUES.has(event.cue));
   const diagnostics: string[] = [];
   const seen = new Set<string>();
   for (const event of ownedEvents) {
     if (seen.has(event.key)) continue;
     seen.add(event.key);
-    const earlier = incomingContext.find((candidate) => candidate.key === event.key);
+    const earlier = priorEventsWithinEpisode.find((candidate) => candidate.key === event.key);
     if (earlier && DUPLICATE_SENSITIVE_CUES.has(event.cue)) {
       diagnostics.push(`Scene "${scene.id ?? 'scene'}" also owns ${event.cue}, already owned by an earlier scene; route later references as aftermath instead of restaging.`);
     }
@@ -344,8 +368,8 @@ export function compileSceneEventOwnershipProfile<T extends SceneEventOwnershipS
     episodeNumber: options.episodeNumber ?? scene.episodeNumber,
     sceneId: scene.id ?? 'scene',
     ownedEvents,
-    incomingContext,
-    outgoingResidue: ownedEvents,
+    priorEventsWithinEpisode,
+    localAftermathEvents: ownedEvents,
     forbiddenRestageEvents,
     sourceContractIds: Array.from(new Set(ownedEvents.flatMap((event) => event.sourceContractIds))),
     diagnostics,
@@ -363,9 +387,32 @@ export function attachSceneEventOwnershipProfiles<T extends SceneEventOwnershipS
 ): SceneEventOwnershipDiagnostic[] {
   const diagnostics: SceneEventOwnershipDiagnostic[] = [];
   const demoteToAftermath = isGateEnabled('GATE_OWNERSHIP_AFTERMATH_DEMOTION');
-  const encounterIndex = scenes.findIndex((entry) => entry.kind === 'encounter' || entry.isEncounter);
-  let previousOwnedEvents: SceneOwnedEvent[] = [];
-  scenes.forEach((scene, sceneIndex) => {
+  const episodeNumbers = options.episodeNumber != null
+    ? [options.episodeNumber]
+    : Array.from(new Set(scenes.map((scene) => scene.episodeNumber ?? 1))).sort((a, b) => a - b);
+  for (const episodeNumber of episodeNumbers) {
+    const episodeScenes = scenes.filter((scene) => (scene.episodeNumber ?? options.episodeNumber ?? 1) === episodeNumber);
+    const encounterIndex = episodeScenes.findIndex((entry) => entry.kind === 'encounter' || entry.isEncounter);
+    let previousOwnedEvents: SceneOwnedEvent[] = [];
+    episodeScenes.forEach((scene, sceneIndex) => {
+    if (options.episodeNumber != null && scene.episodeNumber != null && scene.episodeNumber !== options.episodeNumber) {
+      diagnostics.push({
+        sceneId: scene.id,
+        episodeNumber: scene.episodeNumber,
+        severity: 'error',
+        message: `Scene "${scene.id ?? sceneIndex}" belongs to episode ${scene.episodeNumber}, but ownership compilation was requested for episode ${options.episodeNumber}.`,
+      });
+    }
+    if (scene.sceneEventOwnership?.episodeNumber != null
+      && scene.episodeNumber != null
+      && scene.sceneEventOwnership.episodeNumber !== scene.episodeNumber) {
+      diagnostics.push({
+        sceneId: scene.id,
+        episodeNumber: scene.episodeNumber,
+        severity: 'error',
+        message: `Ownership profile for scene "${scene.id ?? sceneIndex}" belongs to episode ${scene.sceneEventOwnership.episodeNumber}, not scene episode ${scene.episodeNumber}.`,
+      });
+    }
     const profile = compileSceneEventOwnershipProfile(scene, previousOwnedEvents, options);
     // Deterministic demote-to-aftermath repair (bite-me 2026-07-04: five of
     // twelve Ep1 runs hard-aborted at SceneConstructionGate on duplicate
@@ -378,14 +425,14 @@ export function attachSceneEventOwnershipProfiles<T extends SceneEventOwnershipS
     // what the gate's own diagnostic instructs. Kill-switch:
     // GATE_OWNERSHIP_AFTERMATH_DEMOTION=0 restores the hard-abort behavior.
     if (demoteToAftermath && scene.kind !== 'encounter' && !scene.isEncounter) {
-      const incomingKeys = new Set(profile.incomingContext.map((event) => event.key));
+      const incomingKeys = new Set((profile.priorEventsWithinEpisode ?? []).map((event) => event.key));
       const demoted = profile.ownedEvents.filter(
         (event) => DUPLICATE_SENSITIVE_CUES.has(event.cue) && incomingKeys.has(event.key),
       );
       if (demoted.length > 0) {
         const demotedKeys = new Set(demoted.map((event) => event.key));
         profile.ownedEvents = profile.ownedEvents.filter((event) => !demotedKeys.has(event.key));
-        profile.outgoingResidue = profile.outgoingResidue.filter((event) => !demotedKeys.has(event.key));
+        profile.localAftermathEvents = (profile.localAftermathEvents ?? []).filter((event) => !demotedKeys.has(event.key));
         profile.diagnostics = profile.diagnostics.filter(
           (message) => !demoted.some((event) => message.includes(`also owns ${event.cue}`)),
         );
@@ -421,7 +468,7 @@ export function attachSceneEventOwnershipProfiles<T extends SceneEventOwnershipS
         if (regressed.length > 0) {
           const regressedKeys = new Set(regressed.map((event) => event.key));
           profile.ownedEvents = profile.ownedEvents.filter((event) => !regressedKeys.has(event.key));
-          profile.outgoingResidue = profile.outgoingResidue.filter((event) => !regressedKeys.has(event.key));
+          profile.localAftermathEvents = (profile.localAftermathEvents ?? []).filter((event) => !regressedKeys.has(event.key));
           profile.diagnostics = profile.diagnostics.filter(
             (message) => !regressed.some((event) => message.includes(`also owns ${event.cue}`)),
           );
@@ -448,8 +495,9 @@ export function attachSceneEventOwnershipProfiles<T extends SceneEventOwnershipS
         message,
       });
     }
-  });
-  diagnostics.push(...validateSceneEventOwnershipPlan(scenes, options));
+    });
+    diagnostics.push(...validateSceneEventOwnershipPlan(episodeScenes, { episodeNumber }));
+  }
   return diagnostics;
 }
 
@@ -457,6 +505,13 @@ export function validateSceneEventOwnershipPlan<T extends SceneEventOwnershipSce
   scenes: T[],
   options: { episodeNumber?: number } = {},
 ): SceneEventOwnershipDiagnostic[] {
+  if (options.episodeNumber == null) {
+    const episodeNumbers = Array.from(new Set(scenes.map((scene) => scene.episodeNumber ?? 1))).sort((a, b) => a - b);
+    return episodeNumbers.flatMap((episodeNumber) => validateSceneEventOwnershipPlan(
+      scenes.filter((scene) => (scene.episodeNumber ?? 1) === episodeNumber),
+      { episodeNumber },
+    ));
+  }
   const diagnostics: SceneEventOwnershipDiagnostic[] = [];
   const firstOwnerByKey = new Map<string, { scene: T; event: SceneOwnedEvent; index: number }>();
   let previous: { scene: T; event: SceneOwnedEvent; index: number } | undefined;
@@ -702,11 +757,18 @@ export function repairCausalCueOwnershipOrder<T extends SceneEventOwnershipScene
   if (scenes.length === 0) return [];
   const diagnostics: SceneEventOwnershipDiagnostic[] = [];
 
+  const targetScenes = options.episodeNumber == null
+    ? scenes
+    : scenes.filter((scene) => (scene.episodeNumber ?? options.episodeNumber) === options.episodeNumber);
+  if (targetScenes.length > 0 && targetScenes.every((scene) => scene.narrativeEventPlanVersion != null)) {
+    return attachSceneEventOwnershipProfiles(scenes, options);
+  }
+
   // Reorder from text/id cues BEFORE attaching ownership so regressive
   // demotion cannot strip lateNightWriting while blogAftermath sits earlier.
-  const episodeNumbers = Array.from(new Set(
-    scenes.map((scene) => scene.episodeNumber ?? options.episodeNumber ?? 1),
-  )).sort((a, b) => a - b);
+  const episodeNumbers = options.episodeNumber != null
+    ? [options.episodeNumber]
+    : Array.from(new Set(scenes.map((scene) => scene.episodeNumber ?? 1))).sort((a, b) => a - b);
 
   let changed = false;
   for (const episodeNumber of episodeNumbers) {
@@ -824,7 +886,7 @@ export function buildSceneEventOwnershipPromptSection(scene: SceneEventOwnership
   const profile = scene?.sceneEventOwnership;
   if (!profile) return '';
   const owned = profile.ownedEvents.slice(0, 6);
-  const context = profile.incomingContext.slice(-6);
+  const context = (profile.priorEventsWithinEpisode ?? profile.incomingContext ?? []).slice(-6);
   const forbidden = profile.forbiddenRestageEvents.slice(-6);
   if (owned.length === 0 && context.length === 0 && forbidden.length === 0) return '';
   // Chronology keys arrive as slugs ("kylie-forms-dusk-club-mika-stela");

@@ -30,7 +30,7 @@ import { isUnsafeCoverageMetadataText } from '../utils/coverageMetadataHygiene';
 
 /** The contract surface both SceneBlueprint and (tagged) SceneContent carry. */
 export interface SceneContractSource {
-  requiredBeats?: Array<{ tier?: string; mustDepict?: string }>;
+  requiredBeats?: Array<{ tier?: string; mustDepict?: string; contractKind?: 'depiction' | 'identity_constraint' }>;
   storyCircleBeatContracts?: Array<{
     beat?: string;
     sourceText?: string;
@@ -158,6 +158,7 @@ export function requiredMomentsFor(source: SceneContractSource | undefined): Req
   if (!source) return [];
   const moments: RequiredMoment[] = [];
   for (const beat of source.requiredBeats ?? []) {
+    if (beat.contractKind === 'identity_constraint') continue;
     const moment = beat?.mustDepict?.trim();
     if (!moment) continue;
     const tier = beat.tier ?? 'authored';

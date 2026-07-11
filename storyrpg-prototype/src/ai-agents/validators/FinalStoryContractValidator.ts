@@ -151,6 +151,7 @@ const FIDELITY_FALLBACK_POLICY: Record<string, FidelitySeverityMetadata> = {
   SeasonPromiseRealizationValidator: { gateId: 'GATE_SEASON_PROMISE_REALIZATION', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
   CharacterTreatmentRealizationValidator: { gateId: 'GATE_CHARACTER_TREATMENT_REALIZATION', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
   CharacterIntroductionValidator: { gateId: 'GATE_CHARACTER_INTRODUCTION', findingClass: 'repairable_contract', sourceKind: 'story' },
+  NarrativeContractValidator: { gateId: 'GATE_AUTHORED_EPISODE_CONFORMANCE', findingClass: 'authored_contract', sourceKind: 'treatment', hasConcreteObligation: true },
 };
 
 export type FinalStoryContractIssueType =
@@ -1287,7 +1288,15 @@ export class FinalStoryContractValidator {
     await this.validateCallbacks(callbackScenes, callbackChoices, issues, metrics, input.callbackLedger, input.generatedThroughEpisode);
     this.validateMechanicsLeakage(storyTexts, issues, metrics);
     this.validateIncrementalResults(input.incrementalValidationResults || [], issues, metrics);
-    this.validateQAReports(input.story, input.qaReport, input.bestPracticesReport, issues, metrics, input.treatmentSourced === true);
+    this.validateQAReports(
+      input.story,
+      input.qaReport,
+      input.bestPracticesReport,
+      issues,
+      metrics,
+      input.treatmentSourced === true,
+      input.authoredLiteContract === true,
+    );
     this.validateFidelityFindings(input, issues);
 
     const conflictDowngrades = reconcileConflictingFindings(issues);
@@ -1952,8 +1961,10 @@ export class FinalStoryContractValidator {
     bestPracticesReport: ComprehensiveValidationReport | undefined,
     issues: FinalStoryContractIssue[],
     metrics: FinalStoryContractReport['metrics'],
-    treatmentSourced: boolean
+    treatmentSourced: boolean,
+    authoredLiteContract: boolean,
   ): void {
+    const strictTreatment = treatmentSourced && authoredLiteContract;
     if (qaReport && (!qaReport.passesQA || qaReport.criticalIssues.length > 0)) {
       // F3: QA score is an LLM self-assessment (craft signal), not a hard
       // playability gate — advisory by default so the story ships with the score
@@ -1971,12 +1982,16 @@ export class FinalStoryContractValidator {
       issues.push({
         type: 'qa_blocker_present',
         severity: resolveFinalContractSeverity({
-          requestedSeverity: qaReport.criticalIssues.length > 0 ? 'error' : 'warning',
-          findingClass: nonContinuityCriticals.some(isContractualQaCritical)
+          requestedSeverity: strictTreatment && qaReport.criticalIssues.length > 0
+            ? 'error'
+            : qaReport.criticalIssues.length > 0 ? 'error' : 'warning',
+          findingClass: strictTreatment && qaReport.criticalIssues.length > 0
+            ? 'runtime_contract'
+            : nonContinuityCriticals.some(isContractualQaCritical)
             ? 'runtime_contract'
             : 'craft_critic',
           treatmentSourced,
-          gateId: 'GATE_QA_CRITICAL_BLOCK',
+          gateId: strictTreatment && qaReport.criticalIssues.length > 0 ? undefined : 'GATE_QA_CRITICAL_BLOCK',
           sourceKind: 'qa',
         }),
         message: `QA report did not pass: ${qaReport.criticalIssues.join('; ') || `score ${qaReport.overallScore}`}`,
@@ -1997,18 +2012,20 @@ export class FinalStoryContractValidator {
     // never block, so a passing run cannot flip to failing.
     if (qaReport?.continuity?.issues?.length) {
       const REMEDIABLE = new Set(['impossible_knowledge', 'contradiction', 'missing_setup', 'timeline_error']);
-      const continuityGateId = isGateEnabled('GATE_CONTINUITY_REMEDIATION')
-        ? 'GATE_CONTINUITY_REMEDIATION'
-        : isGateEnabled('GATE_QA_CRITICAL_BLOCK')
-        ? 'GATE_QA_CRITICAL_BLOCK'
-        : undefined;
+      const continuityGateId = strictTreatment
+        ? undefined
+        : isGateEnabled('GATE_CONTINUITY_REMEDIATION')
+          ? 'GATE_CONTINUITY_REMEDIATION'
+          : isGateEnabled('GATE_QA_CRITICAL_BLOCK')
+            ? 'GATE_QA_CRITICAL_BLOCK'
+            : undefined;
       for (const issue of qaReport.continuity.issues) {
         if (issue.severity !== 'error' || !REMEDIABLE.has(issue.type)) continue;
         issues.push({
           type: 'continuity_error',
           severity: resolveFinalContractSeverity({
             requestedSeverity: 'error',
-            findingClass: 'repairable_contract',
+            findingClass: strictTreatment ? 'runtime_contract' : 'repairable_contract',
             treatmentSourced,
             gateId: continuityGateId,
             sourceKind: 'qa',

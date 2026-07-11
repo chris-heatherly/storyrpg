@@ -158,6 +158,7 @@ export class SceneSpatialUnitValidator extends BaseValidator {
       if (activeLocations.length < 2) continue;
       const sanctioned = sanctionedLocationKeys(ref);
       if (activeLocations.every((location) => sanctioned.has(normalize(location)))) continue;
+      if (ownsMovementEventCue(ref) && activeLocations.length === 2) continue;
       issues.push(this.error(
         `Scene "${ref.scene.id}" conducts meaningful action in multiple major locations: ${activeLocations.join(', ')}.`,
         `sceneSpatialUnit:ep${ref.episodeNumber}:${ref.scene.id}`,

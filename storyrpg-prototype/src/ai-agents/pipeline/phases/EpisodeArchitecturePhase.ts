@@ -36,7 +36,9 @@ import {
 } from '../seasonChoicePlan';
 import type { GateShadowRecord } from '../../remediation/gateShadowLedger';
 import { type GenerationPlan, setEpisodeScenes } from '../generationPlan';
-import { PipelineError } from '../errors';
+import { PipelineError, type PipelineFailureMetadata } from '../errors';
+import { applyEpisodeEventPlans } from '../narrativeContractCompiler';
+import { scenesForEpisode } from '../seasonScenePlanBuilder';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import { PipelineContext } from './index';
 
@@ -84,6 +86,26 @@ export class EpisodeArchitecturePhase {
   ): Promise<EpisodeBlueprint> {
     context.emit({ type: 'agent_start', agent: 'StoryArchitect', message: 'Creating episode blueprint' });
 
+    // Resume artifacts are recursively frozen. Architecture and its bounded
+    // canonical-plan repair mutate a working season projection, never the
+    // committed season-plan revision.
+    const storedSeasonPlan = brief.seasonPlan;
+    const storedScenePlan = storedSeasonPlan?.scenePlan;
+    const storedEpisode = storedSeasonPlan?.episodes?.[0];
+    const storedPlannedScenes = storedEpisode?.plannedScenes;
+    const rehydratedSeasonPlan = Boolean(
+      storedSeasonPlan && (
+        Object.isFrozen(storedSeasonPlan)
+        || Object.isFrozen(storedScenePlan)
+        || Object.isFrozen(storedScenePlan?.scenes)
+        || Object.isFrozen(storedPlannedScenes)
+        || Object.isFrozen(storedPlannedScenes?.[0])
+      ),
+    );
+    if (rehydratedSeasonPlan && storedSeasonPlan) {
+      brief.seasonPlan = JSON.parse(JSON.stringify(storedSeasonPlan)) as FullCreativeBrief['seasonPlan'];
+    }
+
     const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
 
     // Build season plan directives for this specific episode
@@ -107,6 +129,12 @@ export class EpisodeArchitecturePhase {
     // populate its episode arc block against the correct beat(s).
     const seasonPlan = brief.seasonPlan;
     const seasonEpisode = seasonPlan?.episodes.find((e) => e.episodeNumber === brief.episode.number);
+    const identitySchedules = seasonPlan?.scenePlan?.narrativeContractGraph?.identityScheduleContracts ?? [];
+    const promptSafeNpcName = (character: CharacterBible['characters'][number]): string => {
+      const schedule = identitySchedules.find((candidate) => candidate.characterId === character.id);
+      if (!schedule || brief.episode.number >= schedule.firstNamedEpisode) return character.name;
+      return schedule.allowedAliases[0] || `anonymous ${character.role || 'figure'}`;
+    };
     const configuredTargetSceneCount = clampSceneCount(
       brief.multiEpisode?.preferences?.targetScenesPerEpisode ||
       context.config.generation?.maxScenesPerEpisode ||
@@ -131,7 +159,9 @@ export class EpisodeArchitecturePhase {
         .filter(c => c.id !== brief.protagonist.id)
         .map(c => ({
           id: c.id,
-          name: c.name,
+          // Keep canonical names out of pre-reveal StoryArchitect prompts while
+          // preserving stable IDs for graph ownership and downstream lookup.
+          name: promptSafeNpcName(c),
           description: c.overview,
           relationshipContext: c.relationships.find(r => r.targetId === brief.protagonist.id)?.currentDynamic,
           initialRelationship: c.initialStats,
@@ -173,17 +203,44 @@ export class EpisodeArchitecturePhase {
       if (result.success && result.data) break;
 
       const errorText = result.error || '';
-      const branchFailure =
-        errorText.includes('scene-graph branching') ||
-        errorText.includes('valid branch point') ||
-        errorText.includes('branches=true');
-      const densityFailure =
-        errorText.includes('TreatmentDensityGate') ||
-        errorText.includes('TreatmentBindingGate') ||
-        errorText.includes('Treatment density overload');
-      const sceneCapFailure =
-        /Blueprint must have no more than \d+ scenes/i.test(errorText) ||
-        /Blueprint has \d+ scenes; maximum is \d+/i.test(errorText);
+      const failure = result.metadata?.failure as PipelineFailureMetadata | undefined;
+      const branchFailure = failure
+        ? failure.code === 'branch_structure_invalid'
+        : errorText.includes('scene-graph branching') || errorText.includes('valid branch point') || errorText.includes('branches=true');
+      const densityFailure = failure
+        ? failure.code === 'treatment_density_conflict' || failure.code === 'treatment_binding_conflict'
+        : errorText.includes('TreatmentDensityGate') || errorText.includes('TreatmentBindingGate') || errorText.includes('Treatment density overload');
+      const sceneCapFailure = failure
+        ? failure.code === 'scene_cap_exceeded'
+        : /Blueprint must have no more than \d+ scenes/i.test(errorText) || /Blueprint has \d+ scenes; maximum is \d+/i.test(errorText);
+      const episodePlanFailure = failure?.retryClass === 'recompile_episode_plan' && plannedSceneCount > 0;
+      if (episodePlanFailure) {
+        const scenePlan = brief.seasonPlan?.scenePlan;
+        if (attempt === 1 && scenePlan?.narrativeContractGraph) {
+          scenePlan.episodeEventPlans = applyEpisodeEventPlans(scenePlan.narrativeContractGraph, scenePlan.scenes);
+          const refreshed = scenesForEpisode(scenePlan, brief.episode.number);
+          const seasonEpisode = brief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === brief.episode.number);
+          if (seasonEpisode) seasonEpisode.plannedScenes = refreshed;
+          if (architectureInput.seasonPlanDirectives) {
+            architectureInput.seasonPlanDirectives.plannedScenes = refreshed;
+            architectureInput.seasonPlanDirectives.episodeEventPlan = scenePlan.episodeEventPlans[brief.episode.number];
+          }
+          context.emit({
+            type: 'regeneration_triggered',
+            phase: 'architecture',
+            message: `Recompiled canonical EpisodeEventPlan after ${failure.code}; retrying StoryArchitect once with refreshed immutable ownership.`,
+            data: { failure, sourceGraphHash: scenePlan.narrativeContractGraph.sourceHash },
+          });
+          continue;
+        }
+        context.emit({
+          type: 'debug',
+          phase: 'architecture',
+          message: `Canonical episode-plan failure persisted after bounded recompilation; stopping without blind LLM retries.`,
+          data: { failure, error: result.error },
+        });
+        break;
+      }
       const deterministicPlannedDensityFailure = densityFailure && plannedSceneCount > 0;
       if (deterministicPlannedDensityFailure) {
         context.emit({
@@ -236,6 +293,11 @@ export class EpisodeArchitecturePhase {
             episodeTitle: brief.episode.title,
             hasSeasonPlanDirectives: !!seasonPlanDirectives,
             diagnostics: result!.metadata?.diagnostics,
+          },
+          failure: (result!.metadata?.failure as PipelineFailureMetadata | undefined) ?? {
+            code: 'unknown',
+            ownerStage: 'episode_plan',
+            retryClass: 'none',
           },
         }
       );

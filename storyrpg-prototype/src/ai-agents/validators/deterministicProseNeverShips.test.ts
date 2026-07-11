@@ -49,6 +49,7 @@ function blueprint(overrides: Partial<SceneBlueprint> = {}): SceneBlueprint {
 function degenerateStructure(): EncounterStructure {
   return {
     sceneId: 'scene-1',
+    description: 'The forklift idles between you and the exit as the standoff begins.',
     encounterType: 'social',
     startingBeatId: 'beat-1',
     beats: [

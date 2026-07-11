@@ -184,6 +184,19 @@ describe('relationship arc enforcement', () => {
   });
 
   it('allows a group to advance when a relationship-choice contract defines the group turn', () => {
+    const milestone = {
+      id: 's1-1-circle-milestone',
+      kind: 'group_formation' as const,
+      sourceText: 'The circle becomes a deliberate shared commitment.',
+      subjectType: 'group' as const,
+      subjectId: 'circle',
+      targetStage: 'acquaintance' as const,
+      introductionSceneIds: ['s1-1'],
+      testSceneIds: [],
+      choiceSceneId: 's1-1',
+      memberNpcIds: ['mika', 'stela'],
+      requiredEvidenceTags: ['respected_agency' as const],
+    };
     const s = story([
       scene('s1-1', 'At the station, the circle name becomes a deliberate shared commitment.', {
         relationshipPacing: [pacing({
@@ -192,6 +205,24 @@ describe('relationship arc enforcement', () => {
           npcId: undefined,
           groupId: 'circle',
           targetStage: 'acquaintance',
+          milestone,
+        })],
+        beats: [beat('s1-1-b1', 'At the station, the circle name becomes a deliberate shared commitment.', {
+          choices: [{
+            id: 'join-circle',
+            text: 'Choose the circle together.',
+            choiceType: 'relationship',
+            relationshipMilestoneId: milestone.id,
+            relationshipGroupId: 'circle',
+            consequences: [
+              { type: 'relationship', npcId: 'mika', dimension: 'trust', change: 4 },
+              { type: 'relationship', npcId: 'stela', dimension: 'trust', change: 4 },
+            ],
+            relationshipValueEvidence: [
+              { npcId: 'mika', axis: 'trust', evidenceTags: ['respected_agency'], reason: 'Mika leaves the decision to the player.' },
+              { npcId: 'stela', axis: 'trust', evidenceTags: ['respected_agency'], reason: 'Stela accepts the answer.' },
+            ],
+          }],
         })],
       }),
     ]);

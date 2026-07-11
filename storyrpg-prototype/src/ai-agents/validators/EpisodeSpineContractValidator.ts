@@ -7,12 +7,16 @@
 
 import type { EpisodeSpineContract } from '../../types/episodeSpine';
 import type { PlannedScene } from '../../types/scenePlan';
+import type { EpisodeEventPlan, NarrativeContractGraph } from '../../types/narrativeContract';
 import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidator';
 import { plannedGroupFormation } from '../utils/relationshipPacingStagePolicy';
 
 export interface EpisodeSpineValidationInput {
   spine: EpisodeSpineContract;
   scenes?: PlannedScene[];
+  /** Canonical graph projection: multiple spine units may share one scene. */
+  episodeEventPlan?: EpisodeEventPlan;
+  narrativeContractGraph?: NarrativeContractGraph;
 }
 
 export class EpisodeSpineContractValidator extends BaseValidator {
@@ -37,7 +41,7 @@ export class EpisodeSpineContractValidator extends BaseValidator {
     this.checkPrerequisites(spine, issues);
     this.checkOneLocationPerUnit(spine, issues);
     this.checkStoryCircleFacets(spine, issues);
-    this.checkSceneProjection(spine, scenes, issues);
+    this.checkSceneProjection(spine, scenes, issues, input.episodeEventPlan, input.narrativeContractGraph);
     this.checkRelationshipPacingProjection(scenes, issues);
 
     const errors = issues.filter((issue) => issue.severity === 'error').length;
@@ -107,6 +111,8 @@ export class EpisodeSpineContractValidator extends BaseValidator {
     spine: EpisodeSpineContract,
     scenes: PlannedScene[],
     issues: ValidationIssue[],
+    episodeEventPlan?: EpisodeEventPlan,
+    narrativeContractGraph?: NarrativeContractGraph,
   ): void {
     if (scenes.length === 0) return;
     const unitById = new Map(spine.units.map((unit) => [unit.id, unit]));
@@ -121,15 +127,50 @@ export class EpisodeSpineContractValidator extends BaseValidator {
       }
     }
 
+    const graphEvents = new Map((narrativeContractGraph?.events ?? []).map((event) => [event.id, event]));
+    const canonicalUnitsByScene = new Map<string, Set<string>>();
+    for (const assignment of episodeEventPlan?.assignments ?? []) {
+      const event = graphEvents.get(assignment.eventId);
+      const targetUnitIds = event?.targetSpineUnitIds?.length
+        ? event.targetSpineUnitIds
+        : assignment.eventId.match(/^event:(.+?)(?::aftermath)?$/)?.[1]
+          ? [assignment.eventId.replace(/^event:/, '').replace(/:aftermath$/, '')]
+          : [];
+      for (const unitId of targetUnitIds) {
+        if (!unitById.has(unitId)) continue;
+        const units = canonicalUnitsByScene.get(assignment.sceneId) ?? new Set<string>();
+        units.add(unitId);
+        canonicalUnitsByScene.set(assignment.sceneId, units);
+      }
+    }
+
+    const canonicalProjectionActive = Boolean(episodeEventPlan && narrativeContractGraph);
     const projected = scenes
-      .filter((scene) => scene.spineUnitId && unitById.has(scene.spineUnitId))
-      .slice()
-      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
+      .flatMap((scene) => {
+        const unitIds = new Set<string>();
+        const canonicalUnitIds = canonicalUnitsByScene.get(scene.id);
+        // A legacy PlannedScene can retain one stale spineUnitId after the
+        // canonical graph assigns multiple units to another scene. Once the
+        // graph projection is present, its owner map is authoritative.
+        if (canonicalProjectionActive) {
+          // The canonical owner map is authoritative. A legacy spineUnitId on
+          // a scene with no assigned graph event is stale metadata, not a
+          // second owner; falling back here duplicates units after a
+          // multi-event scene and creates false ESC inversions.
+          for (const unitId of canonicalUnitIds ?? []) unitIds.add(unitId);
+        } else if (scene.spineUnitId && unitById.has(scene.spineUnitId)) {
+          unitIds.add(scene.spineUnitId);
+        }
+        return [...unitIds].map((unitId) => ({ scene, unit: unitById.get(unitId)! }));
+      })
+      .sort((a, b) => (a.scene.order ?? 0) - (b.scene.order ?? 0)
+        || a.unit.order - b.unit.order
+        || a.scene.id.localeCompare(b.scene.id));
 
     // Every ESC unit with obligations (or bond/test kinds) must own a scene.
     // Orphan bond units (e.g. "form the Dusk Club") let group naming drift into
     // earlier meet scenes and invert treatment chronology.
-    const mappedUnitIds = new Set(projected.map((scene) => scene.spineUnitId).filter(Boolean));
+    const mappedUnitIds = new Set(projected.map((projection) => projection.unit.id));
     for (const unit of spine.units) {
       if (mappedUnitIds.has(unit.id)) continue;
       const hasObligations = (unit.obligations ?? []).length > 0;
@@ -143,16 +184,16 @@ export class EpisodeSpineContractValidator extends BaseValidator {
     }
 
     // Bond units must not project earlier than their test prerequisite scene.
-    for (const scene of projected) {
-      const unit = unitById.get(scene.spineUnitId!);
-      if (!unit || unit.kind !== 'bond') continue;
+    for (const projection of projected) {
+      const { scene, unit } = projection;
+      if (unit.kind !== 'bond') continue;
       const testPrereq = unit.prerequisites.find((id) => unitById.get(id)?.kind === 'test');
       if (!testPrereq) continue;
-      const testScene = projected.find((candidate) => candidate.spineUnitId === testPrereq);
+      const testScene = projected.find((candidate) => candidate.unit.id === testPrereq);
       if (!testScene) continue;
-      if ((scene.order ?? 0) < (testScene.order ?? 0)) {
+      if ((scene.order ?? 0) < (testScene.scene.order ?? 0)) {
         issues.push(this.error(
-          `Bond spine unit "${unit.id}" projects to scene "${scene.id}" before test unit "${testPrereq}" (scene "${testScene.id}").`,
+          `Bond spine unit "${unit.id}" projects to scene "${scene.id}" before test unit "${testPrereq}" (scene "${testScene.scene.id}").`,
           scene.id,
           'Keep test-before-bond chronology: group formation must not precede the social test.',
         ));
@@ -160,8 +201,8 @@ export class EpisodeSpineContractValidator extends BaseValidator {
     }
 
     let previousUnitOrder = Number.NEGATIVE_INFINITY;
-    for (const scene of projected) {
-      const unit = unitById.get(scene.spineUnitId!)!;
+    for (const projection of projected) {
+      const { scene, unit } = projection;
       if (unit.order <= previousUnitOrder) {
         issues.push(this.error(
           `Planned scenes with spineUnitId are out of ESC order: "${scene.id}" (unit ${unit.id} order ${unit.order}) follows a later-or-equal unit.`,
@@ -174,7 +215,7 @@ export class EpisodeSpineContractValidator extends BaseValidator {
       for (const prereqId of unit.prerequisites) {
         const prereq = unitById.get(prereqId);
         if (!prereq) continue;
-        const prereqScene = projected.find((candidate) => candidate.spineUnitId === prereqId);
+        const prereqScene = projected.find((candidate) => candidate.unit.id === prereqId);
         if (!prereqScene) {
           issues.push(this.error(
             `Spine unit "${unit.id}" prerequisite "${prereqId}" is not projected onto any planned scene before "${scene.id}".`,
@@ -182,9 +223,10 @@ export class EpisodeSpineContractValidator extends BaseValidator {
           ));
           continue;
         }
-        if ((prereqScene.order ?? 0) >= (scene.order ?? 0)) {
+        const sameCanonicalScene = prereqScene.scene.id === scene.id && Boolean(episodeEventPlan);
+        if (!sameCanonicalScene && (prereqScene.scene.order ?? 0) >= (scene.order ?? 0)) {
           issues.push(this.error(
-            `Spine unit "${unit.id}" prerequisite "${prereqId}" maps to scene "${prereqScene.id}" at order ${prereqScene.order}, which is not earlier than "${scene.id}" (order ${scene.order}).`,
+            `Spine unit "${unit.id}" prerequisite "${prereqId}" maps to scene "${prereqScene.scene.id}" at order ${prereqScene.scene.order}, which is not earlier than "${scene.id}" (order ${scene.order}).`,
             scene.id,
             'Prerequisites must project to earlier PlannedScene.order values.',
           ));

@@ -44,6 +44,8 @@ import {
   resolveCharacterIntroMode,
   resolveEnsembleNpcIdsFromText,
   resolveRosterCharacter,
+  isNamedIntroductionStaging,
+  isGlimpseNameDrop,
   type CharacterIntroMode,
 } from '../utils/npcIntroductionLedger';
 import { MIN_SCENES_PER_EPISODE } from '../pipeline/seasonScenePlanBuilder';
@@ -77,6 +79,13 @@ import type {
   WorldTreatmentRealizationContract,
 } from '../../types/scenePlan';
 import type { EpisodeSpineContract, EncounterSpineProfile } from '../../types/episodeSpine';
+import type {
+  EpisodeEventPlan,
+  NarrativeContractGraph,
+  NarrativeCharacterPresenceContract,
+  NarrativeCharacterRoleConstraint,
+  NarrativeIdentityScheduleContract,
+} from '../../types/narrativeContract';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 import { TreatmentFidelityValidator } from '../validators/TreatmentFidelityValidator';
 import { DramaticStructureValidator } from '../validators/DramaticStructureValidator';
@@ -87,6 +96,7 @@ import { EpisodeStoryCircleValidator, hasConcreteStoryCircleBeatText } from '../
 import { BlueprintContractHygieneValidator } from '../validators/BlueprintContractHygieneValidator';
 import { SceneOwnershipPreflightValidator } from '../validators/SceneOwnershipPreflightValidator';
 import { EpisodeSpineContractValidator } from '../validators/EpisodeSpineContractValidator';
+import type { PipelineFailureMetadata } from '../pipeline/errors';
 import {
   analyzeEpisodeTreatmentDensity,
   describeTreatmentDensityReport,
@@ -128,6 +138,7 @@ import {
   attachSceneEventOwnershipProfiles,
   repairCausalCueOwnershipOrder,
 } from '../utils/sceneEventOwnership';
+import { reprojectEpisodeEventPlan, validateCanonicalEpisodeBlueprintProjection } from '../pipeline/narrativeContractCompiler';
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 import { getFlagRegistry } from '../pipeline/flagRegistry';
@@ -152,6 +163,54 @@ const BRANCH_FLOOR_2_MIN_SCENES = 6;
 const MAX_BINDER_SPLIT_SCENE_CAP_EXTENSION = 4;
 export const EPISODE_BLUEPRINT_SCENE_OWNERSHIP_VERSION = 'episode-scene-ownership-v2';
 
+function collapseUnplannedCanonicalSceneShells(
+  scenes: PlannedScene[],
+  eventPlan: EpisodeEventPlan,
+): PlannedScene[] {
+  const allowedIds = new Set(eventPlan.sceneOrder);
+  const committed = scenes.filter((scene) => allowedIds.has(scene.id));
+  const extras = scenes.filter((scene) => !allowedIds.has(scene.id));
+  if (extras.length === 0) return committed;
+
+  // The obligation binder can create a helper while splitting a broad treatment
+  // summary. Canonical planning has already decided the complete scene set, so a
+  // helper with no depiction assignment is metadata to fold into its nearest
+  // committed scene, never a new event owner.
+  for (const extra of extras) {
+    const target = committed
+      .filter((scene) => scene.order <= extra.order)
+      .sort((a, b) => b.order - a.order)[0]
+      ?? committed.slice().sort((a, b) => a.order - b.order)[0];
+    if (!target) continue;
+
+    target.requiredBeats = [...(target.requiredBeats ?? []), ...(extra.requiredBeats ?? [])]
+      .filter((beat, index, beats) => beats.findIndex((candidate) => candidate.id === beat.id) === index);
+    target.authoredTreatmentFields = [
+      ...(target.authoredTreatmentFields ?? []),
+      ...(extra.authoredTreatmentFields ?? []).map((field) => ({
+        ...field,
+        targetSceneIds: [target.id],
+      })),
+    ].filter((field, index, fields) => fields.findIndex((candidate) => candidate.id === field.id) === index);
+    target.narrativeConstraints = Array.from(new Set([
+      ...(target.narrativeConstraints ?? []),
+      ...(extra.narrativeConstraints ?? []),
+    ].filter(Boolean)));
+    target.mechanicPressure = [
+      ...(target.mechanicPressure ?? []),
+      ...(extra.mechanicPressure ?? []),
+    ];
+    target.relationshipPacing = [
+      ...(target.relationshipPacing ?? []),
+      ...(extra.relationshipPacing ?? []),
+    ];
+    target.setsUp = Array.from(new Set([...(target.setsUp ?? []), ...(extra.setsUp ?? [])]));
+    target.paysOff = Array.from(new Set([...(target.paysOff ?? []), ...(extra.paysOff ?? [])]));
+  }
+
+  return committed.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+}
+
 // Input types
 export interface StoryArchitectInput {
   // Story context
@@ -170,7 +229,8 @@ export interface StoryArchitectInput {
   availableNPCs: Array<{
     id: string;
     name: string;
-    description: string;
+    description?: string;
+    role?: string;
     relationshipContext?: string;
     initialRelationship?: Partial<Record<'trust' | 'affection' | 'respect' | 'fear', number>>;
   }>;
@@ -330,6 +390,10 @@ export interface StoryArchitectInput {
     setupPayoffEdges?: SetupPayoffEdge[];
     /** Episode Spine Contract for this episode when treatment-sourced. */
     episodeSpine?: EpisodeSpineContract;
+    /** Immutable canonical event ownership and chronology projection. */
+    episodeEventPlan?: EpisodeEventPlan;
+    /** Source graph required to restore the immutable ownership projection after LLM parsing. */
+    narrativeContractGraph?: NarrativeContractGraph;
   };
 
   /**
@@ -515,12 +579,17 @@ export interface SceneBlueprint {
   dramaticStructure?: SceneDramaticStructure;
   personalStake?: string;
   themePressure?: string;
+  narrativeConstraints?: string[];
   stakesLayers?: StakesLayers;
   transitionOut?: SceneTransitionOut[];
   residue?: SceneResidue[];
 
   // NPCs present in this scene
   npcsPresent: string[];
+  /** Immutable generator-only character presence policy for first-contact surfaces. */
+  characterPresenceContracts?: NarrativeCharacterPresenceContract[];
+  identityScheduleContracts?: NarrativeIdentityScheduleContract[];
+  characterRoleConstraints?: NarrativeCharacterRoleConstraint[];
 
   // Narrative function
   narrativeFunction: string;
@@ -566,6 +635,19 @@ export interface SceneBlueprint {
   coldOpenProfile?: ColdOpenProfile;
   sceneConstructionProfile?: SceneConstructionProfile;
   sceneEventOwnership?: SceneEventOwnershipProfile;
+  narrativeEventIds?: string[];
+  narrativeEventOrder?: number;
+  narrativeEventPlanVersion?: number;
+  /** Structured elaboration acknowledgement; always constrained by the episode plan. */
+  realizedEventIds?: string[];
+  supportingContractIds?: string[];
+  /** Blocking reader-facing evidence compiled from the owning event contracts. */
+  canonicalEvidenceRequirements?: Array<{
+    eventId: string;
+    kind: string;
+    acceptedPatterns: string[];
+    requiredSurface?: string;
+  }>;
   relationshipPacing?: RelationshipPacingContract[];
   mechanicPressure?: MechanicPressureContract[];
   authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
@@ -722,6 +804,8 @@ export interface EpisodeBlueprint {
   scenes: SceneBlueprint[];
   startingSceneId: string;
   treatmentBindingReport?: PlannedSceneBindingReport;
+  /** Immutable canonical event plan used to produce this blueprint. */
+  episodeEventPlan?: EpisodeEventPlan;
   sceneOwnershipStamp?: {
     version: string;
     finalizedAt: string;
@@ -747,6 +831,12 @@ export interface EpisodeBlueprint {
 }
 
 export class StoryArchitect extends BaseAgent {
+  private failureMetadata(
+    failure: PipelineFailureMetadata,
+    diagnostics?: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return { failure, ...(diagnostics ? { diagnostics } : {}) };
+  }
   private encounterMinimums: {
     short: number;    // 3-4 scenes
     medium: number;   // 5-7 scenes
@@ -1001,9 +1091,7 @@ export class StoryArchitect extends BaseAgent {
         if (!listed) return false;
         return enc.id === plannedScene.id
           || Boolean((plannedScene as { plannedEncounterId?: string }).plannedEncounterId === enc.id)
-          || plannedScene.kind === 'encounter'
-          || plannedScene.narrativeRole === 'encounter'
-          || plannedScene.narrativeRole === 'climax';
+        || plannedScene.kind === 'encounter';
       });
     };
 
@@ -1034,11 +1122,23 @@ export class StoryArchitect extends BaseAgent {
       return foreshadow.test(text) && !physicalStaging.test(text);
     };
 
-    const candidates: Array<{ scene: SceneBlueprint; index: number }> = [];
+    const detectAnonymousOnlyGlimpse = (text: string): boolean =>
+      isGlimpseNameDrop({ characterName: character.name, stagingText: text });
+
+    const candidates: Array<{ scene: SceneBlueprint; index: number; named: boolean }> = [];
     const considerPlannedScene = (plannedScene: PlannedScene, stagingText: string): void => {
-      const namedMatch = matchesCharacter(stagingText);
+      const strongNamed = isNamedIntroductionStaging({
+        characterName: character.name,
+        stagingText,
+      });
+      const namedMention = matchesCharacter(stagingText)
+        && !detectAnonymousOnlyGlimpse(stagingText)
+        && !isPassingMentionOnly(stagingText)
+        && !isForeshadowNameDropOnly(stagingText);
       const anonymousPlant = isAnonymousPlantForCharacter(stagingText, plannedScene);
-      if ((!namedMatch && !anonymousPlant) || isPassingMentionOnly(stagingText) || isForeshadowNameDropOnly(stagingText)) return;
+      // Glimpse-only name-drops are neither intro nor plant candidates.
+      if (!strongNamed && !namedMention && !anonymousPlant) return;
+      if (isPassingMentionOnly(stagingText) || isForeshadowNameDropOnly(stagingText)) return;
       if (
         plannedScene.order === 0
         && !matchesCharacter(plannedScene.turnContract?.turnEvent || plannedScene.title || '')
@@ -1048,7 +1148,12 @@ export class StoryArchitect extends BaseAgent {
       }
       const scene = sceneForPlanned(plannedScene);
       if (!scene) return;
-      candidates.push({ scene, index: blueprintIndex(scene) });
+      // Prefer real named staging (strong or on-page name) over anonymous plant.
+      candidates.push({
+        scene,
+        index: blueprintIndex(scene),
+        named: (strongNamed || namedMention) && !anonymousPlant,
+      });
     };
 
     const explicitCastScenes = planned.filter((plannedScene) => plannedCastsCharacter(plannedScene));
@@ -1057,15 +1162,51 @@ export class StoryArchitect extends BaseAgent {
       considerPlannedScene(plannedScene, this.plannedSceneStagingText(plannedScene));
     }
 
+    // Also consider blueprint keyBeats / signature — plans often name a first
+    // meeting only in keyMoments that plannedSceneStagingText omits.
+    for (const scene of blueprint.scenes || []) {
+      const plannedScene = planned.find((entry) => entry.id === scene.id);
+      const staging = [
+        plannedScene ? this.plannedSceneStagingText(plannedScene) : '',
+        this.sceneBlueprintStagingText(scene),
+        ...(scene.keyBeats || []),
+        scene.signatureMoment,
+      ].filter(Boolean).join(' ');
+      if (detectAnonymousOnlyGlimpse(staging)) continue;
+      const namedMatch = isNamedIntroductionStaging({
+        characterName: character.name,
+        stagingText: staging,
+      });
+      if (!namedMatch || isPassingMentionOnly(staging) || isForeshadowNameDropOnly(staging)) continue;
+      const index = blueprintIndex(scene);
+      if (index < 0) continue;
+      if (!candidates.some((entry) => entry.scene.id === scene.id && entry.named)) {
+        candidates.push({ scene, index, named: true });
+      }
+    }
+
     for (const plannedScene of planned) {
       const ownedEvents = plannedScene.sceneEventOwnership?.ownedEvents ?? [];
       if (!ownedEvents.some((event) => matchesCharacter(event.text || ''))) continue;
+      const ownedText = ownedEvents.map((event) => event.text || '').join(' ');
+      if (detectAnonymousOnlyGlimpse(ownedText)) continue;
+      if (!isNamedIntroductionStaging({ characterName: character.name, stagingText: ownedText })
+        && !matchesCharacter(ownedText)) continue;
       const scene = sceneForPlanned(plannedScene);
       if (!scene) continue;
-      candidates.push({ scene, index: blueprintIndex(scene) });
+      const named = isNamedIntroductionStaging({ characterName: character.name, stagingText: ownedText });
+      candidates.push({ scene, index: blueprintIndex(scene), named });
     }
 
-    candidates.sort((left, right) => left.index - right.index);
+    // Prefer earliest NAMED introduction over anonymous plant — never attach an
+    // anonymous intro beat to a later charcoal-suit scene when an earlier scene
+    // already stages a real named first meeting.
+    candidates.sort((left, right) => {
+      if (left.named !== right.named) return left.named ? -1 : 1;
+      return left.index - right.index;
+    });
+    const namedCandidate = candidates.find((entry) => entry.named && entry.index >= 0);
+    if (namedCandidate) return namedCandidate.scene;
     return candidates.find((entry) => entry.index >= 0)?.scene ?? candidates[0]?.scene;
   }
 
@@ -1212,8 +1353,20 @@ export class StoryArchitect extends BaseAgent {
       const stagingText = [
         plannedForTarget ? this.plannedSceneStagingText(plannedForTarget) : '',
         this.sceneBlueprintStagingText(target),
+        ...(target.keyBeats || []),
+        target.signatureMoment,
       ].filter(Boolean).join(' ');
-      const introMode = this.resolveIntroModeForCharacter(character, stagingText);
+      // If this scene's authored staging is a real named introduction, force
+      // named — never attach an anonymous_plant beat on "You meet X" scenes.
+      // Glimpse name-drops elsewhere do not force named (those get scrubbed for plants).
+      const targetIsNamedIntro = isNamedIntroductionStaging({
+        characterName: character.name,
+        stagingText,
+      });
+      let introMode = this.resolveIntroModeForCharacter(character, stagingText);
+      if (targetIsNamedIntro) {
+        introMode = 'named';
+      }
       if (introMode === 'named') {
         if (!sceneCastsCharacter(target, character.id, character.name)) {
           target.npcsPresent = [...(target.npcsPresent || []), character.id];
@@ -1233,13 +1386,41 @@ export class StoryArchitect extends BaseAgent {
       // Pre-intro cast trim: the reader cannot have "met" this character in a
       // scene that plays before their first meeting — drop them from earlier
       // planned casts so the writer and the introduction ledger agree.
+      const nameNeedle = normalizeName(character.name);
+      const firstNameNeedle = nameNeedle.split(/\s+/).filter(Boolean)[0] ?? '';
+      const beatNamesCharacter = (beat: string): boolean => {
+        const normalizedBeat = normalizeName(String(beat || ''));
+        if (normalizedBeat.includes(nameNeedle)) return true;
+        return firstNameNeedle.length >= 3 && new RegExp(`\\b${firstNameNeedle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(normalizedBeat);
+      };
       const targetIndex = scenes.findIndex((scene) => scene.id === target.id);
       for (let earlier = 0; earlier < targetIndex; earlier += 1) {
         const scene = scenes[earlier];
-        if (!sceneCastsCharacter(scene, character.id, character.name)) continue;
+        if (!sceneCastsCharacter(scene, character.id, character.name)) {
+          // Still scrub name-forcing keyMoments for anonymous plants so early
+          // scenes don't instruct "meets X and sees Y" while the gate forbids naming.
+          if (introMode === 'anonymous_plant') {
+            scene.keyBeats = (scene.keyBeats || []).filter((beat) => !beatNamesCharacter(beat));
+          }
+          continue;
+        }
         if (introMode === 'named' && sceneMentionsCharacter(scene, character.name)) continue; // authored text stages them — leave the cast honest
         scene.npcsPresent = (scene.npcsPresent || []).filter((npc) =>
           normalizeCharacterSlug(String(npc || '')) !== introductionKey);
+        if (introMode === 'anonymous_plant') {
+          scene.keyBeats = (scene.keyBeats || []).filter((beat) => !beatNamesCharacter(beat));
+        }
+      }
+      // anonymous_plant on the plant scene: strip name-forcing keyMoments that
+      // collide with the no-roster-name policy ("meets X and sees Y").
+      if (introMode === 'anonymous_plant') {
+        target.keyBeats = (target.keyBeats || []).filter((beat) => {
+          const normalizedBeat = normalizeName(String(beat || ''));
+          if (normalizedBeat.includes('anonymous first contact') || normalizedBeat.includes('anonymous plant')) {
+            return true;
+          }
+          return !beatNamesCharacter(beat);
+        });
       }
       const already = (target.keyBeats || []).some((beat) => {
         const normalizedBeat = normalizeName(String(beat || ''));
@@ -1268,6 +1449,7 @@ export class StoryArchitect extends BaseAgent {
             mustDepict: introMode === 'anonymous_plant'
               ? `You meet a stranger for the first time in this scene — stage them with distinctive visual cues as an anonymous figure (do NOT use the roster name ${character.name} yet); show first-contact behavior and keep their true identity linked for a later reveal.`
               : `You meet ${character.name} for the first time in this scene — show how they enter your attention, how they name themselves or are named to you, and one concrete identifying detail before any familiarity or group-belonging language.`,
+            contractKind: introMode === 'anonymous_plant' ? 'identity_constraint' : 'depiction',
             tier: 'authored',
           },
         ];
@@ -1340,7 +1522,9 @@ export class StoryArchitect extends BaseAgent {
       const scene = sceneMap.get(sceneId);
       if (!scene) return;
 
-      let currentStreak = scene.choicePoint ? 0 : nonChoiceStreak + 1;
+      // Encounter scenes carry their player choice inside the encounter beats,
+      // so they break a passive-scene run even without a standalone choicePoint.
+      let currentStreak = scene.choicePoint || scene.isEncounter ? 0 : nonChoiceStreak + 1;
       if (currentStreak > 2 && this.addChoicePointIfEligible(scene, 'breaking up a long passive scene run')) {
         choiceSceneCount++;
         currentStreak = 0;
@@ -3798,11 +3982,20 @@ Remember: The encounter is the heart. Design outward from it.
    * transitions, and dramatic-audit minimums are all enforced identically.
    */
   private buildBlueprintFromPlannedScenes(input: StoryArchitectInput): EpisodeBlueprint {
+    // Season-plan artifacts are immutable when rehydrated for resume. The
+    // binder/finalizer intentionally mutate a working scene projection, never
+    // the committed planned-scene payload.
+    const plannedScenes = (input.seasonPlanDirectives?.plannedScenes ?? [])
+      .map((scene) => JSON.parse(JSON.stringify(scene)) as PlannedScene);
     const binding = rebindPlannedSceneObligations(
-      (input.seasonPlanDirectives?.plannedScenes ?? []),
+      plannedScenes,
       { episodeNumber: input.episodeNumber },
     );
-    const ownership = finalizeEpisodeSceneOwnership(binding.scenes, {
+    const canonicalPlan = input.seasonPlanDirectives?.episodeEventPlan;
+    const canonicalScenes = canonicalPlan
+      ? collapseUnplannedCanonicalSceneShells(binding.scenes, canonicalPlan)
+      : binding.scenes;
+    const ownership = finalizeEpisodeSceneOwnership(canonicalScenes, {
       episodeNumber: input.episodeNumber,
       storyCircleRole: input.episodeStoryCircleRole,
     });
@@ -3812,9 +4005,36 @@ Remember: The encounter is the heart. Design outward from it.
         `${ownership.routedObligations.length} routed obligation(s), ${ownership.diagnostics.length} diagnostic(s)`,
       );
     }
-    const planned = binding.scenes
+    // Obligation rebinding may change mutable scene metadata, including the
+    // provisional order used by legacy helpers. For an ESC-backed episode the
+    // immutable EpisodeEventPlan is the chronology authority; reconstruct the
+    // working sequence from that projection before creating leadsTo edges.
+    const canonicalSceneOrder = new Map(
+      (canonicalPlan?.sceneOrder ?? []).map((sceneId, index) => [sceneId, index]),
+    );
+    const spineUnitOrder = new Map(
+      (input.seasonPlanDirectives?.episodeSpine?.units ?? []).map((unit) => [unit.id, unit.order]),
+    );
+    const planned = canonicalScenes
       .slice()
-      .sort((a, b) => a.order - b.order);
+      .sort((a, b) => {
+        const aCanonical = canonicalSceneOrder.get(a.id);
+        const bCanonical = canonicalSceneOrder.get(b.id);
+        if (aCanonical != null || bCanonical != null) {
+          return (aCanonical ?? Number.MAX_SAFE_INTEGER) - (bCanonical ?? Number.MAX_SAFE_INTEGER)
+            || a.id.localeCompare(b.id);
+        }
+        const aSpine = a.spineUnitId ? spineUnitOrder.get(a.spineUnitId) : undefined;
+        const bSpine = b.spineUnitId ? spineUnitOrder.get(b.spineUnitId) : undefined;
+        if (aSpine != null || bSpine != null) {
+          return (aSpine ?? Number.MAX_SAFE_INTEGER) - (bSpine ?? Number.MAX_SAFE_INTEGER)
+            || a.id.localeCompare(b.id);
+        }
+        return a.order - b.order || a.id.localeCompare(b.id);
+      });
+    planned.forEach((scene, index) => {
+      scene.order = index;
+    });
     const beatBudgetByScene = new Map(
       binding.report.beatBudgetRecommendations.map((recommendation) => [
         recommendation.sceneId,
@@ -3844,7 +4064,20 @@ Remember: The encounter is the heart. Design outward from it.
       const isEncounter = p.kind === 'encounter';
       const nextId = sceneIds[idx + 1];
       const arcPressureBinding = this.sanitizePlannedSceneArcPressure(p, input);
-      const requiredBeats = [...arcPressureBinding.requiredBeats, ...(p.encounter?.requiredBeats ?? [])]
+      const openingPremiseContracts = input.seasonPlanDirectives?.narrativeContractGraph?.premiseContracts
+        ?? input.seasonPlanDirectives?.episodeEventPlan?.premiseContracts
+        ?? [];
+      const openingPremiseBeats = input.episodeNumber === 1
+        ? openingPremiseContracts
+          .filter((contract) => contract.blocking && contract.targetSceneIds.includes(p.id))
+          .map((contract) => ({
+            id: `${p.id}-${contract.id}`,
+            sourceTurn: contract.sourceText,
+            mustDepict: contract.sourceText,
+            tier: 'authored' as const,
+          }))
+        : [];
+      const requiredBeats = [...arcPressureBinding.requiredBeats, ...openingPremiseBeats, ...(p.encounter?.requiredBeats ?? [])]
         .filter((beat) => !this.isChoiceMenuPlanningText(beat.mustDepict || beat.sourceTurn));
       const localPurpose = this.localPurposeForPlannedScene(p, requiredBeats);
       const localKeyBeats = this.collectLocalSceneKeyBeats(p, requiredBeats, localPurpose);
@@ -3852,10 +4085,16 @@ Remember: The encounter is the heart. Design outward from it.
       const spineUnit = p.spineUnitId
         ? input.seasonPlanDirectives?.episodeSpine?.units?.find((unit) => unit.id === p.spineUnitId)
         : undefined;
-      const escTurnText = spineUnit?.text?.trim() && !this.isChoiceMenuPlanningText(spineUnit.text)
-        ? spineUnit.text.trim()
-        : undefined;
       const rawTurnContract = p.turnContract as (SceneTurnContract & { pressurePeak?: string }) | undefined;
+      const canonicalTurnText = p.narrativeEventPlanVersion != null
+        && rawTurnContract?.turnEvent?.trim()
+        && !this.isChoiceMenuPlanningText(rawTurnContract.turnEvent)
+        ? rawTurnContract.turnEvent.trim()
+        : undefined;
+      const escTurnText = canonicalTurnText
+        || (spineUnit?.text?.trim() && !this.isChoiceMenuPlanningText(spineUnit.text)
+          ? spineUnit.text.trim()
+          : undefined);
       // ESC fill-slots: when a spine unit owns concrete turn text, copy it into
       // the turnContract so architect/LLM re-author cannot invent a competing turn.
       const turnContract = escTurnText
@@ -3918,15 +4157,17 @@ Remember: The encounter is the heart. Design outward from it.
       // Lumina Books first-meeting scene to Valescu Club because the turn text
       // mentioned the club in passing ("…introduces Kylie to the secret
       // nightlife world of Valescu Club…").
-      const repairedLocation = this.resolvePlannedSceneLocation({
-        plannedLocation: p.locations?.[0],
-        inferredLocation,
-        currentLocation: input.currentLocation,
-        authoredText: [
-          ...requiredBeats.map((beat) => beat.mustDepict || beat.sourceTurn || ''),
-          ...locationHintTexts,
-        ].filter(Boolean).join(' '),
-      });
+      const repairedLocation = p.spineUnitId && p.locations?.[0]
+        ? p.locations[0]
+        : this.resolvePlannedSceneLocation({
+            plannedLocation: p.locations?.[0],
+            inferredLocation,
+            currentLocation: input.currentLocation,
+            authoredText: [
+              ...requiredBeats.map((beat) => beat.mustDepict || beat.sourceTurn || ''),
+              ...locationHintTexts,
+            ].filter(Boolean).join(' '),
+          });
       const scene: SceneBlueprint = {
         id: p.id,
         // Titles may embed raw location ids ("… at loc-valescu-club") — scene
@@ -3945,7 +4186,13 @@ Remember: The encounter is the heart. Design outward from it.
           ? p.stakes
           : p.encounter?.centralConflict || localPurpose,
         npcsPresent: this.plannedSceneNpcPresence(p, requiredBeats, input),
+        characterPresenceContracts: (input.seasonPlanDirectives?.episodeEventPlan?.characterPresenceContracts ?? [])
+          .filter((contract) => contract.sceneId === p.id),
+        identityScheduleContracts: input.seasonPlanDirectives?.episodeEventPlan?.identityScheduleContracts,
+        characterRoleConstraints: (input.seasonPlanDirectives?.episodeEventPlan?.characterRoleConstraints ?? [])
+          .filter((contract) => contract.episodeNumber === p.episodeNumber),
         narrativeFunction: localPurpose,
+        narrativeConstraints: p.narrativeConstraints,
         narrativeRole: p.narrativeRole,
         planningOrigin: p.planningOrigin,
         plannedHasChoice: p.hasChoice,
@@ -3964,6 +4211,11 @@ Remember: The encounter is the heart. Design outward from it.
         coldOpenProfile: p.coldOpenProfile,
         sceneConstructionProfile: p.sceneConstructionProfile,
         sceneEventOwnership: p.sceneEventOwnership,
+        narrativeEventIds: p.narrativeEventIds,
+        narrativeEventOrder: p.narrativeEventOrder,
+        narrativeEventPlanVersion: p.narrativeEventPlanVersion,
+        realizedEventIds: p.narrativeEventIds,
+        supportingContractIds: p.sceneEventOwnership?.sourceContractIds,
         relationshipPacing: p.relationshipPacing,
         mechanicPressure: arcPressureBinding.mechanicPressure,
         authoredTreatmentFields: p.authoredTreatmentFields,
@@ -4051,6 +4303,7 @@ Remember: The encounter is the heart. Design outward from it.
       suggestedTags: [],
       narrativePromises: [],
       treatmentBindingReport: binding.report,
+      episodeEventPlan: input.seasonPlanDirectives?.episodeEventPlan,
     };
     this.applySceneContractsToPlannedBlueprint(blueprint, input);
     this.repairBlueprintHygieneUnsafeText(blueprint, input);
@@ -4072,6 +4325,14 @@ Remember: The encounter is the heart. Design outward from it.
         // s1-5-rb1 grew an unfulfillable walkHome beat that blocked the run).
         const text = [...new Set([beat.sourceTurn, beat.mustDepict].map((part) => (part || '').trim()).filter(Boolean))].join(' ');
         if (/\b(?:event|cue)-[a-z-]+$/i.test(beat.id || '')) {
+          kept.push(beat);
+          continue;
+        }
+        // Premise contracts are already assigned to their canonical opening
+        // scene. They are not composite event bundles: moving or cue-splitting
+        // them here silently removes the contract from the SceneWriter input
+        // and leaves the final treatment-fidelity gate with no repair surface.
+        if (/premise:/i.test(beat.id || '')) {
           kept.push(beat);
           continue;
         }
@@ -4227,6 +4488,102 @@ Remember: The encounter is the heart. Design outward from it.
     }
   }
 
+  /** Restore immutable scene chronology after architecture metadata repairs. */
+  private restoreCanonicalPlannedSceneOrder(
+    blueprint: EpisodeBlueprint,
+    input: StoryArchitectInput,
+  ): void {
+    const canonicalOrder = input.seasonPlanDirectives?.episodeEventPlan?.sceneOrder;
+    if (!canonicalOrder?.length || blueprint.scenes.length < 2) return;
+
+    const eventPlan = input.seasonPlanDirectives?.episodeEventPlan;
+    const graph = input.seasonPlanDirectives?.narrativeContractGraph;
+    if (eventPlan && graph) {
+      const eventById = new Map(graph.events.map((event) => [event.id, event]));
+      const canonicalOwnerByUnit = new Map<string, string>();
+      for (const assignment of eventPlan.assignments) {
+        const event = eventById.get(assignment.eventId);
+        for (const unitId of event?.targetSpineUnitIds ?? []) {
+          const priorOwner = canonicalOwnerByUnit.get(unitId);
+          if (priorOwner && priorOwner !== assignment.sceneId) continue;
+          canonicalOwnerByUnit.set(unitId, assignment.sceneId);
+        }
+      }
+      for (const scene of blueprint.scenes) {
+        const unitId = scene.spineUnitId;
+        const canonicalOwner = unitId ? canonicalOwnerByUnit.get(unitId) : undefined;
+        if (unitId && canonicalOwner && canonicalOwner !== scene.id) {
+          // The event graph may have deliberately moved this unit onto a scene
+          // that already owns another compatible event. Do not let the stale
+          // one-unit legacy field create a second construction owner.
+          scene.spineUnitId = undefined;
+        }
+      }
+    }
+
+    // A canonical scene with no depiction assignment is a generic shell, even
+    // if a legacy spineUnitId survived on it. Remove it before content
+    // generation and route outgoing edges through the next committed scene.
+    if (eventPlan) {
+      const assignedSceneIds = new Set(eventPlan.assignments.map((assignment) => assignment.sceneId));
+      const removable = blueprint.scenes.filter((scene) =>
+        !assignedSceneIds.has(scene.id)
+        && !scene.planningOrigin
+        && !scene.isEncounter,
+      );
+      if (removable.length > 0) {
+        const removedIds = new Set(removable.map((scene) => scene.id));
+        const byId = new Map(blueprint.scenes.map((scene) => [scene.id, scene]));
+        for (const scene of blueprint.scenes) {
+          if (removedIds.has(scene.id)) continue;
+          const nextTargets: string[] = [];
+          for (const targetId of scene.leadsTo ?? []) {
+            if (!removedIds.has(targetId)) {
+              nextTargets.push(targetId);
+              continue;
+            }
+            for (const replacement of byId.get(targetId)?.leadsTo ?? []) {
+              if (!removedIds.has(replacement)) nextTargets.push(replacement);
+            }
+          }
+          scene.leadsTo = Array.from(new Set(nextTargets));
+        }
+        blueprint.scenes = blueprint.scenes.filter((scene) => !removedIds.has(scene.id));
+        const survivingIds = new Set(blueprint.scenes.map((scene) => scene.id));
+        input.seasonPlanDirectives = {
+          ...input.seasonPlanDirectives,
+          episodeEventPlan: {
+            ...eventPlan,
+            sceneOrder: blueprint.scenes.map((scene) => scene.id),
+            assignments: eventPlan.assignments.filter((assignment) => survivingIds.has(assignment.sceneId)),
+            sceneContexts: eventPlan.sceneContexts.filter((context) => survivingIds.has(context.sceneId)),
+          },
+        };
+      }
+    }
+
+    const rank = new Map(canonicalOrder.map((sceneId, index) => [sceneId, index]));
+    const currentIndex = new Map(blueprint.scenes.map((scene, index) => [scene.id, index]));
+    const ordered = [...blueprint.scenes].sort((a, b) => {
+      const aRank = rank.get(a.id);
+      const bRank = rank.get(b.id);
+      if (aRank != null || bRank != null) {
+        return (aRank ?? Number.MAX_SAFE_INTEGER) - (bRank ?? Number.MAX_SAFE_INTEGER)
+          || (currentIndex.get(a.id) ?? 0) - (currentIndex.get(b.id) ?? 0);
+      }
+      // Generic helper shells have no canonical event owner. Keep their
+      // existing relative order after committed scenes so they cannot invert
+      // explicit spine-unit ownership.
+      return (currentIndex.get(a.id) ?? 0) - (currentIndex.get(b.id) ?? 0);
+    });
+    blueprint.scenes = ordered;
+    // `restoreCanonicalPlannedSceneOrder` may replace the episode plan object
+    // while collapsing an unowned shell. Rebind the blueprint projection to
+    // that committed object; otherwise the runtime story can be correct while
+    // the persisted episode-blueprint artifact still carries stale sceneOrder.
+    blueprint.episodeEventPlan = input.seasonPlanDirectives?.episodeEventPlan;
+  }
+
   private applySceneContractsToPlannedBlueprint(blueprint: EpisodeBlueprint, input: StoryArchitectInput): void {
     const guidance = input.seasonPlanDirectives?.treatmentGuidance;
     const episodePressure = this.pickBlueprintText(
@@ -4266,6 +4623,46 @@ Remember: The encounter is the heart. Design outward from it.
         };
       }
     }
+  }
+
+  private applyCanonicalEventAcknowledgements(blueprint: EpisodeBlueprint, input: StoryArchitectInput): string[] {
+    const eventPlan = input.seasonPlanDirectives?.episodeEventPlan;
+    if (!eventPlan) return [];
+    const assignedByScene = new Map(eventPlan.sceneContexts.map((context) => [context.sceneId, context.ownedEventIds]));
+    const issues: string[] = [];
+    for (const scene of blueprint.scenes ?? []) {
+      const allowed = assignedByScene.get(scene.id) ?? [];
+      const allowedSet = new Set(allowed);
+      const requested = scene.realizedEventIds ?? scene.narrativeEventIds ?? allowed;
+      const foreign = requested.filter((eventId) => !allowedSet.has(eventId));
+      if (foreign.length > 0) {
+        issues.push(`Scene "${scene.id}" returned event ID(s) outside its immutable assignment: ${foreign.join(', ')}.`);
+      }
+      scene.realizedEventIds = [...allowed];
+      scene.narrativeEventIds = [...allowed];
+      scene.narrativeEventPlanVersion = eventPlan.version;
+      scene.characterPresenceContracts = (eventPlan.characterPresenceContracts ?? [])
+        .filter((contract) => contract.sceneId === scene.id);
+      scene.supportingContractIds = Array.from(new Set([
+        ...(scene.supportingContractIds ?? []),
+        ...(scene.sceneEventOwnership?.sourceContractIds ?? []),
+      ]));
+      const graph = input.seasonPlanDirectives?.narrativeContractGraph;
+      scene.canonicalEvidenceRequirements = allowed.flatMap((eventId) => {
+        const event = graph?.events.find((candidate) => candidate.id === eventId);
+        return (event?.evidenceRequirements ?? []).map((requirement) => ({
+          eventId,
+          kind: requirement.kind,
+          acceptedPatterns: [...requirement.acceptedPatterns],
+          requiredSurface: requirement.requiredSurface,
+        }));
+      });
+    }
+    const graph = input.seasonPlanDirectives?.narrativeContractGraph;
+    if (graph) {
+      issues.push(...reprojectEpisodeEventPlan(graph, eventPlan, blueprint.scenes, input.episodeNumber).map((issue) => issue.message));
+    }
+    return issues;
   }
 
   /**
@@ -4599,6 +4996,8 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
       const spineResult = new EpisodeSpineContractValidator().validate({
         spine: input.seasonPlanDirectives.episodeSpine,
         scenes: projectedScenes,
+        episodeEventPlan: input.seasonPlanDirectives.episodeEventPlan,
+        narrativeContractGraph: input.seasonPlanDirectives.narrativeContractGraph,
       });
       if (!spineResult.valid) {
         return {
@@ -4836,6 +5235,7 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
       this.repairSceneTransitions(blueprint);
       this.repairSceneTurnContracts(blueprint);
       this.applySceneContractsToPlannedBlueprint(blueprint, input);
+      this.applyCanonicalEventAcknowledgements(blueprint, input);
       this.repairBlueprintHygieneUnsafeText(blueprint, input);
       // Fail-fast for the final contract's generic-planner-turn block: author a
       // concrete turn NOW (one focused LLM call per scaffold scene) instead of
@@ -4849,6 +5249,12 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
       this.ensureEnsembleCastObligations(blueprint, input);
       this.repairBroadArrivalRequiredBeats(blueprint);
       this.repairPlannedSequentialReachability(blueprint);
+      // Later deterministic repairs can insert or split helper scenes. Re-run
+      // the existing bounded choice-density repair at the owning boundary so
+      // the final architecture gate evaluates the actual blueprint shape.
+      this.repairChoiceDensity(blueprint, input);
+      this.restoreCanonicalPlannedSceneOrder(blueprint, input);
+      this.repairSceneTransitions(blueprint);
 
       const missingChoicePoints = this.collectMissingPlannedChoicePoints(blueprint);
       if (missingChoicePoints.length > 0) {
@@ -4857,6 +5263,7 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
           error:
             `[PlannedChoiceGate] Episode ${input.episodeNumber} has plannedHasChoice scene(s) without choicePoint: ` +
             `${missingChoicePoints.join(', ')}. Materialize a real choicePoint before content generation.`,
+          metadata: this.failureMetadata({ code: 'episode_plan_invalid', ownerStage: 'episode_plan', retryClass: 'recompile_episode_plan', issueCodes: ['planned_choice_missing'], repairTarget: 'scene-plan' }),
         };
       }
 
@@ -4868,13 +5275,14 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
             `[SceneConstructionGate] Episode ${input.episodeNumber} has ${sceneConstructionIssues.length} scene construction conflict(s): ` +
             sceneConstructionIssues.slice(0, 5).join(' | ') +
             ` Rebalance the planned scene so each scene has one primary turn and compatible support obligations before content generation.`,
-          metadata: {
-            diagnostics: {
+          metadata: this.failureMetadata(
+            { code: 'scene_construction_conflict', ownerStage: 'episode_plan', retryClass: 'recompile_episode_plan', issueCodes: sceneConstructionIssues.map((_, index) => `scene_construction_${index + 1}`), repairTarget: 'scene-plan' },
+            {
               gate: 'SceneConstructionGate',
               episodeNumber: input.episodeNumber,
               sceneConstructionProfiles: blueprint.scenes.map((scene) => scene.sceneConstructionProfile),
             },
-          },
+          ),
         };
       }
 
@@ -4885,6 +5293,7 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
           error:
             `[TreatmentBindingGate] Episode ${input.episodeNumber} has ${unresolvedBinding.length} unresolved planned-scene obligation binding(s): ` +
             unresolvedBinding.slice(0, 5).map((item) => `${item.contractId} (${item.issueKind ?? 'unresolved'}): ${item.reason}`).join(' | '),
+          metadata: this.failureMetadata({ code: 'treatment_binding_conflict', ownerStage: 'episode_plan', retryClass: 'recompile_episode_plan', issueCodes: unresolvedBinding.map((item) => item.issueKind ?? 'unresolved_binding'), repairTarget: 'scene-plan' }),
         };
       }
 
@@ -4895,9 +5304,10 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
           error:
             `[TreatmentDensityGate] Episode ${input.episodeNumber} planned scene plan overload: ${densityIssues.join(' | ')} ` +
             `Regenerate or rebalance the season scene plan so obligations are spread across neighboring scenes before content generation.`,
-          metadata: {
-            diagnostics: this.buildTreatmentDensityDiagnostics(blueprint, input),
-          },
+          metadata: this.failureMetadata(
+            { code: 'treatment_density_conflict', ownerStage: 'episode_plan', retryClass: 'recompile_episode_plan', issueCodes: ['treatment_density_overload'], repairTarget: 'scene-plan' },
+            this.buildTreatmentDensityDiagnostics(blueprint, input),
+          ),
         };
       }
 
@@ -4915,6 +5325,7 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
           error:
             `[BlueprintAdequacyGate] Episode ${input.episodeNumber} planned scene plan is under-sized for required branch coverage: ${elaborateAdequacy.reason}. ` +
             `Regenerate the season scene plan so this episode carries an adequately-sized, branchable blueprint before content generation.`,
+          metadata: this.failureMetadata({ code: 'branch_structure_invalid', ownerStage: 'episode_plan', retryClass: 'recompile_episode_plan', issueCodes: ['blueprint_adequacy'], repairTarget: 'scene-plan' }),
         };
       }
 
@@ -5111,6 +5522,21 @@ REQUIREMENTS:
             scene.choicePoint.stakes = { want: '', cost: '', identity: '' };
           }
         }
+      }
+
+      const canonicalEventIssues = this.applyCanonicalEventAcknowledgements(blueprint, input);
+      if (canonicalEventIssues.length > 0) {
+        return {
+          success: false,
+          error: `[NarrativeContractOutputGate] ${canonicalEventIssues.join(' ')}`,
+          metadata: this.failureMetadata({
+            code: 'structured_output_invalid',
+            ownerStage: 'episode_plan',
+            retryClass: retryCount < maxRetries ? 'retry_structured_output' : 'none',
+            issueCodes: ['foreign_event_id'],
+            repairTarget: 'episode-blueprint',
+          }),
+        };
       }
 
       this.assignResidueObligationsToScenes(blueprint, input.seasonPlanDirectives);
@@ -5321,13 +5747,14 @@ REQUIREMENTS:
             `[SceneConstructionGate] Episode ${input.episodeNumber} has ${sceneConstructionIssues.length} scene construction conflict(s): ` +
             sceneConstructionIssues.slice(0, 5).join(' | ') +
             ` Rebalance the blueprint so each scene has one primary turn and compatible support obligations before content generation.`,
-          metadata: {
-            diagnostics: {
+          metadata: this.failureMetadata(
+            { code: 'scene_construction_conflict', ownerStage: 'episode_plan', retryClass: 'recompile_episode_plan', issueCodes: sceneConstructionIssues.map((_, index) => `scene_construction_${index + 1}`), repairTarget: 'episode-blueprint' },
+            {
               gate: 'SceneConstructionGate',
               episodeNumber: input.episodeNumber,
               sceneConstructionProfiles: blueprint.scenes.map((scene) => scene.sceneConstructionProfile),
             },
-          },
+          ),
         };
       }
 
@@ -5546,7 +5973,7 @@ REQUIREMENTS:
               .map(([key, value]) => `${key}=${value}`)
               .join(', ')
           : '';
-        return `- ${npc.name} (${npc.id}): ${npc.description}${npc.relationshipContext ? ` [${npc.relationshipContext}]` : ''}${baseline ? ` [baseline relationship: ${baseline}]` : ''}`;
+        return `- ${npc.name} (${npc.id}): ${npc.description || 'No additional description provided.'}${npc.relationshipContext ? ` [${npc.relationshipContext}]` : ''}${baseline ? ` [baseline relationship: ${baseline}]` : ''}`;
       })
       .join('\n');
 
@@ -6067,11 +6494,19 @@ If you don't include enough choice points, the story will be rejected as non-int
   }
 
   private buildStructuralContextSection(input: StoryArchitectInput): string {
-    return buildSharedStructuralContextSection({
+    const base = buildSharedStructuralContextSection({
       anchors: input.seasonAnchors,
       storyCircle: input.seasonStoryCircle,
       episodeStoryCircleRole: this.resolveEpisodeStoryCircleRole(input),
     });
+    const eventPlan = input.seasonPlanDirectives?.episodeEventPlan;
+    if (!eventPlan) return base;
+    const allowed = eventPlan.sceneContexts
+      .map((context) => `${context.sceneId}: ${context.ownedEventIds.join(', ') || '(no depiction event; annotate pressure only)'}`)
+      .join('\n');
+    return `${base}\n\n## CANONICAL NARRATIVE EVENT PLAN (IMMUTABLE)\n` +
+      `Use only the event IDs assigned to each scene. Return them as realizedEventIds and keep supportingContractIds limited to the scene's source contracts. ` +
+      `A downstream payoff is a new event; never claim ownership of an upstream episode's event.\n${allowed}`;
   }
 
   private resolveEpisodeStoryCircleRole(input: StoryArchitectInput): StoryCircleRoleAssignment[] {
@@ -7083,29 +7518,32 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
         scene.recommendedBeatCount = Math.max(scene.recommendedBeatCount ?? 0, budget.recommended);
       }
     }
-    const causalRepairDiagnostics = repairCausalCueOwnershipOrder(blueprint.scenes, { episodeNumber: input.episodeNumber });
-    // Causal reorder may rewrite sequential leadsTo after the earlier
-    // repairSceneTransitions pass; resync transitionOut before craft gates.
-    if (causalRepairDiagnostics.some((diagnostic) =>
-      /Reordered lateNightWriting|Inserted lateNightWriting/.test(diagnostic.message)
-    )) {
-      this.repairSceneTransitions(blueprint);
-    }
-    const ownershipIssues = attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber: input.episodeNumber })
+    const canonicalPlan = input.seasonPlanDirectives?.episodeEventPlan;
+    const canonicalIssues = canonicalPlan
+      ? validateCanonicalEpisodeBlueprintProjection(canonicalPlan, blueprint.scenes, input.episodeNumber)
+        .map((issue) => issue.message)
+      : [];
+    const legacyDiagnostics = canonicalPlan
+      ? []
+      : attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber: input.episodeNumber });
+    const ownershipIssues = legacyDiagnostics
       .filter((diagnostic) => diagnostic.severity === 'error')
       .map((diagnostic) => diagnostic.message);
-    const causalRepairErrors = causalRepairDiagnostics
-      .filter((diagnostic) => diagnostic.severity === 'error')
-      .map((diagnostic) => diagnostic.message);
+    const causalRepairErrors = canonicalPlan
+      ? []
+      : repairCausalCueOwnershipOrder(blueprint.scenes, { episodeNumber: input.episodeNumber })
+        .filter((diagnostic) => diagnostic.severity === 'error')
+        .map((diagnostic) => diagnostic.message);
     const preflight = new SceneOwnershipPreflightValidator().validate({
       episodeNumber: input.episodeNumber,
       storyCircleRole: input.episodeStoryCircleRole,
       scenes: blueprint.scenes,
+      episodeEventPlan: input.seasonPlanDirectives?.episodeEventPlan,
     });
     const preflightIssues = preflight.issues
       .filter((issue) => issue.severity === 'error')
       .map((issue) => issue.message);
-    const allIssues = [...issues, ...ownershipIssues, ...causalRepairErrors, ...preflightIssues];
+    const allIssues = [...issues, ...ownershipIssues, ...causalRepairErrors, ...canonicalIssues, ...preflightIssues];
     blueprint.sceneOwnershipStamp = {
       version: EPISODE_BLUEPRINT_SCENE_OWNERSHIP_VERSION,
       finalizedAt: new Date().toISOString(),
@@ -7177,6 +7615,10 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
     // and carries at least one macro season beat through scene-bound contracts.
     this.bindEpisodeCircleContracts(blueprint, input);
     this.applySceneContractsToPlannedBlueprint(blueprint, input);
+    // Planned-scene binding may materialize a chronology helper scene (for
+    // example late-night writing before a public aftermath). Re-run the
+    // bounded repair after that mutation so the gate evaluates the final graph.
+    this.repairChoiceDensity(blueprint, input);
     const coldOpenIssues = collectColdOpenProfileIssues(blueprint.scenes ?? [], {
       episodeNumber: input.episodeNumber,
       storyCircleRole: blueprint.storyCircleRole,
@@ -7450,7 +7892,9 @@ Design the final scene as "aftermath plus hook": show the consequence of this ep
       const scene = sceneMap.get(sceneId);
       if (!scene) return;
 
-      const currentStreak = scene.choicePoint ? 0 : nonChoiceStreak + 1;
+      // Encounter scenes carry their player choice inside the encounter beats,
+      // so they break a passive-scene run even without a standalone choicePoint.
+      const currentStreak = scene.choicePoint || scene.isEncounter ? 0 : nonChoiceStreak + 1;
 
       if (currentStreak > 2) {
         console.warn(`[StoryArchitect] Scene "${scene.id}" is part of a ${currentStreak}-scene stretch without choices`);

@@ -13,6 +13,9 @@ import type {
 import { extractStoryCircleBeatEpisodeAnchors } from './treatmentFingerprint';
 import { parseInformationLedgerGuidance } from './informationLedgerContracts';
 import { flattenAuthoredEpisodeTurns } from './episodeCircleBuilder';
+import { splitSentencesPreservingAbbreviations } from './treatmentSentenceSegmentation';
+
+export { splitSentencesPreservingAbbreviations } from './treatmentSentenceSegmentation';
 
 export interface ExtractedTreatment {
   isTreatment: boolean;
@@ -308,25 +311,6 @@ function normalizeEncounterStoryCircleTarget(value: string | undefined): Encount
   return target === 'go' || target === 'search' || target === 'find' || target === 'take'
     ? target
     : undefined;
-}
-
-const SENTENCE_ABBREVIATION_DOT = '__TREATMENT_ABBR_DOT__';
-const SENTENCE_ABBREVIATION_RE = /\b(?:Mr|Mrs|Ms|Mx|Dr|Prof|Sr|Jr|St|Mt|Capt|Lt|Col|Gen|Sen|Rep|Gov|Rev)\.|\b(?:a|p)\.m\./gi;
-
-function protectSentenceAbbreviations(text: string): string {
-  return text.replace(SENTENCE_ABBREVIATION_RE, (match) =>
-    match.replace(/\./g, SENTENCE_ABBREVIATION_DOT)
-  );
-}
-
-function restoreSentenceAbbreviations(text: string): string {
-  return text.replace(new RegExp(SENTENCE_ABBREVIATION_DOT, 'g'), '.');
-}
-
-export function splitSentencesPreservingAbbreviations(text: string): string[] {
-  return protectSentenceAbbreviations(text)
-    .split(/(?<=[.!?])\s+|;\s+/)
-    .map((part) => restoreSentenceAbbreviations(part));
 }
 
 function splitEpisodeBodyIntoAnchorCandidates(body: string): string[] {
@@ -1010,7 +994,10 @@ function parseWorldLocationGuidance(markdown: string): WorldLocationTreatmentGui
   if (keyLocations.length === 0 && keyLocationLines.length > 0) {
     keyLocations = keyLocationLines.flatMap((line) => expandProseKeyLocationBlob(line));
   } else if (keyLocations.length <= 1) {
-    const longBlobs = keyLocationLines.filter((line) => line.length > 160);
+    const longBlobs = keyLocationLines.filter((line) =>
+      line.length > 160
+      && !/\b(?:Purpose|Mood|History|Choice pressure)\s*:/i.test(line)
+    );
     if (longBlobs.length > 0) {
       const expanded = longBlobs.flatMap((line) => expandProseKeyLocationBlob(line));
       if (expanded.length > keyLocations.length) {

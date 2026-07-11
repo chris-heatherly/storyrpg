@@ -21,6 +21,7 @@ import {
   StoryCircleRoleAssignment,
   CharacterArchitecture,
   ThemeArgumentContract,
+  TreatmentSeasonGuidance,
 } from './sourceAnalysis';
 import type { CliffhangerType } from './story';
 import type { CanonLockManifest, CanonWizardState, LockedStoryCanon } from './storyCanon';
@@ -419,6 +420,9 @@ export interface SeasonPlan {
   genre: string;
   tone: string;
   themes: string[];
+
+  /** Generator-only treatment guidance retained for downstream contract binding. */
+  treatmentSeasonGuidance?: TreatmentSeasonGuidance;
   
   // Story arcs spanning the season
   arcs: SeasonArc[];

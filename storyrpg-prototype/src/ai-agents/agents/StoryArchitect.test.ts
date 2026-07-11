@@ -578,6 +578,39 @@ describe('StoryArchitect treatment fidelity validation', () => {
     expect(beats[0].mustDepict).toBe(sentence);
   });
 
+  it('keeps canonical premise beats on their assigned opening scene', () => {
+    const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
+    const premise = 'Kylie Marinescu is a food writer turned blogger, publicly humiliated by her cancelled engagement.';
+    const blueprint: any = {
+      scenes: [
+        {
+          id: 's1-1',
+          name: 'Arrival',
+          description: 'Kylie arrives in Bucharest.',
+          location: 'Bucharest Streets',
+          requiredBeats: [{
+            id: 's1-1-premise:role',
+            tier: 'authored',
+            mustDepict: premise,
+            sourceTurn: premise,
+          }],
+        },
+        {
+          id: 's1-2',
+          name: 'Writing',
+          description: 'Kylie writes under pressure.',
+          location: 'Apartment',
+          requiredBeats: [],
+        },
+      ],
+    };
+
+    (architect as any).repairBroadArrivalRequiredBeats(blueprint);
+
+    expect(blueprint.scenes[0].requiredBeats.map((beat: any) => beat.id)).toEqual(['s1-1-premise:role']);
+    expect(blueprint.scenes[1].requiredBeats ?? []).toEqual([]);
+  });
+
   it('keeps signature beats while demoting composite seed bundles out of active beats', () => {
     const architect = new StoryArchitect(config, { allowLinearBottleneckEpisodes: true } as any);
     const blueprint: any = {
@@ -3846,5 +3879,148 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     expect(scene.keyBeats.join(' ')).toMatch(/Anonymous first contact|anonymous/i);
     expect(scene.npcsPresent || []).not.toContain('victor');
     expect(scene.requiredBeats.some((b: any) => /do NOT use the roster name/i.test(b.mustDepict || ''))).toBe(true);
+    expect(scene.requiredBeats.find((b: any) => /do NOT use the roster name/i.test(b.mustDepict || ''))?.contractKind).toBe('identity_constraint');
+  });
+
+  it('does not attach anonymous intro to a named first-meeting scene; prefers named over later plant', () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({
+      episodeNumber: 1,
+      introducesCharacters: [
+        { id: 'stela', name: 'Stela Pavel' },
+        { id: 'victor', name: 'Victor Valcescu' },
+      ],
+      availableNPCs: [
+        { id: 'stela', name: 'Stela Pavel', role: 'ally' },
+        { id: 'victor', name: 'Victor Valcescu', role: 'antagonist' },
+      ],
+      seasonPlanDirectives: {
+        plannedScenes: [
+          {
+            ...plannedStandard('s1-3', 0, 'rising'),
+            title: 'bookshop',
+            dramaticPurpose: 'She wanders into a bookshop owned by Stela who befriends her.',
+            locations: ['Lumina'],
+            npcsInvolved: ['Stela Pavel'],
+            requiredBeats: [{
+              id: 's1-3-rb',
+              tier: 'authored',
+              sourceTurn: 'You meet Stela Pavel for the first time.',
+              mustDepict: 'You meet Stela Pavel for the first time.',
+            }],
+            turnContract: {
+              turnId: 's1-3-turn',
+              source: 'treatment',
+              centralTurn: 'You meet Stela Pavel for the first time.',
+              beforeState: 'Before',
+              turnEvent: 'First meeting with Stela Pavel.',
+              afterState: 'After',
+              handoff: 'Next',
+            },
+          },
+          {
+            ...plannedStandard('s1-6', 1, 'climax'),
+            kind: 'encounter',
+            title: 'rooftop',
+            dramaticPurpose: 'A stranger in a charcoal suit intervenes.',
+            locations: ['Rooftop'],
+            npcsInvolved: ['Victor Valcescu', 'Stela Pavel'],
+            requiredBeats: [{
+              id: 's1-6-rb',
+              tier: 'authored',
+              sourceTurn: 'A stranger in a charcoal suit intervenes.',
+              mustDepict: 'A stranger in a charcoal suit intervenes.',
+            }],
+            turnContract: {
+              turnId: 's1-6-turn',
+              source: 'treatment',
+              centralTurn: 'A stranger in a charcoal suit intervenes.',
+              beforeState: 'Before',
+              turnEvent: 'A stranger in a charcoal suit rescues you.',
+              afterState: 'After',
+              handoff: 'Next',
+            },
+          },
+        ],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+    (architect as any).ensureCharacterIntroductionBeats(blueprint, input);
+    const bookshop = blueprint.scenes.find((s: any) => s.id === 's1-3');
+    const rooftop = blueprint.scenes.find((s: any) => s.id === 's1-6');
+    expect(bookshop?.keyBeats.join(' ')).toMatch(/First meeting with Stela/i);
+    expect(bookshop?.keyBeats.join(' ')).not.toMatch(/Anonymous first contact.*Stela/i);
+    expect(rooftop?.requiredBeats?.some((b: any) => String(b.id || '').includes('intro-stela'))).toBeFalsy();
+    expect(rooftop?.keyBeats.join(' ') || '').toMatch(/Anonymous first contact.*Victor/i);
+  });
+
+  it('scrubs anonymous_plant roster names from pre-reveal keyMoments and cast', () => {
+    const architect = new StoryArchitect(config);
+    const input = makeInput({
+      episodeNumber: 1,
+      introducesCharacters: [{ id: 'victor', name: 'Victor Valcescu' }],
+      availableNPCs: [{ id: 'victor', name: 'Victor Valcescu', role: 'antagonist' }],
+      seasonPlanDirectives: {
+        plannedScenes: [
+          {
+            ...plannedStandard('s1-1', 0, 'hook'),
+            title: 'arrival',
+            dramaticPurpose: 'Kylie arrives in Bucharest.',
+            locations: ['Airport'],
+            npcsInvolved: ['Victor Valcescu'],
+            requiredBeats: [{
+              id: 's1-1-rb',
+              tier: 'authored',
+              sourceTurn: 'Kylie arrives with two suitcases.',
+              mustDepict: 'Kylie arrives with two suitcases.',
+            }],
+            turnContract: {
+              turnId: 's1-1-turn',
+              source: 'treatment',
+              centralTurn: 'Arrival.',
+              beforeState: 'Before',
+              turnEvent: 'Kylie arrives.',
+              afterState: 'After',
+              handoff: 'Next',
+            },
+          },
+          {
+            ...plannedStandard('s1-6', 1, 'climax'),
+            kind: 'encounter',
+            title: 'park',
+            dramaticPurpose: 'A stranger in a charcoal suit intervenes when the shadow attacks.',
+            locations: ['Park'],
+            npcsInvolved: ['Victor Valcescu'],
+            requiredBeats: [{
+              id: 's1-6-rb',
+              tier: 'authored',
+              sourceTurn: 'A stranger in a charcoal suit rescues you.',
+              mustDepict: 'A stranger in a charcoal suit rescues you.',
+            }],
+            turnContract: {
+              turnId: 's1-6-turn',
+              source: 'treatment',
+              centralTurn: 'A stranger in a charcoal suit intervenes.',
+              beforeState: 'Before',
+              turnEvent: 'A stranger in a charcoal suit rescues you.',
+              afterState: 'After',
+              handoff: 'Next',
+            },
+          },
+        ],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+    const arrival = blueprint.scenes.find((s: any) => s.id === 's1-1');
+    if (arrival) {
+      arrival.keyBeats = ['meets Mika and sees Victor', ...(arrival.keyBeats || [])];
+      arrival.npcsPresent = ['victor'];
+    }
+    (architect as any).ensureCharacterIntroductionBeats(blueprint, input);
+    const after = blueprint.scenes.find((s: any) => s.id === 's1-1');
+    expect(after?.npcsPresent || []).not.toContain('victor');
+    expect((after?.keyBeats || []).join(' ')).not.toMatch(/\bVictor\b/i);
   });
 });

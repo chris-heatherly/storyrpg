@@ -1,14 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import {
   detectAnonymousPlantStaging,
+  deriveAnonymousPlantNpcIds,
   ensembleObligationsFromContractText,
   forbiddenNpcNames,
   introducedNpcIds,
   isIntroducedNpc,
+  isNamedIntroductionStaging,
   npcIdsNamedInProse,
   plannedIntroductionsForEpisode,
   resolveCharacterIntroMode,
   resolveEnsembleNpcIdsFromText,
+  anonymousPlantNpcIdsFromStaging,
+  sanitizePlantStagingText,
 } from './npcIntroductionLedger';
 
 const roster = [
@@ -177,6 +181,116 @@ describe('detectAnonymousPlantStaging / resolveCharacterIntroMode', () => {
     const staging = 'A woman with silver-streaked hair sets down her glass and offers a hand.';
     expect(detectAnonymousPlantStaging({ characterName: 'Stela Pavel', stagingText: staging })).toBe(false);
     expect(resolveCharacterIntroMode({ characterName: 'Stela Pavel', stagingText: staging })).toBe('named');
+  });
+});
+
+describe('deriveAnonymousPlantNpcIds (schedule-aware)', () => {
+  const fullRoster = [
+    { id: 'char-victor', name: 'Victor Valcescu' },
+    { id: 'char-mika', name: 'Mika Dragan' },
+    { id: 'char-stela', name: 'Stela Pavel' },
+    { id: 'char-radu', name: 'Radu Stoian' },
+  ];
+
+  it('Stela-style: named first-meeting contract is not plant despite later charcoal-suit stranger text', () => {
+    const plantIds = deriveAnonymousPlantNpcIds({
+      roster: fullRoster,
+      scenes: [
+        {
+          sceneId: 's1-3',
+          contractText:
+            'She wanders into a bookshop owned by Stela who befriends her. You meet Stela Pavel for the first time.',
+          candidateIds: ['char-stela'],
+        },
+        {
+          sceneId: 's1-6',
+          contractText:
+            'At a rooftop bar a man in a charcoal suit catches her attention — a stranger intervenes.',
+          candidateIds: ['char-victor'],
+        },
+      ],
+    });
+    expect(plantIds.has('char-stela')).toBe(false);
+    expect(plantIds.has('char-victor')).toBe(true);
+  });
+
+  it('Victor-style: anonymous plant first staging marks plant; naming early would be a leak for the validator', () => {
+    const plantIds = deriveAnonymousPlantNpcIds({
+      roster: fullRoster,
+      scenes: [
+        {
+          sceneId: 's1-1',
+          contractText: 'Kylie arrives in Bucharest with two suitcases. meets Mika and sees Victor.',
+          candidateIds: ['char-mika', 'char-victor'],
+        },
+        {
+          sceneId: 's1-6',
+          contractText: 'A stranger in a charcoal suit intervenes when the shadow attacks.',
+          candidateIds: ['char-victor'],
+        },
+      ],
+    });
+    // "sees Victor" is a glimpse, not a named intro — first real staging is anonymous plant.
+    expect(plantIds.has('char-victor')).toBe(true);
+    // "meets Mika" is a named intro.
+    expect(plantIds.has('char-mika')).toBe(false);
+  });
+
+  it('unbound descriptor: stranger text that does not involve NPC B must NOT mark B as plant', () => {
+    const plantIds = deriveAnonymousPlantNpcIds({
+      roster: fullRoster,
+      scenes: [
+        {
+          sceneId: 's1-6',
+          contractText: 'A stranger in a charcoal suit rescues you from the shadow.',
+          candidateIds: ['char-victor'],
+        },
+      ],
+    });
+    expect(plantIds.has('char-victor')).toBe(true);
+    expect(plantIds.has('char-stela')).toBe(false);
+    expect(plantIds.has('char-mika')).toBe(false);
+    expect(plantIds.has('char-radu')).toBe(false);
+  });
+
+  it('anonymousPlantNpcIdsFromStaging requires candidate scope (no full-roster scan)', () => {
+    const staging = 'A stranger in a charcoal suit intervenes.';
+    expect(anonymousPlantNpcIdsFromStaging({ roster: fullRoster, stagingText: staging })).toEqual([]);
+    expect(
+      anonymousPlantNpcIdsFromStaging({
+        roster: fullRoster,
+        stagingText: staging,
+        candidateIds: ['char-victor'],
+      }),
+    ).toEqual(['char-victor']);
+  });
+
+  it('sanitizePlantStagingText drops info-ledger title noise', () => {
+    const cleaned = sanitizePlantStagingText(
+      "Victor's True Nature. A stranger in a charcoal suit intervenes. Mika's Contract.",
+    );
+    expect(cleaned).not.toMatch(/True Nature/i);
+    expect(cleaned).not.toMatch(/Mika's Contract/i);
+    expect(cleaned).toMatch(/charcoal suit/i);
+  });
+
+  it('isNamedIntroductionStaging distinguishes meet/intro from glimpse name-drops', () => {
+    expect(isNamedIntroductionStaging({
+      characterName: 'Stela Pavel',
+      stagingText: 'You meet Stela Pavel for the first time in the bookshop.',
+    })).toBe(true);
+    expect(isNamedIntroductionStaging({
+      characterName: 'Mika Dragan',
+      stagingText: 'meets Mika and sees Victor.',
+    })).toBe(true);
+    expect(isNamedIntroductionStaging({
+      characterName: 'Victor Valcescu',
+      stagingText: 'meets Mika and sees Victor.',
+    })).toBe(false);
+    expect(isNamedIntroductionStaging({
+      characterName: 'Victor Valcescu',
+      stagingText: 'In Cișmigiu Gardens at 1am, the shadow pins Kylie before Victor intervenes.',
+    })).toBe(true);
   });
 });
 

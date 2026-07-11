@@ -129,8 +129,8 @@ import {
 } from './episodeCheckpoints';
 import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
 import { resolveEpisodeParallelism } from './episodeScheduling';
-import { lockGeneratedEpisodeArtifact } from './episodeLocking';
-import type { ArtifactRef, ArtifactValidationSummary } from './artifacts';
+import { lockGeneratedEpisodeArtifact, validateEpisodeOutputBoundary } from './episodeLocking';
+import type { ArtifactValidationSummary } from './artifacts';
 import { repairWeakCliffhangerBeforeImages as repairWeakCliffhangerBeforeImagesImpl } from './cliffhangerRepair';
 import { captureEncounterTelemetry as captureEncounterTelemetryInto } from './encounterTelemetryCollect';
 
@@ -169,6 +169,7 @@ import { applySceneConstructionProfilesToScenes } from '../utils/sceneConstructi
 import { attachSceneEventOwnershipProfiles, overlayBlueprintSceneEventOwnership } from '../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
+import { validateCanonicalEpisodeBlueprintProjection } from './narrativeContractCompiler';
 
 import { runEpisodeChargeMaterializationForSeason } from './episodeChargeMaterialization';
 
@@ -185,6 +186,7 @@ import { WorldBuildingPhase } from './phases/WorldBuildingPhase';
 import { AudioPhase } from './phases/AudioPhase';
 import { BrowserQAPhase } from './phases/BrowserQAPhase';
 import { RunArtifactPhase, type RunArtifactRuntime } from './phases/RunArtifactPhase';
+import { persistEpisodePlanningArtifacts, persistPlanningArtifacts } from './planningArtifactPersistence';
 import { VideoPhase, bindGeneratedVideoToStory } from './phases/VideoPhase';
 import { MasterImagePhase } from './phases/MasterImagePhase';
 import { SceneImagePhase, type SceneImagePhaseDeps } from './phases/SceneImagePhase';
@@ -1760,12 +1762,16 @@ export class FullStoryPipeline {
     const sceneConstructionIssues = construction.diagnostics
       .filter((diagnostic) => diagnostic.severity === 'error')
       .map((diagnostic) => diagnostic.message);
-    const eventOwnershipIssues = attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber })
-      .filter((diagnostic) => diagnostic.severity === 'error')
-      .map((diagnostic) => diagnostic.message);
+    const eventOwnershipIssues = blueprint.episodeEventPlan
+      ? validateCanonicalEpisodeBlueprintProjection(blueprint.episodeEventPlan, blueprint.scenes, episodeNumber)
+        .map((issue) => issue.message)
+      : attachSceneEventOwnershipProfiles(blueprint.scenes, { episodeNumber })
+        .filter((diagnostic) => diagnostic.severity === 'error')
+        .map((diagnostic) => diagnostic.message);
     const preflightIssues = new SceneOwnershipPreflightValidator().validate({
       episodeNumber,
       storyCircleRole: storyCircleRole ?? blueprint.storyCircleRole,
+      episodeEventPlan: blueprint.episodeEventPlan,
       scenes: blueprint.scenes,
     }).issues
       .filter((issue) => issue.severity === 'error')
@@ -4170,7 +4176,7 @@ export class FullStoryPipeline {
       ));
       return { content, blueprint: params.blueprint, branchAnalysis: params.branchAnalysis };
     } catch (error) {
-      const isGateAbort = error instanceof PipelineError && error.agent === 'SceneConstructionGate';
+      const isGateAbort = error instanceof PipelineError && error.code === 'scene_construction_conflict';
       if (!isGateAbort || !isGateEnabled('GATE_SCENE_CONSTRUCTION_ARCH_RETRY')) throw error;
       this.emit({
         type: 'regeneration_triggered',
@@ -4323,13 +4329,14 @@ export class FullStoryPipeline {
     sceneContents: SceneContent[],
     choiceSets: ChoiceSet[],
     characterBible: CharacterBible,
-    blueprint: EpisodeBlueprint
+    blueprint: EpisodeBlueprint,
+    encounters?: Map<string, EncounterStructure>,
   ): Promise<QAReport> {
     return this.qaPhase().runQualityAssurance(brief, sceneContents, choiceSets, characterBible, blueprint, {
       config: this.config,
       emit: this.emit.bind(this),
       addCheckpoint: this.addCheckpoint.bind(this),
-    });
+    }, encounters);
   }
 
   private qaPhase(): QAPhase {
@@ -4472,16 +4479,15 @@ export class FullStoryPipeline {
       if (c.overview) knows.push(c.overview);
       if (c.want) knows.push(`their own goal: ${c.want}`);
       if (c.fear) knows.push(`their own fear: ${c.fear}`);
-      const relationships = Array.isArray(c.relationships) ? c.relationships : [];
-      relationships.forEach(r => {
-        if (r.targetName && r.relationshipType) {
-          knows.push(`${r.targetName} (${r.relationshipType})`);
-        }
-      });
-
       const doesNotKnow: string[] = [];
       for (const other of characters) {
         if (other.id === c.id) continue;
+        // Character-bible relationships describe season potential, not proof
+        // that the relationship is already known on page. Treating every
+        // relationship as initial knowledge makes a scheduled visual plant
+        // (for example, a stranger seen at a distance) impossible knowledge.
+        // The continuity checker should derive actual introductions from the
+        // ordered scene prose instead.
         if (other.hiddenSecret) {
           doesNotKnow.push(`${other.name}'s secret: ${other.hiddenSecret}`);
         }
@@ -5154,10 +5160,11 @@ export class FullStoryPipeline {
       const outputDirectory = artifactRuntime.outputDirectory;
       this._currentOutputDirectory = outputDirectory; // F4: visible to the terminal catch
 
-      const planningArtifactRefs = await this.persistPlanningArtifacts({
+      const planningArtifactRefs = await persistPlanningArtifacts({
         artifactRuntime,
         sourceAnalysis: filteredAnalysis,
         seasonPlan: baseBrief.seasonPlan,
+        emit: this.emit.bind(this),
       });
       artifactRuntime.setGlobalUpstreamRefs(planningArtifactRefs);
 
@@ -5332,7 +5339,7 @@ export class FullStoryPipeline {
               previousSummary: baseBrief.episode.previousSummary,
             });
             if (generatedEpisode.episode) {
-              const episodePlanningRefs = await this.persistEpisodePlanningArtifacts({
+              const episodePlanningRefs = await persistEpisodePlanningArtifacts({
                 artifactRuntime,
                 episodeNumber: spec.episodeNumber,
                 blueprint: generatedEpisode.blueprint,
@@ -5340,6 +5347,7 @@ export class FullStoryPipeline {
                 sceneContents: generatedEpisode.sceneContents,
                 choiceSets: generatedEpisode.choiceSets,
                 encounters: generatedEpisode.encounters,
+                emit: this.emit.bind(this),
               });
               artifactRuntime.setEpisodeUpstreamRefs(spec.episodeNumber, episodePlanningRefs);
               await this.lockGeneratedEpisode({
@@ -5462,7 +5470,7 @@ export class FullStoryPipeline {
           // (In run-graph mode the artifact store writes the same watermark
           // when the step's output persists — same files, same ordering.)
           if (generated.episode) {
-            const episodePlanningRefs = await this.persistEpisodePlanningArtifacts({
+            const episodePlanningRefs = await persistEpisodePlanningArtifacts({
               artifactRuntime,
               episodeNumber: i,
               blueprint: generated.blueprint,
@@ -5470,6 +5478,7 @@ export class FullStoryPipeline {
               sceneContents: generated.sceneContents,
               choiceSets: generated.choiceSets,
               encounters: generated.encounters,
+              emit: this.emit.bind(this),
             });
             artifactRuntime.setEpisodeUpstreamRefs(i, episodePlanningRefs);
             await this.lockGeneratedEpisode({
@@ -6087,167 +6096,6 @@ export class FullStoryPipeline {
     }
   }
 
-  private async persistPlanningArtifacts(params: {
-    artifactRuntime: RunArtifactRuntime;
-    sourceAnalysis: SourceMaterialAnalysis;
-    seasonPlan?: SeasonPlan;
-  }): Promise<ArtifactRef[]> {
-    const { artifactRuntime, sourceAnalysis, seasonPlan } = params;
-    const savedKinds = ['source analysis'];
-    const sourceAnalysisArtifact = await artifactRuntime.saveArtifact({
-      kind: 'source-analysis',
-      payload: sourceAnalysis,
-      status: 'valid',
-      provenance: { phase: 'source_analysis', agent: 'SourceMaterialAnalyzer' },
-    });
-    const sourceAnalysisRef = artifactRuntime.refFor(sourceAnalysisArtifact);
-    const upstream = [sourceAnalysisRef];
-    const planningRefs = [sourceAnalysisRef];
-
-    if (sourceAnalysis.sourceCanon) {
-      const sourceCanonArtifact = await artifactRuntime.saveArtifact({
-        kind: 'source-canon',
-        payload: sourceAnalysis.sourceCanon,
-        status: 'valid',
-        upstream,
-        provenance: { phase: 'source_analysis', agent: 'SourceMaterialAnalyzer' },
-      });
-      const sourceCanonRef = artifactRuntime.refFor(sourceCanonArtifact);
-      upstream.push(sourceCanonRef);
-      planningRefs.push(sourceCanonRef);
-      savedKinds.push('source canon');
-    }
-
-    if (seasonPlan) {
-      const seasonPlanArtifact = await artifactRuntime.saveArtifact({
-        kind: 'season-plan',
-        payload: seasonPlan,
-        status: 'valid',
-        upstream,
-        provenance: { phase: 'season_planning', agent: 'SeasonPlannerAgent' },
-      });
-      planningRefs.push(artifactRuntime.refFor(seasonPlanArtifact));
-      savedKinds.push('season plan');
-    }
-
-    this.emit({
-      type: 'debug',
-      phase: 'artifacts',
-      message: `Saved revisioned planning artifacts for ${savedKinds.join(', ')}.`,
-    });
-    return planningRefs;
-  }
-
-  private async persistEpisodePlanningArtifacts(params: {
-    artifactRuntime: RunArtifactRuntime;
-    episodeNumber: number;
-    blueprint?: EpisodeBlueprint;
-    branchAnalysis?: BranchAnalysis | null;
-    sceneContents?: SceneContent[];
-    choiceSets?: ChoiceSet[];
-    encounters?: Map<string, EncounterStructure>;
-  }): Promise<ArtifactRef[]> {
-    const {
-      artifactRuntime,
-      episodeNumber,
-      blueprint,
-      branchAnalysis,
-      sceneContents,
-      choiceSets,
-      encounters,
-    } = params;
-    const globalUpstream = artifactRuntime.getGlobalUpstreamRefs();
-    const refs: ArtifactRef[] = [];
-
-    let episodeBlueprintRef: ArtifactRef | undefined;
-    if (blueprint) {
-      const episodeBlueprintArtifact = await artifactRuntime.saveArtifact({
-        kind: 'episode-blueprint',
-        episodeNumber,
-        payload: blueprint,
-        status: 'valid',
-        upstream: globalUpstream,
-        provenance: { phase: `episode_${episodeNumber}_architecture`, agent: 'StoryArchitect' },
-      });
-      episodeBlueprintRef = artifactRuntime.refFor(episodeBlueprintArtifact);
-      refs.push(episodeBlueprintRef);
-    }
-
-    let branchPlanRef: ArtifactRef | undefined;
-    if (branchAnalysis) {
-      const branchPlanArtifact = await artifactRuntime.saveArtifact({
-        kind: 'branch-plan',
-        episodeNumber,
-        payload: branchAnalysis,
-        status: 'valid',
-        upstream: episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream,
-        provenance: { phase: `episode_${episodeNumber}_branch_analysis`, agent: 'BranchManager' },
-      });
-      branchPlanRef = artifactRuntime.refFor(branchPlanArtifact);
-      refs.push(branchPlanRef);
-    }
-
-    let scenePlanRef: ArtifactRef | undefined;
-    if (blueprint || sceneContents) {
-      const scenePlanArtifact = await artifactRuntime.saveArtifact({
-        kind: 'scene-plan',
-        episodeNumber,
-        payload: {
-          episodeNumber,
-          blueprintScenes: blueprint?.scenes ?? [],
-          authoredScenes: sceneContents ?? [],
-        },
-        status: 'valid',
-        upstream: [
-          ...(episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream),
-          ...(branchPlanRef ? [branchPlanRef] : []),
-        ],
-        provenance: { phase: `episode_${episodeNumber}_content`, agent: 'SceneWriter' },
-      });
-      scenePlanRef = artifactRuntime.refFor(scenePlanArtifact);
-      refs.push(scenePlanRef);
-    }
-
-    if (choiceSets) {
-      const choicePlanArtifact = await artifactRuntime.saveArtifact({
-        kind: 'choice-consequence-plan',
-        episodeNumber,
-        payload: { episodeNumber, choiceSets },
-        status: 'valid',
-        upstream: [
-          ...(scenePlanRef ? [scenePlanRef] : episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream),
-          ...(branchPlanRef ? [branchPlanRef] : []),
-        ],
-        provenance: { phase: `episode_${episodeNumber}_content`, agent: 'ChoiceAuthor' },
-      });
-      refs.push(artifactRuntime.refFor(choicePlanArtifact));
-    }
-
-    if (encounters) {
-      const encounterPlanArtifact = await artifactRuntime.saveArtifact({
-        kind: 'encounter-plan',
-        episodeNumber,
-        payload: {
-          episodeNumber,
-          encounters: Array.from(encounters.entries()).map(([id, encounter]) => ({ id, encounter })),
-        },
-        status: 'valid',
-        upstream: scenePlanRef ? [scenePlanRef] : episodeBlueprintRef ? [episodeBlueprintRef] : globalUpstream,
-        provenance: { phase: `episode_${episodeNumber}_content`, agent: 'EncounterArchitect' },
-      });
-      refs.push(artifactRuntime.refFor(encounterPlanArtifact));
-    }
-
-    if (refs.length > 0) {
-      this.emit({
-        type: 'debug',
-        phase: `episode_${episodeNumber}_artifacts`,
-        message: `Saved ${refs.length} revisioned episode planning artifact(s).`,
-      });
-    }
-    return refs;
-  }
-
   /**
    * The episode lock boundary: an episode becomes resumable only after its
    * runtime contract passes, then its facts are sealed into canon, then the
@@ -6292,6 +6140,23 @@ export class FullStoryPipeline {
       hasEpisodeBrief: Boolean(episodeBrief),
       writeWatermark,
       validateRuntimeContract: async () => {
+        const outputBoundaryIssues = validateEpisodeOutputBoundary(episode);
+        if (outputBoundaryIssues.length > 0) {
+          throw new PipelineError(
+            `Episode ${episodeNumber} output boundary failed`,
+            `episode_${episodeNumber}_output_boundary`,
+            {
+              failure: {
+                code: 'output_boundary_invalid',
+                ownerStage: 'packaging',
+                retryClass: 'none',
+                issueCodes: ['episode_output_boundary_invalid'],
+                repairTarget: `episode:${episodeNumber}`,
+              },
+              context: { episodeNumber, outputBoundaryIssues },
+            },
+          );
+        }
         const sceneLockReport = buildEpisodeSceneLockReport({
           episodeNumber,
           episode,
@@ -6474,10 +6339,24 @@ export class FullStoryPipeline {
   }): Promise<ArtifactValidationSummary> {
     const { episodeNumber: i, episode, episodeBrief, episodeBlueprint, characterBible, qaReport, bestPracticesReport, outputDirectory } = params;
     try {
+      const validationBrief = {
+        ...episodeBrief,
+        // Resumed season-plan artifacts are recursively frozen. Incremental
+        // validation overlays blueprint ownership and may repair projections,
+        // so give it a mutable brief.
+        seasonPlan: episodeBrief.seasonPlan
+          ? JSON.parse(JSON.stringify(episodeBrief.seasonPlan))
+          : episodeBrief.seasonPlan,
+      } as FullCreativeBrief;
       const protagonistId = episodeBrief.protagonist?.id;
       const npcs = (characterBible.characters || [])
         .filter((c: CharacterProfile) => c.id !== protagonistId)
         .map((c: CharacterProfile) => ({ id: c.id, name: c.name, pronouns: (c as { pronouns?: string }).pronouns }));
+      // Rehydrated episode artifacts are recursively frozen. Final-contract
+      // validators include deterministic prose repairs, so validate a mutable
+      // working episode and publish those repairs back only when the caller's
+      // episode shell is mutable.
+      const workingEpisode = JSON.parse(JSON.stringify(episode)) as Episode;
       const oneEpisodeStory = {
         id: (episodeBrief.story as { id?: string })?.id || 'incremental',
         title: episodeBrief.story?.title || '',
@@ -6486,16 +6365,16 @@ export class FullStoryPipeline {
         coverImage: '',
         initialState: { attributes: {}, skills: Object.fromEntries(DEFAULT_SKILLS.map(s => [s.name, 10])), tags: [], inventory: [] },
         npcs,
-        episodes: [episode],
+        episodes: [workingEpisode],
       } as unknown as Story;
 
       // Keep episode-level diagnostics aligned with the final package contract:
       // outcome flags/variants are part of the episode seal, not post-season surgery.
       await this.authorEncounterOutcomeVariants(oneEpisodeStory);
 
-      if (episodeBlueprint && episodeBrief.seasonPlan?.scenePlan?.scenes?.length) {
+      if (episodeBlueprint && validationBrief.seasonPlan?.scenePlan?.scenes?.length) {
         const synced = overlayBlueprintSceneEventOwnership(
-          episodeBrief.seasonPlan.scenePlan.scenes,
+          validationBrief.seasonPlan.scenePlan.scenes,
           episodeBlueprint.scenes,
           i,
         );
@@ -6510,8 +6389,8 @@ export class FullStoryPipeline {
 
       const fidelity = runFidelityValidators({
         story: oneEpisodeStory,
-        seasonPlan: episodeBrief.seasonPlan,
-        sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,
+        seasonPlan: validationBrief.seasonPlan,
+        sourceAnalysis: validationBrief.multiEpisode?.sourceAnalysis,
         planTimeBaseline: this.planTimeFidelityBaseline,
         scope: {
           mode: 'episode-incremental',
@@ -6522,8 +6401,8 @@ export class FullStoryPipeline {
       });
       const plannedChoiceTypes = this.plannedChoiceTypesByScene && Object.keys(this.plannedChoiceTypesByScene).length > 0
         ? this.plannedChoiceTypesByScene
-        : plannedChoiceTypesByScene(episodeBrief.seasonPlan);
-      const plannedConsequenceTiers = plannedConsequenceTiersByScene(episodeBrief.seasonPlan);
+        : plannedChoiceTypesByScene(validationBrief.seasonPlan);
+      const plannedConsequenceTiers = plannedConsequenceTiersByScene(validationBrief.seasonPlan);
 
       let report = await new FinalStoryContractValidator().validate({
         story: oneEpisodeStory,
@@ -6531,7 +6410,7 @@ export class FullStoryPipeline {
           ? { name: episodeBrief.protagonist.name, pronouns: episodeBrief.protagonist.pronouns }
           : undefined,
         requestedEpisodeNumbers: [i],
-        sourceSeasonPlan: episodeBrief.seasonPlan,
+        sourceSeasonPlan: validationBrief.seasonPlan,
         incrementalValidationResults: this.allSceneValidationResults.length > 0 ? this.allSceneValidationResults : this.sceneValidationResults,
         qaReport,
         bestPracticesReport,
@@ -6541,7 +6420,7 @@ export class FullStoryPipeline {
         planTimeFidelityFindings: this.planTimeFidelityFindings,
         treatmentSourced: fidelity.treatmentSourced,
         callbackLedger: this.callbackLedger.serialize(),
-        seasonResiduePlan: episodeBrief.seasonPlan?.residuePlan,
+        seasonResiduePlan: validationBrief.seasonPlan?.residuePlan,
         seasonChoicePlan: this.seasonChoicePlan,
         plannedChoiceTypesByScene: plannedChoiceTypes,
         plannedConsequenceTiersByScene: plannedConsequenceTiers,
@@ -6558,7 +6437,7 @@ export class FullStoryPipeline {
         });
         const repairedReport = await this.enforceEpisodeIncrementalContractWithTimeout(i, {
           story: oneEpisodeStory,
-          brief: episodeBrief,
+          brief: validationBrief,
           requestedEpisodeNumbers: [i],
           qaReport,
           bestPracticesReport,
@@ -6609,6 +6488,12 @@ export class FullStoryPipeline {
           `Episode ${i} incremental contract failed with ${report.blockingIssues.length} blocking issue(s): ` +
           report.blockingIssues.slice(0, 3).map(issue => issue.message).join('; '),
         );
+      }
+      if (!Object.isFrozen(episodeBrief)) {
+        episodeBrief.seasonPlan = validationBrief.seasonPlan;
+      }
+      if (!Object.isFrozen(episode)) {
+        Object.assign(episode as unknown as Record<string, unknown>, workingEpisode);
       }
       return this.toArtifactValidationSummary(`incremental_contract_ep_${i}`, report);
     } catch (err) {
@@ -7290,7 +7175,7 @@ export class FullStoryPipeline {
           normalizeChoiceSetStatChecks(choiceSets);
           const validationInput = this.prepareValidationInput(sceneContents, choiceSets, characterBible, encounters, blueprint);
           const [qaResult, bpResult] = await this.measurePhase(`episode_${i}_qa`, () => Promise.all([
-            this.runQualityAssurance(episodeBrief, sceneContents, choiceSets, characterBible, blueprint),
+            this.runQualityAssurance(episodeBrief, sceneContents, choiceSets, characterBible, blueprint, encounters),
             this.config.validation.enabled
               ? this.integratedValidator.runFullValidation(validationInput)
               : Promise.resolve(undefined),
@@ -9256,6 +9141,8 @@ export class FullStoryPipeline {
     writeFailureCount: number;
     cognifyFailureCount: number;
     circuitOpenSkipCount: number;
+    providerEmptyRecallCount: number;
+    filterFallbackCount: number;
     breakerOpenCount: number;
     totalResultCount: number;
     totalLatencyMs: number;
@@ -9270,6 +9157,8 @@ export class FullStoryPipeline {
       writeFailureCount: summary.writeFailureCount,
       cognifyFailureCount: summary.cognifyFailureCount,
       circuitOpenSkipCount: summary.circuitOpenSkipCount,
+      providerEmptyRecallCount: summary.providerEmptyRecallCount,
+      filterFallbackCount: summary.filterFallbackCount,
       breakerOpenCount: summary.breakerOpenCount,
       totalResultCount: summary.totalResultCount,
       totalLatencyMs: summary.totalLatencyMs,

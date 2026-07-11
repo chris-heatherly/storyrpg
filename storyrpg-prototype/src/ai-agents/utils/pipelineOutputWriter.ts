@@ -532,6 +532,8 @@ export interface PipelineOutputs {
     recallCount: number;
     writeCount: number;
     emptyRecallCount: number;
+    providerEmptyRecallCount: number;
+    filterFallbackCount: number;
     breakerOpenCount: number;
     totalResultCount: number;
     totalLatencyMs: number;
@@ -962,6 +964,8 @@ export async function appendFailedRunLedger(
       recallCount: number;
       writeCount: number;
       emptyRecallCount: number;
+      providerEmptyRecallCount: number;
+      filterFallbackCount: number;
       breakerOpenCount: number;
       totalResultCount: number;
       totalLatencyMs: number;

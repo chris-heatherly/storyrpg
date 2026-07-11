@@ -26,8 +26,10 @@ import {
   type EpisodeContextOut,
   buildEpisodeContextIn,
   deriveEpisodeContextOut,
+  advanceNarrativeRealizationLedger,
   defaultValidationSummary,
 } from './artifacts';
+import type { NarrativeContractGraph, NarrativeRealizationLedger } from '../../types/narrativeContract';
 
 export interface EpisodeCompletionWatermark {
   version: 1;
@@ -59,6 +61,7 @@ export interface EpisodeCompletionArtifactRefs {
   runtimeEpisode?: ArtifactRef;
   validationReport?: ArtifactRef;
   contextOut?: ArtifactRef;
+  realizationLedger?: ArtifactRef;
   upstream?: ArtifactRef[];
 }
 
@@ -106,6 +109,9 @@ export async function writeEpisodeCompletion(options: {
       validation: options.validation ?? shadowArtifacts.validation,
     })
     : undefined;
+  if (shadowArtifacts && !shadowRefs) {
+    throw new Error(`Episode ${episodeNumber} artifact commit failed; completion watermark was not written.`);
+  }
   const watermark: EpisodeCompletionWatermark = {
     version: 1,
     episodeNumber,
@@ -135,14 +141,34 @@ async function writeEpisodeShadowArtifacts(options: {
     const previousContextOut = options.episodeNumber > 1
       ? store.loadCurrent<EpisodeContextOut>('context-out', options.episodeNumber - 1)
       : null;
+    const graphRef = (options.upstream ?? []).find((ref) => ref.kind === 'narrative-contract-graph');
+    const realizationLedgerRef = (options.upstream ?? []).find((ref) => ref.kind === 'narrative-realization-ledger');
+    const graph = graphRef ? store.loadRef<NarrativeContractGraph>(graphRef)?.payload : null;
+    const realizationLedger = realizationLedgerRef
+      ? store.loadRef<NarrativeRealizationLedger>(realizationLedgerRef)?.payload
+      : null;
+    if (graphRef) {
+      const upstreamKinds = new Set((options.upstream ?? []).map((ref) => ref.kind));
+      const requiredKinds = ['season-plan', 'episode-blueprint', 'scene-plan'] as const;
+      const missing = requiredKinds.filter((kind) => !upstreamKinds.has(kind));
+      if (missing.length > 0) {
+        throw new Error(`Canonical episode completion is missing required artifact ref(s): ${missing.join(', ')}.`);
+      }
+      if (!graph?.validation.passed) throw new Error('Canonical narrative contract graph is missing or invalid.');
+      if (!realizationLedger) throw new Error('Canonical narrative realization ledger is missing.');
+    }
     const upstream = [
-      ...(options.upstream ?? []),
+      ...(options.upstream ?? []).map((ref) => ref.kind === 'narrative-realization-ledger'
+        ? { ...ref, dependencyMode: 'exact' as const }
+        : ref),
       ...(previousContextOut ? [store.refFor(previousContextOut)] : []),
     ];
     const contextInPayload = options.contextIn ?? buildEpisodeContextIn({
       storyId: options.storyId,
       episodeNumber: options.episodeNumber,
       previousContextOut: previousContextOut?.payload,
+      graph,
+      realizationLedger,
     });
     const contextIn = await store.saveRevision({
       kind: 'context-in',
@@ -151,6 +177,7 @@ async function writeEpisodeShadowArtifacts(options: {
       episodeNumber: options.episodeNumber,
       payload: contextInPayload,
       status: 'valid',
+      makeCurrent: false,
       upstream,
       provenance: { phase: `episode_${options.episodeNumber}`, agent: 'EpisodeContextBuilder' },
       validation: defaultValidationSummary('context-in'),
@@ -164,6 +191,7 @@ async function writeEpisodeShadowArtifacts(options: {
       episodeNumber: options.episodeNumber,
       payload: options.episode,
       status: 'valid',
+      makeCurrent: false,
       upstream: [contextInRef],
       provenance: { phase: `episode_${options.episodeNumber}`, agent: 'FullStoryPipeline' },
       validation: options.validation ?? defaultValidationSummary('runtime-episode'),
@@ -182,31 +210,56 @@ async function writeEpisodeShadowArtifacts(options: {
         validation: options.validation ?? defaultValidationSummary('runtime-episode'),
       },
       status: 'valid',
+      makeCurrent: false,
       upstream: [runtimeRef],
       provenance: { phase: `episode_${options.episodeNumber}`, agent: 'ArtifactValidationGate' },
       validation: options.validation ?? defaultValidationSummary('validation-report'),
     });
 
+    const contextOutPayload = deriveEpisodeContextOut({
+      storyId: options.storyId,
+      episode: options.episode,
+      contextIn: contextInPayload,
+      graph,
+    });
     const contextOut = await store.saveRevision({
       kind: 'context-out',
       storyId: options.storyId,
       runId: options.runId,
       episodeNumber: options.episodeNumber,
-      payload: deriveEpisodeContextOut({
-        storyId: options.storyId,
-        episode: options.episode,
-        contextIn: contextInPayload,
-      }),
+      payload: contextOutPayload,
       status: 'valid',
+      makeCurrent: false,
       upstream: [runtimeRef, store.refFor(validationReport)],
       provenance: { phase: `episode_${options.episodeNumber}`, agent: 'EpisodeContextBuilder' },
       validation: defaultValidationSummary('context-out'),
     });
+    const episodeRefs = [contextInRef, runtimeRef, store.refFor(validationReport), store.refFor(contextOut)];
+    await store.commitCurrentSet(episodeRefs);
+    let nextRealizationLedgerRef: ArtifactRef | undefined;
+    if (realizationLedger && realizationLedgerRef) {
+      const nextLedger = advanceNarrativeRealizationLedger({ ledger: realizationLedger, contextOut: contextOutPayload });
+      const ledgerArtifact = await store.saveRevision({
+        kind: 'narrative-realization-ledger',
+        storyId: options.storyId,
+        runId: options.runId,
+        payload: nextLedger,
+        status: 'valid',
+        upstream: [
+          { ...realizationLedgerRef, dependencyMode: 'exact' },
+          { ...store.refFor(contextOut), dependencyMode: 'exact' },
+        ],
+        provenance: { phase: `episode_${options.episodeNumber}`, agent: 'NarrativeRealizationLedger' },
+        validation: defaultValidationSummary('narrative-realization-ledger'),
+      });
+      nextRealizationLedgerRef = store.refFor(ledgerArtifact);
+    }
     return {
       contextIn: contextInRef,
       runtimeEpisode: runtimeRef,
       validationReport: store.refFor(validationReport),
       contextOut: store.refFor(contextOut),
+      realizationLedger: nextRealizationLedgerRef,
       upstream,
     };
   } catch (error) {
@@ -294,7 +347,17 @@ function completionArtifactsAreClean(
     artifacts.validationReport,
     artifacts.contextOut,
   ].filter((ref): ref is ArtifactRef => Boolean(ref));
-  return refs.every((ref) => evaluateArtifactStatus(ref, store).status === 'clean');
+  const upstreamKinds = new Set<string>((artifacts.upstream ?? []).map((ref) => ref.kind));
+  const canonical = upstreamKinds.has('narrative-contract-graph');
+  if (canonical && !['season-plan', 'narrative-contract-graph', 'narrative-realization-ledger', 'episode-blueprint', 'scene-plan']
+    .every((kind) => upstreamKinds.has(kind))) {
+    return false;
+  }
+  const coreClean = refs.every((ref) => evaluateArtifactStatus(ref, store).status === 'clean');
+  const ledger = artifacts.realizationLedger ? store.loadRef(artifacts.realizationLedger) : null;
+  const ledgerClean = !artifacts.realizationLedger
+    || Boolean(ledger && ledger.status === 'valid' && ledger.validation.passed !== false);
+  return coreClean && ledgerClean;
 }
 
 /** Which of the requested episodes already completed in this run directory. */

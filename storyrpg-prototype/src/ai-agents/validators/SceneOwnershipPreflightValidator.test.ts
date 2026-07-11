@@ -96,6 +96,27 @@ describe('SceneOwnershipPreflightValidator', () => {
     expect(result.issues.map((issue) => issue.message).join(' ')).toContain('before its prerequisite event lateNightWriting');
   });
 
+  it('accepts canonical causal events ordered within one scene', () => {
+    const writing = ownership('writing', 'lateNightWriting', 'At 4am she writes the first post.');
+    const aftermath = ownership('writing', 'blogAftermath', 'By evening the post has gone viral.');
+    writing.ownedEvents[0].eventContractId = 'event:writing';
+    aftermath.ownedEvents[0].eventContractId = 'event:aftermath';
+    writing.ownedEvents.push(aftermath.ownedEvents[0]);
+    const result = new SceneOwnershipPreflightValidator().validate({
+      episodeNumber: 1,
+      episodeEventPlan: {
+        orderedEventIds: ['event:writing', 'event:aftermath'],
+        assignments: [
+          { eventId: 'event:writing', sceneId: 'writing' },
+          { eventId: 'event:aftermath', sceneId: 'writing' },
+        ],
+      },
+      scenes: [scene({ id: 'writing', sceneEventOwnership: writing })],
+    });
+
+    expect(result.valid).toBe(true);
+  });
+
   it('blocks duplicate first-event ownership', () => {
     const result = new SceneOwnershipPreflightValidator().validate({
       episodeNumber: 1,

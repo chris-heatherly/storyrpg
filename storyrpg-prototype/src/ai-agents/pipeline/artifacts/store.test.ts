@@ -23,6 +23,96 @@ function makeIO(): ArtifactStoreIO & { files: Map<string, unknown> } {
 }
 
 describe('ArtifactRevisionStore', () => {
+  it('migrates schema-v1 indexes and envelopes without rewriting their files', async () => {
+    const io = makeIO();
+    io.files.set('artifacts/current.json', {
+      version: 1,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      artifacts: { 'season-plan': { kind: 'season-plan', artifactId: 'legacy', payloadHash: 'hash', revision: 1, path: 'artifacts/season-plan.rev1.json' } },
+    });
+    io.files.set('artifacts/season-plan.rev1.json', {
+      kind: 'season-plan', schemaVersion: 1, artifactId: 'legacy', storyId: 'story', runId: 'run', revision: 1,
+      status: 'valid', upstream: [], provenance: { phase: 'season_plan' }, validation: { passed: true, gate: 'season-plan', issues: [] },
+      payloadHash: 'hash', createdAt: '2026-01-01T00:00:00.000Z', payload: { episodes: [] },
+    });
+    const store = new ArtifactRevisionStore(io);
+    expect(store.loadCurrentIndex().version).toBe(2);
+    expect(store.loadCurrent('season-plan')?.schemaVersion).toBe(2);
+    expect((io.files.get('artifacts/current.json') as { version: number }).version).toBe(1);
+    expect((io.files.get('artifacts/season-plan.rev1.json') as { schemaVersion: number }).schemaVersion).toBe(1);
+  });
+
+  it('commits a valid artifact set atomically and rejects invalid members', async () => {
+    const io = makeIO();
+    const store = new ArtifactRevisionStore(io);
+    const valid = await store.saveRevision({ kind: 'season-plan', storyId: 'story', runId: 'run', payload: {}, status: 'valid', makeCurrent: false, provenance: { phase: 'test' } });
+    const invalid = await store.saveRevision({ kind: 'narrative-contract-graph', storyId: 'story', runId: 'run', payload: {}, status: 'invalid', makeCurrent: false, provenance: { phase: 'test' }, validation: { passed: false, gate: 'test', issues: [] } });
+    await expect(store.commitCurrentSet([store.refFor(valid), store.refFor(invalid)])).rejects.toThrow(/non-valid/);
+    expect(store.loadCurrentRef('season-plan')).toBeNull();
+    await store.commitCurrentSet([store.refFor(valid)]);
+    expect(store.loadCurrentRef('season-plan')?.artifactId).toBe(valid.artifactId);
+  });
+
+  it('records supersession without mutating an immutable artifact revision', async () => {
+    const io = makeIO();
+    const store = new ArtifactRevisionStore(io);
+    const artifact = await store.saveRevision({ kind: 'season-plan', storyId: 'story', runId: 'run', payload: { stable: true }, status: 'valid', provenance: { phase: 'test' } });
+    const before = JSON.stringify(io.files.get(artifactPath('season-plan', 1)));
+    await store.markSuperseded(store.refFor(artifact));
+    expect(JSON.stringify(io.files.get(artifactPath('season-plan', 1)))).toBe(before);
+    expect(store.loadCurrentIndex().supersededArtifactIds).toContain(artifact.artifactId);
+  });
+
+  it('does not freeze the producer-owned upstream array while committing an artifact', async () => {
+    const io = makeIO();
+    const store = new ArtifactRevisionStore(io);
+    const source = await store.saveRevision({
+      kind: 'source-analysis',
+      storyId: 'story',
+      runId: 'run',
+      payload: { source: true },
+      status: 'valid',
+      provenance: { phase: 'source_analysis' },
+    });
+    const upstream = [store.refFor(source)];
+
+    await store.saveRevision({
+      kind: 'source-canon',
+      storyId: 'story',
+      runId: 'run',
+      payload: { canon: true },
+      status: 'valid',
+      upstream,
+      provenance: { phase: 'source_analysis' },
+    });
+
+    expect(Object.isFrozen(upstream)).toBe(false);
+    expect(() => upstream.push(store.refFor(source))).not.toThrow();
+  });
+
+  it('opens a mutable payload session without mutating the committed revision', async () => {
+    const io = makeIO();
+    const store = new ArtifactRevisionStore(io);
+    const committed = await store.saveRevision({
+      kind: 'season-plan',
+      storyId: 'story',
+      runId: 'run',
+      payload: { scenes: [{ id: 's1', order: 0 }] },
+      status: 'valid',
+      provenance: { phase: 'test' },
+    });
+    const session = store.openMutableSession<typeof committed.payload>(store.refFor(committed));
+    expect(session).toBeTruthy();
+    session!.value.scenes[0].order = 1;
+    expect(store.loadRef<typeof committed.payload>(store.refFor(committed))!.payload.scenes[0].order).toBe(0);
+    const next = await session!.commit({
+      kind: 'season-plan', storyId: 'story', runId: 'run', status: 'valid',
+      provenance: { phase: 'test' },
+    });
+    expect(next.payload.scenes[0].order).toBe(1);
+    expect(next.upstream.some((ref) => ref.artifactId === committed.artifactId)).toBe(true);
+  });
+
   it('writes immutable revisions and advances current only for valid artifacts by default', async () => {
     const io = makeIO();
     const store = new ArtifactRevisionStore(io);

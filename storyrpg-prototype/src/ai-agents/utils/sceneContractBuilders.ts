@@ -64,7 +64,9 @@ const GENERIC_TURN_RE =
 // question filled every field of the release scene and its "write … blog"
 // wording aborted SceneConstructionGate).
 export function isQuestionShapedTurnText(value: unknown): boolean {
-  return isQuestionShapedAnchor(cleanText(value) || undefined);
+  const text = cleanText(value);
+  const unwrapped = text.replace(/^the player-facing choice changes the scene pressure:\s*/i, '');
+  return isQuestionShapedAnchor(unwrapped || undefined);
 }
 
 const REQUIRED_BEAT_TIERS = new Set(['signature', 'authored', 'coldopen']);

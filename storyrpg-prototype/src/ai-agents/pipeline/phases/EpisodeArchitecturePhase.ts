@@ -303,6 +303,29 @@ export class EpisodeArchitecturePhase {
       );
     }
 
+    // StoryArchitect may collapse an unowned generic shell and replace the
+    // episode projection object while sealing the blueprint. Keep the
+    // season-level projection in sync before downstream content/fidelity
+    // phases read brief.seasonPlan.scenePlan. Otherwise the blueprint and
+    // runtime can have seven scenes while final validation still expects a
+    // stale shell from the pre-collapse EpisodeEventPlan.
+    const canonicalScenePlan = brief.seasonPlan?.scenePlan;
+    const canonicalEpisodePlan = result!.data.episodeEventPlan;
+    if (canonicalScenePlan && canonicalEpisodePlan) {
+      canonicalScenePlan.episodeEventPlans = {
+        ...(canonicalScenePlan.episodeEventPlans ?? {}),
+        [brief.episode.number]: canonicalEpisodePlan,
+      };
+      const canonicalEpisode = brief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === brief.episode.number);
+      if (canonicalEpisode) canonicalEpisode.plannedScenes = scenesForEpisode(canonicalScenePlan, brief.episode.number);
+      context.emit({
+        type: 'debug',
+        phase: 'episode_architecture',
+        message: `Synchronized season EpisodeEventPlan projection for episode ${brief.episode.number} after blueprint sealing (${canonicalEpisodePlan.sceneOrder.length} scenes).`,
+        data: { sceneOrder: canonicalEpisodePlan.sceneOrder, sourceGraphHash: canonicalEpisodePlan.sourceGraphHash },
+      });
+    }
+
     context.emit({
       type: 'agent_complete',
       agent: 'StoryArchitect',

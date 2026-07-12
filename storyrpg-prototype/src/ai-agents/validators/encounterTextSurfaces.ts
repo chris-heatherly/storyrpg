@@ -8,6 +8,7 @@
  */
 import type { Scene } from '../../types';
 import type { EncounterPhase } from '../../types/encounter';
+import type { NarrativeRealizationSurface } from '../../types/narrativeContract';
 
 /** Placeholder/residue text that does NOT count as reader-facing prose. */
 const PLACEHOLDER_TEXT_PATTERN =
@@ -65,6 +66,93 @@ export function isReaderFacingText(text: string | undefined): boolean {
 
 function pushReaderText(texts: string[], text: string | undefined): void {
   if (isReaderFacingText(text)) texts.push(text!.trim());
+}
+
+export type NarrativeEvidenceSurfaceIndex = Record<NarrativeRealizationSurface, string[]>;
+
+function emptyEvidenceSurfaceIndex(): NarrativeEvidenceSurfaceIndex {
+  return {
+    beat_text: [], dialogue: [], choice_text: [], encounter_setup: [], encounter_phase: [],
+    encounter_outcome: [], terminal_storylet: [], text_variant: [],
+  };
+}
+
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : undefined;
+}
+
+function valuesOf(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  return recordOf(value) ? Object.values(recordOf(value)!) : [];
+}
+
+function pushUnknownText(output: string[], value: unknown): void {
+  if (typeof value === 'string' && isReaderFacingText(value)) output.push(value.trim());
+}
+
+function collectIndexedChoiceTexts(value: unknown, output: string[]): void {
+  for (const rawChoice of valuesOf(recordOf(value)?.choices ?? value)) {
+    const choice = recordOf(rawChoice);
+    if (!choice) continue;
+    pushUnknownText(output, choice.text);
+    pushUnknownText(output, choice.lockedText);
+    pushUnknownText(output, choice.reactionText);
+    for (const outcome of valuesOf(choice.outcomeTexts)) pushUnknownText(output, outcome);
+  }
+}
+
+function collectIndexedBeats(
+  value: unknown,
+  index: NarrativeEvidenceSurfaceIndex,
+  fallback: NarrativeRealizationSurface,
+): void {
+  for (const rawBeat of valuesOf(value)) {
+    const beat = recordOf(rawBeat);
+    if (!beat) continue;
+    pushUnknownText(index[beat.speaker ? 'dialogue' : fallback], beat.text);
+    pushUnknownText(index[fallback], beat.setupText);
+    pushUnknownText(index[fallback], beat.escalationText);
+    for (const key of ['textVariants', 'setupTextVariants', 'escalationTextVariants']) {
+      for (const rawVariant of valuesOf(beat[key])) pushUnknownText(index.text_variant, recordOf(rawVariant)?.text);
+    }
+    collectIndexedChoiceTexts(beat.choices, index.choice_text);
+  }
+}
+
+function collectIndexedOutcome(value: unknown, output: string[]): void {
+  const outcome = recordOf(value);
+  if (!outcome) return;
+  pushUnknownText(output, outcome.narrativeText);
+  pushUnknownText(output, outcome.outcomeText);
+  const nextSituation = recordOf(outcome.nextSituation);
+  pushUnknownText(output, nextSituation?.setupText);
+  collectIndexedChoiceTexts(nextSituation?.choices, output);
+}
+
+/** Canonical reader-facing surface index used by owner and final realization gates. */
+export function collectNarrativeEvidenceSurfaceIndex(input: {
+  sceneContent?: unknown;
+  choiceSet?: unknown;
+  encounter?: unknown;
+}): NarrativeEvidenceSurfaceIndex {
+  const index = emptyEvidenceSurfaceIndex();
+  const scene = recordOf(input.sceneContent);
+  collectIndexedBeats(scene?.beats, index, 'beat_text');
+  collectIndexedChoiceTexts(input.choiceSet, index.choice_text);
+  const encounter = recordOf(input.encounter);
+  pushUnknownText(index.encounter_setup, encounter?.description);
+  pushUnknownText(index.encounter_setup, encounter?.setupText);
+  collectIndexedBeats(encounter?.beats, index, 'encounter_setup');
+  for (const rawPhase of valuesOf(encounter?.phases)) {
+    const phase = recordOf(rawPhase);
+    if (!phase) continue;
+    collectIndexedBeats(phase.beats, index, 'encounter_phase');
+    pushUnknownText(index.encounter_phase, recordOf(phase.onSuccess)?.outcomeText);
+    pushUnknownText(index.encounter_phase, recordOf(phase.onFailure)?.outcomeText);
+  }
+  for (const outcome of valuesOf(encounter?.outcomes)) collectIndexedOutcome(outcome, index.encounter_outcome);
+  for (const storylet of valuesOf(encounter?.storylets)) collectIndexedBeats(recordOf(storylet)?.beats, index, 'terminal_storylet');
+  return index;
 }
 
 function collectVariants(texts: string[], variants: TextVariantLike[] | Record<string, TextVariantLike> | undefined): void {
@@ -265,6 +353,38 @@ export function collectReaderFacingTerminalTextsForEncounterOutcomeTier(
     || (tier === 'escape' ? storylets.escape : undefined);
   for (const beat of storylet?.beats ?? []) collectBeatText(texts, beat);
   return texts;
+}
+
+/** Tier-scoped surface index. Sibling outcomes/storylets are deliberately excluded. */
+export function collectRouteEvidenceSurfaceIndex(input: {
+  sceneContent?: unknown;
+  choiceSet?: unknown;
+  encounter?: unknown;
+  outcomeTier: string;
+}): NarrativeEvidenceSurfaceIndex {
+  const index = collectNarrativeEvidenceSurfaceIndex(input);
+  index.encounter_outcome = [];
+  index.terminal_storylet = [];
+  const encounter = recordOf(input.encounter);
+  const outcomes = recordOf(encounter?.outcomes) ?? {};
+  const storylets = recordOf(encounter?.storylets) ?? {};
+  const seenOutcomes = new Set<unknown>();
+  const seenStorylets = new Set<unknown>();
+  for (const key of routeOutcomeKeys(input.outcomeTier)) {
+    const outcome = outcomes[key];
+    if (outcome && !seenOutcomes.has(outcome)) {
+      seenOutcomes.add(outcome);
+      collectIndexedOutcome(outcome, index.encounter_outcome);
+    }
+    const storylet = storylets[key];
+    if (storylet && !seenStorylets.has(storylet)) {
+      seenStorylets.add(storylet);
+      const terminalTexts: string[] = [];
+      for (const beat of (recordOf(storylet)?.beats as unknown[] | undefined) ?? []) collectBeatText(terminalTexts, beat);
+      index.terminal_storylet.push(...terminalTexts);
+    }
+  }
+  return index;
 }
 
 /**

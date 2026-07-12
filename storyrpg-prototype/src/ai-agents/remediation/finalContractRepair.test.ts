@@ -28,6 +28,16 @@ describe('runFinalContractRepair', () => {
     expect(first).toBe(second);
   });
 
+  it('preserves an owner-stage realization fingerprint across final repair routing', async () => {
+    const { contractRepairIssueFingerprint } = await import('./finalContractRepair');
+    expect(contractRepairIssueFingerprint({
+      validator: 'NarrativeContractValidator',
+      message: 'wording can change',
+      severity: 'error',
+      realizationFingerprint: 'OWNER_REALIZATION_MISSING::task:route::s1-4::victory::departure',
+    })).toBe('realization::OWNER_REALIZATION_MISSING::task:route::s1-4::victory::departure');
+  });
+
   it('no-ops when the report already passes', async () => {
     const out = await runFinalContractRepair({
       story,

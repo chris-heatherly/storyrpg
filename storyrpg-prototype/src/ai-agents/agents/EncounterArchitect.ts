@@ -30,6 +30,7 @@ import {
   buildEncounterStructureJsonSchema,
 } from '../schemas/encounterSchemas';
 import type { NarrativeCharacterPresenceContract, NarrativeRealizationTask } from '../../types/narrativeContract';
+import { describeNarrativeEvidenceTarget } from '../pipeline/narrativeContractMigration';
 
 /**
  * Distinctive, non-interpolated fragments of the deterministic fallback prose
@@ -1196,7 +1197,7 @@ export class EncounterArchitect extends BaseAgent {
         'The following task IDs are assigned to this encounter. Show their evidence on the required surfaces; do not claim a task through shared synopsis or metadata.',
       );
       for (const task of realizationTasks) {
-        lines.push(`- ${task.id}: surfaces=${task.requiredSurface.join(', ')}; route=${task.routePolicy}; evidence=${task.evidenceAtoms.map((atom) => atom.acceptedPatterns.join(' / ')).join(' | ')}`);
+        lines.push(`- ${task.id}: ${describeNarrativeEvidenceTarget(task.target)}; evidence=${task.evidenceAtoms.map((atom) => atom.acceptedPatterns.join(' / ')).join(' | ')}`);
       }
     }
     if (this.isSustainedSetPieceInput(input)) {

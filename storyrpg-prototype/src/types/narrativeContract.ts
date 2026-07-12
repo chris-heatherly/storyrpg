@@ -28,12 +28,9 @@ export type NarrativeRealizationMode =
 export type NarrativeOwnershipPolicy = 'exactly_one_scene' | 'no_scene_owner';
 
 export type NarrativeRealizationOwnerStage =
-  | 'season_plan'
-  | 'episode_architecture'
   | 'scene_writer'
   | 'choice_author'
-  | 'encounter_architect'
-  | 'final_contract';
+  | 'encounter_architect';
 
 export type NarrativeRealizationSurface =
   | 'beat_text'
@@ -83,11 +80,10 @@ export interface NarrativeRealizationTask {
   contractId: string;
   episodeNumber: number;
   ownerStage: NarrativeRealizationOwnerStage;
-  repairHandler: 'episode_replan' | 'premise_realization' | 'relationship_pacing' | 'encounter_route' | 'scene_prose' | 'final_contract';
+  repairHandler: 'premise_realization' | 'relationship_pacing' | 'encounter_route' | 'scene_prose' | 'choice_reauthor';
   sceneId?: string;
   beatId?: string;
   eventId?: string;
-  outcomeTier?: string;
   /** Relationship-label evidence is evaluated near this subject, not against
    * unrelated names or groups mentioned elsewhere in the same scene. */
   evidenceScope?: { npcId?: string; groupId?: string };
@@ -97,15 +93,21 @@ export interface NarrativeRealizationTask {
    * a threshold contract such as a premise. Omitted means every required atom
    * must be present. */
   minimumEvidenceHits?: number;
-  /** Canonical executable placement for newly compiled tasks. */
-  target?: NarrativeEvidenceTarget;
-  /** @deprecated Version-2 compatibility only; use `target`. */
-  requiredSurface: NarrativeRealizationSurface[];
-  /** @deprecated Version-2 compatibility only; use `target`. */
-  routePolicy: NarrativeRouteEvidencePolicy;
+  /** Canonical executable placement. */
+  target: NarrativeEvidenceTarget;
   sourceContractIds: string[];
   blocking: boolean;
 }
+
+/** Serialized version-2 task shape accepted only at artifact boundaries. */
+export interface LegacyNarrativeRealizationTaskV2 extends Omit<NarrativeRealizationTask, 'target'> {
+  outcomeTier?: string;
+  requiredSurface: NarrativeRealizationSurface[];
+  routePolicy: NarrativeRouteEvidencePolicy;
+  target?: never;
+}
+
+export type PersistedNarrativeRealizationTask = NarrativeRealizationTask | LegacyNarrativeRealizationTaskV2;
 
 export type NarrativeCharacterPresenceMode =
   | 'named_on_page'

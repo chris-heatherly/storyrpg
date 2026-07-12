@@ -201,6 +201,8 @@ export class NarrativeContractValidator extends BaseValidator {
             repairHandler: task?.repairHandler,
             missingEvidenceAtoms: finding.missingEvidenceAtoms,
             requiredEvidenceAtoms: task?.evidenceAtoms.filter((atom) => atom.required).map((atom) => atom.id),
+            realizationFingerprint: finding.fingerprint,
+            matchedForbiddenAtoms: finding.matchedForbiddenAtoms,
           };
           issues.push(issue);
         }
@@ -550,7 +552,8 @@ export class NarrativeContractValidator extends BaseValidator {
         const task = requirement
           ? (graph.realizationTasks ?? []).find((candidate) =>
             candidate.contractId === requirement.id
-            && candidate.outcomeTier === tier,
+            && (candidate.target.scope === 'route_path' || candidate.target.scope === 'route_terminal')
+            && candidate.target.outcomeTier === tier,
           )
           : undefined;
         issue.metadata = {

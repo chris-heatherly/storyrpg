@@ -233,6 +233,8 @@ export interface FinalStoryContractIssue {
   repairHandler?: string;
   missingEvidenceAtoms?: string[];
   requiredEvidenceAtoms?: string[];
+  realizationFingerprint?: string;
+  matchedForbiddenAtoms?: string[];
 }
 
 export interface FinalStoryContractReport {
@@ -339,6 +341,8 @@ export interface FinalStoryContractInput {
     repairHandler?: string;
     missingEvidenceAtoms?: string[];
     requiredEvidenceAtoms?: string[];
+    realizationFingerprint?: string;
+    matchedForbiddenAtoms?: string[];
   }>;
   /** Optional shadow input from pre-generation fidelity checks; raw gating remains unchanged. */
   planTimeFidelityFindings?: Array<{
@@ -2260,6 +2264,8 @@ export class FinalStoryContractValidator {
         repairHandler: finding.repairHandler,
         missingEvidenceAtoms: finding.missingEvidenceAtoms,
         requiredEvidenceAtoms: finding.requiredEvidenceAtoms,
+        realizationFingerprint: finding.realizationFingerprint,
+        matchedForbiddenAtoms: finding.matchedForbiddenAtoms,
       });
     }
   }

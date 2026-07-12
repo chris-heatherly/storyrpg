@@ -109,8 +109,6 @@ export function compileNarrativeRealizationTasks(
       evidenceAtoms: premiseAtoms(premise),
       minimumEvidenceHits: premise.minimumEvidenceHits,
       target: { scope: 'owner', surfaces: premise.requiredSurface as NarrativeRealizationSurface[] },
-      requiredSurface: premise.requiredSurface as NarrativeRealizationSurface[],
-      routePolicy: 'owner_surface',
       sourceContractIds: premise.sourceContractIds,
       blocking: premise.blocking,
     });
@@ -119,7 +117,6 @@ export function compileNarrativeRealizationTasks(
   for (const event of graph.events) {
     for (const requirement of event.evidenceRequirements ?? []) {
       const scene = event.ownerSceneId ? sceneById.get(event.ownerSceneId) : undefined;
-      const routePolicy = routePolicyForEventRequirement(requirement);
       const tiers = requirement.requiredSurface === 'all_routes'
         ? (event.requiredOutcomeTiers ?? ['all-routes'])
         : [undefined];
@@ -132,7 +129,6 @@ export function compileNarrativeRealizationTasks(
           repairHandler: scene?.kind === 'encounter' || scene?.encounter ? 'encounter_route' : 'scene_prose',
           sceneId: event.ownerSceneId,
           eventId: event.id,
-          outcomeTier,
           artifactPath: event.ownerSceneId ? `episodes[${event.episodeNumber}].scenes[${event.ownerSceneId}].encounter` : undefined,
           // acceptedPatterns are alternatives for one authored evidence
           // requirement. Keep them in one atom so the owner gate requires one
@@ -147,8 +143,6 @@ export function compileNarrativeRealizationTasks(
             required: true,
           }],
           target: targetForEventRequirement(requirement, outcomeTier),
-          requiredSurface: surfaceForEventRequirement(requirement),
-          routePolicy,
           sourceContractIds: event.sourceContractIds,
           blocking: requirement.blocking,
         });
@@ -178,8 +172,6 @@ export function compileNarrativeRealizationTasks(
         artifactPath: `episodes[${scene.episodeNumber}].scenes[${scene.id}]`,
         evidenceAtoms: atoms,
         target: { scope: 'owner', surfaces: ['beat_text', 'dialogue', 'choice_text'] },
-        requiredSurface: ['beat_text', 'dialogue', 'choice_text'],
-        routePolicy: 'owner_surface',
         sourceContractIds: [pacing.id],
         blocking: true,
       });

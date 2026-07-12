@@ -30,6 +30,7 @@ import {
   defaultValidationSummary,
 } from './artifacts';
 import type { NarrativeContractGraph, NarrativeRealizationLedger } from '../../types/narrativeContract';
+import { normalizePersistedNarrativeContractGraph } from './narrativeContractMigration';
 
 export interface EpisodeCompletionWatermark {
   version: 1;
@@ -143,7 +144,8 @@ async function writeEpisodeShadowArtifacts(options: {
       : null;
     const graphRef = (options.upstream ?? []).find((ref) => ref.kind === 'narrative-contract-graph');
     const realizationLedgerRef = (options.upstream ?? []).find((ref) => ref.kind === 'narrative-realization-ledger');
-    const graph = graphRef ? store.loadRef<NarrativeContractGraph>(graphRef)?.payload : null;
+    const loadedGraph = graphRef ? store.loadRef<NarrativeContractGraph>(graphRef)?.payload : null;
+    const graph = loadedGraph ? normalizePersistedNarrativeContractGraph(loadedGraph) : null;
     const realizationLedger = realizationLedgerRef
       ? store.loadRef<NarrativeRealizationLedger>(realizationLedgerRef)?.payload
       : null;

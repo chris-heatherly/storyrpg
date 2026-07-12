@@ -24,6 +24,8 @@ export interface ValidationIssue {
     repairHandler?: string;
     missingEvidenceAtoms?: string[];
     requiredEvidenceAtoms?: string[];
+    realizationFingerprint?: string;
+    matchedForbiddenAtoms?: string[];
   };
 }
 

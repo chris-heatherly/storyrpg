@@ -33,8 +33,6 @@ describe('compileNarrativeRealizationTasks', () => {
 
     const tasks = compileNarrativeRealizationTasks(graph, scenes);
     expect(tasks.find((task) => task.contractId === 'premise:wound')?.repairHandler).toBe('premise_realization');
-    expect(tasks.find((task) => task.id === 'task:event:ep1-u7:rescue:route:victory')?.routePolicy).toBe('path_required');
-    expect(tasks.find((task) => task.id === 'task:event:ep1-u7:threshold-disappearance:route:victory')?.routePolicy).toBe('terminal_required');
     expect(tasks.find((task) => task.id === 'task:event:ep1-u7:rescue:route:victory')?.target).toEqual({
       scope: 'route_path',
       outcomeTier: 'victory',

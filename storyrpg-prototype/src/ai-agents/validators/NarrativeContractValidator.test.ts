@@ -223,7 +223,7 @@ describe('NarrativeContractValidator', () => {
     canonical.realizationTasks = [{
       id: 'task:rel:stela:relationship-labels', contractId: 'rel:stela', episodeNumber: 1,
       ownerStage: 'scene_writer', repairHandler: 'relationship_pacing', sceneId: 's2',
-      evidenceAtoms: [], requiredSurface: ['beat_text'], routePolicy: 'owner_surface', sourceContractIds: ['rel:stela'], blocking: true,
+      evidenceAtoms: [], target: { scope: 'owner', surfaces: ['beat_text'] }, sourceContractIds: ['rel:stela'], blocking: true,
     }];
     const input = story(['Arrival.', 'Stela calls you her friend.']);
     const result = new NarrativeContractValidator().validate({ story: input, scenePlan, graph: canonical });
@@ -241,7 +241,7 @@ describe('NarrativeContractValidator', () => {
       evidenceScope: { npcId: 'char-stela-pavel' }, evidenceAtoms: [{
         id: 'family', description: 'family is not yet earned', acceptedPatterns: ['family'],
         kind: 'relationship_label', required: true, polarity: 'forbidden',
-      }], requiredSurface: ['beat_text'], routePolicy: 'owner_surface', sourceContractIds: ['rel:stela'], blocking: true,
+      }], target: { scope: 'owner', surfaces: ['beat_text'] }, sourceContractIds: ['rel:stela'], blocking: true,
     }];
     const input = story(['Arrival.', "Your father's family calls this city a birthright."]);
     input.npcs = [{ id: 'char-stela-pavel', name: 'Stela Pavel' }] as never;
@@ -263,7 +263,7 @@ describe('NarrativeContractValidator', () => {
       id: 'task:ep1-blog:audience', contractId: 'ep1-blog', eventId: 'ep1-blog', episodeNumber: 1,
       ownerStage: 'scene_writer', repairHandler: 'scene_prose', sceneId: 's1',
       evidenceAtoms: [{ id: 'viral', description: 'viral reach', acceptedPatterns: ['viral', 'readers'], kind: 'route', required: true }],
-      requiredSurface: ['beat_text'], routePolicy: 'owner_surface', sourceContractIds: ['ep1-blog'], blocking: true,
+      target: { scope: 'owner', surfaces: ['beat_text'] }, sourceContractIds: ['ep1-blog'], blocking: true,
     }];
     const result = new NarrativeContractValidator().validate({ story: story(['You publish the post, but the night stays quiet.']), graph: canonical });
     const issue = result.issues.find((candidate) => /Canonical owner realization drift/.test(candidate.message));
@@ -285,10 +285,10 @@ describe('NarrativeContractValidator', () => {
     });
     canonical.realizationTasks = [{
       id: 'task:ep1-threat:threshold:victory', contractId: 'ep1-threat:threshold', eventId: 'ep1-threat', episodeNumber: 1,
-      ownerStage: 'encounter_architect', repairHandler: 'encounter_route', sceneId: 's1', outcomeTier: 'victory',
+      ownerStage: 'encounter_architect', repairHandler: 'encounter_route', sceneId: 's1',
       evidenceAtoms: [{ id: 'threshold', description: 'threshold departure', acceptedPatterns: ['vanishes'], kind: 'route', required: true }],
       target: { scope: 'route_terminal', outcomeTier: 'victory', surfaces: ['terminal_storylet'] },
-      requiredSurface: ['terminal_storylet'], routePolicy: 'terminal_required', sourceContractIds: ['threat'], blocking: true,
+      sourceContractIds: ['threat'], blocking: true,
     }];
     const input = story(['The attack ends. By evening, the post has gone viral.']);
     input.episodes[0].scenes[0].encounter = { outcomes: { victory: { outcomeText: 'He walks you to the door.' } } } as never;
@@ -308,7 +308,7 @@ describe('NarrativeContractValidator', () => {
       ownerStage: 'scene_writer', repairHandler: 'scene_prose', sceneId: 's1',
       evidenceAtoms: [{ id: 'readers', description: 'audience reach', acceptedPatterns: ['readers'], kind: 'lexical', required: true }],
       target: { scope: 'owner', surfaces: ['beat_text'] },
-      requiredSurface: ['beat_text'], routePolicy: 'owner_surface', sourceContractIds: ['ep1-blog'], blocking: false,
+      sourceContractIds: ['ep1-blog'], blocking: false,
     }];
 
     const result = new NarrativeContractValidator().validate({ story: story(['You publish the post.']), graph: canonical });

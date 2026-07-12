@@ -1359,9 +1359,44 @@ export class ContentGenerationPhase {
             message: `Discarding resumed encounter checkpoint for ${sceneBlueprint.id}: carries ${resumedEncounterBoilerplate.length} template/fallback prose signature(s) (${resumedEncounterBoilerplate.slice(0, 3).map((hit) => hit.label).join(', ')}).`,
           });
         }
-        const hasRequiredChoice = !sceneBlueprint.choicePoint || Boolean(resumedChoice);
+        const resumedChoiceBlockers = resumedChoice
+          ? validateOwnerRealizationTasks({
+              sceneId: sceneBlueprint.id,
+              tasks: sceneBlueprint.realizationTasks,
+              sceneContent: resumedScene,
+              choiceSet: resumedChoice,
+              mode: 'owner',
+              currentStage: 'choice_author',
+            }).filter((finding) => finding.blocking)
+          : [];
+        const resumedEncounterBlockers = resumedEncounter
+          ? validateOwnerRealizationTasks({
+              sceneId: sceneBlueprint.id,
+              tasks: sceneBlueprint.realizationTasks,
+              sceneContent: resumedScene,
+              choiceSet: resumedChoice,
+              encounter: resumedEncounter,
+              mode: 'owner',
+              currentStage: 'encounter_architect',
+            }).filter((finding) => finding.blocking)
+          : [];
+        if (resumedChoiceBlockers.length > 0 || resumedEncounterBlockers.length > 0) {
+          context.emit({
+            type: 'warning',
+            phase: 'content',
+            message: `Discarding resumed content checkpoint for ${sceneBlueprint.id}: ${resumedChoiceBlockers.length + resumedEncounterBlockers.length} canonical owner-stage realization task(s) remain unresolved.`,
+            data: { findings: [...resumedChoiceBlockers, ...resumedEncounterBlockers] },
+          });
+        }
+        const hasRequiredChoice = !sceneBlueprint.choicePoint
+          || Boolean(resumedChoice && resumedChoiceBlockers.length === 0);
         const hasRequiredEncounter = !(sceneBlueprint.isEncounter && sceneBlueprint.encounterType)
-          || Boolean(resumedEncounter && resumedEncounterTurn?.passed && resumedEncounterBoilerplate.length === 0);
+          || Boolean(
+            resumedEncounter
+            && resumedEncounterTurn?.passed
+            && resumedEncounterBoilerplate.length === 0
+            && resumedEncounterBlockers.length === 0,
+          );
         if (resumedScene && hasRequiredChoice && hasRequiredEncounter) {
           if (sceneBlueprint.isEncounter && sceneBlueprint.encounterType) {
             this.ensureEncounterBridgeBeat(sceneBlueprint, resumedScene);
@@ -2472,11 +2507,26 @@ export class ContentGenerationPhase {
             };
 
             const maxChoiceAuthorAttempts = 3;
+            const choiceRealizationFindings = (choiceSet: ChoiceSet | undefined): RealizationTaskGateFinding[] =>
+              validateOwnerRealizationTasks({
+                sceneId: sceneBlueprint.id,
+                tasks: sceneBlueprint.realizationTasks,
+                sceneContent,
+                choiceSet,
+                mode: 'owner',
+                currentStage: 'choice_author',
+              });
             let choiceAuthorAttempt = 1;
             let choiceResult = await authorChoices(choiceAuthorInput, `ChoiceAuthor.execute(${sceneBlueprint.id})`);
-            while ((!choiceResult.success || !choiceResult.data) && choiceAuthorAttempt < maxChoiceAuthorAttempts) {
+            let choiceOwnerBlockers = choiceResult.success && choiceResult.data
+              ? choiceRealizationFindings(choiceResult.data).filter((finding) => finding.blocking)
+              : [];
+            while ((!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0) && choiceAuthorAttempt < maxChoiceAuthorAttempts) {
               choiceAuthorAttempt++;
-              context.emit({ type: 'warning', phase: 'choices', message: `Choice Author failed on ${sceneBlueprint.id} (attempt ${choiceAuthorAttempt - 1}/${maxChoiceAuthorAttempts}): ${choiceResult.error ?? 'no data'} — retrying.` });
+              const realizationFeedback = choiceOwnerBlockers.length > 0
+                ? choiceOwnerBlockers.map((finding) => `${finding.taskId}: ${finding.message}`).join('; ')
+                : undefined;
+              context.emit({ type: 'warning', phase: 'choices', message: `Choice Author failed on ${sceneBlueprint.id} (attempt ${choiceAuthorAttempt - 1}/${maxChoiceAuthorAttempts}): ${realizationFeedback ?? choiceResult.error ?? 'no data'} — retrying.` });
               // R6: feed the failure back instead of re-running the identical
               // prompt — a parse/schema failure repeats deterministically
               // unless the model is told what went wrong last time.
@@ -2484,10 +2534,13 @@ export class ContentGenerationPhase {
                 ...choiceAuthorInput,
                 storyContext: {
                   ...choiceAuthorInput.storyContext,
-                  userPrompt: `${choiceAuthorInput.storyContext.userPrompt || ''}\n\nIMPORTANT - Your previous choice-authoring attempt FAILED with: ${choiceResult.error ?? 'no data returned'}. Fix that specific problem this time. Return one complete, valid choice set exactly matching the requested JSON structure.`,
+                  userPrompt: `${choiceAuthorInput.storyContext.userPrompt || ''}\n\nIMPORTANT - Your previous choice-authoring attempt FAILED with: ${realizationFeedback ?? choiceResult.error ?? 'no data returned'}. Fix that specific problem this time. Return one complete, valid choice set exactly matching the requested JSON structure.`,
                 },
               };
               choiceResult = await authorChoices(retryFeedbackInput, `ChoiceAuthor.execute(${sceneBlueprint.id} retry-${choiceAuthorAttempt})`);
+              choiceOwnerBlockers = choiceResult.success && choiceResult.data
+                ? choiceRealizationFindings(choiceResult.data).filter((finding) => finding.blocking)
+                : [];
             }
 
             // Per-target branch regeneration (preferred over a templated fallback): if the
@@ -2498,7 +2551,7 @@ export class ContentGenerationPhase {
             // fan-out repair) runs uniformly.
             const branchRegenHints = branchTargetHintsByScene.get(sceneBlueprint.id);
             if (
-              (!choiceResult.success || !choiceResult.data)
+              (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0)
               && new Set(sceneBlueprint.leadsTo ?? []).size > 1
               && branchRegenHints && branchRegenHints.length > 0
             ) {
@@ -2510,8 +2563,12 @@ export class ContentGenerationPhase {
                 },
                 `ChoiceAuthor.execute(${sceneBlueprint.id} branch-regen)`,
               );
-              if (branchRegen.success && branchRegen.data && (branchRegen.data.choices?.length ?? 0) > 0) {
+              const branchRegenBlockers = branchRegen.success && branchRegen.data
+                ? choiceRealizationFindings(branchRegen.data).filter((finding) => finding.blocking)
+                : [];
+              if (branchRegen.success && branchRegen.data && (branchRegen.data.choices?.length ?? 0) > 0 && branchRegenBlockers.length === 0) {
                 choiceResult = branchRegen;
+                choiceOwnerBlockers = [];
                 context.emit({ type: 'warning', phase: 'choices', message: `Authored ${sceneBlueprint.id} branch choices via per-target regeneration (one coherent choice per branch) — no templated fallback needed.` });
               }
             }
@@ -2548,7 +2605,7 @@ export class ContentGenerationPhase {
               }
             };
 
-            if (!choiceResult.success || !choiceResult.data) {
+            if (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0) {
               // ChoiceAuthor failed after retries AND per-target regeneration — only now
               // fall back to deterministic templated choices. The scene ships without
               // LLM-authored choices at this point.
@@ -2577,6 +2634,14 @@ export class ContentGenerationPhase {
                 // success path is not the only place these obligations must be honored.
                 ensureCanonicalStateSetters(fallbackChoiceSet.choices, choiceAuthorInput.requiredCanonicalStateIds);
                 applyOnPageContracts(fallbackChoiceSet.choices);
+                const fallbackOwnerBlockers = choiceRealizationFindings(fallbackChoiceSet).filter((finding) => finding.blocking);
+                if (fallbackOwnerBlockers.length > 0) {
+                  throw new PipelineError(
+                    `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} deterministic choice fallback cannot satisfy ${fallbackOwnerBlockers.length} assigned choice task(s).`,
+                    'content_generation',
+                    { agent: 'ChoiceAuthor', context: { sceneId: sceneBlueprint.id, findings: fallbackOwnerBlockers } },
+                  );
+                }
                 choiceSets.push({ ...fallbackChoiceSet, sceneId: sceneBlueprint.id });
                 // Record the fallback's planted flags so later scenes can pay them off,
                 // exactly as the authored path does below.
@@ -2584,6 +2649,15 @@ export class ContentGenerationPhase {
                 context.emit({ type: 'warning', phase: 'choices', message: `Inserted deterministic fallback choice set for ${sceneBlueprint.id} (${fallbackChoiceSet.choices.length} choice(s)) and planted its on-page contracts after ChoiceAuthor failed.` });
               }
             } else {
+            const choiceAdvisories = choiceRealizationFindings(choiceResult.data).filter((finding) => !finding.blocking);
+            if (choiceAdvisories.length > 0) {
+              context.emit({
+                type: 'warning',
+                phase: 'choices',
+                message: `Choice set ${sceneBlueprint.id} has ${choiceAdvisories.length} advisory realization finding(s).`,
+                data: { findings: choiceAdvisories },
+              });
+            }
             ensureCanonicalStateSetters(choiceResult.data.choices, choiceAuthorInput.requiredCanonicalStateIds);
             applyOnPageContracts(choiceResult.data.choices);
             // Branch fan-out repair: a multi-target branch point (leadsTo.size>1) whose
@@ -3697,6 +3771,18 @@ export class ContentGenerationPhase {
         // P3: attempt summaries / phase errors from failed attempts, persisted
         // into the quarantine record and the pipeline error log on abort.
         let lastEncounterFailureDiagnostics: Record<string, unknown> | undefined;
+        const encounterRealizationFindings = (encounter: EncounterStructure | undefined): RealizationTaskGateFinding[] => {
+          const ownerSceneContent = sceneContents.find((candidate) => candidate.sceneId === sceneBlueprint.id);
+          return validateOwnerRealizationTasks({
+            sceneId: sceneBlueprint.id,
+            tasks: sceneBlueprint.realizationTasks,
+            sceneContent: ownerSceneContent,
+            choiceSet: ownerSceneContent ? findChoiceSetForScene(choiceSets, ownerSceneContent) : undefined,
+            encounter,
+            mode: 'owner',
+            currentStage: 'encounter_architect',
+          });
+        };
         const maxEncounterAttempts = 2;
         for (let encAttempt = 1; encAttempt <= maxEncounterAttempts; encAttempt++) {
           // Failure-class-aware retry (P1): prompt feedback only helps content
@@ -3736,8 +3822,14 @@ export class ContentGenerationPhase {
                 if (!turnRealization.passed) {
                   lastEncounterFailure = `EncounterArchitect under-realized authored encounter turn(s):\n${formatEncounterTurnRealizationFeedback(turnRealization)}\nAuthor the missing moment in setupText, outcome narrativeText, nested nextSituation setupText, or storylet beat prose before returning JSON.`;
                 } else {
-                  encounterResult = attemptResult;
-                  break;
+                  const encounterOwnerBlockers = encounterRealizationFindings(attemptResult.data)
+                    .filter((finding) => finding.blocking);
+                  if (encounterOwnerBlockers.length > 0) {
+                    lastEncounterFailure = `EncounterArchitect missed canonical owner-stage realization task(s): ${encounterOwnerBlockers.map((finding) => `${finding.taskId}: ${finding.message}`).join('; ')}`;
+                  } else {
+                    encounterResult = attemptResult;
+                    break;
+                  }
                 }
               }
             } else {
@@ -3814,6 +3906,11 @@ export class ContentGenerationPhase {
               if (templateHits.length > 0) {
                 return `quarantine retry still contains ${templateHits.length} template-prose signature(s)`;
               }
+              const quarantineOwnerBlockers = encounterRealizationFindings(structure)
+                .filter((finding) => finding.blocking);
+              if (quarantineOwnerBlockers.length > 0) {
+                return `quarantine retry missed canonical owner-stage realization task(s): ${quarantineOwnerBlockers.map((finding) => `${finding.taskId}: ${finding.message}`).join('; ')}`;
+              }
               const sanitizedStructure = scrubPreRevealIdentityReferences(
                 structure,
                 sceneBlueprint.identityScheduleContracts,
@@ -3865,6 +3962,16 @@ export class ContentGenerationPhase {
 
         // Only register encounter + run validation if EncounterArchitect succeeded
         if (encounterResult?.success && encounterResult.data) {
+          const encounterAdvisories = encounterRealizationFindings(encounterResult.data)
+            .filter((finding) => !finding.blocking);
+          if (encounterAdvisories.length > 0) {
+            context.emit({
+              type: 'warning',
+              phase: 'encounters',
+              message: `Encounter ${sceneBlueprint.id} has ${encounterAdvisories.length} advisory realization finding(s).`,
+              data: { findings: encounterAdvisories },
+            });
+          }
           encounterResult.data = scrubPreRevealIdentityReferences(
             encounterResult.data,
             sceneBlueprint.identityScheduleContracts,

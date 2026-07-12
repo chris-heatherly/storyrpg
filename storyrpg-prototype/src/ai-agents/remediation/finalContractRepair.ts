@@ -57,6 +57,8 @@ export interface ContractRepairReport {
     repairHandler?: string;
     missingEvidenceAtoms?: string[];
     requiredEvidenceAtoms?: string[];
+    realizationFingerprint?: string;
+    matchedForbiddenAtoms?: string[];
   }>;
 }
 
@@ -162,6 +164,7 @@ function stableIssueMessage(issue: ContractRepairIssue): string {
 }
 
 export function contractRepairIssueFingerprint(issue: ContractRepairIssue): string {
+  if (issue.realizationFingerprint) return `realization::${issue.realizationFingerprint}`;
   const message = issue.message ?? '';
   const moment = extractQuotedMoment(message) ?? message;
   return [

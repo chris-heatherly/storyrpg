@@ -19,8 +19,7 @@ describe('validateOwnerRealizationTasks', () => {
           kind: 'lexical',
           required: true,
         }],
-        requiredSurface: ['beat_text'],
-        routePolicy: 'owner_surface',
+        target: { scope: 'owner', surfaces: ['beat_text'] },
         sourceContractIds: ['event:ep1-u8'],
         blocking: true,
       }],
@@ -48,8 +47,7 @@ describe('validateOwnerRealizationTasks', () => {
           required: true,
           polarity: 'forbidden',
         }],
-        requiredSurface: ['beat_text'],
-        routePolicy: 'owner_surface',
+        target: { scope: 'owner', surfaces: ['beat_text'] },
         sourceContractIds: ['rel-stela'],
         blocking: true,
       }],
@@ -74,8 +72,7 @@ describe('validateOwnerRealizationTasks', () => {
           { id: 'age', description: 'age', acceptedPatterns: ['34-year-old american'], sourceText: 'A 34-year-old American food writer.', kind: 'semantic', required: true },
           { id: 'work', description: 'work', acceptedPatterns: ['american food'], sourceText: 'A 34-year-old American food writer.', kind: 'semantic', required: true },
         ],
-        requiredSurface: ['beat_text'],
-        routePolicy: 'owner_surface',
+        target: { scope: 'owner', surfaces: ['beat_text'] },
         sourceContractIds: ['role'],
         blocking: true,
       }],
@@ -99,7 +96,7 @@ describe('validateOwnerRealizationTasks', () => {
           { id: 'humiliation', description: 'humiliation', acceptedPatterns: ['humiliated'], kind: 'semantic', required: true },
           { id: 'unknown', description: 'unknown', acceptedPatterns: ['privately unknown'], kind: 'semantic', required: true },
         ],
-        requiredSurface: ['beat_text'], routePolicy: 'owner_surface', sourceContractIds: ['wound'], blocking: true,
+        target: { scope: 'owner', surfaces: ['beat_text'] }, sourceContractIds: ['wound'], blocking: true,
       }],
       sceneContent: { beats: [{ id: 'b1', text: 'The cancelled engagement left her publicly humiliated.' }] },
     });
@@ -119,8 +116,7 @@ describe('validateOwnerRealizationTasks', () => {
         sceneId: 's1-2',
         evidenceScope: { npcId: 'char-stela-pavel' },
         evidenceAtoms: [{ id: 'friend', description: 'friend', acceptedPatterns: ['friend'], kind: 'relationship_label', required: true, polarity: 'forbidden' }],
-        requiredSurface: ['beat_text'],
-        routePolicy: 'owner_surface',
+        target: { scope: 'owner', surfaces: ['beat_text'] },
         sourceContractIds: ['rel-stela'],
         blocking: true,
       }],
@@ -143,8 +139,7 @@ describe('validateOwnerRealizationTasks', () => {
         repairHandler: 'premise_realization',
         sceneId: 's1-1',
         evidenceAtoms: [{ id: 'orders', description: 'orders second', acceptedPatterns: ['orders second'], sourceText: 'The observer orders second.', kind: 'semantic', required: true }],
-        requiredSurface: ['beat_text'],
-        routePolicy: 'owner_surface',
+        target: { scope: 'owner', surfaces: ['beat_text'] },
         sourceContractIds: ['identity'],
         blocking: true,
       }],
@@ -159,10 +154,10 @@ describe('validateOwnerRealizationTasks', () => {
       sceneId: 's1',
       tasks: [{
         id: 'task:choice', contractId: 'choice', episodeNumber: 1,
-        ownerStage: 'choice_author', repairHandler: 'scene_prose', sceneId: 's1',
+        ownerStage: 'choice_author', repairHandler: 'choice_reauthor', sceneId: 's1',
         evidenceAtoms: [{ id: 'tell-truth', description: 'truth choice', acceptedPatterns: ['tell her the truth'], kind: 'lexical', required: true }],
         target: { scope: 'owner', surfaces: ['choice_text'] },
-        requiredSurface: ['choice_text'], routePolicy: 'owner_surface', sourceContractIds: ['choice'], blocking: true,
+        sourceContractIds: ['choice'], blocking: true,
       }],
       sceneContent: { beats: [{ text: 'You decide to tell her the truth.' }] },
       choiceSet: { choices: [{ text: 'Stay silent' }] },
@@ -175,10 +170,8 @@ describe('validateOwnerRealizationTasks', () => {
     const task = {
       id: 'task:threshold', contractId: 'threshold', eventId: 'threat', episodeNumber: 1,
       ownerStage: 'encounter_architect' as const, repairHandler: 'encounter_route' as const, sceneId: 's1',
-      outcomeTier: 'victory',
       evidenceAtoms: [{ id: 'gone', description: 'departure', acceptedPatterns: ['vanishes'], kind: 'route' as const, required: true }],
-      target: { scope: 'route_terminal' as const, outcomeTier: 'victory', surfaces: ['terminal_storylet' as const] },
-      requiredSurface: ['terminal_storylet' as const], routePolicy: 'terminal_required' as const,
+      target: { scope: 'route_terminal' as const, outcomeTier: 'victory', surfaces: ['encounter_outcome' as const] },
       sourceContractIds: ['threat'], blocking: true,
     };
     const misplaced = validateOwnerRealizationTasks({
@@ -200,10 +193,9 @@ describe('validateOwnerRealizationTasks', () => {
   it('preserves advisory severity and owner-stage filtering', () => {
     const task = {
       id: 'task:advisory', contractId: 'advisory', episodeNumber: 1,
-      ownerStage: 'choice_author' as const, repairHandler: 'scene_prose' as const, sceneId: 's1',
+      ownerStage: 'choice_author' as const, repairHandler: 'choice_reauthor' as const, sceneId: 's1',
       evidenceAtoms: [{ id: 'echo', description: 'echo', acceptedPatterns: ['remember'], kind: 'semantic' as const, required: true }],
       target: { scope: 'owner' as const, surfaces: ['choice_text' as const] },
-      requiredSurface: ['choice_text' as const], routePolicy: 'owner_surface' as const,
       sourceContractIds: ['advisory'], blocking: false,
     };
     const skipped = validateOwnerRealizationTasks({
@@ -225,7 +217,7 @@ describe('validateOwnerRealizationTasks', () => {
         ownerStage: 'encounter_architect', repairHandler: 'encounter_route', sceneId: 's1',
         evidenceAtoms: [{ id: 'recognition', description: 'recognition', acceptedPatterns: ['recognizes you'], kind: 'route', required: true }],
         target: { scope: 'any_route', outcomeTiers: ['victory', 'defeat'], surfaces: ['encounter_outcome'] },
-        requiredSurface: ['encounter_outcome'], routePolicy: 'any_route', sourceContractIds: ['route'], blocking: true,
+        sourceContractIds: ['route'], blocking: true,
       }],
       encounter: {
         outcomes: {
@@ -236,5 +228,49 @@ describe('validateOwnerRealizationTasks', () => {
     });
 
     expect(findings).toEqual([]);
+  });
+
+  it('does not combine partial evidence from different routes', () => {
+    const findings = validateOwnerRealizationTasks({
+      sceneId: 's1',
+      tasks: [{
+        id: 'task:any-route-complete', contractId: 'route', eventId: 'route', episodeNumber: 1,
+        ownerStage: 'encounter_architect', repairHandler: 'encounter_route', sceneId: 's1',
+        evidenceAtoms: [
+          { id: 'rescued', description: 'rescue', acceptedPatterns: ['rescues the child'], kind: 'route', required: true },
+          { id: 'vanishes', description: 'departure', acceptedPatterns: ['vanishes into the rain'], kind: 'route', required: true },
+        ],
+        target: { scope: 'any_route', outcomeTiers: ['victory', 'defeat'], surfaces: ['encounter_outcome'] },
+        sourceContractIds: ['route'], blocking: true,
+      }],
+      encounter: {
+        outcomes: {
+          victory: { outcomeText: 'She rescues the child.' },
+          defeat: { outcomeText: 'The stranger vanishes into the rain.' },
+        },
+      },
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.code).toBe('OWNER_REALIZATION_MISSING');
+  });
+
+  it('does not accept route evidence from a surface outside the target contract', () => {
+    const findings = validateOwnerRealizationTasks({
+      sceneId: 's1',
+      tasks: [{
+        id: 'task:route-surface', contractId: 'route', eventId: 'route', episodeNumber: 1,
+        ownerStage: 'encounter_architect', repairHandler: 'encounter_route', sceneId: 's1',
+        evidenceAtoms: [{ id: 'recognized', description: 'recognition', acceptedPatterns: ['recognizes you'], kind: 'route', required: true }],
+        target: { scope: 'route_path', outcomeTier: 'victory', surfaces: ['encounter_outcome'] },
+        sourceContractIds: ['route'], blocking: true,
+      }],
+      encounter: {
+        phases: [{ beats: [{ text: 'The doorman recognizes you.' }] }],
+        outcomes: { victory: { outcomeText: 'The door opens.' } },
+      },
+    });
+
+    expect(findings.map((finding) => finding.code)).toEqual(['OWNER_REALIZATION_MISSING']);
   });
 });

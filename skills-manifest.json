@@ -27,6 +27,26 @@
     "cursor": "storyrpg-prototype/.cursor/skills",
     "codex": "codex-skills"
   },
+  "harnesses": [
+    {
+      "id": "claude-code",
+      "model": "claude",
+      "defaultTarget": "storyrpg-prototype/.claude/skills",
+      "targetEnv": "STORYRPG_CLAUDE_SKILLS_DIR"
+    },
+    {
+      "id": "cursor",
+      "model": "cursor",
+      "defaultTarget": "storyrpg-prototype/.cursor/skills",
+      "targetEnv": "STORYRPG_CURSOR_SKILLS_DIR"
+    },
+    {
+      "id": "codex",
+      "model": "codex",
+      "defaultTarget": "~/.codex/skills",
+      "targetEnv": "STORYRPG_CODEX_SKILLS_DIR"
+    }
+  ],
   "capabilities": [
     {
       "id": "pipeline-orchestration",
@@ -134,7 +154,7 @@
         "cursor": ["testing-tooling"],
         "codex": ["storyrpg-testing-validation"]
       },
-      "requiredPatterns": ["audit:skills", "reader:typecheck", "generator:typecheck", "check:reader-boundary"]
+      "requiredPatterns": ["audit:skills", "sync:skills", "reader:typecheck", "generator:typecheck", "check:reader-boundary"]
     },
     {
       "id": "documentation-skill-sync",
@@ -143,7 +163,7 @@
         "cursor": ["update-docs"],
         "codex": ["storyrpg-testing-validation"]
       },
-      "requiredPatterns": ["skills-manifest\\.json", "audit:skills", "Claude.*Cursor.*Codex|Codex.*Cursor.*Claude"]
+      "requiredPatterns": ["skills-manifest\\.json", "audit:skills", "sync:skills", "Claude.*Cursor.*Codex|Codex.*Cursor.*Claude"]
     }
   ],
   "forbiddenPatterns": [

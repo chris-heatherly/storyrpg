@@ -116,6 +116,8 @@ don't recreate references to them.
 Use `skills-manifest.json` as the capability map. Update the mapped Claude, Cursor, and Codex skills
 when operational facts change; grouping and depth may differ, but triggers and load-bearing facts
 must agree. Run `npm run audit:skills` and update AGENTS.md when a capability changes.
+Then run `npm run sync:skills` so every manifest-declared Claude, Cursor, Codex, or future harness
+target receives its model-specific catalog.
 
 ## Step 5 — Summarize
 

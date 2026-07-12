@@ -14,7 +14,7 @@ defaults:
 
 jobs:
   validate:
-    name: typecheck · lint · test · boundary · monolith
+    name: skills · typecheck · lint · test · boundary · monolith
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +24,8 @@ jobs:
           cache: npm
           cache-dependency-path: storyrpg-prototype/package-lock.json
       - run: npm ci
+      - name: Cross-model skill capability audit
+        run: npm run audit:skills
       - name: Typecheck (all targets)
         run: npm run typecheck
       - name: Lint (max-warnings ratchet)

@@ -23,7 +23,9 @@ This skill is the source of truth for how to author, run, and extend tests. For 
 ## The `npm run validate` contract
 
 Run `npm run audit:skills` after changing pipeline contracts, commands, auth/media/package behavior,
-or any Claude, Cursor, or Codex skill. `skills-manifest.json` enforces capability parity.
+or any Claude, Cursor, or Codex skill. `skills-manifest.json` enforces capability parity. Run
+`npm run sync:skills` to update all harness targets and `npm run sync:skills:check` for a read-only
+installed-target drift check.
 Run `npm run check:reader-boundary` for every Reader/import/deployment-boundary change.
 
 `npm run validate` runs in CI on every push. It is:

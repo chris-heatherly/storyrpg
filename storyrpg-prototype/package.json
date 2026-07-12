@@ -33,6 +33,8 @@
     "check:reader-boundary": "node scripts/check-reader-boundary.mjs",
     "check:monolith-size": "node scripts/check-monolith-size.mjs",
     "audit:skills": "node scripts/audit-skills.mjs",
+    "sync:skills": "node scripts/sync-skills.mjs",
+    "sync:skills:check": "node scripts/sync-skills.mjs --check",
     "verify:reader": "npm run reader:export && node scripts/check-reader-boundary.mjs --require-bundle",
     "check:generator-bundle": "node scripts/scan-bundle-secrets.mjs dist-generator-internal",
     "verify:generator": "npm run generator:export:internal && node scripts/scan-bundle-secrets.mjs dist-generator-internal --require-bundle",

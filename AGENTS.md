@@ -163,6 +163,8 @@ npm run check:reader-boundary  # Reader must not import generator code (import-g
 npm run verify:reader          # Build dist-reader + scan the bundle for leaked secret VALUES
 npm run check:monolith-size    # Fail if the two monoliths grow past baseline
 npm run audit:skills           # Check Claude/Cursor/Codex capability parity and stale skill facts
+npm run sync:skills            # Audit + sync every manifest harness target (supports per-harness env overrides)
+npm run sync:skills:check      # Check installed harness targets for drift without writing
 
 # Generation (run by the proxy worker; CLI entry points for local runs):
 npm run generate          # CLI story generation
@@ -285,4 +287,4 @@ All documentation lives in `docs/` at the workspace root:
 | `storyrpg-prototype/.cursor/skills/` | Cursor agent skills (deep): pipeline debugging, validation, orchestration, agent development, image generation, audio narration, story playback, proxy server, reader-generator-safety, testing tooling, UX design, story structure rules, prose/character/twist/worldbuilding craft, analytics-integration, update docs |
 | `codex-skills/` | Codex skills (grouped, each + `agents/openai.yaml`) covering the same capability manifest at Codex-appropriate granularity. |
 | `skills-manifest.json` | Canonical cross-model capability map and required load-bearing facts. |
-| Skill-set sync | Run `npm run audit:skills` after skill, pipeline-contract, package, auth, media, reader-boundary, or command changes. Different grouping is allowed; capability coverage and operational facts must match. |
+| Skill-set sync | Run `npm run audit:skills` after relevant changes and `npm run sync:skills` to update every manifest-declared harness target. Override destinations with `STORYRPG_CLAUDE_SKILLS_DIR`, `STORYRPG_CURSOR_SKILLS_DIR`, or `STORYRPG_CODEX_SKILLS_DIR`. Different grouping is allowed; capability coverage and operational facts must match. |

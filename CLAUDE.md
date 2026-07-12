@@ -88,7 +88,8 @@ All app code and commands live in `storyrpg-prototype/`. Run commands from there
 These are concise; richer Cursor-targeted skills live under `storyrpg-prototype/.cursor/skills/`,
 and Codex-targeted skills under `codex-skills/` (each with `agents/openai.yaml`). Capability grouping
 may differ, but `skills-manifest.json` defines shared coverage and load-bearing facts. Run
-`npm run audit:skills` whenever those facts or catalogs change.
+`npm run audit:skills` whenever those facts or catalogs change, then `npm run sync:skills` to update
+all manifest-declared harness discovery targets.
 
 ## Recent context
 

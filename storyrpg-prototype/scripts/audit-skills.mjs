@@ -45,6 +45,20 @@ function readSkill(model, skillName) {
   return content;
 }
 
+const harnessIds = new Set();
+const harnessModels = new Set();
+for (const harness of manifest.harnesses ?? []) {
+  if (!harness.id || harnessIds.has(harness.id)) fail(`invalid or duplicate harness id: ${harness.id}`);
+  else harnessIds.add(harness.id);
+  if (!manifest.models[harness.model]) fail(`${harness.id}: unknown model ${harness.model}`);
+  else harnessModels.add(harness.model);
+  if (!harness.defaultTarget) fail(`${harness.id}: missing defaultTarget`);
+  if (!harness.targetEnv) fail(`${harness.id}: missing targetEnv`);
+}
+for (const model of Object.keys(manifest.models)) {
+  if (!harnessModels.has(model)) fail(`${model}: no harness distribution target declared`);
+}
+
 const allSkillContent = [];
 const mappedSkills = new Map(Object.keys(manifest.models).map((model) => [model, new Set()]));
 for (const capability of manifest.capabilities) {

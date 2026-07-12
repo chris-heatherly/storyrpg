@@ -9,6 +9,8 @@ description: Use this skill when deciding how to test or validate StoryRPG chang
 
 Run `npm run audit:skills` after changing pipeline contracts, commands, auth/media/package behavior,
 or any Claude, Cursor, or Codex skill. `skills-manifest.json` defines cross-model capability parity.
+Run `npm run sync:skills` to update every harness target and `npm run sync:skills:check` to detect
+installed-target drift without writing.
 
 Run the smallest check that proves the changed behavior:
 

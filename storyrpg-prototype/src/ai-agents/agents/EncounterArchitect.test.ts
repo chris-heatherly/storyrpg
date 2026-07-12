@@ -831,6 +831,46 @@ describe('Phase prompt builders', () => {
     expect(prompt).toContain('defeat');
     expect(prompt).toContain('escape');
   });
+
+  it('routes immutable outcome evidence into its owning Phase 4 storylet and validates the authored draft', () => {
+    const rescueTask = {
+      id: 'task:rescue:victory', contractId: 'event:rescue', episodeNumber: 1,
+      ownerStage: 'encounter_architect', repairHandler: 'encounter_route', sceneId: input.sceneId,
+      artifactPath: 'encounter', sourceContractIds: ['event:rescue'], blocking: true,
+      target: { scope: 'route_path', outcomeTier: 'victory', surfaces: ['terminal_storylet'] },
+      evidenceAtoms: [{
+        id: 'rescue:victory', description: 'rescue action', acceptedPatterns: ['rescues you', 'pulls you clear'],
+        kind: 'route', required: true,
+      }],
+    } as const;
+    const thresholdTask = {
+      ...rescueTask,
+      id: 'task:threshold:victory', contractId: 'event:threshold', sourceContractIds: ['event:threshold'],
+      target: { scope: 'route_terminal', outcomeTier: 'victory', surfaces: ['terminal_storylet'] },
+      evidenceAtoms: [{
+        id: 'threshold:victory', description: 'threshold disappearance', acceptedPatterns: ['apartment door', 'vanishes'],
+        kind: 'route', required: true,
+      }],
+    } as const;
+    const taskedInput = { ...input, realizationTasks: [rescueTask, thresholdTask] as any };
+    const brief = { npcDynamics: [], knockOnEffects: [], briefText: '' };
+    const prompt = (architect as any).buildPhase4StoryletPrompt(taskedInput, brief, 'victory');
+    expect(prompt).toContain('CANONICAL ROUTE EVIDENCE (BLOCKING)');
+    expect(prompt).toContain('task:rescue:victory');
+    expect(prompt).toContain('rescues you / pulls you clear');
+    expect(prompt).toContain('task:threshold:victory');
+
+    const missing = (architect as any).hydratePhase4StoryletDraft(taskedInput, 'victory', {
+      beats: [{ text: 'You reach safety while the night settles behind you.' }],
+    });
+    expect(() => (architect as any).validatePhase4StoryletSlot(missing, 'victory', taskedInput))
+      .toThrow(/missed canonical route evidence/);
+
+    const realized = (architect as any).hydratePhase4StoryletDraft(taskedInput, 'victory', {
+      beats: [{ text: 'The stranger rescues you, pulls you clear, and walks you to the apartment door before he vanishes.' }],
+    });
+    expect(() => (architect as any).validatePhase4StoryletSlot(realized, 'victory', taskedInput)).not.toThrow();
+  });
 });
 
 // ========================================================================

@@ -31,6 +31,7 @@ import {
 } from '../schemas/encounterSchemas';
 import type { NarrativeCharacterPresenceContract, NarrativeRealizationTask } from '../../types/narrativeContract';
 import { describeNarrativeEvidenceTarget } from '../pipeline/narrativeContractMigration';
+import { validateOwnerRealizationTasks } from '../pipeline/realizationTaskGate';
 
 /**
  * Distinctive, non-interpolated fragments of the deterministic fallback prose
@@ -5914,6 +5915,54 @@ Return ONLY the JSON object.`;
     if (!Array.isArray(storylet.consequences)) storylet.consequences = [];
     const lastBeat = storylet.beats[storylet.beats.length - 1];
     if (lastBeat) lastBeat.isTerminal = true;
+    const ownerBlockers = validateOwnerRealizationTasks({
+      sceneId: input.sceneId,
+      tasks: this.phase4RealizationTasks(input, slot),
+      encounter: { storylets: { [slot]: storylet } },
+      mode: 'owner',
+      currentStage: 'encounter_architect',
+    }).filter((finding) => finding.blocking);
+    if (ownerBlockers.length > 0) {
+      throw new Error(
+        `Phase 4 ${slot} storylet missed canonical route evidence: ${ownerBlockers.map((finding) => `${finding.taskId}: ${finding.missingEvidenceAtoms?.join(', ') || finding.message}`).join('; ')}`,
+      );
+    }
+  }
+
+  private phase4OutcomeTiers(slot: Phase4StoryletSlot): string[] {
+    switch (slot) {
+      case 'victory': return ['victory', 'success'];
+      case 'partialVictory': return ['partialVictory', 'complicated'];
+      case 'defeat': return ['defeat', 'failure'];
+      case 'escape': return ['escape'];
+    }
+  }
+
+  private phase4RealizationTasks(
+    input: EncounterArchitectInput,
+    slot: Phase4StoryletSlot,
+  ): NarrativeRealizationTask[] {
+    const outcomeTiers = new Set(this.phase4OutcomeTiers(slot));
+    return (input.realizationTasks ?? []).filter((task) =>
+      task.ownerStage === 'encounter_architect'
+      && (task.target.scope === 'route_path' || task.target.scope === 'route_terminal')
+      && outcomeTiers.has(task.target.outcomeTier)
+      && task.target.surfaces.includes('terminal_storylet'),
+    );
+  }
+
+  private buildPhase4RealizationTaskSection(
+    input: EncounterArchitectInput,
+    slot: Phase4StoryletSlot,
+  ): string {
+    const tasks = this.phase4RealizationTasks(input, slot);
+    if (tasks.length === 0) return '';
+    return `
+## CANONICAL ROUTE EVIDENCE (BLOCKING)
+This ${slot} draft is the terminal storylet for route aliases ${this.phase4OutcomeTiers(slot).join(' / ')}.
+Every required evidence atom below must appear in this draft's beat text. Use at least one accepted phrase per atom, naturally in the fiction; shared encounter setup and sibling outcomes do not count.
+${tasks.map((task) => `- ${task.id}: ${task.evidenceAtoms.filter((atom) => atom.polarity !== 'forbidden').map((atom) => atom.acceptedPatterns.join(' / ')).join(' | ')}`).join('\n')}
+`;
   }
 
   private expectedPhase4BeatCount(slot: Phase4StoryletSlot): number {
@@ -6072,6 +6121,7 @@ ${this.formatEncounterStoryCircleTarget(input)}
 ## Genre-Aware Jeopardy: ${jeopardyLine}
 ${relationshipSection}
 ${safetyBoundary}
+${this.buildPhase4RealizationTaskSection(input, slot)}
 
 ## TASK
 Generate ONLY the authored prose draft for the "${slot}" aftermath.

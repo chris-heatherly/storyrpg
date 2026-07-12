@@ -104,7 +104,7 @@ import {
   PixarStakes, CinematicImageDescription, EncounterVisualContract
 } from '../../types';
 import { PipelineEvent, PipelineEventHandler } from './events';
-import { emitEpisodeGenerationStart, handleEpisodeGenerationFailure } from './episodeGenerationEvents';
+import { commitEpisodeGenerationAfterLock, emitEpisodeGenerationStart, handleEpisodeGenerationFailure } from './episodeGenerationEvents';
 import {
   type GenerationPlan,
   applyEventToPlan,
@@ -5440,16 +5440,8 @@ export class FullStoryPipeline {
               outputDirectory,
               previousSummary,
             });
-            if (generated.episode) episodes.push(generated.episode);
-            if (
-              generated.episode &&
-              generated.episodeBrief &&
-              generated.blueprint &&
-              generated.sceneContents &&
-              generated.choiceSets &&
-              generated.encounters
-            ) {
-              authoredEpisodeArtifacts.push({
+            const authoredArtifact = (generated.episode && generated.episodeBrief && generated.blueprint && generated.sceneContents && generated.choiceSets && generated.encounters)
+              ? {
                 episode: generated.episode,
                 episodeBrief: generated.episodeBrief,
                 blueprint: generated.blueprint,
@@ -5457,43 +5449,51 @@ export class FullStoryPipeline {
                 sceneContents: generated.sceneContents,
                 choiceSets: generated.choiceSets,
                 encounters: generated.encounters,
-              });
-            }
-            episodeResults.push(generated.result);
-            if (generated.qaReport) episodeQAReports.push(generated.qaReport);
-            if (generated.bestPracticesReport) episodeBPReports.push(generated.bestPracticesReport);
-            // WS1a: watermark only after content + canon seal both succeeded, so
-            // a resume never rehydrates an episode that failed its season gate.
-            // (In run-graph mode the artifact store writes the same watermark
-            // when the step's output persists — same files, same ordering.)
-            if (generated.episode) {
-              const episodePlanningRefs = await persistEpisodePlanningArtifacts({
-                artifactRuntime,
-                episodeNumber: i,
-                blueprint: generated.blueprint,
-                branchAnalysis: generated.branchAnalysis,
-                sceneContents: generated.sceneContents,
-                choiceSets: generated.choiceSets,
-                encounters: generated.encounters,
-                emit: this.emit.bind(this),
-              });
-              artifactRuntime.setEpisodeUpstreamRefs(i, episodePlanningRefs);
-              await this.lockGeneratedEpisode({
-                episodeNumber: i,
-                title: spec.outline.title,
-                episode: generated.episode,
-                blueprint: generated.blueprint,
-                episodeBrief: generated.episodeBrief,
-                baseBrief,
-                analysis,
-                characterBible,
-                qaReport: generated.qaReport,
-                bestPracticesReport: generated.bestPracticesReport,
-                outputDirectory,
-                artifactRuntime,
-                writeWatermark: opts.writeWatermark,
-              });
-            }
+              }
+              : undefined;
+            await commitEpisodeGenerationAfterLock({
+              episode: generated.episode,
+              result: generated.result,
+              artifact: authoredArtifact,
+              qaReport: generated.qaReport,
+              bestPracticesReport: generated.bestPracticesReport,
+              episodes,
+              results: episodeResults,
+              artifacts: authoredEpisodeArtifacts,
+              qaReports: episodeQAReports,
+              bestPracticesReports: episodeBPReports,
+              // WS1a: publish only after content + canon seal both succeed, so
+              // final assembly and resume never see an episode that failed its
+              // incremental contract.
+              lockEpisode: async () => {
+                const episodePlanningRefs = await persistEpisodePlanningArtifacts({
+                  artifactRuntime,
+                  episodeNumber: i,
+                  blueprint: generated.blueprint,
+                  branchAnalysis: generated.branchAnalysis,
+                  sceneContents: generated.sceneContents,
+                  choiceSets: generated.choiceSets,
+                  encounters: generated.encounters,
+                  emit: this.emit.bind(this),
+                });
+                artifactRuntime.setEpisodeUpstreamRefs(i, episodePlanningRefs);
+                await this.lockGeneratedEpisode({
+                  episodeNumber: i,
+                  title: spec.outline.title,
+                  episode: generated.episode!,
+                  blueprint: generated.blueprint,
+                  episodeBrief: generated.episodeBrief,
+                  baseBrief,
+                  analysis,
+                  characterBible,
+                  qaReport: generated.qaReport,
+                  bestPracticesReport: generated.bestPracticesReport,
+                  outputDirectory,
+                  artifactRuntime,
+                  writeWatermark: opts.writeWatermark,
+                });
+              },
+            });
             completedEpisodeCount += 1;
             if (this.generationPlan) {
               markEpisode(this.generationPlan, i, 'complete');

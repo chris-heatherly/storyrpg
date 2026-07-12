@@ -24,7 +24,7 @@ import {
   EPISODE_EVENT_PLAN_VERSION,
   NARRATIVE_CONTRACT_GRAPH_VERSION,
 } from '../../types/narrativeContract';
-import type { PlannedScene, SceneOwnedEvent, SeasonScenePlan } from '../../types/scenePlan';
+import type { PlannedScene, SceneOwnedEvent, SeasonScenePlan, SetupPayoffEdge } from '../../types/scenePlan';
 import type { EpisodeSpineContract, EpisodeSpineUnit } from '../../types/episodeSpine';
 import { stableHash } from './artifacts/store';
 import { detectPrimaryStoryEventCues, isQuestionShapedAnchor } from '../remediation/storyEventCues';
@@ -1849,5 +1849,54 @@ export function compileAndApplyNarrativeContracts(
       context: { invalidEpisodes: invalidPlans.map((eventPlan) => eventPlan.episodeNumber) },
     });
   }
-  return { ...scenePlan, narrativeContractGraph: graph, episodeEventPlans };
+  const setupPayoffEdges = projectSetupPayoffEdgesFromGraph(graph, scenePlan.scenes);
+  const edgesByFrom = new Map<string, string[]>();
+  const edgesByTo = new Map<string, string[]>();
+  for (const edge of setupPayoffEdges) {
+    edgesByFrom.set(edge.from, [...(edgesByFrom.get(edge.from) ?? []), edge.to]);
+    edgesByTo.set(edge.to, [...(edgesByTo.get(edge.to) ?? []), edge.from]);
+  }
+  for (const scene of scenePlan.scenes) {
+    scene.setsUp = [...(edgesByFrom.get(scene.id) ?? [])];
+    scene.paysOff = [...(edgesByTo.get(scene.id) ?? [])];
+  }
+  return {
+    ...scenePlan,
+    narrativeContractGraph: graph,
+    episodeEventPlans,
+    // Legacy setup/payoff consumers receive a deterministic projection of the
+    // graph. They no longer remain an independent source of event identity.
+    setupPayoffEdges,
+  };
+}
+
+/**
+ * Project only canonical `pays_off` dependencies back into the legacy scene
+ * edge shape. The reader never sees this metadata; keeping the projection
+ * deterministic lets existing budget/validator consumers migrate without
+ * allowing a stale hand-authored edge to create narrative truth on its own.
+ */
+export function projectSetupPayoffEdgesFromGraph(
+  graph: NarrativeContractGraph,
+  scenes: PlannedScene[],
+): SetupPayoffEdge[] {
+  const eventById = new Map(graph.events.map((event) => [event.id, event]));
+  const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
+  const projected: SetupPayoffEdge[] = [];
+  for (const dependency of graph.dependencies) {
+    if (dependency.relation !== 'pays_off') continue;
+    const fromEvent = eventById.get(dependency.fromEventId);
+    const toEvent = dependency.toEventId ? eventById.get(dependency.toEventId) : undefined;
+    const from = fromEvent?.ownerSceneId;
+    const to = toEvent?.ownerSceneId ?? dependency.targetSceneIds[0];
+    if (!from || !to || !sceneById.has(from) || !sceneById.has(to)) continue;
+    projected.push({
+      from,
+      to,
+      description: dependency.description,
+      span: fromEvent?.episodeNumber === toEvent?.episodeNumber ? 'same_episode' : 'cross_episode',
+    });
+  }
+  return [...new Map(projected.map((edge) => [`${edge.from}|${edge.to}`, edge])).values()]
+    .sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
 }

@@ -6,6 +6,7 @@ import type {
   NarrativeRealizationRecord,
 } from '../../../types/narrativeContract';
 import { collectReaderFacingTexts } from '../../validators/encounterTextSurfaces';
+import { validateOwnerRealizationTasks } from '../realizationTaskGate';
 
 export interface ContextObligation {
   id: string;
@@ -202,6 +203,20 @@ export function deriveEpisodeContextOut(params: {
 
   const eventEvidenceStatus = (event: NarrativeEventContract, prose: string): 'resolved' | 'partially_realized' | 'blocked' => {
     const requirements = event.evidenceRequirements ?? [];
+    const ownerTasks = (params.graph?.realizationTasks ?? []).filter((task) =>
+      task.eventId === event.id && task.target.scope === 'owner' && task.blocking,
+    );
+    if (requirements.length === 0 && ownerTasks.length > 0) {
+      const ownerFindings = validateOwnerRealizationTasks({
+        sceneId: event.ownerSceneId ?? 'unknown',
+        tasks: ownerTasks,
+        sceneContent: params.episode.scenes.find((scene) => scene.id === event.ownerSceneId),
+        mode: 'final_regression',
+      });
+      const missing = ownerFindings.filter((finding) => finding.code === 'OWNER_REALIZATION_MISSING');
+      if (missing.length === 0) return 'resolved';
+      return missing.length < ownerTasks.length ? 'partially_realized' : 'blocked';
+    }
     const failed = requirements.filter((requirement) =>
       requirement.blocking
       && !requirement.acceptedPatterns.some((pattern) => requirement.requiredExactText

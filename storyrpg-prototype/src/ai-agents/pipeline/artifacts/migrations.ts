@@ -1,5 +1,9 @@
 import type { ArtifactCurrentIndex, ArtifactRef, PipelineArtifact } from './types';
 import { ARTIFACT_SCHEMA_VERSION, defaultValidationSummary } from './types';
+import {
+  normalizePersistedNarrativeContractGraph,
+  normalizePersistedSeasonScenePlan,
+} from '../narrativeContractMigration';
 
 interface LegacyArtifactCurrentIndex {
   version: 1;
@@ -29,9 +33,15 @@ export function migrateArtifactEnvelope<T>(raw: unknown, expectedRef?: ArtifactR
   if (artifact.schemaVersion !== 1 && artifact.schemaVersion !== ARTIFACT_SCHEMA_VERSION) return null;
   if (expectedRef && (artifact.artifactId !== expectedRef.artifactId || artifact.payloadHash !== expectedRef.payloadHash)) return null;
   if (artifact.schemaVersion === ARTIFACT_SCHEMA_VERSION) return artifact;
+  const migratedPayload = artifact.kind === 'narrative-contract-graph'
+    ? normalizePersistedNarrativeContractGraph(artifact.payload as never)
+    : artifact.kind === 'scene-plan'
+      ? normalizePersistedSeasonScenePlan(artifact.payload as never)
+      : artifact.payload;
   return {
     ...artifact,
     schemaVersion: ARTIFACT_SCHEMA_VERSION,
+    payload: migratedPayload as T,
     status: artifact.status ?? 'valid',
     upstream: artifact.upstream ?? [],
     provenance: {

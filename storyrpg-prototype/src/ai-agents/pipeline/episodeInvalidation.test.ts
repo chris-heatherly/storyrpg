@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { invalidateEpisodes, planDependencyAwareForwardRepair, planEpisodeInvalidation } from './episodeInvalidation';
+import { invalidateDependencyAwareEpisodes, invalidateEpisodes, planDependencyAwareForwardRepair, planEpisodeInvalidation } from './episodeInvalidation';
 import {
   type ArtifactLoader,
   type ArtifactSaver,
@@ -76,6 +76,33 @@ describe('planEpisodeInvalidation', () => {
     await completeEpisodes(io, [1, 3]); // 2 never finished
     const plan = planEpisodeInvalidation({ target: 2, episodeNumbers: [1, 2, 3], load: io.load });
     expect(plan).toEqual({ target: 2, invalidated: [3], kept: [1] });
+  });
+});
+
+describe('invalidateDependencyAwareEpisodes', () => {
+  it('tombstones the changed episode and dependency-affected payoffs while leaving unrelated later episodes resumable', async () => {
+    const io = makeRunDir();
+    await completeEpisodes(io, [1, 2, 3, 4]);
+    const result = await invalidateDependencyAwareEpisodes({
+      changedEpisode: 1,
+      totalEpisodes: 4,
+      episodeNumbers: [1, 2, 3, 4],
+      graph: {
+        version: 1, compilerVersion: 'test', storyId: 'story', sourceHash: 'hash', validation: { passed: true, issues: [] },
+        events: [
+          { id: 'e1', episodeNumber: 1, sourceOrder: 0, sourceText: 'setup', sourceContractIds: [], realizationMode: 'depiction', ownershipPolicy: 'exactly_one_scene', prerequisiteEventIds: [], targetSceneIds: ['s1'], targetSpineUnitIds: [], ownerSceneId: 's1', provenance: { source: 'season_plan', confidence: 'deterministic' } },
+          { id: 'e3', episodeNumber: 3, sourceOrder: 0, sourceText: 'payoff', sourceContractIds: [], realizationMode: 'depiction', ownershipPolicy: 'exactly_one_scene', prerequisiteEventIds: [], targetSceneIds: ['s3'], targetSpineUnitIds: [], ownerSceneId: 's3', provenance: { source: 'season_plan', confidence: 'deterministic' } },
+        ],
+        dependencies: [{ id: 'd1', fromEventId: 'e1', toEventId: 'e3', relation: 'pays_off', sourceEpisodeNumber: 1, targetEpisodeNumbers: [3], targetSceneIds: ['s3'], branchConditionKeys: [], requiredSurfaces: ['final_prose'], priority: 'major', sourceContractIds: [] }],
+        characterPresenceContracts: [],
+      } as any,
+      load: io.load,
+      save: io.save,
+      reason: 'canonical event changed',
+    });
+    expect(result.revalidate).toEqual([2, 3, 4]);
+    expect(result.regenerated).toEqual([1, 3]);
+    expect(partitionResumableEpisodes([1, 2, 3, 4].map((episodeNumber) => ({ episodeNumber })), io.load).pending.map((item) => item.episodeNumber)).toEqual([1, 3]);
   });
 });
 

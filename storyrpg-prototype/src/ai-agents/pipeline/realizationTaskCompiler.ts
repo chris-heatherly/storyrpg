@@ -1,6 +1,7 @@
 import type { PlannedScene } from '../../types/scenePlan';
 import type {
   NarrativeContractGraph,
+  NarrativeEventContract,
   NarrativeEvidenceAtom,
   NarrativeEvidenceRequirement,
   NarrativeRealizationOwnerStage,
@@ -67,6 +68,34 @@ function routePolicyForEventRequirement(
   return /threshold|disappear|vanish|gone/i.test(requirement.id) ? 'terminal_required' : 'path_required';
 }
 
+function ownerSurfacesForEvent(scene: PlannedScene | undefined): NarrativeRealizationSurface[] {
+  return scene?.kind === 'encounter' || scene?.encounter
+    ? ['encounter_setup', 'encounter_phase', 'encounter_outcome', 'terminal_storylet']
+    : ['beat_text', 'dialogue', 'text_variant'];
+}
+
+/**
+ * Every depiction event needs a minimum owner-stage proof, even when the
+ * source did not provide a specialized evidence requirement. Without this
+ * fallback, the immutable owner map can be correct while SceneWriter drifts
+ * into a neighboring event, which is exactly the failure the Bite Me replay
+ * exposed. The source text remains a semantic atom rather than a literal
+ * phrase requirement; the realization gate applies its existing normalized
+ * paraphrase matching.
+ */
+function genericEventAtoms(event: NarrativeEventContract): NarrativeEvidenceAtom[] {
+  const sourceText = event.sourceText.trim();
+  if (!sourceText) return [];
+  return [{
+    id: `${event.id}:source-event`,
+    description: `Depict the canonical event on its owner surface: ${sourceText}`,
+    acceptedPatterns: [sourceText],
+    sourceText,
+    kind: 'semantic',
+    required: true,
+  }];
+}
+
 function targetForEventRequirement(
   requirement: NarrativeEvidenceRequirement,
   outcomeTier: string | undefined,
@@ -115,6 +144,26 @@ export function compileNarrativeRealizationTasks(
   }
 
   for (const event of graph.events) {
+    if (event.realizationMode === 'depiction' && !(event.evidenceRequirements?.length) && event.ownerSceneId) {
+      const scene = sceneById.get(event.ownerSceneId);
+      const evidenceAtoms = genericEventAtoms(event);
+      if (evidenceAtoms.length > 0) {
+        tasks.push({
+          id: `task:${event.id}:owner-event`,
+          contractId: event.id,
+          episodeNumber: event.episodeNumber,
+          ownerStage: sceneStage(scene),
+          repairHandler: scene?.kind === 'encounter' || scene?.encounter ? 'encounter_route' : 'scene_prose',
+          sceneId: event.ownerSceneId,
+          eventId: event.id,
+          artifactPath: `episodes[${event.episodeNumber}].scenes[${event.ownerSceneId}]`,
+          evidenceAtoms,
+          target: { scope: 'owner', surfaces: ownerSurfacesForEvent(scene) },
+          sourceContractIds: [...event.sourceContractIds],
+          blocking: true,
+        });
+      }
+    }
     for (const requirement of event.evidenceRequirements ?? []) {
       const scene = event.ownerSceneId ? sceneById.get(event.ownerSceneId) : undefined;
       const tiers = requirement.requiredSurface === 'all_routes'

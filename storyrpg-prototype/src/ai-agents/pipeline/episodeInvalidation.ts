@@ -96,6 +96,47 @@ export function planDependencyAwareForwardRepair(options: {
 }
 
 /**
+ * Apply the dependency-aware plan to durable episode watermarks. The changed
+ * episode is always regenerated; later episodes are tombstoned only when a
+ * graph dependency or context-in hash actually changed. Callers still receive
+ * the full `revalidate` set so a resume can run cheap validation over untouched
+ * downstream packages without paying for fresh prose.
+ */
+export async function invalidateDependencyAwareEpisodes(options: {
+  changedEpisode: number;
+  totalEpisodes: number;
+  episodeNumbers: number[];
+  graph?: NarrativeContractGraph;
+  changedEventIds?: string[];
+  contextHashesBefore?: Record<number, string | undefined>;
+  contextHashesAfter?: Record<number, string | undefined>;
+  load: ArtifactLoader;
+  save: ArtifactSaver;
+  reason: string;
+}): Promise<DependencyAwareForwardRepairPlan & { regenerated: number[] }> {
+  const plan = planDependencyAwareForwardRepair(options);
+  const regenerated = [...new Set([options.changedEpisode, ...plan.regenerate])]
+    .filter((episode) => options.episodeNumbers.includes(episode))
+    .sort((a, b) => a - b);
+  for (const episodeNumber of regenerated) {
+    const existing = loadCompletedEpisode(episodeNumber, options.load);
+    if (!existing) continue;
+    const tombstone: EpisodeInvalidationTombstone = {
+      version: 0,
+      invalidatedAt: new Date().toISOString(),
+      reason: options.reason,
+      ...(episodeNumber !== options.changedEpisode ? { downstreamOf: options.changedEpisode } : {}),
+      replaced: existing.watermark,
+    };
+    await options.save(episodeCompleteArtifact(episodeNumber), tombstone);
+    if (loadCompletedEpisode(episodeNumber, options.load) !== null) {
+      throw new Error(`Episode ${episodeNumber} dependency-aware invalidation did not stick.`);
+    }
+  }
+  return { ...plan, regenerated };
+}
+
+/**
  * Decide which completed episodes an invalidation of `target` covers.
  * Pure planning — probes watermarks via `load`, writes nothing.
  */

@@ -1777,7 +1777,9 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
   };
 
   const startAnalysis = async () => {
-    if (!selectedLlmApiKey) {
+    // Server workers hydrate provider credentials from the proxy environment.
+    // Do not require a browser-persisted secret when that path is active.
+    if (!selectedLlmApiKey && !USE_SERVER_WORKER) {
       Alert.alert(
         'API Key Required',
         llmProvider === 'gemini'
@@ -2007,7 +2009,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
   }, [canonWizardState, seasonPlan, sourceAnalysis?.sourceCanon]);
 
   const startGeneration = async () => {
-    if (!selectedLlmApiKey) {
+    if (!selectedLlmApiKey && !USE_SERVER_WORKER) {
       Alert.alert(
         'API Key Required',
         llmProvider === 'gemini'

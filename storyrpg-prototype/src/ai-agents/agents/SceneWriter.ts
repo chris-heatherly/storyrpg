@@ -442,6 +442,11 @@ export interface SceneContent {
   // Continuity notes
   continuityNotes: string[];
 
+  /** Generator-only acknowledgement of the canonical events realized in this scene. */
+  realizedEventIds?: string[];
+  /** Beat-local evidence claims used for diagnostics; prose gates remain authoritative. */
+  eventEvidence?: Array<{ eventId: string; beatIds?: string[]; evidence: string }>;
+
   // Branch metadata for visual differentiation
   branchType?: 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption';
   isBottleneck?: boolean;
@@ -1103,6 +1108,13 @@ Return exactly one complete SceneContent JSON object with:
       content.sceneTakeaways = [];
     } else if (!Array.isArray(content.sceneTakeaways)) {
       content.sceneTakeaways = [content.sceneTakeaways as unknown as string];
+    }
+
+    if (content.realizedEventIds && !Array.isArray(content.realizedEventIds)) {
+      content.realizedEventIds = [String(content.realizedEventIds)];
+    }
+    if (content.eventEvidence && !Array.isArray(content.eventEvidence)) {
+      content.eventEvidence = [content.eventEvidence as unknown as { eventId: string; evidence: string }];
     }
 
     if (content.transitionIn && typeof content.transitionIn !== 'string') {
@@ -2196,12 +2208,29 @@ Create the scene content following the SceneContent schema. Include:
 9. Optional visualContinuity metadata when it clarifies beat-to-beat flow; keep panelMode as "single" unless an explicit UX/config flag says otherwise
 10. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id. \`callbackHookId\` is ONLY for those listed ledger hooks — a variant gated on a state/outcome flag (\`encounter_*\`, \`route_*\`, \`treatment_branch_*\`, \`tint:*\`) keeps that flag in its condition and sets NO callbackHookId (✓ condition: "encounter_x_partialVictory" with no callbackHookId; ✗ callbackHookId: "encounter_x_partialVictory")
 11. sceneTakeaways and transitionIn when they clarify purpose and flow
+12. realizedEventIds containing only the event IDs assigned to this scene, plus eventEvidence claims with short beat-local evidence for each realized event
 
 Respond with valid JSON matching the SceneContent type. Return raw JSON only: no markdown fences, no commentary, no trailing prose.
 `;
   }
 
   private validateContent(content: SceneContent, input: SceneWriterInput): void {
+    const allowedEventIds = new Set(
+      (input.sceneBlueprint.realizationTasks ?? [])
+        .map((task) => task.eventId)
+        .filter((eventId): eventId is string => Boolean(eventId)),
+    );
+    for (const eventId of content.realizedEventIds ?? []) {
+      if (!allowedEventIds.has(eventId)) {
+        throw new Error(`Scene ${content.sceneId} acknowledged unassigned canonical event ${eventId}`);
+      }
+    }
+    for (const claim of content.eventEvidence ?? []) {
+      if (!claim || !allowedEventIds.has(claim.eventId)) {
+        throw new Error(`Scene ${content.sceneId} supplied evidence for unassigned canonical event ${claim?.eventId ?? 'unknown'}`);
+      }
+    }
+
     // Check beat count
     if (content.beats.length === 0) {
       throw new Error('Scene must have at least 1 beat');

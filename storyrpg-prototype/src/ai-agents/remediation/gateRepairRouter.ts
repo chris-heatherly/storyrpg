@@ -791,11 +791,14 @@ export class GateRepairRouter {
       if (issue.repairHandler === 'choice_reauthor') {
         return directive('diagnostic_stop', issue, 'Choice realization is owned and retried by ChoiceAuthor before checkpointing; the final regression net must not rewrite unrelated scene prose if a later mutation reintroduces drift.');
       }
-      if (issue.repairHandler === 'relationship_pacing' || issue.contractId && /relationshipLabel/i.test(issue.message ?? '')) {
+      if (issue.repairHandler === 'relationship_pacing') {
         return directive('same_scene_retry', issue, 'Relationship pacing is scene-local; rewrite the exact offending surface at the currently earned stage.');
       }
       if (issue.repairHandler === 'premise_realization') {
         return directive('same_scene_retry', issue, 'Premise realization is owned by the opening scene and must be rewritten with its missing evidence atoms.');
+      }
+      if (issue.repairHandler === 'scene_prose') {
+        return directive('same_scene_retry', issue, 'Canonical realization drift is owned by the exact scene-prose target carried by the task.');
       }
       if (/episode topology|planned scenes|generic pressure/i.test(issueText)) {
         return directive('episode_replan', issue, 'Canonical authored topology is invalid; rebuild the episode scene plan before prose generation.');

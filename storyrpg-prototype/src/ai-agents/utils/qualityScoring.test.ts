@@ -112,6 +112,26 @@ describe('qualityScoring caps and eligibility', () => {
       rmSync(outputDir, { recursive: true, force: true });
     }
   });
+
+  it('does not score or cap arbiter-refuted route warnings while retaining them in the report', () => {
+    const result = deriveStoryCircleQualityScore({
+      finalStory: syntheticStory(),
+      finalStoryContractReport: {
+        passed: true,
+        blockingIssues: [],
+        warnings: [{
+          type: 'route_duplicate_event',
+          validator: 'RouteContinuityValidator',
+          severity: 'warning',
+          disposition: 'refuted',
+          message: '[arbiter-confirmed reference, not restage] route_duplicate_event in s1.',
+        }],
+      } as any,
+    }, { now: new Date('2026-01-01T00:00:00Z') });
+
+    expect(result.basis.caps.some((cap) => cap.id === 'duplicate_or_out_of_order_treatment_atom' || cap.id === 'route_continuity_hard_fail')).toBe(false);
+    expect(result.basis.domains.flatMap((domain) => domain.findings).some((finding) => finding.message.includes('arbiter-confirmed reference'))).toBe(false);
+  });
 });
 
 describe('qualityScoring v4: graded judge intake', () => {

@@ -1,3 +1,8 @@
+import type {
+  ValidationOwnerStage,
+  ValidationRetryClass,
+} from '../../types/validationOwnership';
+
 /**
  * Pipeline error types.
  *
@@ -25,22 +30,9 @@ export type PipelineFailureCode =
   | 'final_contract_drift'
   | 'unknown';
 
-export type PipelineFailureOwnerStage =
-  | 'provider'
-  | 'source_analysis'
-  | 'season_plan'
-  | 'episode_plan'
-  | 'scene_content'
-  | 'final_contract'
-  | 'packaging';
+export type PipelineFailureOwnerStage = ValidationOwnerStage;
 
-export type PipelineRetryClass =
-  | 'retry_provider'
-  | 'retry_structured_output'
-  | 'recompile_episode_plan'
-  | 'repair_scene_prose'
-  | 'repair_final_contract'
-  | 'none';
+export type PipelineRetryClass = ValidationRetryClass;
 
 export interface PipelineFailureMetadata {
   code: PipelineFailureCode;

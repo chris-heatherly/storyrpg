@@ -28,3 +28,4 @@ export * from './storyCanon';
 export * from './narrativeThread';
 export * from './relationshipValue';
 export * from './narrativeContract';
+export * from './validationOwnership';

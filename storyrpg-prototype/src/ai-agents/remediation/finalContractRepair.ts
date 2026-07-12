@@ -18,6 +18,10 @@
 // with the flag off behavior is byte-identical to today (immediate throw).
 
 import type { Story } from '../../types/story';
+import type {
+  ValidationOwnerStage,
+  ValidationRetryClass,
+} from '../../types/validationOwnership';
 import type { RemediationLedgerRecord } from './remediationLedger';
 import { StructuralValidator } from '../validators/StructuralValidator';
 import { canonicalizeStoryWitnessReactions } from '../utils/witnessNpcResolver';
@@ -55,6 +59,9 @@ export interface ContractRepairReport {
     outcomeTier?: string;
     artifactPath?: string;
     repairHandler?: string;
+    issueCode?: string;
+    ownerStage?: ValidationOwnerStage;
+    retryClass?: ValidationRetryClass;
     missingEvidenceAtoms?: string[];
     requiredEvidenceAtoms?: string[];
     realizationFingerprint?: string;
@@ -169,6 +176,7 @@ export function contractRepairIssueFingerprint(issue: ContractRepairIssue): stri
   const moment = extractQuotedMoment(message) ?? message;
   return [
     issue.validator ?? '',
+    issue.issueCode ?? '',
     issue.type ?? '',
     issue.category ?? '',
     issue.severity ?? '',

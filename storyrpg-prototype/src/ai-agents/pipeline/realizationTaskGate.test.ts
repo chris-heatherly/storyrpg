@@ -50,6 +50,31 @@ describe('validateOwnerRealizationTasks', () => {
     expect(findings[0]?.code).toBe('OWNER_REALIZATION_MISSING');
   });
 
+  it('blocks ordinary depiction drift even when the event has no specialized evidence requirement', () => {
+    const task = {
+      id: 'task:event:writing:owner-event', contractId: 'event:writing', eventId: 'event:writing',
+      episodeNumber: 1, ownerStage: 'scene_writer' as const, repairHandler: 'scene_prose' as const,
+      sceneId: 's1-6', evidenceAtoms: [{
+        id: 'event:writing:source-event', description: 'writing event',
+        acceptedPatterns: ['Kylie writes the first post about the rescue.'],
+        sourceText: 'Kylie writes the first post about the rescue.', kind: 'semantic' as const, required: true,
+      }], target: { scope: 'owner' as const, surfaces: ['beat_text' as const] },
+      sourceContractIds: ['treatment:writing'], blocking: true,
+    };
+
+    const findings = validateOwnerRealizationTasks({
+      sceneId: 's1-6', tasks: [task],
+      sceneContent: { beats: [{ id: 'b1', text: 'Kylie opens her laptop and writes the first post about the rescue.' }] },
+    });
+    expect(findings).toEqual([]);
+
+    const drift = validateOwnerRealizationTasks({
+      sceneId: 's1-6', tasks: [task],
+      sceneContent: { beats: [{ id: 'b1', text: 'Kylie walks home beneath the streetlights, thinking about the stranger.' }] },
+    });
+    expect(drift[0]?.code).toBe('OWNER_REALIZATION_MISSING');
+  });
+
   it('treats blocked relationship labels as forbidden rather than required', () => {
     const findings = validateOwnerRealizationTasks({
       sceneId: 's1-2',

@@ -42,6 +42,26 @@ describe('ArtifactRevisionStore', () => {
     expect((io.files.get('artifacts/season-plan.rev1.json') as { schemaVersion: number }).schemaVersion).toBe(1);
   });
 
+  it('materializes legacy current revisions transactionally when explicitly requested', async () => {
+    const io = makeIO();
+    io.files.set('artifacts/current.json', {
+      version: 1,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      artifacts: { 'narrative-contract-graph': { kind: 'narrative-contract-graph', artifactId: 'legacy-graph', payloadHash: 'hash', revision: 1, path: 'artifacts/narrative-contract-graph.rev1.json' } },
+    });
+    io.files.set('artifacts/narrative-contract-graph.rev1.json', {
+      kind: 'narrative-contract-graph', schemaVersion: 1, artifactId: 'legacy-graph', storyId: 'story', runId: 'run', revision: 1,
+      status: 'valid', upstream: [], provenance: { phase: 'season_plan' }, validation: { passed: true, gate: 'graph', issues: [] },
+      payloadHash: 'hash', createdAt: '2026-01-01T00:00:00.000Z', payload: { realizationTasks: [{ ...({ id: 'task', contractId: 'event', episodeNumber: 1, ownerStage: 'scene_writer', repairHandler: 'scene_prose', evidenceAtoms: [], sourceContractIds: [], blocking: true, outcomeTier: 'victory', requiredSurface: ['beat_text'], routePolicy: 'path_required' } as any) }] },
+    });
+    const store = new ArtifactRevisionStore(io);
+    const migrated = await store.migrateCurrentRevisionSet();
+    expect(migrated.version).toBe(2);
+    expect(migrated.artifacts['narrative-contract-graph']?.revision).toBe(2);
+    expect(store.loadCurrent<any>('narrative-contract-graph')?.payload.realizationTasks[0].target.scope).toBe('route_path');
+    expect((io.files.get('artifacts/narrative-contract-graph.rev1.json') as { schemaVersion: number }).schemaVersion).toBe(1);
+  });
+
   it('commits a valid artifact set atomically and rejects invalid members', async () => {
     const io = makeIO();
     const store = new ArtifactRevisionStore(io);

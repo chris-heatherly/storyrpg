@@ -21,6 +21,7 @@ import { buildForbiddenReveals } from '../../utils/forbiddenReveals';
 import { BEST_OF_N_DEFAULTS, INCREMENTAL_VALIDATION_DEFAULTS } from '../../../constants/validation';
 import { GrowthCurveEntry, buildGrowthTemplates } from '../../../engine/growthConsequenceBuilder';
 import { ThreadLedger } from '../../../types/narrativeThread';
+import type { ValidatorExecutionRecord } from '../../../types/validation';
 import { isPlanningRegisterText } from '../../constants/planningRegisterText';
 import { AgentResponse } from '../../agents/BaseAgent';
 import { BranchAnalysis, ReconvergencePoint } from '../../agents/BranchManager';
@@ -283,6 +284,14 @@ import {
   type ProducerBlockerFinding,
 } from '../producerBlockerChecks';
 import { validateOwnerRealizationTasks, type RealizationTaskGateFinding } from '../realizationTaskGate';
+import { createValidatorExecutionRecord } from '../../validators/validatorExecutionRecords';
+
+export type ContentGenerationResult = {
+  sceneContents: SceneContent[];
+  choiceSets: ChoiceSet[];
+  encounters: Map<string, EncounterStructure>;
+  validationExecutionRecords: ValidatorExecutionRecord[];
+};
 import { SeasonChoicePlan, episodeTypeCounts } from '../seasonChoicePlan';
 import {
   SeasonSkillPlan,
@@ -642,13 +651,14 @@ export class ContentGenerationPhase {
     outputDirectory: string | undefined,
     episodeNumber: number | undefined,
     context: PipelineContext
-  ): Promise<{ sceneContents: SceneContent[]; choiceSets: ChoiceSet[]; encounters: Map<string, EncounterStructure> }> {
+  ): Promise<ContentGenerationResult> {
     const sceneContents: SceneContent[] = [];
     const choiceSets: ChoiceSet[] = [];
     // Phase 1 (Season Canon): flags planted by EARLIER scenes this episode, fed
     // to LATER scenes so SceneWriter can author within-episode callback payoffs.
     const episodePlants: EpisodePlant[] = [];
     const encounters: Map<string, EncounterStructure> = new Map();
+    const validationExecutionRecords: ValidatorExecutionRecord[] = [];
 
     // UNIT QUARANTINE (P2, 2026-07-06): an encounter unit that exhausts its
     // in-place ladder no longer aborts the run mid-phase (the bite-me abort
@@ -4343,6 +4353,35 @@ export class ContentGenerationPhase {
       });
       const realizationBlockers = realizationFindings.filter((finding) => finding.blocking);
       const realizationAdvisories = realizationFindings.filter((finding) => !finding.blocking);
+      if ((sceneBlueprint.realizationTasks?.length ?? 0) > 0) {
+        validationExecutionRecords.push(createValidatorExecutionRecord({
+          policyId: 'NarrativeRealizationTask@scene',
+          validatorId: 'NarrativeRealizationTaskGate',
+          lifecycle: 'episode-contract',
+          role: 'primary',
+          placement: 'scene',
+          mode: 'enforce',
+          passed: realizationBlockers.length === 0,
+          issues: realizationFindings.map((finding) => ({
+            severity: finding.blocking ? 'error' : 'warning',
+            code: finding.code,
+            message: finding.message,
+            metadata: {
+              issueCode: finding.code,
+              taskId: finding.taskId,
+              contractId: finding.contractId,
+              ownerStage: finding.ownerStage,
+              repairHandler: sceneBlueprint.realizationTasks?.find((task) => task.id === finding.taskId)?.repairHandler,
+              sceneId: finding.sceneId,
+              outcomeTier: finding.outcomeTier,
+              artifactPath: finding.field,
+              missingEvidenceAtoms: finding.missingEvidenceAtoms,
+              matchedForbiddenAtoms: finding.matchedForbiddenAtoms,
+              findingFingerprint: finding.fingerprint,
+            },
+          })),
+        }));
+      }
       if (realizationAdvisories.length > 0) {
         context.emit({
           type: 'warning',
@@ -4534,7 +4573,7 @@ export class ContentGenerationPhase {
       });
     }
 
-    return { sceneContents, choiceSets, encounters };
+    return { sceneContents, choiceSets, encounters, validationExecutionRecords };
   }
 
   /**

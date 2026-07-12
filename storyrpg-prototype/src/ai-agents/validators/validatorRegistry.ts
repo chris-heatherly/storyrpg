@@ -75,6 +75,11 @@ export type ValidatorMemoryEvidenceMode =
   | 'artifact-required';
 
 export interface ValidatorRegistryEntry {
+  /**
+   * Stable static policy identity. Legacy rows derive this from validator+stage;
+   * new multi-role rows should set it explicitly so lookups never depend on row order.
+   */
+  policyId?: string;
   validator: string;
   stage: ValidatorStage;
   tier: ValidatorTier;
@@ -557,6 +562,7 @@ export const ARTIFACT_CONTRACT_REGISTRY: ArtifactContractEntry[] = [
 ];
 
 export interface NormalizedValidatorOwnershipEntry extends ValidatorRegistryEntry {
+  policyId: string;
   lifecycle: ValidatorLifecycle;
   role: ValidatorExecutionRole;
 }
@@ -599,14 +605,32 @@ function lifecycleForStage(stage: ValidatorStage): ValidatorLifecycle {
 function normalizeEntry(entry: ValidatorRegistryEntry): NormalizedValidatorOwnershipEntry {
   return {
     ...entry,
+    policyId: entry.policyId ?? `${entry.validator}@${entry.stage}`,
     lifecycle: entry.lifecycle ?? lifecycleForStage(entry.stage),
     role: entry.role ?? 'primary',
   };
 }
 
+export function policyById(policyId: string): NormalizedValidatorOwnershipEntry | undefined {
+  return VALIDATOR_REGISTRY.map(normalizeEntry).find((entry) => entry.policyId === policyId);
+}
+
+export function policiesForValidator(validator: string): NormalizedValidatorOwnershipEntry[] {
+  return VALIDATOR_REGISTRY.map(normalizeEntry).filter((entry) => entry.validator === validator);
+}
+
+export function policiesForGate(flag: string): NormalizedValidatorOwnershipEntry[] {
+  return VALIDATOR_REGISTRY.map(normalizeEntry).filter((entry) => entry.rolloutFlag === flag);
+}
+
+export function primaryPolicyForValidator(validator: string): NormalizedValidatorOwnershipEntry | undefined {
+  const policies = policiesForValidator(validator);
+  return policies.find((entry) => entry.role === 'primary') ?? policies[0];
+}
+
+/** @deprecated Prefer policiesForValidator or primaryPolicyForValidator. */
 export function validatorById(validator: string): NormalizedValidatorOwnershipEntry | undefined {
-  const entry = VALIDATOR_REGISTRY.find((candidate) => candidate.validator === validator);
-  return entry ? normalizeEntry(entry) : undefined;
+  return primaryPolicyForValidator(validator);
 }
 
 export function validatorsForLifecycle(lifecycle: ValidatorLifecycle): NormalizedValidatorOwnershipEntry[] {
@@ -614,8 +638,8 @@ export function validatorsForLifecycle(lifecycle: ValidatorLifecycle): Normalize
 }
 
 export function validatorForGate(flag: string): NormalizedValidatorOwnershipEntry | undefined {
-  const entry = VALIDATOR_REGISTRY.find((candidate) => candidate.rolloutFlag === flag);
-  return entry ? normalizeEntry(entry) : undefined;
+  const policies = policiesForGate(flag);
+  return policies.find((entry) => entry.role === 'primary') ?? policies[0];
 }
 
 export function artifactValidatorsForKind(
@@ -670,6 +694,14 @@ export function validateValidatorOwnershipRegistry(
   const artifactContractRegistry = options.artifactContractRegistry ?? ARTIFACT_CONTRACT_REGISTRY;
   const intentionallyUngatedArtifactKinds = options.intentionallyUngatedArtifactKinds ?? new Set<ArtifactKind>();
   const knownValidators = new Set(validatorRegistry.map((entry) => entry.validator));
+  const policyIds = new Set<string>();
+
+  for (const entry of validatorRegistry.map(normalizeEntry)) {
+    if (policyIds.has(entry.policyId)) {
+      violations.push({ validator: entry.validator, problem: `duplicate policyId ${entry.policyId}` });
+    }
+    policyIds.add(entry.policyId);
+  }
 
   for (const entry of validatorRegistry) {
     if (!entry.rolloutFlag) continue;

@@ -13,6 +13,10 @@ import {
   RelationshipDimension,
   Consequence,
 } from './index';
+import type {
+  ValidationExecutionMode,
+  ValidationOwnershipMetadata,
+} from './validationOwnership';
 
 // ========================================
 // ENFORCEMENT LEVELS
@@ -353,9 +357,12 @@ export interface ValidatorExecutionIssue {
   location?: unknown;
   source?: string;
   suggestion?: string;
+  ownership?: ValidationOwnershipMetadata;
 }
 
 export interface ValidatorExecutionRecord {
+  /** Unique static policy identity when one validator has multiple lifecycle roles. */
+  policyId?: string;
   validatorId: string;
   lifecycle: ValidatorExecutionLifecycle;
   role: ValidatorExecutionRole;
@@ -363,6 +370,10 @@ export interface ValidatorExecutionRecord {
   gateEnabled: boolean;
   placement?: string;
   passed: boolean;
+  mode?: ValidationExecutionMode;
+  artifactRefs?: string[];
+  durationMs?: number;
+  effectiveSeverityReason?: string;
   issues: ValidatorExecutionIssue[];
   repair?: {
     attempted: boolean;

@@ -1,7 +1,16 @@
 import type { Story, Episode, Scene, Beat, Choice, Consequence } from '../../types';
 import type { QAReport } from '../agents/QAAgents';
-import type { ComprehensiveValidationReport, TreatmentObligationCanonicalReport, ValidatorEvidenceSummary } from '../../types/validation';
+import type {
+  ComprehensiveValidationReport,
+  TreatmentObligationCanonicalReport,
+  ValidatorEvidenceSummary,
+  ValidatorExecutionRecord,
+} from '../../types/validation';
 import type { SceneValidationResult } from './IncrementalValidators';
+import type {
+  ValidationOwnerStage,
+  ValidationRetryClass,
+} from '../../types/validationOwnership';
 import { CallbackOpportunitiesValidator } from './CallbackOpportunitiesValidator';
 import { IncrementalEncounterValidator } from './IncrementalValidators';
 import { MechanicsLeakageValidator, type MechanicsLeakageText } from './MechanicsLeakageValidator';
@@ -218,6 +227,8 @@ export type FinalStoryContractIssueType =
 export interface FinalStoryContractIssue {
   type: FinalStoryContractIssueType;
   severity: 'error' | 'warning';
+  /** Explicit arbitration state; refuted heuristics remain auditable but do not score or block. */
+  disposition?: 'blocking' | 'confirmed' | 'refuted' | 'uncorroborated';
   message: string;
   episodeId?: string;
   episodeNumber?: number;
@@ -231,6 +242,9 @@ export interface FinalStoryContractIssue {
   outcomeTier?: string;
   artifactPath?: string;
   repairHandler?: string;
+  issueCode?: string;
+  ownerStage?: ValidationOwnerStage;
+  retryClass?: ValidationRetryClass;
   missingEvidenceAtoms?: string[];
   requiredEvidenceAtoms?: string[];
   realizationFingerprint?: string;
@@ -256,6 +270,8 @@ export interface FinalStoryContractReport {
   };
   /** Shadow-only canonical grouping for treatment-fidelity overlap; does not affect pass/fail or scoring. */
   treatmentObligationCanonicalReport?: TreatmentObligationCanonicalReport;
+  /** Joined runtime ownership records for the final aggregate and its contributing validators. */
+  executionRecords?: ValidatorExecutionRecord[];
   /** Memory-derived context. Additive audit metadata only; never pass/fail authority. */
   memoryEvidence?: ValidatorEvidenceSummary[];
   generatedAt: string;
@@ -339,6 +355,9 @@ export interface FinalStoryContractInput {
     outcomeTier?: string;
     artifactPath?: string;
     repairHandler?: string;
+    issueCode?: string;
+    ownerStage?: ValidationOwnerStage;
+    retryClass?: ValidationRetryClass;
     missingEvidenceAtoms?: string[];
     requiredEvidenceAtoms?: string[];
     realizationFingerprint?: string;
@@ -2262,6 +2281,9 @@ export class FinalStoryContractValidator {
         outcomeTier: finding.outcomeTier,
         artifactPath: finding.artifactPath,
         repairHandler: finding.repairHandler,
+        issueCode: finding.issueCode,
+        ownerStage: finding.ownerStage,
+        retryClass: finding.retryClass,
         missingEvidenceAtoms: finding.missingEvidenceAtoms,
         requiredEvidenceAtoms: finding.requiredEvidenceAtoms,
         realizationFingerprint: finding.realizationFingerprint,

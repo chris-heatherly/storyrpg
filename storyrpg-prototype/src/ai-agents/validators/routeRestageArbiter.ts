@@ -119,6 +119,7 @@ Return ONLY JSON:
 interface ArbitrableIssue {
   message?: string;
   severity?: string;
+  disposition?: 'blocking' | 'confirmed' | 'refuted' | 'uncorroborated';
   type?: string;
   validator?: string;
   suggestion?: string;
@@ -246,6 +247,7 @@ export async function arbitrateRouteRestageFindings(opts: {
     const verdict = verdictById.get(claim.id);
     if (verdict?.restaged === true) {
       outcome.confirmed += 1;
+      issue.disposition = 'confirmed';
       remaining.push(issue);
       return;
     }
@@ -257,6 +259,7 @@ export async function arbitrateRouteRestageFindings(opts: {
     (opts.report.warnings ??= []).push({
       ...issue,
       severity: 'warning',
+      disposition: verdict ? 'refuted' : 'uncorroborated',
       message: `${annotation} ${issue.message ?? ''}`,
     });
     opts.emit?.(

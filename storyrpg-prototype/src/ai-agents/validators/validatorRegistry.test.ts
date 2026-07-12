@@ -5,6 +5,10 @@ import {
   VALIDATOR_REGISTRY,
   artifactGateDefinitions,
   blockingValidators,
+  policiesForGate,
+  policiesForValidator,
+  policyById,
+  primaryPolicyForValidator,
   remediationRoute,
   validateValidatorOwnershipRegistry,
   validatorForGate,
@@ -70,6 +74,21 @@ describe('validatorRegistry (B4 dispatch map)', () => {
       expect(seen.has(key), `duplicate ${key}`).toBe(false);
       seen.add(key);
     }
+  });
+
+  it('derives unique static policy ids and exposes non-ambiguous multi-policy lookups', () => {
+    const policyIds = VALIDATOR_REGISTRY.map((entry) => entry.policyId ?? `${entry.validator}@${entry.stage}`);
+    expect(new Set(policyIds).size).toBe(policyIds.length);
+
+    const finalContract = primaryPolicyForValidator('FinalStoryContractValidator');
+    expect(finalContract?.policyId).toBe('FinalStoryContractValidator@final');
+    expect(policyById(finalContract!.policyId)?.validator).toBe('FinalStoryContractValidator');
+    expect(policiesForValidator('NarrativeContractValidator')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'regression-net', lifecycle: 'final-contract' }),
+    ]));
+    expect(policiesForGate('GATE_REQUIRED_BEAT_REALIZATION')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ validator: 'RequiredBeatRealizationValidator' }),
+    ]));
   });
 
   it('the architecture-stage craft validators are advisory (B1 tiering)', () => {

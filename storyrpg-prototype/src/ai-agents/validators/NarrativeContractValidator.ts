@@ -191,9 +191,16 @@ export class NarrativeContractValidator extends BaseValidator {
             'Repair the assigned owner surface without changing the event identity, route policy, or cross-episode dependency.',
           );
           issue.metadata = {
+            issueCode: finding.code,
             taskId: finding.taskId,
             contractId: finding.contractId,
             eventId: task?.eventId,
+            ownerStage: finding.ownerStage,
+            retryClass: task?.repairHandler === 'choice_reauthor'
+              ? 'repair_choice'
+              : task?.repairHandler === 'encounter_route'
+                ? 'repair_encounter_route'
+                : 'repair_scene_prose',
             episodeNumber: episode.number,
             sceneId: scene.id,
             outcomeTier: finding.outcomeTier,
@@ -202,6 +209,7 @@ export class NarrativeContractValidator extends BaseValidator {
             missingEvidenceAtoms: finding.missingEvidenceAtoms,
             requiredEvidenceAtoms: task?.evidenceAtoms.filter((atom) => atom.required).map((atom) => atom.id),
             realizationFingerprint: finding.fingerprint,
+            findingFingerprint: finding.fingerprint,
             matchedForbiddenAtoms: finding.matchedForbiddenAtoms,
           };
           issues.push(issue);

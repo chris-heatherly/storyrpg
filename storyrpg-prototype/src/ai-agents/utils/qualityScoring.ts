@@ -225,6 +225,7 @@ interface SidecarFinding {
   validator?: string;
   message: string;
   location?: string;
+  disposition?: 'blocking' | 'confirmed' | 'refuted' | 'uncorroborated';
   /** Explicit routing set by the producer; wins over the keyword fallback. */
   domainId?: QualityDomainId;
   conceptId?: string;
@@ -941,22 +942,26 @@ function collectReportFindings(
   const finalContract = inputs.finalStoryContractReport;
 
   finalContract?.blockingIssues?.forEach((issue) => {
+    if (issue.disposition === 'refuted' || issue.disposition === 'uncorroborated') return;
     findings.push({
       severity: finalContractIssueSeverity(issue, 'error'),
       source: 'final-story-contract',
       validator: issue.validator,
       message: issue.message,
       location: (issue as any).path,
+      disposition: issue.disposition,
     });
   });
 
   finalContract?.warnings?.forEach((issue) => {
+    if (issue.disposition === 'refuted' || issue.disposition === 'uncorroborated') return;
     findings.push({
       severity: finalContractIssueSeverity(issue, 'warning'),
       source: 'final-story-contract',
       validator: issue.validator,
       message: issue.message,
       location: (issue as any).path,
+      disposition: issue.disposition,
     });
   });
 
@@ -1703,10 +1708,13 @@ function applyCaps(
     });
   }
 
+  // Arbitration demotions are audit evidence, not quality defects. They must
+  // not trigger a cap merely because the original heuristic type remains in
+  // the warning message.
   const finalContractIssues = [
     ...(inputs.finalStoryContractReport?.blockingIssues || []),
     ...(inputs.finalStoryContractReport?.warnings || []),
-  ];
+  ].filter((issue) => issue.disposition !== 'refuted' && issue.disposition !== 'uncorroborated');
   if (hasIssue(finalContractIssues, /planning_register|planning-register|raw treatment|scaffold|fallback prose|protagonist synopsis/i)) {
     caps.push({
       id: 'planning_register_leak',

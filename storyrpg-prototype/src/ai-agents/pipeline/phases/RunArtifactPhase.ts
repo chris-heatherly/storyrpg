@@ -1,4 +1,5 @@
 import type { Episode } from '../../../types';
+import type { ValidatorExecutionRecord } from '../../../types/validation';
 import {
   ArtifactRevisionStore,
   type ArtifactRef,
@@ -51,6 +52,7 @@ export interface RunArtifactRuntime {
     title: string;
     lock?: EpisodeCompletionLockEvidence;
     validation?: ArtifactValidationSummary;
+    executionRecords?: ValidatorExecutionRecord[];
   }) => Promise<EpisodeCompletionWatermark>;
 }
 

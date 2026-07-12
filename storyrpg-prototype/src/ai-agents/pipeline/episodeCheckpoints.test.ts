@@ -264,6 +264,17 @@ describe('episodeCheckpoints', () => {
         gate: 'incremental_contract_ep_2',
         issues: [{ validator: 'FinalStoryContractValidator', severity: 'warning', message: 'advisory', code: 'scene_turn' }],
       },
+      executionRecords: [{
+        policyId: 'SceneTurnRealizationValidator@final',
+        validatorId: 'SceneTurnRealizationValidator',
+        lifecycle: 'final-contract',
+        role: 'regression-net',
+        gateEnabled: true,
+        placement: 'season-final',
+        passed: true,
+        mode: 'audit',
+        issues: [],
+      }],
       lock: {
         runtimeContractPassed: true,
         canonSealed: true,
@@ -299,6 +310,10 @@ describe('episodeCheckpoints', () => {
         gate: 'incremental_contract_ep_2',
         issues: [{ code: 'scene_turn' }],
       },
+      executionRecords: [{
+        policyId: 'SceneTurnRealizationValidator@final',
+        mode: 'audit',
+      }],
     });
     expect(artifactStore.loadCurrentRef('context-in', 2)?.path).toBe('artifacts/episodes/002/context-in.rev1.json');
     expect(artifactStore.loadCurrentRef('runtime-episode', 2)?.path).toBe('artifacts/episodes/002/runtime-episode.rev1.json');

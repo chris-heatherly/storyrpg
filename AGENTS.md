@@ -171,6 +171,8 @@ npm run generate          # CLI story generation
 npm run generate:doc      # Generate from document
 npm run clean:runtime     # Clean runtime artifacts (job state, caches, backups)
 npm run validate:assets   # Validate story assets
+npm run validation:audit  # Check validator/gate policy ids, defaults, and repair-policy drift
+npm run validation:explain -- --validator NarrativeContractValidator  # Explain static validation ownership
 npm run test:e2e          # Playwright E2E (story playthrough) — nightly in CI
 
 # Auth / Postgres (proxy):

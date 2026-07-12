@@ -117,6 +117,32 @@ checks) remain only for persisted graphs that have no compiled realization task.
 They do not execute alongside a version-3 task and are tracked for deletion in
 `docs/LEGACY_REMOVAL_REGISTRY.md`.
 
+Validation ownership now has two explicit levels:
+
+- Per-story authored obligations are owned exclusively by
+  `NarrativeContractGraph` / `NarrativeRealizationTask`. Static validator policy
+  must not redefine a task's owner, evidence target, repair handler, or
+  fingerprint.
+- Cross-cutting structural/runtime/package rules remain in the metadata-only
+  `validatorRegistry.ts` and `gateRegistry.ts`. Registry rows have stable policy
+  ids, while stage-local orchestration remains the executable dispatcher.
+
+`ValidatorExecutionRecord` joins those levels in runtime evidence: records can
+carry policy id, task/contract ownership, execution mode, artifact references,
+and repair disposition without scheduling validators a second time. Episode
+`validation-report` artifacts persist owner-stage plus best-practices execution
+records, and final-contract reports persist the final aggregate plus fidelity
+regression records.
+
+Operational inspection commands:
+
+- `npm run validation:audit` checks gate/validator registry drift and policy-id
+  uniqueness.
+- `npm run validation:explain -- --validator <id>` explains static policy.
+- `npm run validation:explain -- --run <runDir> --task <taskId>` resolves a
+  dynamic realization owner from saved artifacts and joins any recorded runtime
+  executions.
+
 ## Output Contract
 
 Generated story directories now write a modern package:

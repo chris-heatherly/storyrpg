@@ -15,6 +15,7 @@
  */
 
 import type { Episode } from '../../types';
+import type { ValidatorExecutionRecord } from '../../types/validation';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { SYNTHETIC_FALLBACK_PROSE_PATTERNS } from '../constants/syntheticFallbackProse';
 import {
@@ -72,6 +73,7 @@ export interface EpisodeShadowArtifactOptions {
   load: ArtifactLoader;
   contextIn?: EpisodeContextIn;
   validation?: ArtifactValidationSummary;
+  executionRecords?: ValidatorExecutionRecord[];
   upstream?: ArtifactRef[];
   onError?: (error: Error) => void;
 }
@@ -96,6 +98,7 @@ export async function writeEpisodeCompletion(options: {
   shadowArtifacts?: EpisodeShadowArtifactOptions;
   lock?: EpisodeCompletionLockEvidence;
   validation?: ArtifactValidationSummary;
+  executionRecords?: ValidatorExecutionRecord[];
 }): Promise<EpisodeCompletionWatermark> {
   const { episode, episodeNumber, title, save, shadowArtifacts } = options;
   const assembledArtifact = episodeAssembledArtifact(episodeNumber);
@@ -108,6 +111,7 @@ export async function writeEpisodeCompletion(options: {
       save,
       ...shadowArtifacts,
       validation: options.validation ?? shadowArtifacts.validation,
+      executionRecords: options.executionRecords ?? shadowArtifacts.executionRecords,
     })
     : undefined;
   if (shadowArtifacts && !shadowRefs) {
@@ -210,6 +214,7 @@ async function writeEpisodeShadowArtifacts(options: {
         episodeNumber: options.episodeNumber,
         runtimeEpisode: runtimeRef,
         validation: options.validation ?? defaultValidationSummary('runtime-episode'),
+        executionRecords: options.executionRecords ?? [],
       },
       status: 'valid',
       makeCurrent: false,

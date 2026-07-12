@@ -219,7 +219,7 @@ import { FinalContract, type FinalContractDeps } from './finalContract';
 import { Assembly } from './assembly';
 import { QAPhase, type QAPhaseDeps } from './phases/QAPhase';
 import { QuickValidationPhase, type QuickValidationPhaseDeps } from './phases/QuickValidationPhase';
-import { ContentGenerationPhase, type ContentGenerationPhaseDeps } from './phases/ContentGenerationPhase';
+import { ContentGenerationPhase, type ContentGenerationPhaseDeps, type ContentGenerationResult } from './phases/ContentGenerationPhase';
 import { AssemblyPhase } from './phases/AssemblyPhase';
 import { bindStoryMediaAssets, rethrowAsImagePhaseFailure } from './mediaBinding';
 import { EpisodeArchitecturePhase, type EpisodeArchitecturePhaseDeps } from './phases/EpisodeArchitecturePhase';
@@ -655,6 +655,7 @@ type AuthoredEpisodeArtifacts = {
   sceneContents: SceneContent[];
   choiceSets: ChoiceSet[];
   encounters: Map<string, EncounterStructure>;
+  validationExecutionRecords?: import('../../types/validation').ValidatorExecutionRecord[];
 };
 
 type EpisodeGenerationResult = {
@@ -3004,16 +3005,13 @@ export class FullStoryPipeline {
         this.getResumeOutput<unknown>(resumeCheckpoint, 'scene_content'),
         { episodeNumber: brief.episode.number, blueprintId: draftBlueprintFingerprint },
       );
-      let contentGenerationResult: {
-        sceneContents: SceneContent[];
-        choiceSets: ChoiceSet[];
-        encounters: Map<string, EncounterStructure>;
-      };
+      let contentGenerationResult: ContentGenerationResult;
       if (resumedSceneContent) {
         contentGenerationResult = {
           sceneContents: resumedSceneContent.sceneContents || [],
           choiceSets: resumedSceneContent.choiceSets || [],
           encounters: new Map<string, EncounterStructure>(resumedSceneContent.encounters || []),
+          validationExecutionRecords: [],
         };
       } else {
         const contentOutcome = await this.runContentGenerationWithArchitectureRetry({
@@ -4142,18 +4140,8 @@ export class FullStoryPipeline {
     return result;
   }
 
-  /**
-   * Content generation with ONE bounded architecture re-run when the
-   * SceneConstructionGate blocks (bite-me 2026-07-07: the gate's own error says
-   * "Re-run architecture…" but nothing ever did — a preflight hit hard-aborted
-   * the run at ~4% and discarded a healthy analysis + season plan). On a gate
-   * error: re-run StoryArchitect once (the LLM elaboration varies, and the
-   * question-shaped-turn / cue-detection fixes change the derived contracts),
-   * refresh branch analysis for the new blueprint, and retry content generation
-   * once. A second gate hit rethrows — a genuine chronology defect still fails
-   * fast before prose is written. Kill-switch:
-   * GATE_SCENE_CONSTRUCTION_ARCH_RETRY=0 restores the immediate hard abort.
-   */
+  /** Re-run architecture once after a SceneConstructionGate abort; a second
+   * abort still fails fast. GATE_SCENE_CONSTRUCTION_ARCH_RETRY=0 disables it. */
   private async runContentGenerationWithArchitectureRetry(params: {
     brief: FullCreativeBrief;
     worldBible: WorldBible;
@@ -4165,7 +4153,7 @@ export class FullStoryPipeline {
     phaseLabel: string;
     onArchitectureRetry?: (blueprint: EpisodeBlueprint, branchAnalysis: BranchAnalysis | undefined) => Promise<void>;
   }): Promise<{
-    content: { sceneContents: SceneContent[]; choiceSets: ChoiceSet[]; encounters: Map<string, EncounterStructure> };
+    content: ContentGenerationResult;
     blueprint: EpisodeBlueprint;
     branchAnalysis?: BranchAnalysis;
   }> {
@@ -4212,7 +4200,7 @@ export class FullStoryPipeline {
     branchAnalysis?: BranchAnalysis,
     outputDirectory?: string,
     episodeNumber?: number
-  ): Promise<{ sceneContents: SceneContent[]; choiceSets: ChoiceSet[]; encounters: Map<string, EncounterStructure> }> {
+  ): Promise<ContentGenerationResult> {
     const deps = {
       sceneWriter: this.sceneWriter,
       choiceAuthor: this.choiceAuthor,
@@ -5361,6 +5349,7 @@ export class FullStoryPipeline {
                 characterBible,
                 qaReport: generatedEpisode.qaReport,
                 bestPracticesReport: generatedEpisode.bestPracticesReport,
+                validationExecutionRecords: generatedEpisode.validationExecutionRecords,
                 outputDirectory,
                 artifactRuntime,
                 writeWatermark: true,
@@ -5401,6 +5390,7 @@ export class FullStoryPipeline {
               sceneContents: result.sceneContents,
               choiceSets: result.choiceSets,
               encounters: result.encounters,
+              validationExecutionRecords: result.validationExecutionRecords,
             });
           }
           episodeResults.push(result.result);
@@ -5449,6 +5439,7 @@ export class FullStoryPipeline {
                 sceneContents: generated.sceneContents,
                 choiceSets: generated.choiceSets,
                 encounters: generated.encounters,
+                validationExecutionRecords: generated.validationExecutionRecords,
               }
               : undefined;
             await commitEpisodeGenerationAfterLock({
@@ -5488,6 +5479,7 @@ export class FullStoryPipeline {
                   characterBible,
                   qaReport: generated.qaReport,
                   bestPracticesReport: generated.bestPracticesReport,
+                  validationExecutionRecords: generated.validationExecutionRecords,
                   outputDirectory,
                   artifactRuntime,
                   writeWatermark: opts.writeWatermark,
@@ -6113,6 +6105,7 @@ export class FullStoryPipeline {
     characterBible: CharacterBible;
     qaReport?: QAReport;
     bestPracticesReport?: ComprehensiveValidationReport;
+    validationExecutionRecords?: import('../../types/validation').ValidatorExecutionRecord[];
     outputDirectory: string;
     artifactRuntime: RunArtifactRuntime;
     writeWatermark: boolean;
@@ -6128,6 +6121,7 @@ export class FullStoryPipeline {
       characterBible,
       qaReport,
       bestPracticesReport,
+      validationExecutionRecords,
       outputDirectory,
       artifactRuntime,
       writeWatermark,
@@ -6219,6 +6213,10 @@ export class FullStoryPipeline {
         title,
         lock,
         validation,
+        executionRecords: [
+          ...(validationExecutionRecords ?? []),
+          ...(bestPracticesReport?.executionRecords ?? []),
+        ],
       }).then(() => undefined),
     });
   }
@@ -6661,7 +6659,7 @@ export class FullStoryPipeline {
         },
       });
       blueprint = contentOutcome.blueprint;
-      const { sceneContents, choiceSets, encounters } = contentOutcome.content;
+      const { sceneContents, choiceSets, encounters, validationExecutionRecords } = contentOutcome.content;
       await this.qualityCouncil?.runChoice({
         brief: episodeBrief,
         sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,
@@ -7256,6 +7254,7 @@ export class FullStoryPipeline {
         sceneContents,
         choiceSets,
         encounters,
+        validationExecutionRecords,
         result: { episodeNumber: i, title: episodeOutline.title, success: true },
         qaReport,
         bestPracticesReport,

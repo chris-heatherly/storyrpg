@@ -81,6 +81,10 @@ import {
   type ValidationPhaseBaseline,
 } from './validationPhaseBaseline';
 import type { ValidatorExecutionRecord } from '../../types/validation';
+import type {
+  ValidationOwnerStage,
+  ValidationRetryClass,
+} from '../../types/validationOwnership';
 import { createValidatorExecutionRecordsFromGroupedIssues } from './validatorExecutionRecords';
 import type {
   FinalContractFindingClass,
@@ -108,8 +112,14 @@ export interface FidelityFinding {
   outcomeTier?: string;
   artifactPath?: string;
   repairHandler?: string;
+  issueCode?: string;
+  ownerStage?: ValidationOwnerStage;
+  retryClass?: ValidationRetryClass;
   missingEvidenceAtoms?: string[];
   requiredEvidenceAtoms?: string[];
+  matchedForbiddenAtoms?: string[];
+  findingFingerprint?: string;
+  realizationFingerprint?: string;
 }
 
 export interface RunFidelityValidatorsResult {

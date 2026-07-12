@@ -216,6 +216,45 @@ export class ArtifactRevisionStore {
     return current;
   }
 
+  /**
+   * Materialize schema-v1 current artifacts as new immutable v2 revisions and
+   * advance their current pointers in one commit. A failed migration leaves
+   * every legacy pointer untouched; callers can surface the thrown diagnostic
+   * as `migration_blocked` without silently regenerating upstream work.
+   */
+  async migrateCurrentRevisionSet(episodeNumber?: number): Promise<ArtifactCurrentIndex> {
+    const current = this.loadCurrentIndex(episodeNumber);
+    const refs: ArtifactRef[] = [];
+    for (const ref of Object.values(current.artifacts)) {
+      if (!ref) continue;
+      const raw = this.io.load<unknown>(ref.path);
+      const schemaVersion = raw && typeof raw === 'object' ? (raw as { schemaVersion?: unknown }).schemaVersion : undefined;
+      if (schemaVersion !== 1) {
+        refs.push(ref);
+        continue;
+      }
+      const artifact = this.loadRef(ref);
+      if (!artifact) throw new Error(`migration_blocked: legacy artifact ${ref.artifactId} is missing or hash-mismatched.`);
+      const migrated = await this.saveRevision({
+        kind: artifact.kind,
+        storyId: artifact.storyId,
+        runId: artifact.runId,
+        episodeNumber: artifact.episodeNumber,
+        payload: artifact.payload,
+        status: artifact.status,
+        upstream: artifact.upstream,
+        provenance: { ...artifact.provenance, phase: artifact.provenance.phase || 'legacy_migration' },
+        validation: artifact.validation,
+        makeCurrent: false,
+      });
+      if (migrated.status !== 'valid' || !migrated.validation.passed) {
+        throw new Error(`migration_blocked: migrated artifact ${artifact.artifactId} did not pass validation.`);
+      }
+      refs.push(this.refFor(migrated));
+    }
+    return this.commitCurrentSet(refs);
+  }
+
   async markSuperseded(ref: ArtifactRef): Promise<PipelineArtifact<unknown> | null> {
     const artifact = this.loadRef(ref);
     if (!artifact) return null;

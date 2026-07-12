@@ -7,6 +7,7 @@ import {
   compileAndApplyNarrativeContracts,
   compileEpisodeEventPlan,
   compileNarrativeContractGraph,
+  projectSetupPayoffEdgesFromGraph,
   validateCanonicalEpisodeBlueprintProjection,
 } from './narrativeContractCompiler';
 
@@ -384,5 +385,27 @@ describe('NarrativeContractCompiler', () => {
       blocking: true,
     })]);
     expect(transition?.blocking).toBe(true);
+  });
+
+  it('projects legacy setup/payoff edges from canonical pays_off dependencies', () => {
+    const graph = {
+      events: [
+        { id: 'event:setup', episodeNumber: 1, ownerSceneId: 's1' },
+        { id: 'event:payoff', episodeNumber: 3, ownerSceneId: 's3' },
+      ],
+      dependencies: [{
+        id: 'dep:setup-payoff', fromEventId: 'event:setup', toEventId: 'event:payoff',
+        relation: 'pays_off', sourceEpisodeNumber: 1, targetEpisodeNumbers: [3],
+        targetSceneIds: ['s3'], branchConditionKeys: [], requiredSurfaces: ['final_prose'],
+        priority: 'major', sourceContractIds: [], description: 'The later reveal pays off the planted clue.',
+      }],
+    } as any;
+    expect(projectSetupPayoffEdgesFromGraph(graph, [
+      scene({ id: 's1', episodeNumber: 1, order: 0 }),
+      scene({ id: 's3', episodeNumber: 3, order: 0 }),
+    ])).toEqual([{
+      from: 's1', to: 's3', span: 'cross_episode',
+      description: 'The later reveal pays off the planted clue.',
+    }]);
   });
 });

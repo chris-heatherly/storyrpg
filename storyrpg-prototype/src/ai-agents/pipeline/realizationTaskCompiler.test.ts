@@ -52,4 +52,35 @@ describe('compileNarrativeRealizationTasks', () => {
     ]);
     expect(tasks.find((task) => task.contractId === 'rel:stela')?.sceneId).toBe('s1-2');
   });
+
+  it('compiles a blocking owner task for an ordinary depiction event without specialized route evidence', () => {
+    const graph = {
+      events: [{
+        id: 'event:ep1-writing', episodeNumber: 1, sourceOrder: 2,
+        sourceText: 'Kylie writes the first post about the rescue.',
+        sourceContractIds: ['treatment:writing'], realizationMode: 'depiction',
+        ownershipPolicy: 'exactly_one_scene', prerequisiteEventIds: [],
+        targetSceneIds: ['s1-6'], targetSpineUnitIds: [], ownerSceneId: 's1-6',
+        provenance: { source: 'treatment_contract', confidence: 'authoritative' },
+      }],
+      dependencies: [],
+    } as unknown as NarrativeContractGraph;
+
+    const [task] = compileNarrativeRealizationTasks(graph, [{
+      id: 's1-6', episodeNumber: 1, order: 0, kind: 'standard', relationshipPacing: [],
+    }] as any).filter((candidate) => candidate.eventId === 'event:ep1-writing');
+
+    expect(task).toMatchObject({
+      id: 'task:event:ep1-writing:owner-event',
+      contractId: 'event:ep1-writing',
+      sceneId: 's1-6',
+      ownerStage: 'scene_writer',
+      blocking: true,
+      target: { scope: 'owner', surfaces: ['beat_text', 'dialogue', 'text_variant'] },
+    });
+    expect(task.evidenceAtoms[0]).toMatchObject({
+      acceptedPatterns: ['Kylie writes the first post about the rescue.'],
+      sourceText: 'Kylie writes the first post about the rescue.',
+    });
+  });
 });

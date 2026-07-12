@@ -32,6 +32,7 @@ import {
   SceneValidationResult,
 } from '../validators';
 import type { ComprehensiveValidationReport } from '../../types/validation';
+import { createValidatorExecutionRecord } from '../validators/validatorExecutionRecords';
 import { runFidelityValidators, type FidelityFinding } from '../validators/runFidelityValidators';
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
 import {
@@ -1053,6 +1054,19 @@ export class FinalContract {
       } catch (encErr) {
         console.warn(`[Pipeline] EncounterQualityValidator failed (non-fatal): ${(encErr as Error).message}`);
       }
+      r.executionRecords = [
+        ...(freshFidelity.executionRecords ?? []),
+        createValidatorExecutionRecord({
+          policyId: 'FinalStoryContractValidator@final',
+          validatorId: 'FinalStoryContractValidator',
+          lifecycle: 'final-contract',
+          role: 'aggregate',
+          placement: 'season-final',
+          mode: 'enforce',
+          issues: [...r.blockingIssues, ...r.warnings],
+          passed: r.passed,
+        }),
+      ];
       // Re-apply the fidelity judge's refutations: a paraphrase it already confirmed
       // dramatized must not re-block when the re-run heuristic re-flags it. A rewrite
       // only ADDS staged content, so a refuted (content-present) finding stays valid.
@@ -1453,6 +1467,20 @@ export class FinalContract {
       }
     }
 
+    report.executionRecords = [
+      ...(report.executionRecords ?? []).filter((record) => record.validatorId !== 'FinalStoryContractValidator'),
+      createValidatorExecutionRecord({
+        policyId: 'FinalStoryContractValidator@final',
+        validatorId: 'FinalStoryContractValidator',
+        lifecycle: 'final-contract',
+        role: 'aggregate',
+        placement: 'season-final',
+        mode: 'enforce',
+        issues: [...report.blockingIssues, ...report.warnings],
+        passed: report.passed,
+      }),
+    ];
+
     this.deps.emit({
       type: report.passed ? 'checkpoint' : 'error',
       phase: input.phase,
@@ -1495,14 +1523,14 @@ export class FinalContract {
                   code: 'character_presence_contract_failed' as const,
                   ownerStage: 'scene_content' as const,
                   retryClass: 'repair_scene_prose' as const,
-                  issueCodes: presenceIssues.map((issue) => issue.type),
+                  issueCodes: presenceIssues.map((issue) => issue.issueCode ?? issue.type),
                   repairTarget: presenceIssues[0]?.type,
                 }
               : {
                   code: 'final_contract_drift' as const,
                   ownerStage: 'final_contract' as const,
                   retryClass: 'repair_final_contract' as const,
-                  issueCodes: report.blockingIssues.map((issue) => issue.type),
+                  issueCodes: report.blockingIssues.map((issue) => issue.issueCode ?? issue.type),
                 };
           })(),
           context: {

@@ -6,6 +6,7 @@ import type {
   NarrativeRealizationTask,
   PersistedNarrativeRealizationTask,
 } from '../../types/narrativeContract';
+import type { SeasonScenePlan } from '../../types/scenePlan';
 import { ENCOUNTER_OUTCOME_TIERS } from '../validators/encounterTextSurfaces';
 
 function isCanonicalTask(task: PersistedNarrativeRealizationTask): task is NarrativeRealizationTask {
@@ -55,6 +56,21 @@ export function normalizePersistedEpisodeEventPlan(plan: EpisodeEventPlan): Epis
   );
   if (realizationTasks.every((task, index) => task === plan.realizationTasks?.[index])) return plan;
   return { ...plan, realizationTasks };
+}
+
+/** Normalize the nested episode projections carried by a persisted season scene plan. */
+export function normalizePersistedSeasonScenePlan(plan: SeasonScenePlan): SeasonScenePlan {
+  const graph = plan.narrativeContractGraph
+    ? normalizePersistedNarrativeContractGraph(plan.narrativeContractGraph)
+    : plan.narrativeContractGraph;
+  const episodeEventPlans = plan.episodeEventPlans
+    ? Object.fromEntries(Object.entries(plan.episodeEventPlans).map(([episode, episodePlan]) => [
+      episode,
+      normalizePersistedEpisodeEventPlan(episodePlan),
+    ]))
+    : plan.episodeEventPlans;
+  if (graph === plan.narrativeContractGraph && episodeEventPlans === plan.episodeEventPlans) return plan;
+  return { ...plan, narrativeContractGraph: graph, episodeEventPlans };
 }
 
 export function describeNarrativeEvidenceTarget(target: NarrativeEvidenceTarget): string {

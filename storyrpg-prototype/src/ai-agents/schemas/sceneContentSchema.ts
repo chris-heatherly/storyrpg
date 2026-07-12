@@ -94,6 +94,25 @@ export function buildSceneContentJsonSchema(maxBeats: number): StructuredJsonSch
         sceneTakeaways: stringArray,
         transitionIn: { type: 'string' },
         continuityNotes: stringArray,
+        realizedEventIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Canonical event IDs assigned to this scene and realized in its prose. Never invent IDs.',
+        },
+        eventEvidence: {
+          type: 'array',
+          maxItems: 12,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['eventId', 'evidence'],
+            properties: {
+              eventId: { type: 'string' },
+              beatIds: { type: 'array', items: { type: 'string' }, maxItems: 6 },
+              evidence: { type: 'string' },
+            },
+          },
+        },
       },
     },
   };

@@ -2285,6 +2285,116 @@ function spineUnitSceneOverlap(unit: EpisodeSpineUnit, scene: PlannedScene): num
   return hits / unitTokens.length;
 }
 
+function normalizedSpineTurnText(value: string | undefined): string {
+  return (value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * ESC ownership is stronger than the earlier lexical treatment binder. The
+ * binder can place unit N+1's beat on unit N's positional scene when adjacent
+ * units share most of their source sentence (for example test -> bond). Once
+ * `spineUnitId` is assigned, replace only authored depiction beats that are an
+ * exact normalized match for another ESC unit; preserve seeds, identity
+ * constraints, and any authored/cold-open/signature obligation that is not an
+ * exact ESC-unit depiction.
+ */
+function alignStandardSceneTurnsToSpineUnits(
+  scenes: PlannedScene[],
+  units: EpisodeSpineUnit[],
+): void {
+  const unitById = new Map(units.map((unit) => [unit.id, unit]));
+  const hasTestBondDecomposition = units.some((unit) =>
+    unit.kind === 'bond' && unit.prerequisites.some((id) => unitById.get(id)?.kind === 'test'),
+  );
+  if (!hasTestBondDecomposition) return;
+  type Candidate = { beat: RequiredBeat; scene: PlannedScene };
+  const unitTexts = new Set(units.map((unit) => normalizedSpineTurnText(unit.text)).filter(Boolean));
+  const candidates = new Map<string, Candidate[]>();
+  for (const scene of scenes) {
+    for (const beat of scene.requiredBeats ?? []) {
+      if (beat.contractKind === 'identity_constraint' || !['authored', 'coldopen', 'signature'].includes(beat.tier)) continue;
+      const text = normalizedSpineTurnText(beat.mustDepict || beat.sourceTurn);
+      if (!unitTexts.has(text)) continue;
+      candidates.set(text, [...(candidates.get(text) ?? []), { beat, scene }]);
+    }
+  }
+  const tierPriority = (candidate: Candidate): number => candidate.beat.tier === 'coldopen' ? 0 : candidate.beat.tier === 'authored' ? 1 : 2;
+  for (const pool of candidates.values()) pool.sort((left, right) => tierPriority(left) - tierPriority(right));
+  const hasProtectedAuthoredTurn = (scene: PlannedScene): boolean => (scene.requiredBeats ?? []).some((beat) =>
+    beat.contractKind !== 'identity_constraint'
+    && ['authored', 'coldopen', 'signature'].includes(beat.tier)
+    && !unitTexts.has(normalizedSpineTurnText(beat.mustDepict || beat.sourceTurn)),
+  );
+  const assignments = units.map((unit, index): { unit: EpisodeSpineUnit; scene: PlannedScene; candidate: Candidate } | undefined => {
+    const scene = scenes[index];
+    if (!scene) return undefined;
+    const text = normalizedSpineTurnText(unit.text);
+    const pool = candidates.get(text) ?? [];
+    const localIndex = pool.findIndex((candidate) => candidate.scene === scene);
+    const candidate = localIndex >= 0
+      ? pool.splice(localIndex, 1)[0]
+      : hasProtectedAuthoredTurn(scene)
+        ? undefined
+        : pool.shift();
+    return candidate ? { unit, scene, candidate } : undefined;
+  }).filter((assignment): assignment is NonNullable<typeof assignment> => Boolean(assignment));
+  const assignmentByText = new Map(assignments.map((assignment) => [normalizedSpineTurnText(assignment.unit.text), assignment]));
+  const displacedCandidates = [...candidates.entries()].flatMap(([text, pool]) => {
+    const owner = assignmentByText.get(text)?.scene;
+    return owner ? pool.filter((candidate) => candidate.scene !== owner) : [];
+  });
+  const assignedUnitIds = new Set(assignments.map((assignment) => assignment.unit.id));
+  for (const [index, unit] of units.entries()) {
+    if (assignedUnitIds.has(unit.id)) continue;
+    const scene = scenes[index];
+    if (!scene) continue;
+    const sceneTurn = normalizedSpineTurnText(scene.turnContract?.turnEvent || scene.turnContract?.centralTurn);
+    const carriesAnotherUnitTurn = units.some((candidate) =>
+      candidate.id !== unit.id && normalizedSpineTurnText(candidate.text) === sceneTurn,
+    );
+    if (hasProtectedAuthoredTurn(scene) && !carriesAnotherUnitTurn) continue;
+    const losesShiftedBeat = assignments.some((assignment) =>
+      assignment.candidate.scene === scene && assignment.scene !== scene,
+    ) || displacedCandidates.some((candidate) => candidate.scene === scene);
+    if (!losesShiftedBeat) continue;
+    assignments.push({
+      unit,
+      scene,
+      candidate: {
+        scene,
+        beat: { id: '', sourceTurn: unit.text, mustDepict: unit.text, tier: 'authored' },
+      },
+    });
+  }
+  const assignedBeats = new Set([
+    ...assignments.map((assignment) => assignment.candidate.beat),
+    ...displacedCandidates.map((candidate) => candidate.beat),
+  ]);
+  for (const scene of scenes) {
+    scene.requiredBeats = (scene.requiredBeats ?? []).filter((beat) => !assignedBeats.has(beat));
+  }
+  for (const { unit, scene, candidate } of assignments) {
+    let beatIndex = 1;
+    const existingIds = new Set((scene.requiredBeats ?? []).map((beat) => beat.id));
+    while (existingIds.has(`${scene.id}-rb${beatIndex}`)) beatIndex += 1;
+    const canonicalBeat: RequiredBeat = {
+      ...candidate.beat,
+      id: `${scene.id}-rb${beatIndex}`,
+      sourceTurn: unit.text,
+      mustDepict: unit.text,
+      contractKind: 'depiction',
+    };
+    scene.requiredBeats = [canonicalBeat, ...(scene.requiredBeats ?? [])];
+    applyAuthoredTurnContract(scene, canonicalBeat);
+  }
+}
+
 function promoteSpineUnitToEncounterScene(scene: PlannedScene, unit: EpisodeSpineUnit): void {
   if (scene.kind === 'encounter' && scene.encounter) {
     scene.encounterProfile = unit.encounterProfile || scene.encounterProfile;
@@ -2334,6 +2444,8 @@ export function projectSpineOntoScenes(
   const encounterUnits = episodeSpine.units.filter((unit) => unit.sceneKind === 'encounter');
 
   let projected = 0;
+
+  alignStandardSceneTurnsToSpineUnits(standardSlots, standardUnits);
 
   standardUnits.forEach((unit, index) => {
     const scene = standardSlots[index];
@@ -2701,7 +2813,17 @@ export function migrateLegacySeasonNarrativeContracts(plan: SeasonPlan): SeasonP
   const existing = plan.scenePlan;
   if (!existing) return rebuildTreatmentSeasonScenePlan({ ...plan, scenePlan: undefined });
   const cloned = JSON.parse(JSON.stringify(existing)) as SeasonScenePlan;
+  // A compiler-version migration can reuse the authored scene skeleton, but it
+  // must replay ESC projection before rebuilding the graph. Older cached plans
+  // may have correct spineUnitIds alongside shifted turn/required-beat text;
+  // compiling that stale text preserves a planning contradiction even though
+  // canonical event ownership itself is correct.
+  for (const spine of Object.values(cloned.episodeSpines ?? {})) {
+    projectSpineOntoScenes(scenesForEpisode(cloned, spine.episodeNumber), spine);
+  }
   const scenePlan = compileAndApplyNarrativeContracts(plan, cloned);
+  attachSceneConstructionProfiles(scenePlan.scenes);
+  syncGenericSceneTitlesFromAuthoredBeats(scenePlan.scenes);
   return {
     ...plan,
     episodes: (plan.episodes ?? []).map((episode) => ({

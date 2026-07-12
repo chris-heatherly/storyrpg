@@ -9,6 +9,7 @@ import {
   repairRouteCueSceneOrder,
   rebuildTreatmentSeasonScenePlan,
   syncGenericSceneTitlesFromAuthoredBeats,
+  projectSpineOntoScenes,
 } from './seasonScenePlanBuilder';
 import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type { PlannedScene } from '../../types/scenePlan';
@@ -1144,6 +1145,51 @@ describe('repairRouteCueSceneOrder (plan-retry rung, bite-me 2026-07-03T18-19-01
 });
 
 describe('projectSpineOntoScenes', () => {
+  it('realigns shifted authored beats and turn contracts to explicit ESC ownership', () => {
+    const makeScene = (id: string, order: number, authoredText: string): PlannedScene => ({
+      id, episodeNumber: 1, order, kind: 'standard', title: id,
+      dramaticPurpose: id, narrativeRole: 'development', locations: [], npcsInvolved: [], setsUp: [], paysOff: [],
+      requiredBeats: [{ id: `${id}-rb1`, sourceTurn: authoredText, mustDepict: authoredText, tier: 'authored' }],
+      turnContract: {
+        turnId: `${id}-turn`, source: 'treatment', centralTurn: authoredText,
+        beforeState: 'before', turnEvent: authoredText, afterState: 'after', handoff: `After ${authoredText}`,
+      },
+    });
+    const scenes = [
+      makeScene('s1-4', 3, 'The three become friends and form the Dusk Club.'),
+      makeScene('s1-5', 4, 'At the rooftop, two strangers notice Kylie.'),
+      makeScene('s1-6', 5, 'At the rooftop, two strangers notice Kylie.'),
+    ];
+    scenes[0].requiredBeats!.push({
+      id: 's1-4-identity', sourceTurn: 'Keep the stranger anonymous.', mustDepict: 'Keep the stranger anonymous.',
+      tier: 'authored', contractKind: 'identity_constraint',
+    });
+    const spine = {
+      episodeNumber: 1, sourceHash: 'source', episodeStoryCircleBeats: ['you' as const], polarityFacets: [],
+      units: [
+        { id: 'ep1-u4', order: 3, text: 'Testing Kylie.', kind: 'test' as const, storyCircleFacets: [], prerequisites: [], sceneKind: 'standard' as const },
+        { id: 'ep1-u5', order: 4, text: 'The three become friends and form the Dusk Club.', kind: 'bond' as const, storyCircleFacets: [], prerequisites: ['ep1-u4'], sceneKind: 'standard' as const },
+        { id: 'ep1-u6', order: 5, text: 'At the rooftop, two strangers notice Kylie.', kind: 'development' as const, storyCircleFacets: [], prerequisites: ['ep1-u5'], sceneKind: 'standard' as const },
+      ],
+    };
+
+    expect(projectSpineOntoScenes(scenes, spine)).toBe(3);
+    for (const [index, scene] of scenes.entries()) {
+      const unit = spine.units[index];
+      expect(scene.spineUnitId).toBe(unit.id);
+      expect(scene.turnContract?.centralTurn).toBe(unit.text);
+      expect(scene.turnContract?.turnEvent).toBe(unit.text);
+      expect(scene.requiredBeats?.some((beat) => beat.tier === 'authored' && beat.contractKind !== 'identity_constraint' && beat.mustDepict === unit.text)).toBe(true);
+      expect(scene.requiredBeats?.filter((beat) =>
+        beat.contractKind !== 'identity_constraint'
+        && spine.units.some((candidate) => candidate.text === beat.mustDepict),
+      ).map((beat) => beat.mustDepict)).toEqual([unit.text]);
+    }
+    expect(scenes[0].requiredBeats?.find((beat) => beat.contractKind === 'identity_constraint')?.mustDepict)
+      .toBe('Keep the stranger anonymous.');
+    expect(scenes[0].requiredBeats?.some((beat) => beat.mustDepict.includes('Dusk Club'))).toBe(false);
+  });
+
   it('syncs a treatment scene title from final event ownership, not a stale pre-binding beat', () => {
     const scene = {
       id: 's1-street',
@@ -1319,6 +1365,59 @@ describe('projectSpineOntoScenes', () => {
     const scenes = scenesForEpisode(sp, 1);
     expect(scenes.some((scene) => scene.spineUnitId === bond!.id)).toBe(true);
     expect(scenes.some((scene) => scene.spineUnitId === test!.id)).toBe(true);
+  });
+
+  it('replays ESC turn alignment while migrating a stale cached narrative compiler plan', () => {
+    const ep = episode(1, ['you'], {
+      estimatedSceneCount: 6,
+      locations: ['Bucharest', 'Lumina Books', 'Valescu Club', 'Cismigiu Gardens', "Kylie's Apartment"],
+      treatmentGuidance: {
+        sourceKind: 'authored_lite',
+        episodeTurns: [
+          "Kylie arrives in Bucharest with two suitcases and her grandmother's address.",
+          'She explores Bucharest and meets Stela and Mika.',
+          'After testing Kylie, the three become friends and form the Dusk Club.',
+          'At a rooftop bar two strangers notice Kylie.',
+          'Walking home, Kylie is attacked and rescued.',
+          'At 4am she writes the first Dating After Dusk post.',
+        ],
+      },
+    });
+    const sourcePlan = plan([ep]);
+    const scenePlan = buildSeasonScenePlan(sourcePlan);
+    const cached = JSON.parse(JSON.stringify({
+      ...sourcePlan,
+      scenePlan,
+      episodes: [{ ...ep, plannedScenes: scenesForEpisode(scenePlan, 1) }],
+    })) as SeasonPlan;
+    const spine = cached.scenePlan!.episodeSpines![1];
+    const testUnit = spine.units.find((unit) => unit.kind === 'test')!;
+    const bondUnit = spine.units.find((unit) => unit.kind === 'bond')!;
+    const nextUnit = spine.units.find((unit) => unit.order === bondUnit.order + 1)!;
+    const testScene = cached.scenePlan!.scenes.find((scene) => scene.spineUnitId === testUnit.id)!;
+    const bondScene = cached.scenePlan!.scenes.find((scene) => scene.spineUnitId === bondUnit.id)!;
+    const shiftTurn = (scene: PlannedScene, text: string): void => {
+      scene.requiredBeats = [{ id: `${scene.id}-rb1`, sourceTurn: text, mustDepict: text, tier: 'authored' }];
+      scene.turnContract = {
+        turnId: `${scene.id}-turn`, source: 'treatment', centralTurn: text,
+        beforeState: 'before', turnEvent: text, afterState: 'after', handoff: `After ${text}`,
+      };
+    };
+    shiftTurn(testScene, bondUnit.text);
+    shiftTurn(bondScene, nextUnit.text);
+    cached.scenePlan!.narrativeContractGraph!.compilerVersion = 'narrative-contract-compiler-v6';
+
+    const migrated = rebuildTreatmentSeasonScenePlan(cached);
+    const migratedTest = migrated.scenePlan!.scenes.find((scene) => scene.spineUnitId === testUnit.id)!;
+    const migratedBond = migrated.scenePlan!.scenes.find((scene) => scene.spineUnitId === bondUnit.id)!;
+    for (const unit of spine.units.filter((candidate) => candidate.sceneKind !== 'encounter')) {
+      const owner = migrated.scenePlan!.scenes.find((scene) => scene.spineUnitId === unit.id)!;
+      expect(owner.turnContract?.centralTurn, unit.id).toBe(unit.text);
+    }
+    expect(migratedTest.turnContract?.centralTurn).toBe(testUnit.text);
+    expect(migratedTest.requiredBeats?.some((beat) => beat.mustDepict === bondUnit.text)).toBe(false);
+    expect(migratedBond.turnContract?.centralTurn).toBe(bondUnit.text);
+    expect(migratedBond.requiredBeats?.some((beat) => beat.mustDepict === bondUnit.text)).toBe(true);
   });
 
   it('floors authored-lite scenes to ESC standard units so meet/threshold are not orphaned (Bite Me ep3)', () => {

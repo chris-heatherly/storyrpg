@@ -35,7 +35,7 @@ import { buildCharacterTreatmentContractsForPlan } from '../utils/characterTreat
 import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 import { plannedGroupFormation } from '../utils/relationshipPacingStagePolicy';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v6';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v7';
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',

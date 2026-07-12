@@ -13,6 +13,21 @@ const fail: ContractRepairReport = { passed: false, blockingIssues: [{ message: 
 const pass: ContractRepairReport = { passed: true, blockingIssues: [] };
 
 describe('runFinalContractRepair', () => {
+  it('keeps a canonical-target fingerprint stable when rewritten prose changes', async () => {
+    const { contractRepairIssueFingerprint } = await import('./finalContractRepair');
+    const first = contractRepairIssueFingerprint({
+      validator: 'NarrativeContractValidator', type: 'treatment_fidelity_violation',
+      sceneId: 's1-1', taskId: 'task:premise:identity',
+      message: 'Premise was missing: "observer orders second".',
+    });
+    const second = contractRepairIssueFingerprint({
+      validator: 'NarrativeContractValidator', type: 'treatment_fidelity_violation',
+      sceneId: 's1-1', taskId: 'task:premise:identity',
+      message: 'Premise was missing: "watches the room".',
+    });
+    expect(first).toBe(second);
+  });
+
   it('no-ops when the report already passes', async () => {
     const out = await runFinalContractRepair({
       story,

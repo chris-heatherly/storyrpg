@@ -147,4 +147,64 @@ describe('validateEpisodeArchitectureContract', () => {
     });
     expect(conflicts[0]?.message).toContain('s1-6');
   });
+
+  it('rejects distinct scene ids that duplicate the same planned dramatic turn', () => {
+    const conflicts = validateEpisodeArchitectureContract([
+      {
+        id: 's1-5',
+        name: 'Rooftop watchers',
+        description: 'After the club, Kylie notices a man in a charcoal suit and another man watching him.',
+        location: 'Valescu rooftop',
+        turnContract: {
+          turnId: 's1-5-turn', source: 'treatment', centralTurn: 'Kylie notices two men watching on the rooftop.',
+          beforeState: 'Kylie enjoys the party.', turnEvent: 'Kylie notices two men watching.', afterState: 'Kylie is being watched.', handoff: 'The night turns dangerous.',
+        },
+        narrativeEventIds: ['ep1-watchers'],
+        narrativeEventPlanVersion: 3,
+      },
+      {
+        id: 's1-6',
+        name: 'A second rooftop look',
+        description: 'On the rooftop after the club, Kylie notices the charcoal-suited man and another man watching him.',
+        location: 'Valescu rooftop',
+        turnContract: {
+          turnId: 's1-6-turn', source: 'planner', centralTurn: 'Kylie notices two men watching on the rooftop.',
+          beforeState: 'Kylie enjoys the party.', turnEvent: 'Kylie notices two men watching.', afterState: 'Kylie is being watched.', handoff: 'The night turns dangerous.',
+        },
+        narrativeEventIds: ['ep1-watchers'],
+        narrativeEventPlanVersion: 3,
+      },
+    ]);
+
+    expect(conflicts.some((conflict) => conflict.code === 'PLAN_DUPLICATE_SCENE_TURN')).toBe(true);
+  });
+
+  it('uses high-confidence semantic overlap as a duplicate fallback when event ids drift', () => {
+    const conflicts = validateEpisodeArchitectureContract([
+      {
+        id: 's1-5',
+        name: 'Rooftop watchers',
+        description: 'Kylie notices two men watching on the rooftop after the club.',
+        location: 'Valescu rooftop',
+        turnContract: {
+          centralTurn: 'Kylie notices two men watching on the rooftop.',
+          turnEvent: 'Kylie notices two men watching.',
+        },
+        narrativeEventPlanVersion: 3,
+      },
+      {
+        id: 's1-6',
+        name: 'Rooftop watchers',
+        description: 'Kylie notices two men watching on the rooftop after the club.',
+        location: 'Valescu rooftop',
+        turnContract: {
+          centralTurn: 'Kylie notices two men watching on the rooftop.',
+          turnEvent: 'Kylie notices two men watching.',
+        },
+        narrativeEventPlanVersion: 3,
+      },
+    ]);
+
+    expect(conflicts.some((conflict) => conflict.code === 'PLAN_DUPLICATE_SCENE_TURN')).toBe(true);
+  });
 });

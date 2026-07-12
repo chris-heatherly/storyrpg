@@ -85,13 +85,28 @@ function capGroupWithoutGroupChoice(contract: RelationshipPacingContract): void 
   if (contract.milestone) contract.milestone.targetStage = contract.targetStage;
 }
 
+function hasPlannedGroupDefiningChoice(
+  scene: SceneWithRelationshipPacing,
+  contract: RelationshipPacingContract,
+): boolean {
+  if (hasGroupDefiningChoice(scene, contract)) return true;
+  // ChoiceAuthor has not materialized options when plan-time reconciliation
+  // runs. Preserve an authored milestone when the locked scene already
+  // promises its group-defining relationship choice; otherwise reconciliation
+  // permanently downgrades the source contract to spark and makes the later
+  // choice impossible to validate as the treatment's milestone.
+  return contract.milestone?.kind === 'group_formation'
+    && contract.milestone.choiceSceneId === (scene as { id?: string }).id
+    && (scene.choicePoint?.type ?? scene.choiceType) === 'relationship';
+}
+
 export function reconcileRelationshipPacingWithChoiceTypes(scenes: SceneWithRelationshipPacing[]): number {
   let changed = 0;
   for (const scene of scenes || []) {
     const finalChoiceType = scene.choicePoint?.type ?? scene.choiceType ?? inferChoiceType(scene);
     for (const contract of scene.relationshipPacing || []) {
       const before = JSON.stringify(contract);
-      if (!hasGroupDefiningChoice(scene, contract)) capGroupWithoutGroupChoice(contract);
+      if (!hasPlannedGroupDefiningChoice(scene, contract)) capGroupWithoutGroupChoice(contract);
       else if (contract.milestone?.kind === 'group_formation') contract.source = 'choice';
       if (finalChoiceType !== 'relationship') capWithoutRelationshipChoice(contract);
       if (JSON.stringify(contract) !== before) changed += 1;

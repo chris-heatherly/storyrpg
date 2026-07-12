@@ -13,6 +13,7 @@ import type {
   NarrativeEventCue,
   NarrativeChoiceResidueContract,
   NarrativePremiseContract,
+  NarrativePremiseEvidenceAtom,
   NarrativeSeedContract,
   NarrativeStateContract,
   NarrativeTransitionContract,
@@ -33,7 +34,7 @@ import { resolveCharacterIntroMode, resolveRosterCharacter } from '../utils/npcI
 import { buildCharacterTreatmentContractsForPlan } from '../utils/characterTreatmentContracts';
 import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v4';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v5';
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',
@@ -399,11 +400,11 @@ function spineUnitOwnerScene(
     ].some((value) => normalized(value) === unitText);
   };
 
-  // An explicit ESC projection is authoritative when its scene carries the
-  // authored unit text. If a legacy/collapsed shell has a stale spine ID, an
-  // exact authored-text match is a deterministic compatibility repair. Broad
-  // lexical overlap is never allowed to move a valid explicit projection.
-  if (sourceScene.spineUnitId === unit.id && carriesUnitText(sourceScene)) return sourceScene;
+  // Explicit ESC projection is authoritative. The scene plan owns chronology
+  // and event identity; prose text is elaboration and may be stale, shifted, or
+  // intentionally folded into a neighboring cold-open scene. Never let an
+  // exact or lexical prose match move a valid spine binding to another scene.
+  if (sourceScene.spineUnitId === unit.id) return sourceScene;
   const exactMatches = scenes.filter((scene) =>
     scene.episodeNumber === sourceScene.episodeNumber
     && scene.kind !== 'encounter' === (unit.sceneKind !== 'encounter')
@@ -483,7 +484,57 @@ function premiseEvidencePatterns(sourceText: string): string[] {
     }
   }
   const distinctiveWords = words.filter((word) => word.length >= 6);
-  return Array.from(new Set([...phrases, ...distinctiveWords])).slice(0, 8);
+  // Prefer independently meaningful authored terms before adjacent n-grams.
+  // Adjacent n-grams describe source syntax rather than stable reader-facing facts.
+  return Array.from(new Set([...distinctiveWords, ...phrases])).slice(0, 8);
+}
+
+function premiseEvidenceAtoms(
+  contractId: string,
+  fieldKind: NarrativePremiseContract['fieldKind'],
+  sourceText: string,
+): NarrativePremiseEvidenceAtom[] {
+  const sourcePatterns = premiseEvidencePatterns(sourceText);
+  const aliases: Record<string, string[]> = {
+    observe: ['watch', 'watching', 'spectator', 'notice', 'study'],
+    observer: ['observe', 'watch', 'watching', 'spectator', 'notice', 'study'],
+    watch: ['observe', 'observes', 'watching', 'spectator', 'notice', 'study'],
+    write: ['writer', 'writing', 'article', 'piece', 'paragraph', 'prose', 'byline', 'compose'],
+    writer: ['write', 'writing', 'article', 'piece', 'paragraph', 'prose', 'byline', 'compose'],
+    hesitate: ['hesitating', 'pause', 'wait', 'delay', 'indecision', 'second guess'],
+    second: ['hesitate', 'pause', 'wait', 'delay', 'indecision', 'second guess'],
+    cancel: ['cancelled', 'canceled', 'ended', 'called off', 'imploded', 'broken'],
+    cancelled: ['cancel', 'canceled', 'ended', 'called off', 'imploded', 'broken'],
+    humiliate: ['humiliated', 'shame', 'shamed', 'embarrassed', 'exposed'],
+    humiliated: ['humiliate', 'shame', 'shamed', 'embarrassed', 'exposed'],
+    grandmother: ['grandma', 'ancestor', 'maternal elder', 'paternal elder'],
+    escape: ['flee', 'fled', 'run', 'ran', 'left', 'disappeared'],
+    fled: ['escape', 'flee', 'run', 'ran', 'left', 'disappeared'],
+  };
+  const kind: NarrativePremiseEvidenceAtom['kind'] = fieldKind === 'role_fact'
+    ? 'role'
+    : fieldKind === 'origin_pressure'
+      ? 'origin'
+      : fieldKind === 'wound_pressure'
+        ? 'wound'
+        : fieldKind === 'starting_identity'
+          ? 'behavior'
+          : 'fact';
+  return sourcePatterns.map((pattern, index) => {
+    const words = pattern.toLowerCase().split(/\s+/);
+    const acceptedPatterns = new Set([pattern]);
+    for (const word of words) {
+      for (const alias of aliases[word.replace(/(?:ing|ed|es|s)$/i, '')] ?? []) acceptedPatterns.add(alias);
+    }
+    return {
+      id: `${contractId}:atom:${index + 1}`,
+      kind,
+      canonicalFact: pattern,
+      acceptedPatterns: [...acceptedPatterns],
+      required: true,
+      sourceText,
+    };
+  });
 }
 
 function compilePremiseContracts(plan: SeasonPlan, scenes: PlannedScene[]): NarrativePremiseContract[] {
@@ -497,6 +548,11 @@ function compilePremiseContracts(plan: SeasonPlan, scenes: PlannedScene[]): Narr
     .filter((contract) => premiseKinds.has(contract.contractKind) && contract.targetEpisodeNumbers.includes(1))
     .map((contract) => {
       const evidencePatterns = premiseEvidencePatterns(contract.sourceText);
+      const evidenceAtoms = premiseEvidenceAtoms(
+        `premise:${contract.id}`,
+        contract.contractKind as NarrativePremiseContract['fieldKind'],
+        contract.sourceText,
+      );
       return {
         id: `premise:${contract.id}`,
         episodeNumber: 1,
@@ -504,7 +560,8 @@ function compilePremiseContracts(plan: SeasonPlan, scenes: PlannedScene[]): Narr
         fieldKind: contract.contractKind as NarrativePremiseContract['fieldKind'],
         sourceText: contract.sourceText,
         evidencePatterns,
-        minimumEvidenceHits: evidencePatterns.length >= 3 ? 2 : Math.min(1, evidencePatterns.length),
+        evidenceAtoms,
+        minimumEvidenceHits: Math.min(2, Math.max(1, evidenceAtoms.length)),
         targetSceneIds: contract.targetSceneIds.length > 0 ? [...contract.targetSceneIds] : openingScenes.map((scene) => scene.id),
         requiredSurface: ['beat_text', 'dialogue', 'choice_text'],
         sourceContractIds: [contract.id],

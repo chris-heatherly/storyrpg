@@ -1764,7 +1764,10 @@ Return exactly one complete SceneContent JSON object with:
       ? input.relevantFlags.map(f => `- ${f.name}: ${f.description}`).join('\n')
       : 'None specified';
     const premiseContracts = (input.premiseContracts ?? [])
-      .map((contract) => `- ${contract.fieldName}: ${contract.sourceText} (concrete evidence: ${contract.evidencePatterns.join(', ')})${contract.blocking ? ' [required]' : ''}`)
+      .map((contract) => {
+        const atoms = contract.evidenceAtoms?.map((atom) => `${atom.canonicalFact}: ${atom.acceptedPatterns.slice(0, 6).join(', ')}`).join(' | ');
+        return `- ${contract.fieldName}: ${contract.sourceText} (concrete evidence: ${atoms || contract.evidencePatterns.join(', ')})${contract.blocking ? ' [required]' : ''}`;
+      })
       .join('\n');
 
     const sourceContextStr = buildSourceMaterialFidelitySection(input.sourceAnalysis);
@@ -2176,7 +2179,7 @@ least two concrete evidence patterns from that contract. Prefer natural wording
 that preserves the fact, but do not replace a specific fact with a vague mood.
 This is a hard content requirement, not metadata. Re-read the beat text before
 returning and revise it if any checklist item is absent:
-${(input.premiseContracts ?? []).filter((contract) => contract.blocking).map((contract) => `- ${contract.fieldName}: include at least two of: ${contract.evidencePatterns.join(' | ')}`).join('\n')}
+${(input.premiseContracts ?? []).filter((contract) => contract.blocking).map((contract) => `- ${contract.fieldName}: include at least two typed facts: ${(contract.evidenceAtoms ?? []).map((atom) => `${atom.canonicalFact} [${atom.acceptedPatterns.slice(0, 5).join(', ')}]`).join(' | ') || contract.evidencePatterns.join(' | ')}`).join('\n')}
 ` : ''}
 
 Create the scene content following the SceneContent schema. Include:

@@ -147,6 +147,20 @@ function compactFingerprintText(value: string | undefined): string {
     .slice(0, 240);
 }
 
+function stableIssueMessage(issue: ContractRepairIssue): string {
+  // Once a validator supplies a canonical target, quoted prose and model
+  // wording are evidence, not identity. Keeping them in the fingerprint made
+  // the same unresolved contract look new after every LLM rewrite.
+  const hasCanonicalTarget = Boolean(
+    issue.taskId || issue.contractId || issue.eventId || issue.fieldPath || issue.sceneId || issue.beatId,
+  );
+  if (hasCanonicalTarget) return '@canonical-target';
+  return compactFingerprintText(issue.message)
+    .toLowerCase()
+    .replace(/"[^"]*"/g, '"value"')
+    .replace(/\b\d+(?:\.\d+)?\b/g, '#');
+}
+
 export function contractRepairIssueFingerprint(issue: ContractRepairIssue): string {
   const message = issue.message ?? '';
   const moment = extractQuotedMoment(message) ?? message;
@@ -159,7 +173,7 @@ export function contractRepairIssueFingerprint(issue: ContractRepairIssue): stri
     issue.sceneId ?? '',
     issue.beatId ?? '',
     issue.fieldPath ?? '',
-    compactFingerprintText(moment),
+    stableIssueMessage(issue) || compactFingerprintText(moment),
     issue.taskId ?? '',
     issue.contractId ?? '',
     issue.eventId ?? '',

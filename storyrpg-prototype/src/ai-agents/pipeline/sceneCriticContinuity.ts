@@ -71,6 +71,24 @@ export interface SceneCriticContinuityDeps {
   buildContinuityTimeline: (blueprint: EpisodeBlueprint) => Array<{ event: string; when: string }>;
 }
 
+function continuityRepairBeatIds(
+  sceneContents: SceneContent[],
+  sceneId: string,
+  findings: ContinuityFinding[] | undefined,
+): string[] {
+  const scene = sceneContents.find((candidate) => candidate.sceneId === sceneId);
+  const beats = scene?.beats ?? [];
+  const ids = new Set<string>();
+  for (const finding of selectRepairableContinuityFindings(findings)) {
+    if (finding.location?.sceneId !== sceneId || !finding.location.beatId) continue;
+    ids.add(finding.location.beatId);
+    if (finding.type !== 'impossible_knowledge') continue;
+    const index = beats.findIndex((beat) => beat.id === finding.location?.beatId);
+    if (index > 0 && beats[index - 1]?.id) ids.add(beats[index - 1].id);
+  }
+  return [...ids];
+}
+
 export class SceneCriticContinuity {
   constructor(private deps: SceneCriticContinuityDeps) {}
 
@@ -269,9 +287,7 @@ export class SceneCriticContinuity {
       ...scenes.map((sceneId) => ({
         sceneId,
         guidance: buildContinuityRepairGuidance(sceneId, findings, capabilityFacts),
-        flaggedBeatIds: selectRepairableContinuityFindings(findings)
-          .filter((f) => f.location?.sceneId === sceneId && f.location?.beatId)
-          .map((f) => f.location!.beatId!),
+        flaggedBeatIds: continuityRepairBeatIds(sceneContents, sceneId, findings),
         revalidateWith: [] as string[],
       })),
       ...ownerTargets.map((target) => ({

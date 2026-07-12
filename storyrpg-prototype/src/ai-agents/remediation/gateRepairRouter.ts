@@ -677,6 +677,9 @@ export class GateRepairRouter {
     }
 
     if (validator === 'ContinuityChecker') {
+      if (/(?:duplicate|alternate version|same event|same scene)/i.test(issueText)) {
+        return directive('episode_replan', issue, 'Duplicate or alternate scene content is an architecture defect; recompile the locked scene turns before prose repair.');
+      }
       if (/(?:impossible_knowledge|timeline_error)/i.test(issueText)) {
         return directive('scene_cluster_rewrite', issue, 'The knowledge gap is localized to the flagged beat and must be repaired in scene prose.');
       }

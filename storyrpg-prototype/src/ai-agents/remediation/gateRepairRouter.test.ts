@@ -274,6 +274,18 @@ describe('GateRepairRouter', () => {
     expect(route.unsafeForProsePatch).toBe(true);
   });
 
+  it('routes duplicate continuity scenes to episode replanning', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue(issue(
+      'ContinuityChecker',
+      'Scene s1-6 is a duplicate or alternate version of scene s1-5. Both scenes depict the same event.',
+      's1-6',
+    ));
+
+    expect(route.kind).toBe('episode_replan');
+    expect(route.unsafeForProsePatch).toBe(true);
+  });
+
   it('routes route chronology failures to blueprint rebalance instead of prose repair', () => {
     const router = new GateRepairRouter();
     const route = router.routeIssue(issue(

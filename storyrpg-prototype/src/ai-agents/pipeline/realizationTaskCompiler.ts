@@ -14,6 +14,16 @@ function sceneStage(scene: PlannedScene | undefined): NarrativeRealizationOwnerS
 }
 
 function premiseAtoms(contract: NonNullable<NarrativeContractGraph['premiseContracts']>[number]): NarrativeEvidenceAtom[] {
+  if (contract.evidenceAtoms?.length) {
+    return contract.evidenceAtoms.map((atom) => ({
+      id: atom.id,
+      description: `${contract.fieldName}: ${atom.canonicalFact}`,
+      acceptedPatterns: [...atom.acceptedPatterns],
+      sourceText: atom.sourceText,
+      kind: 'semantic',
+      required: atom.required,
+    }));
+  }
   return contract.evidencePatterns.map((pattern, patternIndex) => ({
     id: `${contract.id}:evidence:${patternIndex + 1}`,
     description: `Opening evidence for ${contract.fieldName}: ${pattern}`,

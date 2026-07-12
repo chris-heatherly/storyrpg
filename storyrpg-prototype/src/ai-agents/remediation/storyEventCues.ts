@@ -195,7 +195,11 @@ export function detectStoryEventCues(value: string | undefined): Set<StoryEventC
     cues.add('antagonistContact');
   }
 
-  const directViralAftermath = /\b(?:goes?|gone|has gone|went|becomes?)\s+viral\b/.test(text);
+  // Compound writing scenes may contain both draft language and a later
+  // published result. Evaluate the decisive viral clause independently so the
+  // writing lexicon cannot suppress the owned aftermath event.
+  const directViralAftermath = /\b(?:goes?|gone|has gone|went|becomes?|is|was|gets?)\s+viral\b/.test(text)
+    || /\b(?:post|blog|article|story|account|feed)\b[^.!?\n]{0,80}\bviral\b/.test(text);
   const publicBlogAftermath = (/\b(?:readership|viral|views?|comments?|dashboard|profile|public pressure|public signal|broke the internet|audience growth|attention spike)\b/.test(text)
     || /\b\d[\d,]*\s+reads?\b/.test(text))
     && !/\b(?:could|might|may|has to|need(?:s)? to|going to|will)\s+(?:go\s+)?viral\b/.test(text)

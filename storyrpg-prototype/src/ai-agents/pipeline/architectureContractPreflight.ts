@@ -8,6 +8,7 @@ export type ArchitectureConflictCode =
   | 'PLAN_READER_TEXT_SOURCE_LEAK'
   | 'PLAN_UNREALIZABLE_EVENT_SURFACE'
   | 'PLAN_MILESTONE_STAGE_CONFLICT'
+  | 'PLAN_DUPLICATE_SCENE_TURN'
   | 'PLAN_SCENE_ORDER_DRIFT';
 
 export interface ArchitectureConflict {
@@ -20,6 +21,7 @@ export interface ArchitectureConflict {
 
 interface ArchitectureSceneLike {
   id: string;
+  episodeNumber?: number;
   name?: string;
   title?: string;
   location?: string;
@@ -37,6 +39,13 @@ interface ArchitectureSceneLike {
     acceptedPatterns: string[];
     requiredSurface?: string;
   }>;
+  narrativeEventIds?: string[];
+  realizedEventIds?: string[];
+  narrativeEventPlanVersion?: number;
+  timeOfDay?: string;
+  timeJumpFromPrevious?: string;
+  sequenceIntent?: { objective?: string; activity?: string; turningPoint?: string };
+  keyBeats?: string[];
   encounter?: {
     description?: string;
     sourceSynopsis?: string;
@@ -47,6 +56,104 @@ interface ArchitectureSceneLike {
 
 function clean(value: unknown): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+const DUPLICATE_STOPWORDS = new Set([
+  'a', 'an', 'and', 'at', 'be', 'by', 'for', 'from', 'in', 'into', 'is', 'of', 'on', 'or',
+  'that', 'the', 'their', 'then', 'this', 'to', 'with', 'you', 'your', 'scene', 'moment',
+  'people', 'thing', 'something', 'somewhere',
+]);
+
+function duplicateTokens(value: string): Set<string> {
+  return new Set(value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(/\s+/)
+    .map((word) => word.replace(/(?:ing|ed|es|s)$/i, ''))
+    .filter((word) => word.length >= 4 && !DUPLICATE_STOPWORDS.has(word)));
+}
+
+function jaccard(left: Set<string>, right: Set<string>): number {
+  if (left.size === 0 || right.size === 0) return 0;
+  let intersection = 0;
+  for (const token of left) if (right.has(token)) intersection += 1;
+  return intersection / (left.size + right.size - intersection);
+}
+
+function planningFingerprint(scene: ArchitectureSceneLike): Set<string> {
+  const ownership = scene.sceneEventOwnership?.ownedEvents ?? [];
+  const turn = scene.turnContract;
+  return duplicateTokens([
+    scene.name,
+    scene.title,
+    scene.description,
+    scene.location,
+    ...(scene.locations ?? []),
+    scene.timeOfDay,
+    scene.timeJumpFromPrevious,
+    turn?.centralTurn,
+    turn?.turnEvent,
+    scene.sequenceIntent?.objective,
+    scene.sequenceIntent?.activity,
+    scene.sequenceIntent?.turningPoint,
+    ...(scene.keyBeats ?? []),
+    ...(scene.requiredBeats ?? []).map((beat) => beat.mustDepict || beat.sourceTurn),
+    ...ownership.map((event) => event.text),
+  ].filter(Boolean).join(' '));
+}
+
+function sceneEventIds(scene: ArchitectureSceneLike): Set<string> {
+  return new Set([
+    ...(scene.narrativeEventIds ?? []),
+    ...(scene.realizedEventIds ?? []),
+    ...(scene.sceneEventOwnership?.ownedEvents ?? []).map((event) => event.eventContractId ?? event.key),
+  ].filter(Boolean));
+}
+
+function duplicateSceneTurnConflicts(scenes: ArchitectureSceneLike[]): ArchitectureConflict[] {
+  // Legacy/from-scratch architecture has no canonical event identity. Its
+  // scenes may intentionally share broad location/turn vocabulary, so the
+  // semantic detector is only authoritative when the canonical plan has been
+  // projected onto at least one scene in this episode.
+  if (!scenes.some((scene) => scene.sceneEventOwnership || scene.narrativeEventPlanVersion != null)) return [];
+  const conflicts: ArchitectureConflict[] = [];
+  for (let index = 0; index < scenes.length; index += 1) {
+    const left = scenes[index];
+    const leftEvents = sceneEventIds(left);
+    const leftFingerprint = planningFingerprint(left);
+    for (let next = index + 1; next < scenes.length; next += 1) {
+      const right = scenes[next];
+      if (left.episodeNumber != null && right.episodeNumber != null && left.episodeNumber !== right.episodeNumber) continue;
+      const canonicalProjection = Boolean(
+        left.sceneEventOwnership || right.sceneEventOwnership
+        || left.narrativeEventPlanVersion != null || right.narrativeEventPlanVersion != null,
+      );
+      if (!canonicalProjection) continue;
+      const rightEvents = sceneEventIds(right);
+      const sharedEvents = [...leftEvents].filter((eventId) => rightEvents.has(eventId));
+      const similarity = jaccard(leftFingerprint, planningFingerprint(right));
+      // Lexical overlap is only a fallback for legacy projections. Keep it
+      // deliberately high: adjacent scenes often share location, characters,
+      // and aftermath vocabulary without restaging the same turn. Canonical
+      // event identity remains the authoritative duplicate signal.
+      if (sharedEvents.length === 0 && similarity < 0.9) continue;
+      conflicts.push({
+        code: 'PLAN_DUPLICATE_SCENE_TURN',
+        sceneId: right.id,
+        message: `Scene "${right.id}" duplicates the planned dramatic turn of scene "${left.id}"${sharedEvents.length > 0 ? ` through event(s) ${sharedEvents.join(', ')}` : ''}.`,
+        evidence: [
+          `first=${left.id}`,
+          `second=${right.id}`,
+          `similarity=${similarity.toFixed(3)}`,
+          `sharedEvents=${sharedEvents.join(', ') || 'none'}`,
+        ],
+        repairInstruction: 'Assign each scene a distinct canonical primary turn. Restore the later scene\'s locked event and forbidden-restage context before invoking SceneWriter; do not solve a duplicate by deleting an authored scene.',
+      });
+    }
+  }
+  return conflicts;
 }
 
 function planningText(scene: ArchitectureSceneLike): string[] {
@@ -183,6 +290,7 @@ export function validateEpisodeArchitectureContract(scenes: ArchitectureSceneLik
       ...sourceLeakConflicts(scene),
       ...evidenceSurfaceConflicts(scene),
     ])
+    .concat(duplicateSceneTurnConflicts(scenes))
     .sort((a, b) => a.sceneId.localeCompare(b.sceneId) || a.code.localeCompare(b.code) || a.message.localeCompare(b.message));
 }
 

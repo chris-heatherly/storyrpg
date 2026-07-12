@@ -5418,100 +5418,114 @@ export class FullStoryPipeline {
           opts: { writeWatermark: boolean },
         ): Promise<Episode | null> => {
           const i = spec.episodeNumber;
-          await this.checkCancellation();
-          this.currentEpisode = spec.idx + 1;
-          const episodeProgress = Math.round((spec.idx / this.totalEpisodes) * 80) + 10;
-          await this.updateJobProgress(`episode_${i}`, episodeProgress);
-          this.emit({
-            type: 'phase_start',
-            phase: `episode_${i}`,
-            message: `Generating Episode ${i}: ${spec.outline.title}`,
-          });
-          if (this.generationPlan) markEpisode(this.generationPlan, i, 'active');
-          const previousSummary = episodes.length > 0
-            ? this.summarizeEpisode(episodes[episodes.length - 1])
-            : baseBrief.episode.previousSummary;
-          const generated = await this.generateEpisodeFromOutline({
-            episodeNumber: i,
-            episodeIndex: spec.idx,
-            episodeOutline: spec.outline,
-            baseBrief,
-            worldBrief,
-            characterBrief,
-            worldBible,
-            characterBible,
-            outputDirectory,
-            previousSummary,
-          });
-          if (generated.episode) episodes.push(generated.episode);
-          if (
-            generated.episode &&
-            generated.episodeBrief &&
-            generated.blueprint &&
-            generated.sceneContents &&
-            generated.choiceSets &&
-            generated.encounters
-          ) {
-            authoredEpisodeArtifacts.push({
-              episode: generated.episode,
-              episodeBrief: generated.episodeBrief,
-              blueprint: generated.blueprint,
-              branchAnalysis: generated.branchAnalysis,
-              sceneContents: generated.sceneContents,
-              choiceSets: generated.choiceSets,
-              encounters: generated.encounters,
+          try {
+            await this.checkCancellation();
+            this.currentEpisode = spec.idx + 1;
+            const episodeProgress = Math.round((spec.idx / this.totalEpisodes) * 80) + 10;
+            await this.updateJobProgress(`episode_${i}`, episodeProgress);
+            this.emit({
+              type: 'phase_start',
+              phase: `episode_${i}`,
+              message: `Generating Episode ${i}: ${spec.outline.title}`,
             });
-          }
-          episodeResults.push(generated.result);
-          if (generated.qaReport) episodeQAReports.push(generated.qaReport);
-          if (generated.bestPracticesReport) episodeBPReports.push(generated.bestPracticesReport);
-          // WS1a: watermark only after content + canon seal both succeeded, so
-          // a resume never rehydrates an episode that failed its season gate.
-          // (In run-graph mode the artifact store writes the same watermark
-          // when the step's output persists — same files, same ordering.)
-          if (generated.episode) {
-            const episodePlanningRefs = await persistEpisodePlanningArtifacts({
-              artifactRuntime,
+            if (this.generationPlan) markEpisode(this.generationPlan, i, 'active');
+            const previousSummary = episodes.length > 0
+              ? this.summarizeEpisode(episodes[episodes.length - 1])
+              : baseBrief.episode.previousSummary;
+            const generated = await this.generateEpisodeFromOutline({
               episodeNumber: i,
-              blueprint: generated.blueprint,
-              branchAnalysis: generated.branchAnalysis,
-              sceneContents: generated.sceneContents,
-              choiceSets: generated.choiceSets,
-              encounters: generated.encounters,
-              emit: this.emit.bind(this),
-            });
-            artifactRuntime.setEpisodeUpstreamRefs(i, episodePlanningRefs);
-            await this.lockGeneratedEpisode({
-              episodeNumber: i,
-              title: spec.outline.title,
-              episode: generated.episode,
-              blueprint: generated.blueprint,
-              episodeBrief: generated.episodeBrief,
+              episodeIndex: spec.idx,
+              episodeOutline: spec.outline,
               baseBrief,
-              analysis,
+              worldBrief,
+              characterBrief,
+              worldBible,
               characterBible,
-              qaReport: generated.qaReport,
-              bestPracticesReport: generated.bestPracticesReport,
               outputDirectory,
-              artifactRuntime,
-              writeWatermark: opts.writeWatermark,
+              previousSummary,
             });
-          }
-          completedEpisodeCount += 1;
-          if (this.generationPlan) {
-            markEpisode(this.generationPlan, i, 'complete');
-            this.emitPlanUpdate(`Episode ${i} complete`);
-          }
-          this.emitPhaseProgress(
-            'content',
-            completedEpisodeCount,
-            totalEpisodeProgressItems,
-            'episodes',
-            `Episode ${i} finished (${completedEpisodeCount}/${totalEpisodeProgressItems})`,
-            { episodeNumber: i }
-          );
+            if (generated.episode) episodes.push(generated.episode);
+            if (
+              generated.episode &&
+              generated.episodeBrief &&
+              generated.blueprint &&
+              generated.sceneContents &&
+              generated.choiceSets &&
+              generated.encounters
+            ) {
+              authoredEpisodeArtifacts.push({
+                episode: generated.episode,
+                episodeBrief: generated.episodeBrief,
+                blueprint: generated.blueprint,
+                branchAnalysis: generated.branchAnalysis,
+                sceneContents: generated.sceneContents,
+                choiceSets: generated.choiceSets,
+                encounters: generated.encounters,
+              });
+            }
+            episodeResults.push(generated.result);
+            if (generated.qaReport) episodeQAReports.push(generated.qaReport);
+            if (generated.bestPracticesReport) episodeBPReports.push(generated.bestPracticesReport);
+            // WS1a: watermark only after content + canon seal both succeeded, so
+            // a resume never rehydrates an episode that failed its season gate.
+            // (In run-graph mode the artifact store writes the same watermark
+            // when the step's output persists — same files, same ordering.)
+            if (generated.episode) {
+              const episodePlanningRefs = await persistEpisodePlanningArtifacts({
+                artifactRuntime,
+                episodeNumber: i,
+                blueprint: generated.blueprint,
+                branchAnalysis: generated.branchAnalysis,
+                sceneContents: generated.sceneContents,
+                choiceSets: generated.choiceSets,
+                encounters: generated.encounters,
+                emit: this.emit.bind(this),
+              });
+              artifactRuntime.setEpisodeUpstreamRefs(i, episodePlanningRefs);
+              await this.lockGeneratedEpisode({
+                episodeNumber: i,
+                title: spec.outline.title,
+                episode: generated.episode,
+                blueprint: generated.blueprint,
+                episodeBrief: generated.episodeBrief,
+                baseBrief,
+                analysis,
+                characterBible,
+                qaReport: generated.qaReport,
+                bestPracticesReport: generated.bestPracticesReport,
+                outputDirectory,
+                artifactRuntime,
+                writeWatermark: opts.writeWatermark,
+              });
+            }
+            completedEpisodeCount += 1;
+            if (this.generationPlan) {
+              markEpisode(this.generationPlan, i, 'complete');
+              this.emitPlanUpdate(`Episode ${i} complete`);
+            }
+            this.emitPhaseProgress(
+              'content',
+              completedEpisodeCount,
+              totalEpisodeProgressItems,
+              'episodes',
+              `Episode ${i} finished (${completedEpisodeCount}/${totalEpisodeProgressItems})`,
+              { episodeNumber: i }
+            );
 
-          return generated.episode ?? null;
+            return generated.episode ?? null;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const failure = { episodeNumber: i, title: spec.outline.title, success: false, error: message };
+            episodeResults.push(failure);
+            this.emit({
+              type: 'error',
+              phase: `episode_${i}`,
+              message: `Episode ${i} failed: ${message}`,
+              data: { episodeNumber: i, error: message },
+            });
+            if (this.config.validation.mode === 'strict') throw error;
+            return null;
+          }
         };
 
         if (runGraphEnabled) {

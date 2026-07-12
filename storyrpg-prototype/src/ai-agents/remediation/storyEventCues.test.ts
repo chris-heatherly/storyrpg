@@ -39,6 +39,10 @@ describe('detectStoryEventCues', () => {
     expect(detectStoryEventCues('At 4 a.m., the narrator chooses a codename and publishes.').has('blogAftermath')).toBe(false);
   });
 
+  it('recognizes a published viral result inside a compound writing scene', () => {
+    expect(detectStoryEventCues('At 4am you publish the post. Hours later, the post is viral and the city is reading.').has('blogAftermath')).toBe(true);
+  });
+
   it('detects generic public writing launches as writing cues', () => {
     const cues = detectStoryEventCues('The narrator starts a public account under a codename.');
 

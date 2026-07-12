@@ -28,7 +28,7 @@ import {
   StakesLayers,
 } from '../../types';
 import type { StoryVerb } from '../utils/storyVerbs';
-import type { RelationshipEvidenceTag, RelationshipSurface, RelationshipValueAxis } from '../../types/relationshipValue';
+import type { RelationshipEvidenceTag, RelationshipValueAxis } from '../../types/relationshipValue';
 import {
   SourceMaterialAnalysis,
   StoryAnchors,
@@ -3156,14 +3156,15 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
     if ((choice.relationshipValueEvidence ?? []).some((evidence) => evidence.npcId === npcId)) return;
     const axis: RelationshipValueAxis = dimension === 'fear' ? 'safety' : dimension === 'affection' ? 'love' : dimension;
     const evidenceTags: RelationshipEvidenceTag[] = positive ? ['respected_agency'] : ['withheld_care'];
-    const intendedSurface: RelationshipSurface = positive ? 'mutual_aid' : 'withheld_help';
     choice.relationshipValueEvidence = [
       ...(choice.relationshipValueEvidence ?? []),
       {
         npcId,
         axis,
         evidenceTags,
-        intendedSurface,
+        // A generic fallback proves directional movement only. It cannot
+        // claim a thematic-square surface until the canonical relationship
+        // transition compiler has checked the before/after rung.
         reason: `The choice "${choice.text}" visibly changes the relationship surface.`,
       },
     ];

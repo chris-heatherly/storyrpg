@@ -317,7 +317,11 @@ export class SceneOwnershipPreflightValidator extends BaseValidator {
         const canonicalUnitIds = [...canonicalOwnerByUnit.entries()]
           .filter(([, sceneId]) => sceneId === scene.id)
           .map(([unitId]) => unitId);
-        const unitIds = input.episodeEventPlan && canonicalUnitIds.length > 0
+        // Once a canonical event plan exists, it is the complete owner map.
+        // Do not fall back to a stale legacy spineUnitId on a scene that the
+        // compiler intentionally left unassigned; that fallback manufactured
+        // the r98 duplicate ep1-u6 owner.
+        const unitIds = input.episodeEventPlan
           ? canonicalUnitIds
           : scene.spineUnitId
             ? [scene.spineUnitId]

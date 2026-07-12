@@ -6519,11 +6519,16 @@ If you don't include enough choice points, the story will be rejected as non-int
     const eventPlan = input.seasonPlanDirectives?.episodeEventPlan;
     if (!eventPlan) return base;
     const allowed = eventPlan.sceneContexts
-      .map((context) => `${context.sceneId}: ${context.ownedEventIds.join(', ') || '(no depiction event; annotate pressure only)'}`)
+      .map((context) => {
+        const owned = context.ownedEventIds.join(', ') || '(no depiction event; annotate pressure only)';
+        const forbidden = context.forbiddenRestageEventIds.join(', ') || 'none';
+        return `${context.sceneId}: owns [${owned}]; forbidden restages [${forbidden}]`;
+      })
       .join('\n');
     return `${base}\n\n## CANONICAL NARRATIVE EVENT PLAN (IMMUTABLE)\n` +
       `Use only the event IDs assigned to each scene. Return them as realizedEventIds and keep supportingContractIds limited to the scene's source contracts. ` +
-      `A downstream payoff is a new event; never claim ownership of an upstream episode's event.\n${allowed}`;
+      `A downstream payoff is a new event; never claim ownership of an upstream episode's event. ` +
+      `Do not restage any forbidden event, even when the same location or characters remain present.\n${allowed}`;
   }
 
   private resolveEpisodeStoryCircleRole(input: StoryArchitectInput): StoryCircleRoleAssignment[] {

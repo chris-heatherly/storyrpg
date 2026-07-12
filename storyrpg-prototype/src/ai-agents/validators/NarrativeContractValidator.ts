@@ -58,6 +58,40 @@ function contractTextForScene(story: Story, episodeNumber: number, sceneId: stri
   return scene ? sceneText(scene) : '';
 }
 
+function relationshipSubjectTerms(
+  story: Story,
+  task: { evidenceScope?: { npcId?: string; groupId?: string } } | undefined,
+): string[] {
+  const scope = task?.evidenceScope;
+  const scopedId = scope?.npcId ?? scope?.groupId;
+  if (!scopedId) return [];
+  const terms = new Set<string>();
+  const normalizedId = normalize(scopedId);
+  if (normalizedId) terms.add(normalizedId);
+  const idWithoutPrefix = normalizedId.replace(/^char\s+/, '');
+  if (idWithoutPrefix) terms.add(idWithoutPrefix);
+  const npc = scope?.npcId
+    ? story.npcs?.find((candidate) => candidate.id === scope.npcId)
+    : undefined;
+  if (npc?.name) terms.add(normalize(npc.name));
+  return [...terms].filter((term) => term.length >= 3);
+}
+
+function relationshipLabelIsSubjectScoped(
+  sentence: string,
+  label: string,
+  subjectTerms: string[],
+): boolean {
+  if (subjectTerms.length === 0) return true;
+  const normalizedSentence = normalize(sentence);
+  const labelIndex = normalizedSentence.indexOf(normalize(label));
+  if (labelIndex < 0) return false;
+  return subjectTerms.some((term) => {
+    const subjectIndex = normalizedSentence.indexOf(term);
+    return subjectIndex >= 0 && Math.abs(subjectIndex - labelIndex) <= 56;
+  });
+}
+
 function choicesInScene(scene: Scene): Choice[] {
   const choices: Choice[] = [];
   for (const beat of scene.beats ?? []) choices.push(...((beat.choices ?? []) as Choice[]));
@@ -97,6 +131,12 @@ function setFlagsInEpisode(story: Story, episodeNumber: number): Set<string> {
 }
 
 function hasPremiseEvidence(contract: NarrativePremiseContract, text: string): boolean {
+  if (contract.evidenceAtoms?.length) {
+    const hits = contract.evidenceAtoms.filter((atom) =>
+      atom.acceptedPatterns.some((pattern) => evidenceHit(pattern, text)),
+    ).length;
+    return hits >= contract.minimumEvidenceHits;
+  }
   if (contract.evidencePatterns.length === 0) return Boolean(text.trim());
   const hits = contract.evidencePatterns.filter((pattern) => evidenceHit(pattern, text)).length;
   return hits >= contract.minimumEvidenceHits;
@@ -549,6 +589,8 @@ export class NarrativeContractValidator extends BaseValidator {
       const scenes = episodeScenes(input.story, episodeNumber);
       for (const { label, contractId, permittedSceneOrder } of labels) {
         const labelPattern = normalize(label);
+        const task = taskByContractId.get(contractId);
+        const subjectTerms = relationshipSubjectTerms(input.story, task);
         const plannedOrderByScene = new Map((input.scenePlan?.scenes ?? [])
           .filter((scene) => scene.episodeNumber === episodeNumber)
           .map((scene) => [scene.id, scene.order]));
@@ -558,6 +600,7 @@ export class NarrativeContractValidator extends BaseValidator {
           return sceneText(scene).split(/(?<=[.!?])\s+/).some((text) => {
             const normalized = normalize(text);
             if (!normalized.includes(labelPattern)) return false;
+            if (!relationshipLabelIsSubjectScoped(text, label, subjectTerms)) return false;
             const prefix = normalized.slice(0, normalized.indexOf(labelPattern));
             return !/(?:\bnot|\bnever|\bno|\bnot yet|\bcould become|\bmight become)\s+(?:your|our|my|a|an|the)?\s*$/i.test(prefix);
           });
@@ -568,9 +611,6 @@ export class NarrativeContractValidator extends BaseValidator {
           `Blocked relationship label "${label}" appears in reader-facing episode ${episodeNumber} prose before contract "${contractId}" permits it.`,
           `relationshipLabel:ep${episodeNumber}:${sceneId}:${contractId}:${labelPattern}`,
           'Rewrite the line at the currently earned relationship stage; preserve attraction, pressure, or provisional alliance without declaring the blocked label.',
-        );
-        const task = (graph.realizationTasks ?? []).find((candidate) =>
-          candidate.contractId === contractId && candidate.repairHandler === 'relationship_pacing',
         );
         issue.metadata = {
           taskId: task?.id,

@@ -127,11 +127,29 @@ describe('NarrativeContractCompiler', () => {
     const graph = compileNarrativeContractGraph(plan([1]), scenePlan(scenes, { 1: spine }));
     expect(graph.events.filter((event) => event.episodeNumber === 1).map((event) => [event.id, event.ownerSceneId])).toEqual([
       ['event:ep1-u1', 's1-1'],
-      ['event:ep1-u2', 's1-1'],
-      ['event:ep1-u3', 's1-2'],
+      ['event:ep1-u2', 's1-2'],
+      ['event:ep1-u3', 's1-3'],
     ]);
     const plans = applyEpisodeEventPlans(graph, scenes);
-    expect(plans[1].sceneContexts.find((context) => context.sceneId === 's1-1')?.ownedEventIds).toEqual(['event:ep1-u1', 'event:ep1-u2']);
+    expect(plans[1].sceneContexts.find((context) => context.sceneId === 's1-1')?.ownedEventIds).toEqual(['event:ep1-u1']);
+  });
+
+  it('does not let an exact prose match move an explicitly bound spine event', () => {
+    const spine: EpisodeSpineContract = {
+      episodeNumber: 1,
+      sourceHash: 'ep1',
+      episodeStoryCircleBeats: ['you'],
+      polarityFacets: [],
+      units: [
+        { id: 'ep1-u1', order: 0, text: 'The authored turn.', kind: 'meet', storyCircleFacets: [], prerequisites: [], sceneKind: 'standard' },
+      ],
+    };
+    const scenes = [
+      scene({ id: 'bound', episodeNumber: 1, order: 0, spineUnitId: 'ep1-u1', dramaticPurpose: 'Different connective tissue.' }),
+      scene({ id: 'prose-match', episodeNumber: 1, order: 1, dramaticPurpose: 'The authored turn.' }),
+    ];
+    const graph = compileNarrativeContractGraph(plan([1]), scenePlan(scenes, { 1: spine }));
+    expect(graph.events.find((event) => event.id === 'event:ep1-u1')?.ownerSceneId).toBe('bound');
   });
 
   it('does not promote a question-shaped pressure shell to a depiction event when an ESC exists', () => {
@@ -273,7 +291,10 @@ describe('NarrativeContractCompiler', () => {
       scene({ id: 'ep2-payoff', episodeNumber: 2, order: 0, locations: ['bookshop'], timeOfDay: 'morning', dramaticPurpose: 'The contact remembers the trust.' }),
     ];
     const canonical = compileNarrativeContractGraph(planned, scenePlan(scenes));
-    expect(canonical.premiseContracts?.map((contract) => contract.fieldName)).toContain('Role in the world');
+    const rolePremise = canonical.premiseContracts?.find((contract) => contract.fieldName === 'Role in the world');
+    expect(rolePremise).toBeDefined();
+    expect(rolePremise?.evidenceAtoms?.length).toBeGreaterThan(0);
+    expect(rolePremise?.minimumEvidenceHits).toBeGreaterThanOrEqual(1);
     expect(canonical.stateContracts?.map((contract) => contract.canonicalStateId)).toContain('trusted_contact');
     expect(canonical.seedContracts?.map((contract) => contract.id)).toContain('seed:residue-trust');
     expect(canonical.transitionContracts?.some((contract) => contract.toSceneId === 'ep1-night')).toBe(true);

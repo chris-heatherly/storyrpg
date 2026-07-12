@@ -166,6 +166,17 @@ export type NarrativePremiseFieldKind =
   | 'wound_pressure'
   | 'starting_identity';
 
+export type NarrativePremiseEvidenceKind = 'fact' | 'behavior' | 'role' | 'wound' | 'origin';
+
+export interface NarrativePremiseEvidenceAtom {
+  id: string;
+  kind: NarrativePremiseEvidenceKind;
+  canonicalFact: string;
+  acceptedPatterns: string[];
+  required: boolean;
+  sourceText: string;
+}
+
 export interface NarrativePremiseContract {
   id: string;
   episodeNumber: number;
@@ -174,6 +185,9 @@ export interface NarrativePremiseContract {
   sourceText: string;
   /** Strong source-derived phrases that prove the premise landed on-page. */
   evidencePatterns: string[];
+  /** Typed evidence replaces brittle adjacent source n-grams while retaining
+   * evidencePatterns for version-2 readers and migration diagnostics. */
+  evidenceAtoms?: NarrativePremiseEvidenceAtom[];
   minimumEvidenceHits: number;
   targetSceneIds: string[];
   requiredSurface: Array<'beat_text' | 'dialogue' | 'choice_text' | 'encounter_outcome'>;

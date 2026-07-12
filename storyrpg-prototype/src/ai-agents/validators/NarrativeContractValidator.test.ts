@@ -233,6 +233,30 @@ describe('NarrativeContractValidator', () => {
     expect(issue?.metadata?.taskId).toBe('task:rel:stela:relationship-labels');
   });
 
+  it('does not treat family-history prose as a relationship label for every NPC', () => {
+    const canonical = graph();
+    canonical.realizationTasks = [{
+      id: 'task:rel:stela:relationship-labels', contractId: 'rel:stela', episodeNumber: 1,
+      ownerStage: 'scene_writer', repairHandler: 'relationship_pacing', sceneId: 's2',
+      evidenceScope: { npcId: 'char-stela-pavel' }, evidenceAtoms: [{
+        id: 'family', description: 'family is not yet earned', acceptedPatterns: ['family'],
+        kind: 'relationship_label', required: true, polarity: 'forbidden',
+      }], requiredSurface: ['beat_text'], routePolicy: 'owner_surface', sourceContractIds: ['rel:stela'], blocking: true,
+    }];
+    const input = story(['Arrival.', "Your father's family calls this city a birthright."]);
+    input.npcs = [{ id: 'char-stela-pavel', name: 'Stela Pavel' }] as never;
+    const scenePlan = {
+      scenes: [{ id: 's2', episodeNumber: 1, order: 1, relationshipPacing: [{
+        id: 'rel:stela', source: 'treatment', startStage: 'unmet', targetStage: 'spark',
+        allowedLabels: ['spark'], blockedLabels: ['family'], requiredEvidence: [],
+        minScenesSinceIntroduction: 0, maxDeltaThisScene: 1, mechanicDimensions: ['trust'],
+      }] }],
+      narrativeContractGraph: canonical,
+    } as unknown as SeasonScenePlan;
+    const result = new NarrativeContractValidator().validate({ story: input, scenePlan, graph: canonical });
+    expect(result.issues.some((issue) => /Blocked relationship label/.test(issue.message))).toBe(false);
+  });
+
   it('rechecks event realization after late scene mutation and preserves the owner repair target', () => {
     const canonical = graph();
     canonical.realizationTasks = [{

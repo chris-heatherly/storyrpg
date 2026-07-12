@@ -344,7 +344,7 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
     if (issue.validator === 'NarrativeContractValidator') {
       if (/premise contract/i.test(issue.message ?? '')) {
         lines.push(
-          '  NON-NEGOTIABLE: this is an authored premise obligation. Put the concrete identity/role/origin-pressure detail on the page in this scene through behavior, dialogue, an object, or a specific consequence. Do not satisfy it with a character sheet, scene title, synopsis, abstract adjective, or planning language; preserve second-person narration and all existing event ownership.',
+          '  NON-NEGOTIABLE: this is an authored premise obligation. Put the concrete identity/role/origin-pressure detail on the page in this scene through behavior, dialogue, an object, or a specific consequence. Reuse at least two distinctive facts or phrases from the quoted contract in natural player-facing prose; do not paraphrase both into generic mood. Do not satisfy it with a character sheet, scene title, synopsis, abstract adjective, or planning language; preserve second-person narration and all existing event ownership.',
         );
       } else if (/downstream seed/i.test(issue.message ?? '')) {
         lines.push(

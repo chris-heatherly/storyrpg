@@ -365,6 +365,29 @@ describe('foldTintFlagIntoConsequences (D1)', () => {
     const assembled = assembleChoiceForStory({ id: 'c', text: 't', choiceType: 'expression', consequences: [], tintFlag: 'tint:control' } as any);
     expect(assembled.consequences).toContainEqual({ type: 'setFlag', flag: 'tint:control', value: true });
   });
+
+  it('preserves canonical relationship milestone metadata through reader assembly', () => {
+    const assembled = assembleChoiceForStory({
+      id: 'group-choice',
+      text: 'Try the name on',
+      choiceType: 'relationship',
+      relationshipMilestoneId: 'milestone-dusk-club',
+      relationshipGroupId: 'dusk-club',
+      relationshipValueEvidence: [{
+        npcId: 'mika',
+        axis: 'trust',
+        evidenceTags: ['respected_agency'],
+        reason: 'The choice respects her agency.',
+      }],
+      consequences: [],
+    } as any);
+
+    expect(assembled).toMatchObject({
+      relationshipMilestoneId: 'milestone-dusk-club',
+      relationshipGroupId: 'dusk-club',
+      relationshipValueEvidence: [expect.objectContaining({ npcId: 'mika' })],
+    });
+  });
   it('assembleChoiceForStory normalizes stat-check difficulty and skill weights', () => {
     const assembled = assembleChoiceForStory({
       id: 'c',

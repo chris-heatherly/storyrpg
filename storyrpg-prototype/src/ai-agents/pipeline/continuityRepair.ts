@@ -95,6 +95,14 @@ export function buildContinuityRepairGuidance(
   const lines: string[] = ['Fix these continuity contradictions (do not introduce new ones):'];
   for (const f of forScene) {
     lines.push(`- ${f.description ?? f.type}${f.suggestedFix ? ` (suggested: ${f.suggestedFix})` : ''}`);
+    if (f.type === 'impossible_knowledge') {
+      lines.push(
+        '  NON-NEGOTIABLE: make the missing knowledge causally available before the flagged use. '
+        + 'Rewrite the flagged beat and, when necessary, the immediately preceding beat so the character asks, '
+        + 'is told, or witnesses the name/fact before using it. Do not merely repeat the name in the flagged line; '
+        + 'preserve the existing event and relationship stage.',
+      );
+    }
   }
   if (capabilityFacts.length > 0) {
     lines.push('Respect this established canon — do not contradict it:');

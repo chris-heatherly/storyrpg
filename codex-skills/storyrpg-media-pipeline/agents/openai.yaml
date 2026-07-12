@@ -1,6 +1,6 @@
 interface:
   display_name: "StoryRPG Media Pipeline"
-  short_description: "Work on StoryRPG image and audio-narration generation"
-  default_prompt: "Use $storyrpg-media-pipeline for StoryRPG storyboard-v2/ImageAgentTeam media work, providers, style/reference packs, Stable Diffusion/LoRA, and ElevenLabs/Gemini audio narration."
+  short_description: "Work on StoryRPG optional audio and video generation"
+  default_prompt: "Use $storyrpg-media-pipeline for StoryRPG video direction/generation, ElevenLabs or Gemini narration, voice casting, alignment, media jobs, and playback."
 policy:
   allow_implicit_invocation: true

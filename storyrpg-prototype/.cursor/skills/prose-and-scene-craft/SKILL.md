@@ -10,7 +10,7 @@ enforce and `pipeline-validation` validators protect — change the rule here an
 together, never one in isolation. (This is the *sentence- and scene-level how-to-write*;
 `story-structure-rules` is the *what-to-author* at season/scene-graph scale.)
 
-The trigger agents: **SceneWriter** (`agents/SceneWriter.ts`, ~2300 lines — navigate by prompt
+The trigger agents: **SceneWriter** (`agents/SceneWriter.ts` — navigate by prompt
 section, don't read whole) drafts beats; **SceneCritic** (`agents/SceneCritic.ts`) does the optional
 surgical rewrite; **StyleArchitect** (`agents/StyleArchitect.ts`) sets the visual-style contract; and
 **ChoiceAuthor** writes the choice prose that must honor the same fiction-first rules.

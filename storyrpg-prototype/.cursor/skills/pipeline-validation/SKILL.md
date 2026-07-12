@@ -21,6 +21,12 @@ walking, and optional Playwright QA.
 not the live dispatcher for every validator. Keep it in sync when changing stage/tier/remediation,
 but confirm real runtime flow at the owning call site before changing behavior.
 
+Also inspect `finalContractSeverityPolicy.ts`, `runFidelityValidators.ts`, and the owner-stage
+`NarrativeRealizationTask` gates. Registry rows must reflect live lifecycle, role, dispatch owner,
+tier, remediation route, and attempt budget. Before changing gate policy, run
+`npm run replay:gates`, `npm run rollout:gates`, and `npm run corpus:check`; use
+`npm run audit:episode` for treatment-vs-realized evidence.
+
 ### Validator Interface
 
 Every validator follows this pattern:

@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG Story Packaging Assets"
+  short_description: "Maintain StoryRPG packages, manifests, and assets"
+  default_prompt: "Use $storyrpg-story-packaging-assets for story.json, manifest.json, AssetRef, catalogs, migrations, exports, and asset validation."
+policy:
+  allow_implicit_invocation: true

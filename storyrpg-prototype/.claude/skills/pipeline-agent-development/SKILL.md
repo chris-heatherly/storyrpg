@@ -14,6 +14,11 @@ QA/critics (`QAAgents`, `SceneCritic`), plus `image-team/*`.
 
 ## The contract
 
+When an agent realizes a canonical `NarrativeRealizationTask`, preserve its `ownerStage`,
+discriminated evidence target, route scope, severity, and repair handler. SceneWriter,
+ChoiceAuthor, and EncounterArchitect must only author tasks they own; owner-stage gates run before
+checkpointing and `NarrativeContractValidator` repeats the contract after late mutations.
+
 - Implement `getAgentSpecificPrompt()` and `execute()`. **Never throw from `execute()`** — return
   `AgentResponse<T>` `{ success, data, rawResponse, error? }`.
 - Use `this.callLLM()` (retries, backoff + jitter, circuit breaker after 5 fails, cancellation

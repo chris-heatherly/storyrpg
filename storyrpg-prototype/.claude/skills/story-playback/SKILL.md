@@ -7,8 +7,12 @@ description: Use this skill when editing StoryRPG deterministic runtime playback
 
 The deterministic runtime that reads a generated Story (no LLM): `src/engine/` (storyEngine,
 resolutionEngine, conditionEvaluator, identityEngine, templateProcessor, rewindEngine),
-`src/stores/gameStore.ts` (player state), `src/components/StoryReader.tsx` (~2.4k-line UI), and the
+`src/stores/gameStore.ts` (player state), `src/components/StoryReader.tsx` (playback UI), and the
 thin `src/screens/ReadingScreen.tsx` shell.
+
+Load packages through the story codec/story library and resolve media with
+`src/assets/assetResolver.ts` (`AssetRef` first, legacy strings through migrations). Never depend
+on transient worker results or generator modules.
 
 ## Footguns
 

@@ -10,6 +10,10 @@ Two test pyramids: **Vitest** unit (`src/**/*.test.ts` and `proxy/**/*.test.ts`,
 
 ## The gate
 
+Run `npm run audit:skills` after changing pipeline contracts, commands, auth/media/package behavior,
+or any Claude, Cursor, or Codex skill. `skills-manifest.json` defines capability parity and required
+load-bearing facts across all three catalogs.
+
 `npm run validate` runs in CI = `typecheck` (4 configs: app, test, contracts, worker) + `lint` +
 `test`. **If you can't make validate green, don't merge.** E2E (`npm run test:e2e`) is *not* in
 validate (needs a running server). Two extra typecheck configs — `tsconfig.reader.json` /

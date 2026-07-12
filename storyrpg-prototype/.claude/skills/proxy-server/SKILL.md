@@ -1,6 +1,6 @@
 ---
 name: proxy-server
-description: Use this skill when editing the StoryRPG Express proxy (proxy-server.js, proxy/**) — LLM/image/audio API proxying, generated-story file APIs, generation-job CRUD, worker process lifecycle, endpoint config, or proxy auth. The proxy is where server-side provider keys live.
+description: Use this skill when editing the StoryRPG Express proxy (proxy-server.js, proxy/**) — provider proxying, Passport auth/sessions, Postgres/local accounts, generated-story package/catalog APIs, generation jobs, worker lifecycle, endpoint config, or server-side secrets.
 ---
 
 # Proxy Server
@@ -9,6 +9,11 @@ description: Use this skill when editing the StoryRPG Express proxy (proxy-serve
 server-side and CORS doesn't block the web build), serves `/generated-stories/**`, owns
 generation-job + worker state, and spawns the worker subprocess. Each route module under `proxy/`
 exports `register*Routes(app, deps)`.
+
+Modern delivery is package-first: catalog/story routes use `manifest.json` + `story.json`, modern
+media uses `AssetRef`, and public content uses `npm run content:reader:export`. Auth uses Passport
+local/Google/Discord strategies plus local/Postgres persistence; keep `DATABASE_URL` and
+`SESSION_SECRET` server-side.
 
 ## Auth & exposure (don't get this wrong)
 

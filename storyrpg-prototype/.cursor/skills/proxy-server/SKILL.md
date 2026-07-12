@@ -5,6 +5,11 @@ description: Work on the StoryRPG Express proxy server — the local Node proces
 
 # Proxy Server
 
+Account routes use Passport local/Google/Discord strategies with local/Postgres persistence; keep
+`DATABASE_URL` and `SESSION_SECRET` server-side. Package/catalog routes treat `manifest.json` and
+`story.json` as primary, resolve modern media through `AssetRef`, and support public content through
+`npm run content:reader:export`.
+
 ## Scope — what this skill covers
 
 The proxy is **local-dev infrastructure by default**, but it CAN be exposed publicly

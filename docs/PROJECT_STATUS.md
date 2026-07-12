@@ -1,6 +1,6 @@
 # StoryRPG Project Status
 
-**Last updated:** May 25, 2026  
+**Last updated:** July 12, 2026
 **Scope:** Current implementation status for the StoryRPG workspace. This file is the high-level operational map; the other docs remain the deeper design, pipeline, image, validation, and setup references.
 
 ## Executive Snapshot
@@ -160,6 +160,12 @@ The export skips checkpoints, prompts, job state, LoRA artifacts, source uploads
 
 Active generation flow:
 
+For authored-lite treatments, the current structural contract is
+**Parse+ESC -> Facts -> Realize -> Enforce -> Media**. The Episode Spine Contract is the sole
+structural author; later agents compile or realize `NarrativeRealizationTask` records at their
+owning SceneWriter, ChoiceAuthor, or EncounterArchitect stage. See
+`docs/CURRENT_PIPELINE_STATUS.md` for the versioned realization and migration details.
+
 1. Optional source analysis through `SourceMaterialAnalyzer`.
 2. Optional season planning through `SeasonPlannerAgent`.
 3. Story Circle structural validation through `StoryCircleCoverageValidator`.
@@ -188,7 +194,10 @@ blueprints. `DramaticStructure` and `SceneTurnContract` are default-on
 scene-shape gates with `GATE_DRAMATIC_STRUCTURE=0` and
 `GATE_SCENE_TURN_CONTRACT=0` kill switches.
 
-The pipeline has begun extracting typed phases. `SavingPhase` is wired and tested. `WorldBuildingPhase` is scaffolded but not fully wired as the active phase boundary. Future extraction should continue in behavior-preserving steps.
+The pipeline has extracted typed active phases under `src/ai-agents/pipeline/phases/`, including
+`SavingPhase`, `WorldBuildingPhase`, content/architecture/validation phases, post-story media,
+assembly, browser QA, and run-artifact handling. Continue extraction only as a
+behavior-preserving migration.
 
 ## Pipeline Parallelism and Resumability
 

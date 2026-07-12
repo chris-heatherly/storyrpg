@@ -1,6 +1,0 @@
-interface:
-  display_name: "StoryRPG Analytics Integration"
-  short_description: "Work with StoryRPG PostHog analytics (web + native) safely"
-  default_prompt: "Use $storyrpg-analytics-integration when editing analyticsService, posthog config, or adding capture() calls in StoryRPG."
-policy:
-  allow_implicit_invocation: true

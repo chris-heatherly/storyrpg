@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "authoritativeDocs": [
+    "docs/CURRENT_PIPELINE_STATUS.md",
+    "docs/PROJECT_STATUS.md",
+    "AGENTS.md"
+  ],
+  "requiredPaths": [
+    "storyrpg-prototype/src/ai-agents/pipeline/FullStoryPipeline.ts",
+    "storyrpg-prototype/src/ai-agents/pipeline/phases",
+    "storyrpg-prototype/src/types/narrativeContract.ts",
+    "storyrpg-prototype/src/ai-agents/pipeline/realizationTaskGate.ts",
+    "storyrpg-prototype/src/ai-agents/validators/validatorRegistry.ts",
+    "storyrpg-prototype/src/ai-agents/validators/finalContractSeverityPolicy.ts",
+    "storyrpg-prototype/src/ai-agents/validators/runFidelityValidators.ts",
+    "storyrpg-prototype/src/ai-agents/images/storyboard-v2",
+    "storyrpg-prototype/src/assets/assetResolver.ts",
+    "storyrpg-prototype/src/story-codec",
+    "storyrpg-prototype/proxy/authRoutes.js",
+    "storyrpg-prototype/proxy/db",
+    "storyrpg-prototype/apps/reader/ReaderApp.tsx",
+    "storyrpg-prototype/apps/generator/GeneratorApp.tsx",
+    "storyrpg-prototype/scripts/check-reader-boundary.mjs"
+  ],
+  "models": {
+    "claude": "storyrpg-prototype/.claude/skills",
+    "cursor": "storyrpg-prototype/.cursor/skills",
+    "codex": "codex-skills"
+  },
+  "capabilities": [
+    {
+      "id": "pipeline-orchestration",
+      "skills": {
+        "claude": ["pipeline-orchestration"],
+        "cursor": ["pipeline-orchestration"],
+        "codex": ["storyrpg-pipeline-orchestration"]
+      },
+      "requiredPatterns": ["FullStoryPipeline", "authored[_-]lite", "Episode Spine Contract|\\bESC\\b", "NarrativeRealizationTask", "Cognee.*advisory|advisory.*Cognee", "story\\.json.*manifest\\.json|manifest\\.json.*story\\.json"]
+    },
+    {
+      "id": "pipeline-debugging",
+      "skills": {
+        "claude": ["pipeline-debugging"],
+        "cursor": ["pipeline-debugging"],
+        "codex": ["storyrpg-pipeline-debugging"]
+      },
+      "requiredPatterns": ["CURRENT_PIPELINE_STATUS", "NarrativeRealizationTask", "memory:doctor", "invalidate:episode"]
+    },
+    {
+      "id": "pipeline-agent-development",
+      "skills": {
+        "claude": ["pipeline-agent-development"],
+        "cursor": ["pipeline-agent-development"],
+        "codex": ["storyrpg-pipeline-agent-development"]
+      },
+      "requiredPatterns": ["BaseAgent", "ownerStage|owner stage", "NarrativeRealizationTask"]
+    },
+    {
+      "id": "narrative-validation",
+      "skills": {
+        "claude": ["pipeline-validation", "story-structure-rules"],
+        "cursor": ["pipeline-validation", "story-structure-rules"],
+        "codex": ["storyrpg-narrative-validation"]
+      },
+      "requiredPatterns": ["validatorRegistry", "finalContractSeverityPolicy", "runFidelityValidators", "NarrativeRealizationTask", "replay:gates", "corpus:check"]
+    },
+    {
+      "id": "narrative-craft",
+      "skills": {
+        "claude": ["prose-and-scene-craft", "character-arc-and-voice-craft", "twist-and-thread-craft", "worldbuilding-craft"],
+        "cursor": ["prose-and-scene-craft", "character-arc-and-voice-craft", "twist-and-thread-craft", "worldbuilding-craft"],
+        "codex": ["storyrpg-narrative-validation"]
+      },
+      "requiredPatterns": ["fiction-first", "scene[- ]turn", "setup.payoff|setup/payoff", "character", "world"]
+    },
+    {
+      "id": "image-pipeline",
+      "skills": {
+        "claude": ["media-generation"],
+        "cursor": ["image-generation-team"],
+        "codex": ["storyrpg-image-pipeline"]
+      },
+      "requiredPatterns": ["storyboard-v2", "ArtStyleProfile", "LoRA", "ImageAgentTeam"]
+    },
+    {
+      "id": "audio-video-pipeline",
+      "skills": {
+        "claude": ["media-generation"],
+        "cursor": ["audio-narration", "image-generation-team"],
+        "codex": ["storyrpg-media-pipeline"]
+      },
+      "requiredPatterns": ["audio", "video", "ElevenLabs", "VideoDirectorAgent"]
+    },
+    {
+      "id": "story-packaging-assets",
+      "skills": {
+        "claude": ["proxy-server", "story-playback"],
+        "cursor": ["pipeline-orchestration", "proxy-server", "story-playback"],
+        "codex": ["storyrpg-story-packaging-assets"]
+      },
+      "requiredPatterns": ["story\\.json", "manifest\\.json", "AssetRef", "content:reader:export"]
+    },
+    {
+      "id": "proxy-auth-analytics",
+      "skills": {
+        "claude": ["proxy-server", "integration-expo"],
+        "cursor": ["proxy-server", "analytics-integration"],
+        "codex": ["storyrpg-auth-analytics-accounts", "storyrpg-proxy-worker"]
+      },
+      "requiredPatterns": ["Passport", "Postgres|DATABASE_URL", "PostHog", "SESSION_SECRET"]
+    },
+    {
+      "id": "reader-deployment-boundary",
+      "skills": {
+        "claude": ["reader-generator-safety"],
+        "cursor": ["reader-generator-safety"],
+        "codex": ["storyrpg-reader-deployment-boundary"]
+      },
+      "requiredPatterns": ["STORYRPG_APP_TARGET", "check:reader-boundary", "verify:reader", "content:reader:export"]
+    },
+    {
+      "id": "reader-playback-ux",
+      "skills": {
+        "claude": ["story-playback", "ux-design"],
+        "cursor": ["story-playback", "ux-design"],
+        "codex": ["storyrpg-reader-playback", "storyrpg-ux-design"]
+      },
+      "requiredPatterns": ["storyEngine", "gameStore", "fiction-first", "assetResolver"]
+    },
+    {
+      "id": "testing-validation",
+      "skills": {
+        "claude": ["testing-tooling"],
+        "cursor": ["testing-tooling"],
+        "codex": ["storyrpg-testing-validation"]
+      },
+      "requiredPatterns": ["audit:skills", "reader:typecheck", "generator:typecheck", "check:reader-boundary"]
+    },
+    {
+      "id": "documentation-skill-sync",
+      "skills": {
+        "claude": ["testing-tooling"],
+        "cursor": ["update-docs"],
+        "codex": ["storyrpg-testing-validation"]
+      },
+      "requiredPatterns": ["skills-manifest\\.json", "audit:skills", "Claude.*Cursor.*Codex|Codex.*Cursor.*Claude"]
+    }
+  ],
+  "forbiddenPatterns": [
+    {
+      "pattern": "WorldBuildingPhase[^\\n]{0,40}scaffolded",
+      "message": "WorldBuildingPhase is wired, not scaffolded."
+    },
+    {
+      "pattern": "App\\.tsx[^\\n]{0,60}(root component|sets up providers)",
+      "message": "The monolithic App.tsx entry has been removed."
+    },
+    {
+      "pattern": "EpisodePipeline[^\\n]{0,40}(active|current)",
+      "message": "EpisodePipeline has been removed."
+    }
+  ]
+}

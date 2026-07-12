@@ -7,6 +7,10 @@ description: Use this skill when debugging StoryRPG story generation failures, s
 
 ## Workflow
 
+Read `docs/CURRENT_PIPELINE_STATUS.md` first. For authored-lite runs, separate ESC/architecture
+ownership failures from `NarrativeRealizationTask` owner-stage evidence failures; do not hide either
+by weakening final validation.
+
 Start from the failing symptom, then trace the execution zone that owns it:
 
 1. Inspect the user-facing job state and proxy events before changing pipeline code.
@@ -25,6 +29,9 @@ Start from the failing symptom, then trace the execution zone that owns it:
 ## Common Checks
 
 - Pipeline orchestration: `FullStoryPipeline.ts`, worker payload types, and job timeline hooks.
+- Memory/context health: run `npm run memory:doctor`; Cognee remains advisory.
+- Episode recovery: inspect checkpoint artifacts, then use `npm run invalidate:episode` when the
+  owning episode should be regenerated.
 - Plan-time gates in multi-episode runs are shadow-only (validate + ledger record, never throw); only single-episode `generate()` enforces them. Check `gate-shadow-ledger.jsonl` before assuming a gate is broken.
 - Job state: proxy job routes, `.generation-jobs.json`, worker stdout events, and cancellation handling.
 - Retry loops: validator failures feeding the Karpathy retry loop, especially season planning and scene validation.

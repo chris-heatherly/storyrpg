@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG Auth Analytics Accounts"
+  short_description: "Maintain StoryRPG accounts, sessions, and analytics"
+  default_prompt: "Use $storyrpg-auth-analytics-accounts for Passport auth, sessions, Postgres accounts, PostHog analytics, and attribution."
+policy:
+  allow_implicit_invocation: true

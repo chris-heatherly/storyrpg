@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG Reader Deployment Boundary"
+  short_description: "Protect the public StoryRPG reader deployment"
+  default_prompt: "Use $storyrpg-reader-deployment-boundary for reader/generator imports, public exports, environment variables, and secret safety."
+policy:
+  allow_implicit_invocation: true

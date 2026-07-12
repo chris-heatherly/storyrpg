@@ -39,7 +39,7 @@ docs/
     └── StoryRPG_Engine_GDD.docx.pdf.txt
 
 storyrpg-prototype/
-├── App.tsx                        ← Root component: providers, navigation, library
+├── apps/                          ← Target-specific Reader and Generator app entries
 ├── index.ts                       ← Expo entry + Node polyfills for RN
 ├── proxy-server.js                ← Express dev server: API proxy, file I/O, job mgmt
 ├── proxy/                         ← Modular Express route handlers
@@ -136,7 +136,8 @@ Client reads story files → Story Engine → Player experience
 | `proxy/loraTrainingRoutes.js` | Proxy mount for `/lora-training/*` — forwards jobs, status polling, artifact downloads, and installation to the configured trainer. |
 | `src/config/endpoints.ts` | All URLs, proxy config, external API endpoints, storage keys, timing defaults. |
 | `proxy-server.js` + `proxy/` | Express routes for Anthropic/OpenRouter proxy, file ops, job management, catalog, ElevenLabs, image APIs. |
-| `App.tsx` | Root component — sets up providers, navigation, story library loading. |
+| `apps/reader/ReaderApp.tsx` | Public reader entry; must remain generator-free. |
+| `apps/generator/GeneratorApp.tsx` | Internal generation and media-job entry. |
 | `src/screens/ReadingScreen.tsx` | The main story playback UI. |
 | `src/screens/GeneratorScreen.tsx` | Story generation UI with job monitoring. |
 
@@ -161,6 +162,7 @@ npm run lint         # ESLint with --max-warnings ratchet (CI-enforced; new @ts-
 npm run check:reader-boundary  # Reader must not import generator code (import-graph walk)
 npm run verify:reader          # Build dist-reader + scan the bundle for leaked secret VALUES
 npm run check:monolith-size    # Fail if the two monoliths grow past baseline
+npm run audit:skills           # Check Claude/Cursor/Codex capability parity and stale skill facts
 
 # Generation (run by the proxy worker; CLI entry points for local runs):
 npm run generate          # CLI story generation
@@ -250,7 +252,7 @@ The pipeline honours a season-long Story Circle spine:
 - **LLMs write, deterministic systems enforce** — Deterministic code must never author or inject reader-facing prose. It enforces facts, criteria, and rules; when it detects a problem it gets the LLMs to rewrite (retry-with-feedback loops, final-contract repair handlers), never takes over the writing. Run-survival placeholders are permitted only when the exact string is registered in `src/ai-agents/constants/syntheticFallbackProse.ts` (choice outcome tiers: `choiceTextFallbacks.ts`) so `RouteContinuityValidator` / `OutcomeTextQualityValidator` block them at the final contract and route an LLM re-author. `src/ai-agents/validators/deterministicProseNeverShips.test.ts` enforces registry completeness for the known deterministic producers.
 - **Minimal diffs** — Keep code changes tightly scoped to the requested task. Do not reformat files, reorder imports, rename symbols, refactor unrelated code, or update generated artifacts unless required for the fix. Prefer the smallest clear patch that preserves existing style and behavior.
 - **Node polyfills** — `fs`/`path`/`process` are shimmed via babel and metro config so pipeline code can run in RN/web bundles.
-- **Typecheck split** — Five tsconfig files: `tsconfig.app.json` (narrow app subset), `tsconfig.test.json`, `tsconfig.contracts.json` (shared types for worker payloads), `tsconfig.worker.json`, and base `tsconfig.json`.
+- **Typecheck split** — Shared app/test/contracts/worker configs plus target-specific `tsconfig.reader.json` and `tsconfig.generator.json`, all extending the base `tsconfig.json` as appropriate.
 - **Tests** — Co-located `*.test.ts` files, run with Vitest in Node env with RN stubs in `test/stubs/`.
 - **Generated content** — `generated-stories/` contains large JSON + image files and dominates repo size. Runtime artifacts (`.generation-jobs.json`, `pipeline-memories/`, `.ref-images/`) are transient.
 - **EXPO_PUBLIC_** prefix — Required for env vars that need to be accessible in the Expo client bundle. **Never use it for provider API keys or other secrets** — Expo inlines `EXPO_PUBLIC_*` into the public reader bundle. Provider keys are server-side (proxy) only; `npm run verify:reader` scans the built bundle for leaked key values. (PostHog `phc_` publishable keys are the one client-safe exception.)
@@ -279,7 +281,8 @@ All documentation lives in `docs/` at the workspace root:
 | `docs/PARALLEL_GENERATION.md` | Parallel generation status (ParallelStoryPipeline removed; concurrency lives in `FullStoryPipeline`) |
 | `docs/reference/` | Original reference materials (PDF text extracts) |
 | `CLAUDE.md` (root) | Claude Code orientation: non-negotiables + skills index (points back here) |
-| `storyrpg-prototype/.claude/skills/` | Claude Code skills (concise): reader-generator-safety, pipeline-debugging, pipeline-agent-development, pipeline-validation, story-structure-rules, twist-and-thread-craft, character-arc-and-voice-craft, prose-and-scene-craft, worldbuilding-craft, media-generation, proxy-server, story-playback, testing-tooling, ux-design, integration-expo (PostHog analytics) |
+| `storyrpg-prototype/.claude/skills/` | Claude Code skills (concise), including pipeline orchestration/debugging/development/validation, narrative craft, media, proxy/accounts, reader safety/playback, testing, UX, and analytics. |
 | `storyrpg-prototype/.cursor/skills/` | Cursor agent skills (deep): pipeline debugging, validation, orchestration, agent development, image generation, audio narration, story playback, proxy server, reader-generator-safety, testing tooling, UX design, story structure rules, prose/character/twist/worldbuilding craft, analytics-integration, update docs |
-| `codex-skills/` | Codex agent skills (grouped, each + `agents/openai.yaml`): pipeline-debugging, pipeline-agent-development, narrative-validation, media-pipeline, proxy-worker, reader-playback, reader-generator-safety, ux-design, analytics-integration, testing-validation |
-| Skill-set sync | The three sets mirror the same topics at different depth. When a skill's facts change, update its counterpart in the other two sets. |
+| `codex-skills/` | Codex skills (grouped, each + `agents/openai.yaml`) covering the same capability manifest at Codex-appropriate granularity. |
+| `skills-manifest.json` | Canonical cross-model capability map and required load-bearing facts. |
+| Skill-set sync | Run `npm run audit:skills` after skill, pipeline-contract, package, auth, media, reader-boundary, or command changes. Different grouping is allowed; capability coverage and operational facts must match. |

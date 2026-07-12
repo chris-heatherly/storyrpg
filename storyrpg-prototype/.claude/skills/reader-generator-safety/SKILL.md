@@ -31,6 +31,9 @@ only thing deployed publicly (Vercel).
 
 ## How to verify a reader-affecting change
 
+Use `npm run content:reader:export` or `npm run reader:export:with-content` for public story content;
+the export must omit prompts, checkpoints, job state, LoRA artifacts, uploads, and diagnostics.
+
 ```bash
 npm run check:reader-boundary   # fast: walks the reader import graph for forbidden modules
 npm run verify:reader           # full: builds dist-reader, scans the BUNDLE for secret

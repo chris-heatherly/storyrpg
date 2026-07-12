@@ -1,52 +1,30 @@
 ---
 name: storyrpg-media-pipeline
-description: Use this skill when working on StoryRPG media generation — image provider adapters, style bible anchors, ArtStyleProfile, reference packs, image QA/retry, Stable Diffusion/LoRA, AND audio narration (ElevenLabs/Gemini TTS, deterministic voice casting, alignment where supported) and their playback integration.
+description: Use this skill when working on StoryRPG optional video or audio generation, VideoDirectorAgent, videoGenerationService, ElevenLabs/Gemini narration, voice casting, alignment, generated media jobs, or playback integration. Use storyrpg-image-pipeline for still images and visual style systems.
 ---
 
-# StoryRPG Media Pipeline (Image + Audio)
+# StoryRPG Media Pipeline
 
-StoryRPG renders two media layers after text is finalized: **images** (per-beat/scene/encounter)
-and **audio narration** (provider-aware TTS, with word-level alignment where supported). Both are
-pipeline phases that degrade softly — a missing image or beat audio never fails the run.
+## Workflow
 
-## Image Workflow
-
-1. Start with `docs/IMAGE_PIPELINE_RUNTIME.md` and `docs/IMAGE_PIPELINE_AUDIT.md`.
-2. Inspect `src/ai-agents/services/imageGenerationService.ts` and provider adapters before changing call sites.
-3. Inspect style/reference helpers in `src/ai-agents/images/` and the `image-team/*` agents.
-4. For LoRA: `docs/LORA_TRAINING.md`, `LoraTrainingAgent.ts`, `datasetBuilder.ts`, `loraRegistry.ts`, `proxy/loraTrainingRoutes.js`.
-
-## Audio Workflow
-
-1. `src/ai-agents/services/voiceCastingService.ts` casts characters to provider voices — **deterministic heuristics, no LLM** (keep it that way; same story = same cast). Providers are `elevenlabs` and `gemini`.
-2. `src/ai-agents/services/audioGenerationService.ts` pre-renders per-beat TTS via provider-neutral `/audio/tts` and `/audio/batch-generate`, storing `audioUrl`, provider, voice id, and alignment when returned.
-3. `proxy/elevenLabsRoutes.js` still owns the audio routes: `/audio/*` is provider-neutral; legacy `/elevenlabs/*` routes remain for ElevenLabs compatibility.
+1. Read `docs/CURRENT_PIPELINE_STATUS.md`; ensure story authoring and text-contract gates complete before media.
+2. For video, inspect `VideoDirectorAgent`, `videoGenerationService`, video phases, job stores, continuation paths, and playback binding.
+3. For audio, inspect `audioGenerationService`, `voiceCastingService`, narration services, `proxy/elevenLabsRoutes.js`, and playback controls.
+4. Preserve deterministic voice casting, provider-neutral proxy routes, idempotent beat keys, alignment where supported, and cache/resume behavior.
+5. Keep video/audio failures non-blocking while retaining diagnostics and missing-media truth.
 
 ## Guardrails
 
-- Keep image generation provider-aware (refs, batch, seed, LoRA differ per provider); never assume one shape fits all.
-- Route every image call through `ProviderThrottle` (`this._throttle.run(provider, task, { dedupKey })`), never call a provider directly. Caps live in `images/providerCapabilities.ts`.
-- No hardcoded endpoints — use `src/config/endpoints.ts`.
-- Voice casting stays deterministic (no LLM, no `Math.random()`); narrator voice is never reused by characters.
-- Audio is idempotent (keyed on `beatId`, `cached: true` on re-render) and soft-fails. ElevenLabs returns alignment for karaoke; Gemini emits WAV audio without alignment. If beat text changes post-TTS, regenerate.
-- Don't regenerate/commit generated images or audio unless explicitly requested.
-
-## Common Checks
-
-- Providers: nano-banana (Gemini), atlas-cloud, midapi (Midjourney), stable-diffusion, placeholder, plus historical compatibility names (`useapi` normalizes to `midapi`; `dall-e` remains compatibility-only). Per-provider concurrency/interval caps in `providerCapabilities.ts`.
-- Default image work flows through storyboard-v2 plus `ImageAgentTeam`; `ImageGenerator.ts` is gone.
-- `ArtStyleProfile` resolution, reference pack slot priority (`referenceStrategy.ts`), character identity fingerprints, previous-panel continuity.
-- Audio: `hasAlignment` flag, per-character ElevenLabs alignment grouped into word spans, Gemini voice catalog (`Kore`, `Puck`, etc.), 429 backoff serialized per voice.
+- Do not mutate sealed prose or narrative structure from a media phase.
+- Keep provider keys and external API calls behind the proxy.
+- Regenerate bound audio when source beat text changes.
+- Use `storyrpg-image-pipeline` for storyboard-v2, `ImageAgentTeam`, `ArtStyleProfile`, image QA, and LoRA.
 
 ## Verification
 
-From `storyrpg-prototype/`, prefer focused tests:
-
 ```bash
-npm test -- imageGenerationService
-npm test -- stable-diffusion
-npm test -- lora-training
 npm test -- audioGeneration
 npm test -- voiceCasting
-npm run typecheck
+npm test -- VideoPhase
+npm run generator:typecheck
 ```

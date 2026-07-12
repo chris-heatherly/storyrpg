@@ -7,6 +7,11 @@ description: Debug StoryRPG generation pipeline failures — interpret checkpoin
 
 > **Scope:** failure-mode catalog and live debugging only. For pipeline *design* (phases, checkpoint contract, worker lifecycle, dependency graph), use the `pipeline-orchestration` skill instead.
 
+Read `docs/CURRENT_PIPELINE_STATUS.md` first. Separate ESC/architecture failures from
+`NarrativeRealizationTask` owner-stage evidence failures; neither is fixed by weakening a final gate.
+Run `npm run memory:doctor` for Cognee/context health and `npm run invalidate:episode` when a bad
+checkpoint should be regenerated from its owning episode boundary.
+
 ## Diagnostic Files
 
 Generation runs produce these files in the output directory:

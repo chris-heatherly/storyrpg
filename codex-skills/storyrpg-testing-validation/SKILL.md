@@ -7,6 +7,9 @@ description: Use this skill when deciding how to test or validate StoryRPG chang
 
 ## Workflow
 
+Run `npm run audit:skills` after changing pipeline contracts, commands, auth/media/package behavior,
+or any Claude, Cursor, or Codex skill. `skills-manifest.json` defines cross-model capability parity.
+
 Run the smallest check that proves the changed behavior:
 
 1. Identify the subsystem touched: engine, validators, image pipeline, proxy/worker, reader UI, stores, or generated assets.

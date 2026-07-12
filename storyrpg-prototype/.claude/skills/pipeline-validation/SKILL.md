@@ -10,6 +10,10 @@ Validators live in `src/ai-agents/validators/`. The set churns — the canonical
 stage → validator → tier/remediation manifest). `validatorRegistry.ts` is documentation-grade, not
 the universal live dispatcher, so confirm behavior in the owning call site before editing flow.
 
+Current policy seams include `finalContractSeverityPolicy.ts`, `runFidelityValidators.ts`, and the
+owner-stage `NarrativeRealizationTask` gates. Keep `validatorRegistry.ts` aligned with live
+dispatch, lifecycle, role, tier, remediation route, and attempt budget.
+
 - **Best-practices orchestrator**: `IntegratedBestPracticesValidator` owns quick/full checks such as
   choice density/distribution/impact, NPC depth, consequence budget, stakes triangle, five-factor,
   callbacks, mechanics leakage, stat balance, skill coverage/surface, branch mechanical divergence,
@@ -36,6 +40,8 @@ consequence budget; encounter-first design with goal/threat clocks and a branchi
 ## Guardrails
 
 - Don't weaken a validator to pass bad output — tighten the prompt/remediation/data flow instead.
+- Use `npm run replay:gates`, `npm run rollout:gates`, and `npm run corpus:check` before promoting or
+  consolidating gates; use `npm run audit:episode` for treatment-vs-realized evidence.
 - New validator: `validate()` returns `{ passed, metrics, issues }`; wire it at the owning runtime
   call site (season, architecture, quick, full, diagnostic, artifact, final), update
   `validatorRegistry.ts` when it belongs in the gate map, and add config/gates only when runtime

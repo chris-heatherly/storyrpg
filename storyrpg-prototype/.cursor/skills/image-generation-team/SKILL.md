@@ -5,6 +5,9 @@ description: Work on the StoryRPG image generation subsystem — the ImageAgentT
 
 # Image Generation Team
 
+The active path is storyboard-v2 -> `ImageAgentTeam` -> `ImageGenerationService`. Preserve the raw
+user style through `ArtStyleProfile`, canonical style composition, and approved style anchors.
+
 ## Architecture Overview
 
 ```

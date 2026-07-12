@@ -1,6 +1,6 @@
 ---
 name: storyrpg-narrative-validation
-description: Use this skill when working on StoryRPG narrative QA and the story-structure contract — Story Circle structure, branch-and-bottleneck design, choice taxonomy, consequence budgets, encounter design, setup/payoff, branch divergence, callbacks, fiction-first mechanics, or story validator failures.
+description: Use this skill when working on StoryRPG narrative QA, Story Circle and ESC structure, NarrativeRealizationTask ownership, scene-turn/prose/character/world craft, treatment fidelity, setup/payoff, branching, encounters, or validator failures.
 ---
 
 # StoryRPG Narrative Validation
@@ -13,6 +13,8 @@ Anchor every change in the canonical story contract:
 2. Inspect validators in `storyrpg-prototype/src/ai-agents/validators/` before changing agent prompts.
 3. Use `docs/GDD.md`, `docs/STORY_BRANCHING.md`, `docs/STORY_PIPELINE_PROMPTING.md`, and `docs/INCREMENTAL_VALIDATION_PLAN.md` as targeted references.
 4. Confirm playback impact through `storyrpg-prototype/src/engine/` when validation affects conditions, consequences, or player state.
+5. Inspect `validatorRegistry.ts`, `finalContractSeverityPolicy.ts`, and `runFidelityValidators.ts`
+   before changing tier, lifecycle, dispatch, or remediation behavior.
 
 ## Guardrails
 
@@ -21,6 +23,8 @@ Anchor every change in the canonical story contract:
 - Prefer deterministic validation where possible; use LLM critique only for subjective prose quality.
 - Do not weaken validators to pass bad output. Tighten prompts, remediation, or data flow first.
 - Treat cosmetic branching warnings as design signals, not noise.
+- Preserve each `NarrativeRealizationTask` owner stage, route-specific evidence target, repair route,
+  and fingerprint; evidence cannot be borrowed across outcomes or surfaces.
 
 ## Story Structure Contract (what the validators enforce)
 
@@ -32,6 +36,10 @@ These are the load-bearing rules; validators exist to protect them. Confirm shap
 - **Stakes triangle**: every choicePoint defines want / cost / identity. **Five-factor**: non-expression choices affect ≥1 of outcome/process/information/relationship/identity (major choices ≥3).
 - **Consequence budget**: balanced mix of `setFlag` / `changeScore` / `addTag` / `relationship`; delayed consequences used sparingly (1–2 per episode).
 - **Encounters**: encounter-first design, 3–5 beats, goal/threat clocks, branching `nextSituation` tree (not linear), victory/defeat/escape storylets.
+- **Scene-turn and prose craft**: every scene changes pressure or information; keep prose fiction-first
+  and route subjective repair through the owning LLM author.
+- **Character and world craft**: preserve voice, relationship pacing, canon facts, setting rules, and
+  sensory specificity rather than patching contradictions deterministically.
 
 ## Common Checks
 
@@ -49,4 +57,6 @@ npm test -- StoryCircleCoverageValidator
 npm test -- DivergenceValidator
 npm test -- Choice
 npm run typecheck
+npm run replay:gates
+npm run corpus:check
 ```

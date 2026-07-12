@@ -9,6 +9,10 @@ description: Build and modify AI agents in the StoryRPG generation pipeline — 
 
 All agents extend `BaseAgent` (`src/ai-agents/agents/BaseAgent.ts`).
 
+When an agent realizes a `NarrativeRealizationTask`, preserve `ownerStage`, its discriminated
+evidence target and route scope, severity, repair handler, and fingerprint. SceneWriter,
+ChoiceAuthor, and EncounterArchitect may author only their owned tasks; validate before checkpoint.
+
 ### Required Methods
 
 ```typescript

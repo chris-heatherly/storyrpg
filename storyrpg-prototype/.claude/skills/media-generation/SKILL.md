@@ -1,12 +1,17 @@
 ---
 name: media-generation
-description: Use this skill when working on StoryRPG media generation — image providers/adapters, style bible anchors, reference packs, image QA/retry, Stable Diffusion/LoRA, and audio narration (ElevenLabs/Gemini TTS, deterministic voice casting, alignment where supported). Use when editing imageGenerationService.ts, image-team agents, providerThrottle, audioGenerationService.ts, voiceCastingService.ts, or elevenLabsRoutes.js.
+description: Use this skill when working on StoryRPG media generation — storyboard-v2, ImageAgentTeam, ArtStyleProfile, image providers, style anchors, image QA/retry, Stable Diffusion/LoRA, optional video, or audio narration.
 ---
 
-# Media Generation (Image + Audio)
+# Media Generation (Image + Audio + Video)
 
 Two media layers render after text is finalized; both are pipeline phases that **degrade softly** —
 a missing image or beat audio never fails the run.
+
+The active still-image path is storyboard-v2 -> `ImageAgentTeam` -> `ImageGenerationService`, with
+`ArtStyleProfile` and approved anchors kept authoritative. Optional video uses
+`VideoDirectorAgent` / `videoGenerationService`; all media runs after the sealed text contract and
+must not mutate narrative structure.
 
 ## Images
 

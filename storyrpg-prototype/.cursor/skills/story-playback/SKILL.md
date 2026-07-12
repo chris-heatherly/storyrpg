@@ -9,9 +9,12 @@ description: Work on StoryRPG deterministic runtime playback — the story engin
 
 This skill covers the **deterministic runtime** half of StoryRPG, which is separate from the AI generation pipeline:
 
-- `src/engine/` — pure TypeScript story navigation and mechanics (5 modules, ~2k lines)
+Modern packages load through the story codec/story library and resolve media through
+`src/assets/assetResolver.ts` (`AssetRef` first, legacy strings through migrations).
+
+- `src/engine/` — pure TypeScript story navigation and mechanics
 - `src/stores/gameStore.ts` — player state, story progress, encounter state, persistence
-- `src/components/StoryReader.tsx` — the 2.4k-line playback UI component
+- `src/components/StoryReader.tsx` — the main playback UI component
 - `src/screens/ReadingScreen.tsx` — thin screen shell that hosts `StoryReader`
 
 If you are generating content or working on `src/ai-agents/**`, use the `pipeline-*` skills instead. If you are restyling UI, see `ux-design`.
@@ -86,9 +89,10 @@ Footguns:
 
 `templateProcessor.ts` substitutes variables (`{{character_name}}`, `{{flag_value}}`, etc.) into prose. The module-level counter `getUnresolvedTokenCount()` / `resetUnresolvedTokenCount()` is the canary for "something broke in my data" — a non-zero count means prose has unresolved template tokens visible to the player. Reset before a fresh story load; sample after major phases.
 
-## StoryReader (~2.4k lines)
+## StoryReader
 
-`src/components/StoryReader.tsx` is the real complexity; `ReadingScreen.tsx` is a thin shell (~86 lines). Most playback changes land in StoryReader.
+`src/components/StoryReader.tsx` owns most playback complexity; `ReadingScreen.tsx` is a thin shell.
+Most playback changes land in StoryReader.
 
 Integration points to be aware of:
 - Calls into `storyEngine` for navigation: `findScene`, `findBeat`, `executeChoice`, `getNextScene`, etc.

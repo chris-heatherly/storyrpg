@@ -60,6 +60,8 @@ All app code and commands live in `storyrpg-prototype/`. Run commands from there
   reader/deploy work.**
 - `pipeline-debugging` — diagnosing generation failures, stuck worker jobs,
   validator/abort behavior, and the quality ledger.
+- `pipeline-orchestration` — FullStoryPipeline phases, authored-lite ESC ownership,
+  NarrativeRealizationTask routing, checkpoints, Cognee context, and package output.
 - `pipeline-agent-development` — extending `BaseAgent`, LLM prompting/parsing, converters.
 - `pipeline-validation` — validators + the story-structure contract they enforce.
 - `story-structure-rules` — story-architecture craft: Story Circle spine, scene graph,
@@ -75,17 +77,18 @@ All app code and commands live in `storyrpg-prototype/`. Run commands from there
   / StyleArchitect).
 - `worldbuilding-craft` — emergent lore, environmental storytelling, consistent rule
   systems, sensory immersion, location-design checklist (WorldBuilder).
-- `media-generation` — image providers/LoRA + audio narration (ElevenLabs).
-- `proxy-server` — Express proxy routes, worker lifecycle, and proxy auth-gating.
+- `media-generation` — storyboard-v2/images/LoRA plus optional audio and video.
+- `proxy-server` — Express routes, worker lifecycle, Passport/accounts, packages, and auth-gating.
 - `story-playback` — the deterministic runtime (engine, `gameStore`, fiction-first).
 - `testing-tooling` — Vitest/Playwright, the four main tsconfigs, reader/generator target
-  typechecks, boundary checks, `npm run validate`.
+  typechecks, boundary checks, `npm run validate`, and cross-model skill parity.
 - `ux-design` — fiction-first UI, theme tokens, shared components.
 - `integration-expo` — PostHog analytics (web + native) and the `phc_` key rule.
 
-These are concise; **richer (Cursor-targeted) skills with the same coverage live under
-`storyrpg-prototype/.cursor/skills/`**, and a Codex-targeted set under `codex-skills/` (each with an
-`agents/openai.yaml`). Keep the three sets in sync when a skill's facts change.
+These are concise; richer Cursor-targeted skills live under `storyrpg-prototype/.cursor/skills/`,
+and Codex-targeted skills under `codex-skills/` (each with `agents/openai.yaml`). Capability grouping
+may differ, but `skills-manifest.json` defines shared coverage and load-bearing facts. Run
+`npm run audit:skills` whenever those facts or catalogs change.
 
 ## Recent context
 

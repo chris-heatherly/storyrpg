@@ -61,6 +61,14 @@ Debug skip events: `thread_twist_skipped_authored_lite`, `character_arc_skipped_
 `STORYRPG_THREAD_TWIST_PLANNING=1`, `STORYRPG_CHARACTER_ARC_TRACKING=1`,
 `STORYRPG_BRANCH_ANNOTATION=1`. Cognee stays advisory — index compiled ESC/ledger facts.
 
+### Canonical narrative realization
+
+`NarrativeContractGraph` / `EpisodeEventPlan` v3 compile obligations into
+`NarrativeRealizationTask` records. Preserve the single owner stage, discriminated evidence target,
+route scope, severity, repair handler, and owner-stage fingerprint. SceneWriter, ChoiceAuthor, or
+EncounterArchitect must satisfy each task before checkpointing; `NarrativeContractValidator` is the
+late-mutation regression net. Never borrow route evidence from another outcome or undeclared surface.
+
 Story authoring completes before post-story media. Images/video/audio decorate authored story
 artifacts; do not interleave media generation with story agents unless you are explicitly changing
 that contract. Find phases by filename and event labels, not hard-coded line numbers.

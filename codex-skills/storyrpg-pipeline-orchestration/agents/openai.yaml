@@ -1,0 +1,6 @@
+interface:
+  display_name: "StoryRPG Pipeline Orchestration"
+  short_description: "Maintain StoryRPG generation phases and canonical contracts"
+  default_prompt: "Use $storyrpg-pipeline-orchestration for StoryRPG pipeline phases, authored-lite ESC ownership, realization tasks, checkpoints, and package output."
+policy:
+  allow_implicit_invocation: true

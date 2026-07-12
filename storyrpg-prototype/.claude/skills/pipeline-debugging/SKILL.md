@@ -5,16 +5,19 @@ description: Use this skill when debugging StoryRPG story generation — failed 
 
 # Pipeline Debugging
 
+Read `docs/CURRENT_PIPELINE_STATUS.md` before older architecture/status documents. For authored-lite
+runs, distinguish ESC/architecture ownership failures from `NarrativeRealizationTask` owner-stage
+evidence failures; do not repair either by weakening the final gate.
+
 Story generation runs in the **proxy-spawned worker** (`src/ai-agents/server/worker-runner.ts`),
 which drives `src/ai-agents/pipeline/FullStoryPipeline.ts` and streams events
 back to the UI via the proxy (`proxy/workerLifecycle.js`).
 
 ## Start from artifacts, not the monolith
 
-`FullStoryPipeline.ts` is ~12k lines (typed — its `@ts-nocheck` was removed
-2026-06-10; every phase body lives in `pipeline/phases/`, and the non-phase
-helper clusters in `pipeline/imageSupport.ts` / `pipelineMemory.ts` /
-`runLedger.ts` / `treatmentRefresh.ts`). **Do not read it
+`FullStoryPipeline.ts` is large and typed; active phase bodies live in `pipeline/phases/`, and the
+non-phase helper clusters in `pipeline/imageSupport.ts` / `pipelineMemory.ts` /
+`runLedger.ts` / `treatmentRefresh.ts`. **Do not read it
 top-to-bottom.** Start
 from the failing run's artifacts, then jump to the owning code:
 
@@ -50,6 +53,10 @@ Navigate the pipeline by phase, not by scrolling: `pipeline/phases/`,
   `maxTokens`). Don't treat a truncated parse as success.
 - **Stuck/orphaned jobs** — check `workerLifecycle.js` and the dead-letter file;
   the proxy normalizes stale jobs on startup.
+- **Memory/context failures** — run `npm run memory:doctor`; Cognee is advisory and must not override
+  typed current-run artifacts.
+- **Bad episode checkpoint** — inspect checkpoint artifacts, then use `npm run invalidate:episode`
+  when regeneration from the owning episode boundary is intended.
 
 ## Guardrails
 

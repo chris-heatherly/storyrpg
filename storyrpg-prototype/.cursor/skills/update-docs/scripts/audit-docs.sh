@@ -115,11 +115,15 @@ grep -roh 'process\.env\.\w\+' "$PROTO/src" "$PROTO/proxy-server.js" "$PROTO/pro
 grep -roh 'EXPO_PUBLIC_\w\+' "$PROTO/src" 2>/dev/null | sort -u | sed 's/^/  /'
 echo ""
 
-# --- 16. Cursor skills ---
-echo "## 16. Cursor Skills (.cursor/skills/)"
-if [ -d "$PROTO/.cursor/skills" ]; then
-  ls -1 "$PROTO/.cursor/skills/" | sed 's/^/  /'
-fi
+# --- 16. Cross-model skills ---
+echo "## 16. Model Skills and Capability Parity"
+for skill_root in "$PROTO/.claude/skills" "$PROTO/.cursor/skills" "$WORKSPACE_ROOT/codex-skills"; do
+  echo "  ${skill_root#$WORKSPACE_ROOT/}:"
+  find "$skill_root" -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/SKILL.md' ';' -print \
+    | sort | sed "s|$skill_root/|    |"
+done
+echo "  parity audit:"
+(cd "$PROTO" && npm run audit:skills) | sed 's/^/    /'
 echo ""
 
 # --- 17. Types exports ---

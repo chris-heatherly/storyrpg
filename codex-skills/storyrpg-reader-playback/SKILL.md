@@ -10,9 +10,11 @@ description: Use this skill when working on StoryRPG reading screens, story play
 Separate deterministic playback from presentation:
 
 1. Inspect `storyrpg-prototype/src/engine/` for story progression, conditions, resolution, templates, and identity effects.
-2. Inspect `storyrpg-prototype/src/stores/gameStore.ts` and persistence helpers for player state behavior.
-3. Inspect `storyrpg-prototype/src/screens/ReadingScreen.tsx`, `StoryReader.tsx`, `ReadingShell.tsx`, and reader components for UI behavior.
-4. Use `docs/MOBILE_REDESIGN.md`, `docs/GDD.md`, and `docs/TDD.md` as targeted references.
+2. Load modern packages through story-codec/storyLibrary and resolve media with `assetResolver`
+   (`AssetRef` first, legacy strings through migrations).
+3. Inspect `storyrpg-prototype/src/stores/gameStore.ts` and persistence helpers for player state behavior.
+4. Inspect `storyrpg-prototype/src/screens/ReadingScreen.tsx`, `StoryReader.tsx`, `ReadingShell.tsx`, and reader components for UI behavior.
+5. Use `docs/MOBILE_REDESIGN.md`, `docs/GDD.md`, and `docs/TDD.md` as targeted references.
 
 ## Guardrails
 

@@ -7,6 +7,10 @@ description: Use this skill when creating or modifying AI agents in the StoryRPG
 
 ## Workflow
 
+When an agent realizes a `NarrativeRealizationTask`, preserve `ownerStage`, its discriminated
+evidence target and route scope, severity, repair handler, and fingerprint. SceneWriter,
+ChoiceAuthor, and EncounterArchitect may author only their owned tasks; validate before checkpoint.
+
 1. Read `src/ai-agents/agents/BaseAgent.ts` for the base contract before adding an agent.
 2. Browse the current roster with `ls src/ai-agents/agents/` (it grows — do not trust a copied list).
 3. Define input/output types in `src/types/` and converters in `src/ai-agents/converters/`.

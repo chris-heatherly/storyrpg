@@ -1,10 +1,9 @@
 ---
 name: update-docs
 description: >-
-  Audit the codebase and update all documentation in docs/ and AGENTS.md to
-  reflect current code reality. Use when the user asks to update docs, refresh
-  documentation, sync AGENTS.md, or run a documentation audit. Also triggers
-  on "update docs", "refresh docs", "docs out of date", or "doc audit".
+  Audit the codebase, documentation, AGENTS.md, and Claude/Cursor/Codex skills
+  against current code reality. Use for documentation refreshes, skill sync,
+  stale agent instructions, or cross-model capability audits.
 ---
 
 # Update Documentation
@@ -112,9 +111,11 @@ The `docs/` tree (repo root, NOT `storyrpg-prototype/docs/`) has grown — also 
 (`src/ai-agents/prompts/visualPrinciples.ts`) — the old `visual_storytelling_*.md` docs were removed,
 don't recreate references to them.
 
-## Step 4 — Update Cursor Skills Table
+## Step 4 — Synchronize model skills
 
-If any new skill directories exist under `storyrpg-prototype/.cursor/skills/`, add them to the AGENTS.md table. Remove entries for deleted skills.
+Use `skills-manifest.json` as the capability map. Update the mapped Claude, Cursor, and Codex skills
+when operational facts change; grouping and depth may differ, but triggers and load-bearing facts
+must agree. Run `npm run audit:skills` and update AGENTS.md when a capability changes.
 
 ## Step 5 — Summarize
 

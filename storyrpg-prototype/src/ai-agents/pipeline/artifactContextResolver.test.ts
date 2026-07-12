@@ -5,10 +5,12 @@ import { ArtifactMemoryService } from './artifactMemoryService';
 import type { PipelineMemory } from './pipelineMemory';
 
 describe('ArtifactContextResolver', () => {
-  it('retrieves Cognee artifact context with dataset and node filters', async () => {
-    const recallPacket = vi.fn(async () => ({
+  it('uses exact/live context first, then a narrowly scoped semantic fallback', async () => {
+    const recallPacket = vi.fn().mockResolvedValue({
       summary: 'ok',
       sourceSnippets: ['Artifact source-analysis hash abc123 contains the requested treatment obligation.'],
+      authority: 'advisory',
+      source: 'cognee',
       datasetNames: ['storyrpg-run-bite-me'],
       queryLog: [{
         query: 'artifact query',
@@ -19,7 +21,7 @@ describe('ArtifactContextResolver', () => {
         nodeNames: ['artifact:source-analysis'],
       }],
       warnings: [],
-    }));
+    });
     const memory = { recallPacket, writeArtifactSnapshot: vi.fn(async () => undefined) } as unknown as PipelineMemory;
     const resolver = new ArtifactContextResolver({
       memory,
@@ -34,12 +36,14 @@ describe('ArtifactContextResolver', () => {
       artifactKinds: ['source-analysis', 'season-plan'],
     });
 
-    expect(recallPacket).toHaveBeenCalledWith(expect.objectContaining({
-      datasets: expect.arrayContaining(['storyrpg-project', 'storyrpg-run-bite-me', 'storyrpg-validator-history']),
+    expect(recallPacket).toHaveBeenCalledTimes(1);
+    expect(recallPacket).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      datasets: expect.arrayContaining(['storyrpg-project', 'storyrpg-run-bite-me']),
       nodeNames: expect.arrayContaining(['artifact:source-analysis', 'artifact:season-plan', 'episode:1']),
+      recallMode: 'facts-first',
       topK: 6,
     }));
-    expect(pack.renderedPromptBlock).toContain('Retrieved Canonical Artifact Context');
+    expect(pack.renderedPromptBlock).toContain('Retrieved Story Context');
     expect(pack.tokenEstimate).toBeGreaterThan(0);
   });
 

@@ -38,6 +38,9 @@ export type PipelineMemoryProviderName = 'cognee' | 'file' | 'disabled';
 export interface PipelineMemoryPacket {
   summary: string;
   sourceSnippets: string[];
+  /** Structured authority replaces text heuristics such as matching "validated". */
+  authority?: 'exact-artifact' | 'current-typed' | 'advisory';
+  source?: 'live-artifact' | 'live-fact' | 'cognee' | 'file';
   datasetNames: string[];
   queryLog: Array<{
     query: string;
@@ -76,6 +79,9 @@ export interface PipelineMemoryRecallRequest {
   storyId?: string;
   episodeNumber?: number;
   sceneId?: string;
+  /** Attribution only; never part of semantic filtering. */
+  agentRole?: AgentMemoryRole;
+  lifecycle?: string;
   queries?: string[];
   datasets?: string[];
   nodeNames?: string[];
@@ -588,6 +594,8 @@ class FileMemoryProvider implements MemoryProvider {
     return {
       summary: `Local file memory: ${snippets.length} record(s) from pipeline/validator buckets.`,
       sourceSnippets: snippets,
+      authority: 'advisory',
+      source: 'file',
       datasetNames: ['file:pipeline-memories'],
       queryLog: [],
       warnings: [],
@@ -791,6 +799,8 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
     const nodeNames = providerNodeNames(request);
     const nodeFilterMode = this.config.nodeFilterMode || 'off';
     const packet = emptyPacket();
+    packet.authority = 'advisory';
+    packet.source = 'cognee';
     packet.datasetNames = datasets;
 
     for (const query of queries) {
@@ -1039,6 +1049,9 @@ export class PipelineMemory {
   }
 
   private agentDatasets(request: AgentMemoryRequest): string[] {
+    // An explicit policy is authoritative. Do not silently blend all historical
+    // corpora into a source- or run-specific retrieval request.
+    if (request.datasets?.length) return uniqueStrings(request.datasets);
     return uniqueStrings([
       this.defaults.projectDataset,
       runDatasetName(this.defaults, request.storyId),
@@ -1098,7 +1111,8 @@ export class PipelineMemory {
       });
     }), null);
     const result = attempt.value;
-    this.recordTelemetry('recall', 'recallPacket', {
+    this.recordTelemetry('recall', request.lifecycle || 'recallPacket', {
+      agentRole: request.agentRole,
       recallMode,
       datasets: result?.datasetNames || request.datasets || [],
       nodeNames: request.nodeNames,
@@ -1126,6 +1140,8 @@ export class PipelineMemory {
     const roleDefaults = roleRecallDefaults[request.agentRole];
     const packets = await Promise.all(plannedQueries.map((plan) => this.recallPacket({
       queries: [plan.query],
+      agentRole: request.agentRole,
+      lifecycle: request.lifecycle,
       storyId: request.storyId,
       episodeNumber: request.episodeNumber,
       sceneId: request.sceneId,

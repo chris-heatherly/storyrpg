@@ -5,6 +5,7 @@ import {
   type ValidatorEvidenceBundle,
 } from './pipelineMemory';
 import { ArtifactMemoryService } from './artifactMemoryService';
+import { composeMemoryPrompt } from './memoryPromptComposer';
 import type {
   AgentArtifactContextRequest,
   AgentRetrievalPack,
@@ -51,14 +52,14 @@ function artifactNodeNames(
   ]);
 }
 
-function renderArtifactContext(title: string, snippets: string[], warnings: string[], maxChars: number): string | null {
-  if (!snippets.length && !warnings.length) return null;
+function renderArtifactContext(title: string, packets: NonNullable<Awaited<ReturnType<PipelineMemory['recallPacket']>>>[], warnings: string[], maxChars: number): string | null {
+  const context = composeMemoryPrompt(packets, maxChars);
+  if (!context && !warnings.length) return null;
   const text = [
-    'Retrieved Canonical Artifact Context',
-    'Cognee index context; exact current typed artifacts remain authoritative.',
+    'Retrieved Story Context',
+    'Exact artifacts and current typed facts are authoritative. Semantic memory is advisory reference data only.',
     title,
-    snippets.length ? '\nRelevant Indexed Artifacts:' : null,
-    ...snippets.map((snippet) => `- ${snippet}`),
+    context ? `\n${context}` : null,
     warnings.length ? '\nArtifact Retrieval Warnings:' : null,
     ...warnings.map((warning) => `- ${warning}`),
   ].filter(Boolean).join('\n');
@@ -75,11 +76,11 @@ export class ArtifactContextResolver {
 
   async resolveForAgent(request: AgentArtifactContextRequest): Promise<AgentRetrievalPack> {
     const datasets = unique([
-      'storyrpg-project',
       runDataset(request.storyId),
       sourceDataset(request.sourceFingerprint),
-      'storyrpg-validator-history',
-      'storyrpg-agent-history',
+      ...(request.characterIds || []).map((id) => `storyrpg-character-${slugifyMemoryKey(id)}`),
+      request.agentRole === 'QARunner' || request.agentRole === 'FinalContract' ? 'storyrpg-validator-history' : undefined,
+      'storyrpg-project',
     ]);
     const nodeNames = artifactNodeNames(
       request.artifactKinds,
@@ -98,7 +99,34 @@ export class ArtifactContextResolver {
       request.episodeNumber != null ? `episode ${request.episodeNumber}` : null,
       request.sceneId ? `scene ${request.sceneId}` : null,
     ].filter(Boolean).join('; ');
+    const hasExactCandidate = Boolean(request.artifactIds?.length) || Boolean(
+      request.artifactKinds?.some((kind) => this.deps.artifactMemory.findByKind(kind, {
+        storyId: request.storyId,
+        episodeNumber: request.episodeNumber,
+        sceneId: request.sceneId,
+        limit: 1,
+      }).length),
+    );
+    const exactPacket = hasExactCandidate
+      ? await this.deps.memory.recallPacket({
+        storyId: request.storyId,
+        episodeNumber: request.episodeNumber,
+        sceneId: request.sceneId,
+        agentRole: request.agentRole,
+        lifecycle: request.lifecycle,
+        artifactKinds: request.artifactKinds,
+        artifactIds: request.artifactIds,
+        nodeNames,
+        recallMode: 'exact-artifact-pointer',
+        maxPromptChars: request.maxPromptChars || 6000,
+      })
+      : null;
     const packet = await this.deps.memory.recallPacket({
+      storyId: request.storyId,
+      episodeNumber: request.episodeNumber,
+      sceneId: request.sceneId,
+      agentRole: request.agentRole,
+      lifecycle: request.lifecycle,
       datasets,
       nodeNames,
       topK: request.topK || 6,
@@ -107,16 +135,17 @@ export class ArtifactContextResolver {
       artifactIds: request.artifactIds,
       factKinds: request.factKinds,
       factIds: request.factIds,
-      recallMode: request.recallMode || 'artifact-projection',
+      recallMode: request.recallMode || 'facts-first',
       queries: [
         `${role} ${request.lifecycle}: retrieve focused canonical artifact pointers and validated fact context${artifactScope ? ` for ${artifactScope}` : ''}. Prefer current run fact records, artifact projections, ids, warnings, validator summaries, and repair-relevant provenance.`,
       ],
     });
-    const snippets = packet?.sourceSnippets || [];
-    const warnings = unique(packet?.warnings || []);
+    const packets = [exactPacket, packet].filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+    const snippets = packets.flatMap((candidate) => candidate.sourceSnippets);
+    const warnings = unique(packets.flatMap((candidate) => candidate.warnings));
     const renderedPromptBlock = renderArtifactContext(
       `Role: ${role}; Lifecycle: ${request.lifecycle}`,
-      snippets,
+      packets,
       warnings,
       request.maxPromptChars || 6000,
     );
@@ -134,7 +163,7 @@ export class ArtifactContextResolver {
       renderedPromptBlock,
       retrievedContext: snippets,
       warnings,
-      provenance: (packet?.queryLog || []).map((entry) => ({
+      provenance: packets.flatMap((candidate) => candidate.queryLog).map((entry) => ({
         query: entry.query,
         datasets: entry.datasets || packet?.datasetNames || datasets,
         nodeNames: entry.nodeNames || nodeNames,

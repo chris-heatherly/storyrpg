@@ -110,7 +110,11 @@ async function recallExactArtifacts(
     });
   }
   if (!pointers.length && request.artifactKinds?.length) {
-    for (const envelope of deps.artifactMemory.findByKind(request.artifactKinds[0], request as { episodeNumber?: number })) {
+    for (const envelope of deps.artifactMemory.findByKind(request.artifactKinds[0], {
+      storyId: request.storyId,
+      episodeNumber: request.episodeNumber,
+      sceneId: request.sceneId,
+    })) {
       pointers.push(deps.artifactMemory.pointerFor(envelope));
     }
   }
@@ -132,6 +136,8 @@ async function recallExactArtifacts(
   const packet: PipelineMemoryPacket = {
     summary: `Exact artifact recall: ${snippets.length} live pointer(s).`,
     sourceSnippets: uniqueStrings(snippets),
+    authority: 'exact-artifact',
+    source: 'live-artifact',
     datasetNames: ['live-artifacts'],
     queryLog: [{
       query: 'exact-artifact-pointer',
@@ -171,6 +177,8 @@ async function recallLiveFacts(
   const packet: PipelineMemoryPacket = {
     summary: `Live fact recall: ${facts.length} fact(s).`,
     sourceSnippets: snippets,
+    authority: 'current-typed',
+    source: 'live-fact',
     datasetNames: ['live-facts'],
     queryLog: [{
       query: 'facts-first',

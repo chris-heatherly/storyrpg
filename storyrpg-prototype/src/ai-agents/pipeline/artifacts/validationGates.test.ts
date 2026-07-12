@@ -94,6 +94,7 @@ describe('artifact validation gate registry', () => {
         'SetupPayoffValidator',
         'StructuralValidator',
         'FinalStoryContractValidator',
+        'NarrativeContractValidator',
         'MechanicsLeakageValidator',
         'SceneGraphBranchValidator',
         'ArcDeltaValidator',

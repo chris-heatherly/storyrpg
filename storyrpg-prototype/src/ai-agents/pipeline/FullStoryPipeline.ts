@@ -16,7 +16,6 @@ import { PipelineConfig, loadConfig, defaultValidationConfig, clampTargetBeatCou
 import { AudioGenerationService } from '../services/audioGenerationService';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
 
-
 import { 
   SCENE_DEFAULTS, 
   TIMING_DEFAULTS, 
@@ -105,6 +104,7 @@ import {
   PixarStakes, CinematicImageDescription, EncounterVisualContract
 } from '../../types';
 import { PipelineEvent, PipelineEventHandler } from './events';
+import { emitEpisodeGenerationStart, handleEpisodeGenerationFailure } from './episodeGenerationEvents';
 import {
   type GenerationPlan,
   applyEventToPlan,
@@ -5423,11 +5423,7 @@ export class FullStoryPipeline {
             this.currentEpisode = spec.idx + 1;
             const episodeProgress = Math.round((spec.idx / this.totalEpisodes) * 80) + 10;
             await this.updateJobProgress(`episode_${i}`, episodeProgress);
-            this.emit({
-              type: 'phase_start',
-              phase: `episode_${i}`,
-              message: `Generating Episode ${i}: ${spec.outline.title}`,
-            });
+            emitEpisodeGenerationStart(this.emit.bind(this), i, spec.outline.title);
             if (this.generationPlan) markEpisode(this.generationPlan, i, 'active');
             const previousSummary = episodes.length > 0
               ? this.summarizeEpisode(episodes[episodes.length - 1])
@@ -5514,17 +5510,7 @@ export class FullStoryPipeline {
 
             return generated.episode ?? null;
           } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            const failure = { episodeNumber: i, title: spec.outline.title, success: false, error: message };
-            episodeResults.push(failure);
-            this.emit({
-              type: 'error',
-              phase: `episode_${i}`,
-              message: `Episode ${i} failed: ${message}`,
-              data: { episodeNumber: i, error: message },
-            });
-            if (this.config.validation.mode === 'strict') throw error;
-            return null;
+            return handleEpisodeGenerationFailure({ error, episodeNumber: i, title: spec.outline.title, strict: this.config.validation.mode === 'strict', results: episodeResults, emit: this.emit.bind(this) });
           }
         };
 
@@ -9239,26 +9225,26 @@ export class FullStoryPipeline {
   }
 
   private async getAgentMemoryContext(request: AgentMemoryRequest): Promise<string | null> {
-    const [memoryBlock, artifactPack] = await Promise.all([
-      this.agentMemoryContextBuilder().renderedPromptBlock(request),
-      this.artifactContextResolver().resolveForAgent({
-        agentRole: request.agentRole,
-        lifecycle: request.lifecycle,
-        storyId: request.storyId,
-        episodeNumber: request.episodeNumber,
-        sceneId: request.sceneId,
-        characterIds: request.characterIds,
-        artifactKinds: request.artifactKinds,
-        artifactIds: request.artifactIds,
-        factKinds: request.factKinds,
-        factIds: request.factIds,
-        sourceFingerprint: request.sourceFingerprint || request.treatmentId,
-        recallMode: request.recallMode || 'artifact-projection',
-        topK: request.topK,
-        maxPromptChars: request.maxPromptChars,
-      }),
-    ]);
-    return [memoryBlock, artifactPack.renderedPromptBlock].filter(Boolean).join('\n\n') || null;
+    // One orchestrator resolves exact artifacts, current typed facts, then
+    // semantic historical context. Running the legacy agent-memory and artifact
+    // paths in parallel doubled Cognee queries and blurred source authority.
+    const artifactPack = await this.artifactContextResolver().resolveForAgent({
+      agentRole: request.agentRole,
+      lifecycle: request.lifecycle,
+      storyId: request.storyId,
+      episodeNumber: request.episodeNumber,
+      sceneId: request.sceneId,
+      characterIds: request.characterIds,
+      artifactKinds: request.artifactKinds,
+      artifactIds: request.artifactIds,
+      factKinds: request.factKinds,
+      factIds: request.factIds,
+      sourceFingerprint: request.sourceFingerprint || request.treatmentId,
+      recallMode: request.recallMode || 'facts-first',
+      topK: request.topK,
+      maxPromptChars: request.maxPromptChars,
+    });
+    return artifactPack.renderedPromptBlock;
   }
 
   private async getScopedAgentMemoryContext(

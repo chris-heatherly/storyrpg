@@ -1,6 +1,6 @@
 # Current Pipeline Status
 
-**Last Updated:** July 8, 2026
+**Last Updated:** July 12, 2026
 
 This is the short operational status of the codebase as it exists now. It is
 intended to answer "what is live?" before older architecture notes or audit
@@ -93,6 +93,29 @@ LLM plans.
 `SavingPhase` and `WorldBuildingPhase` are wired active paths under
 `src/ai-agents/pipeline/phases/`. Continue phase extraction as
 behavior-preserving migrations.
+
+## Canonical Narrative Realization Contract
+
+`NarrativeContractGraph` and `EpisodeEventPlan` version 3 compile premise,
+event, relationship-pacing, and route obligations into executable
+`NarrativeRealizationTask` records. A task has one owner (`SceneWriter`,
+`ChoiceAuthor`, or `EncounterArchitect`), one discriminated evidence `target`,
+typed evidence atoms, severity, and a repair route. The target is the only
+active representation of surface and route placement; the former
+`requiredSurface` + `routePolicy` + top-level `outcomeTier` combination is
+accepted only by the checkpoint migration boundary.
+
+The content phase validates each task at its owning stage and supplies bounded
+feedback retries before accepting or checkpointing the artifact. Route evidence
+is evaluated per playable outcome and cannot be borrowed across routes or from
+an undeclared surface. `NarrativeContractValidator` repeats the same canonical
+gate after late story mutations as a regression net, and the owner-stage
+fingerprint is preserved through final-contract repair accounting.
+
+Three older event heuristics (viral payoff, exact codename, and all-route threat
+checks) remain only for persisted graphs that have no compiled realization task.
+They do not execute alongside a version-3 task and are tracked for deletion in
+`docs/LEGACY_REMOVAL_REGISTRY.md`.
 
 ## Output Contract
 

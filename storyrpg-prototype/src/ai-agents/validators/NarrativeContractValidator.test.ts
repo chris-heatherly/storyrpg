@@ -270,6 +270,7 @@ describe('NarrativeContractValidator', () => {
     expect(issue?.metadata?.taskId).toBe('task:ep1-blog:audience');
     expect(issue?.metadata?.repairHandler).toBe('scene_prose');
     expect(issue?.metadata?.missingEvidenceAtoms).toEqual(['viral']);
+    expect(issue?.metadata?.realizationFingerprint).toContain('task:ep1-blog:audience');
   });
 
   it('uses realization tasks as the sole executable route check for version-3 graphs', () => {

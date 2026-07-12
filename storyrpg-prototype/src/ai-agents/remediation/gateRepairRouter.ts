@@ -788,6 +788,9 @@ export class GateRepairRouter {
       if (issue.repairHandler === 'encounter_route' || issue.outcomeTier) {
         return directive('same_scene_retry', issue, 'Encounter route realization is owned by the exact encounter outcome surface and requires a focused route rewrite.');
       }
+      if (issue.repairHandler === 'choice_reauthor') {
+        return directive('diagnostic_stop', issue, 'Choice realization is owned and retried by ChoiceAuthor before checkpointing; the final regression net must not rewrite unrelated scene prose if a later mutation reintroduces drift.');
+      }
       if (issue.repairHandler === 'relationship_pacing' || issue.contractId && /relationshipLabel/i.test(issue.message ?? '')) {
         return directive('same_scene_retry', issue, 'Relationship pacing is scene-local; rewrite the exact offending surface at the currently earned stage.');
       }

@@ -20,6 +20,18 @@ const issue = (validator: string, message: string, sceneId = 's1-1', episodeNumb
 });
 
 describe('GateRepairRouter', () => {
+  it('does not misroute canonical choice realization drift into scene-prose repair', () => {
+    const router = new GateRepairRouter();
+    const route = router.routeIssue({
+      ...issue('NarrativeContractValidator', 'Canonical owner realization drift.', 's1-2'),
+      repairHandler: 'choice_reauthor',
+      taskId: 'task:choice',
+    });
+
+    expect(route.kind).toBe('diagnostic_stop');
+    expect(route.reason).toContain('ChoiceAuthor');
+  });
+
   it('routes a missing simple detail to same-scene retry', () => {
     const router = new GateRepairRouter({
       densityReports: [{

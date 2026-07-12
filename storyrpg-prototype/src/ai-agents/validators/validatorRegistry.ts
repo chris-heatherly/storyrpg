@@ -158,6 +158,12 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
 
   // --- Phase gates (PhaseValidator) ---
   { validator: 'PhaseValidator', stage: 'phase', tier: 'advisory', dispatchedFrom: 'FullStoryPipeline' },
+  // Canonical narrative realization tasks are enforced by their artifact owner
+  // before checkpointing. Each stage uses a bounded re-author route; the final
+  // NarrativeContractValidator entry below is only the post-mutation regression net.
+  { validator: 'NarrativeRealizationTaskGate (SceneWriter)', stage: 'phase', tier: 'blocking', remediation: 'regen-scene', maxRemediationAttempts: 2, lifecycle: 'episode-contract', role: 'primary', dispatchedFrom: 'ContentGenerationPhase (SceneWriter output)' },
+  { validator: 'NarrativeRealizationTaskGate (ChoiceAuthor)', stage: 'phase', tier: 'blocking', remediation: 'regen-choices', maxRemediationAttempts: 3, lifecycle: 'episode-contract', role: 'primary', dispatchedFrom: 'ContentGenerationPhase (ChoiceAuthor output)' },
+  { validator: 'NarrativeRealizationTaskGate (EncounterArchitect)', stage: 'phase', tier: 'blocking', remediation: 'regen-encounter', maxRemediationAttempts: 2, lifecycle: 'episode-contract', role: 'primary', dispatchedFrom: 'ContentGenerationPhase (EncounterArchitect output)' },
 
   // --- Quick validation (IntegratedBestPracticesValidator.runQuickValidation) ---
   // tier stays 'advisory' (not 'blocking'): runtime enforcement is a guaranteed
@@ -216,6 +222,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // --- Final assembly gate ---
   { validator: 'StructuralValidator', stage: 'final', tier: 'autofix', dispatchedFrom: 'FullStoryPipeline' },
   { validator: 'FinalStoryContractValidator', stage: 'final', tier: 'blocking', dispatchedFrom: 'FullStoryPipeline (enforceFinalStoryContract)' },
+  { validator: 'NarrativeContractValidator', stage: 'final', tier: 'blocking', remediation: 'regen-scene', lifecycle: 'final-contract', role: 'regression-net', dispatchedFrom: 'FullStoryPipeline (runFidelityValidators after late mutators)' },
   // KEPT BY DESIGN (2026-07-03 retirement review): the final-contract dispatch
   // was replaced by the unified ObligationLedgerValidator at the flip
   // (fec133ca); THIS remaining dispatch is the episode-time quick-validation
@@ -446,6 +453,7 @@ export const ARTIFACT_VALIDATOR_OWNERSHIP: ArtifactValidatorOwnershipEntry[] = [
 
   { validator: 'StructuralValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
   { validator: 'FinalStoryContractValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
+  { validator: 'NarrativeContractValidator', artifactKinds: ['runtime-episode'], role: 'regression-net' },
   { validator: 'MechanicsLeakageValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
   { validator: 'SceneGraphBranchValidator', artifactKinds: ['runtime-episode'], role: 'primary' },
   { validator: 'ArcDeltaValidator', artifactKinds: ['runtime-episode'], role: 'primary' },

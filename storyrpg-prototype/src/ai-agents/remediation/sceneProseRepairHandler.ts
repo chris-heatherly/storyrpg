@@ -120,6 +120,7 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
  * player at all (bite-me 2026-07-05T23-54-17 s1-1 establishing shot).
  */
 function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
+  if (issue.validator === 'NarrativeContractValidator' && issue.repairHandler === 'choice_reauthor') return false;
   if (issue.validator && SCENE_PROSE_REPAIRABLE_VALIDATORS.has(issue.validator)) return true;
   if (issue.validator === 'RouteContinuityValidator' && issue.type === 'unsafe_fallback_prose') return true;
   // Encounter template collapse / malformed prose live in encounter phase/

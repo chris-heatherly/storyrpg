@@ -31,6 +31,8 @@ catalog runtime code should use current contracts directly.
 | `EpisodePipeline.ts` / `ParallelStoryPipeline` doc references | delete/stale-doc | Code is gone; docs must not describe them as present. |
 | `sceneEpisode` active-mode references | delete/stale-doc | Keep only explicitly historical references when needed. |
 | `@ts-nocheck` suppressions | modernize | Remove in small typed tranches after legacy shape dependencies are gone. |
+| Narrative realization task v2 fields (`requiredSurface`, `routePolicy`, top-level `outcomeTier`) | migrate-then-delete | Normalize only while loading persisted checkpoints; all active compilers, prompts, gates, and repair metadata use the version-3 discriminated `target` contract. Remove the boundary adapter after supported resume artifacts have crossed the version-3 migration window. |
+| NarrativeContractValidator viral/codename/all-route heuristic loops | migrate-then-delete | Compatibility checks only for events that lack a compiled realization task. Version-3 events use the canonical task gate exclusively; delete these loops when version-2 graph resume support is retired. |
 
 ## Current Ratchet
 

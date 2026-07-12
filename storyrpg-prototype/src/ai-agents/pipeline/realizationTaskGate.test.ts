@@ -273,4 +273,19 @@ describe('validateOwnerRealizationTasks', () => {
 
     expect(findings.map((finding) => finding.code)).toEqual(['OWNER_REALIZATION_MISSING']);
   });
+
+  it('keeps owner-stage and final-regression fingerprints in parity on the same artifact', () => {
+    const task = {
+      id: 'task:parity', contractId: 'event:parity', eventId: 'event', episodeNumber: 1,
+      ownerStage: 'scene_writer' as const, repairHandler: 'scene_prose' as const, sceneId: 's1',
+      evidenceAtoms: [{ id: 'visible-cost', description: 'cost', acceptedPatterns: ['broken window'], kind: 'semantic' as const, required: true }],
+      target: { scope: 'owner' as const, surfaces: ['beat_text' as const] },
+      sourceContractIds: ['event'], blocking: true,
+    };
+    const shared = { sceneId: 's1', tasks: [task], sceneContent: { beats: [{ text: 'The room is quiet.' }] } };
+    const owner = validateOwnerRealizationTasks({ ...shared, mode: 'owner', currentStage: 'scene_writer' });
+    const final = validateOwnerRealizationTasks({ ...shared, mode: 'final_regression' });
+
+    expect(owner.map((finding) => finding.fingerprint)).toEqual(final.map((finding) => finding.fingerprint));
+  });
 });

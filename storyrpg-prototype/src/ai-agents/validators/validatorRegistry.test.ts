@@ -160,6 +160,7 @@ describe('validatorRegistry (B4 dispatch map)', () => {
       'SetupPayoffValidator',
       'StructuralValidator',
       'FinalStoryContractValidator',
+      'NarrativeContractValidator',
       'MechanicsLeakageValidator',
       'SceneGraphBranchValidator',
       'ArcDeltaValidator',

@@ -33,8 +33,9 @@ import { PipelineError } from './errors';
 import { resolveCharacterIntroMode, resolveRosterCharacter } from '../utils/npcIntroductionLedger';
 import { buildCharacterTreatmentContractsForPlan } from '../utils/characterTreatmentContracts';
 import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
+import { plannedGroupFormation } from '../utils/relationshipPacingStagePolicy';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v5';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v6';
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',
@@ -863,6 +864,40 @@ function collapseConstraintOnlySceneShells(scenePlan: SeasonScenePlan): void {
         .map((scene) => scene.id),
     ]),
   );
+}
+
+function alignGroupPacingWithSpineOwners(scenePlan: SeasonScenePlan): void {
+  const normalizeGroupId = (value: string): string => value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  for (const spine of Object.values(scenePlan.episodeSpines ?? {})) {
+    const episodeScenes = scenePlan.scenes.filter((scene) => scene.episodeNumber === spine.episodeNumber);
+    for (const unit of spine.units) {
+      const groupName = plannedGroupFormation({ title: unit.text });
+      if (!groupName) continue;
+      const groupId = normalizeGroupId(groupName);
+      const owner = episodeScenes.find((scene) => scene.spineUnitId === unit.id);
+      if (!owner || (owner.relationshipPacing ?? []).some((contract) => contract.groupId && normalizeGroupId(contract.groupId) === groupId)) continue;
+      const donor = episodeScenes.find((scene) => (scene.relationshipPacing ?? []).some((contract) =>
+        contract.groupId && normalizeGroupId(contract.groupId) === groupId,
+      ));
+      if (!donor) continue;
+      const moved = (donor.relationshipPacing ?? []).filter((contract) =>
+        contract.groupId && normalizeGroupId(contract.groupId) === groupId,
+      );
+      for (const contract of moved) {
+        if (contract.milestone?.kind === 'group_formation') contract.milestone.choiceSceneId = owner.id;
+      }
+      donor.relationshipPacing = (donor.relationshipPacing ?? []).filter((contract) => !moved.includes(contract));
+      owner.relationshipPacing = [...(owner.relationshipPacing ?? []), ...moved];
+      if (moved.some((contract) => contract.milestone?.kind === 'group_formation')) {
+        owner.hasChoice = true;
+        owner.choiceType = 'relationship';
+      }
+    }
+  }
 }
 
 function dependencyId(parts: string[]): string {
@@ -1734,6 +1769,7 @@ export function compileAndApplyNarrativeContracts(
   scenePlan: SeasonScenePlan,
 ): SeasonScenePlan {
   collapseConstraintOnlySceneShells(scenePlan);
+  alignGroupPacingWithSpineOwners(scenePlan);
   const graph = compileNarrativeContractGraph(plan, scenePlan);
   if (!graph.validation.passed) {
     const blockers = graph.validation.issues.filter((issue) => issue.severity === 'error').map((issue) => `${issue.code}: ${issue.message}`);

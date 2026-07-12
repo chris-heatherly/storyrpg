@@ -32,6 +32,22 @@ describe('relationshipPacingStagePolicy', () => {
     expect(scenes[0].relationshipPacing).toHaveLength(0);
   });
 
+  it('does not inherit group formation from a stale source label after canonical turn projection', () => {
+    const scenes = [{
+      id: 's1-5',
+      title: 'The three become friends and form the Dusk Club.',
+      turnContract: {
+        centralTurn: 'At a rooftop bar Kylie catches the attention of two strangers.',
+        turnEvent: 'The strangers notice Kylie across the rooftop bar.',
+      },
+      requiredBeats: [{ mustDepict: 'The strangers notice Kylie across the rooftop bar.' }],
+      relationshipPacing: [] as never[],
+    }];
+
+    expect(ensureGroupFormationPacingContracts(scenes as never)).toBe(0);
+    expect(scenes[0].relationshipPacing).toHaveLength(0);
+  });
+
   it('does not duplicate an existing group contract for the same group', () => {
     const scenes = [{
       id: 's1-2',

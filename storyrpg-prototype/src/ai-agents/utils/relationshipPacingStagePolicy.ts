@@ -111,17 +111,20 @@ function groupSlug(value: string): string {
 }
 
 export function plannedGroupFormation(scene: RelationshipPacingSceneLike): string | undefined {
-  const surfaces = [
-    scene.title,
-    scene.name,
-    scene.dramaticPurpose,
-    scene.description,
+  const stagedSurfaces = [
     scene.turnContract?.centralTurn,
     scene.turnContract?.turnEvent,
     scene.turnContract?.afterState,
     ...(scene.storyCircleBeatContracts ?? []).map((c) => c.sourceText),
     ...(scene.requiredBeats ?? []).map((b) => b.mustDepict),
   ];
+  // Once a scene has compiled staging surfaces, they are authoritative. Titles
+  // and descriptions can intentionally retain the source-unit label after the
+  // canonical event projection moves that unit to its actual owner; scanning
+  // both made the following scene falsely inherit group-formation obligations.
+  const surfaces = stagedSurfaces.some((surface) => String(surface || '').trim())
+    ? stagedSurfaces
+    : [scene.title, scene.name, scene.dramaticPurpose, scene.description];
   for (const surface of surfaces) {
     const match = GROUP_FORMATION_RE.exec(String(surface || ''));
     if (match) return match[1];

@@ -53,6 +53,45 @@ function scenePlan(scenes: PlannedScene[], spines: Record<number, EpisodeSpineCo
 }
 
 describe('NarrativeContractCompiler', () => {
+  it('moves group pacing to the canonical bond-unit owner before task compilation', () => {
+    const spine: EpisodeSpineContract = {
+      episodeNumber: 1,
+      sourceHash: 'ep1',
+      episodeStoryCircleBeats: ['you'],
+      polarityFacets: [],
+      units: [
+        { id: 'ep1-u4', order: 3, text: 'Testing Kylie.', kind: 'test', storyCircleFacets: [], prerequisites: [], sceneKind: 'standard' },
+        { id: 'ep1-u5', order: 4, text: 'The three form the Dusk Club.', kind: 'bond', storyCircleFacets: [], prerequisites: ['ep1-u4'], sceneKind: 'standard' },
+      ],
+    };
+    const groupContract = {
+      id: 'dusk-club-pacing', source: 'treatment' as const, groupId: 'dusk-club',
+      startStage: 'noticed' as const, targetStage: 'spark' as const,
+      allowedLabels: ['joke'], blockedLabels: ['official'], requiredEvidence: ['earn membership'],
+      minScenesSinceIntroduction: 1, maxDeltaThisScene: 1, mechanicDimensions: ['trust' as const],
+      milestone: {
+        id: 'dusk-club-milestone', kind: 'group_formation' as const,
+        sourceText: 'The three form the Dusk Club.', subjectType: 'group' as const,
+        subjectId: 'dusk-club', targetStage: 'spark' as const,
+        introductionSceneIds: ['s1-4'], testSceneIds: ['s1-4'], choiceSceneId: 's1-4',
+        memberNpcIds: ['mika'], requiredEvidenceTags: ['respected_agency' as const],
+      },
+    };
+    const scenes = [
+      scene({ id: 's1-4', episodeNumber: 1, order: 3, spineUnitId: 'ep1-u4', dramaticPurpose: 'Testing Kylie.', relationshipPacing: [groupContract] }),
+      scene({ id: 's1-5', episodeNumber: 1, order: 4, spineUnitId: 'ep1-u5', dramaticPurpose: 'A rooftop stranger notices Kylie.' }),
+    ];
+
+    const compiled = compileAndApplyNarrativeContracts(plan([1]), scenePlan(scenes, { 1: spine }));
+
+    expect(compiled.scenes.find((candidate) => candidate.id === 's1-4')?.relationshipPacing).toEqual([]);
+    expect(compiled.scenes.find((candidate) => candidate.id === 's1-5')?.relationshipPacing?.[0]?.id).toBe('dusk-club-pacing');
+    expect(compiled.scenes.find((candidate) => candidate.id === 's1-5')?.choiceType).toBe('relationship');
+    expect(compiled.narrativeContractGraph?.realizationTasks?.some((task) =>
+      task.contractId === 'dusk-club-pacing' && task.sceneId === 's1-5',
+    )).toBe(true);
+  });
+
   it('orders Bite Me rescue before writing and writing before viral aftermath without duplicate ownership', () => {
     const spine: EpisodeSpineContract = {
       episodeNumber: 1,

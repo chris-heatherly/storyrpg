@@ -392,6 +392,30 @@ describe('buildSeasonScenePlan', () => {
       .toThrow(/no compatible earning path/);
   });
 
+  it('canonicalizes authored group members and marks unconditional formation all-routes', () => {
+    const base = (id: string, order: number, text: string, npcsInvolved: string[]): PlannedScene => ({
+      id, episodeNumber: 1, order, kind: 'standard', title: text, dramaticPurpose: text,
+      narrativeRole: order === 2 ? 'turn' : 'development', locations: ['club'], npcsInvolved,
+      setsUp: [], paysOff: [], requiredBeats: [{ id: `${id}-beat`, sourceTurn: text, mustDepict: text, tier: 'authored' }],
+    } as PlannedScene);
+    const scenes = [
+      base('s1-2', 0, 'Kylie meets Stela Pavel and Mika Dragan.', ['Stela Pavel', 'Mika Dragan']),
+      base('s1-3', 1, 'Stela and Mika test whether Kylie respects their agency.', ['Stela Pavel', 'Mika Dragan']),
+      base('s1-5', 2, 'The three become friends and form the Dusk Club.', ['Stela Pavel', 'Mika Dragan']),
+    ];
+
+    const [milestone] = compileAuthoredRelationshipMilestones(scenes, undefined, [
+      { characterId: 'char-stela-pavel', characterName: 'Stela Pavel', introducedInEpisode: 1, role: 'ally' },
+      { characterId: 'char-mika-dragan', characterName: 'Mika Dragan', introducedInEpisode: 1, role: 'ally' },
+    ]);
+
+    expect(milestone.memberNpcIds).toEqual(['char-stela-pavel', 'char-mika-dragan']);
+    expect(milestone.routeRealizationPolicy).toBe('all_routes');
+    const contract = scenes[2].relationshipPacing?.find((candidate) => candidate.groupId === 'dusk-club');
+    expect(contract?.blockedLabels).not.toContain('friend');
+    expect(contract?.allowedLabels).toContain('friends');
+  });
+
   it('does not create relationship pacing contracts for the protagonist', () => {
     const ep = episode(1, ['you'], {
       mainCharacters: ['Kylie Marinescu', 'Mika Dragan'],
@@ -1415,7 +1439,7 @@ describe('projectSpineOntoScenes', () => {
       expect(owner.turnContract?.centralTurn, unit.id).toBe(unit.text);
     }
     expect(migratedTest.turnContract?.centralTurn).toBe(testUnit.text);
-    expect(migratedTest.requiredBeats?.some((beat) => beat.mustDepict === bondUnit.text)).toBe(false);
+    expect(migratedTest.requiredBeats?.some((beat) => beat.mustDepict === bondUnit.text) ?? false).toBe(false);
     expect(migratedBond.turnContract?.centralTurn).toBe(bondUnit.text);
     expect(migratedBond.requiredBeats?.some((beat) => beat.mustDepict === bondUnit.text)).toBe(true);
   });

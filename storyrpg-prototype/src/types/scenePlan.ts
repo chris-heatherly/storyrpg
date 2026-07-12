@@ -371,6 +371,13 @@ export interface RelationshipMilestoneContract {
   testSceneIds: string[];
   choiceSceneId: string;
   memberNpcIds: string[];
+  /**
+   * Authored milestones are facts, not optional flavor. `all_routes` means
+   * every player option may change the tone/cost of the moment but must still
+   * realize the milestone. `selected_route` is reserved for genuinely
+   * conditional source material.
+   */
+  routeRealizationPolicy?: 'all_routes' | 'selected_route';
   requiredEvidenceTags: Array<
     'respected_agency'
     | 'sacrificed_without_control'

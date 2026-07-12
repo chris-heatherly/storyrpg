@@ -35,7 +35,7 @@ import { buildCharacterTreatmentContractsForPlan } from '../utils/characterTreat
 import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 import { plannedGroupFormation } from '../utils/relationshipPacingStagePolicy';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v7';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v8';
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',
@@ -97,6 +97,29 @@ function sceneCharacterPresenceText(scene: PlannedScene, spineUnit?: EpisodeSpin
   ].filter(Boolean).join(' '));
 }
 
+function canonicalCharacterPresenceText(scene: PlannedScene, spineUnit?: EpisodeSpineUnit): string {
+  return clean([
+    scene.title,
+    scene.dramaticPurpose,
+    scene.turnContract?.turnEvent,
+    scene.turnContract?.centralTurn,
+    scene.signatureMoment,
+    spineUnit?.text,
+    scene.encounter?.authoredAnchor,
+    scene.encounter?.centralConflict,
+  ].filter(Boolean).join(' '));
+}
+
+function textNamesCharacter(text: string, character: { id: string; name: string }): boolean {
+  const normalized = slug(text).replace(/-/g, ' ');
+  const aliases = [
+    character.id,
+    character.name,
+    character.name.split(/\s+/)[0],
+  ].map((value) => slug(value).replace(/^char-/, '').replace(/-/g, ' ')).filter((value) => value.length >= 3);
+  return aliases.some((alias) => new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(normalized));
+}
+
 function compileCharacterPresenceContracts(
   plan: SeasonPlan,
   scenePlan: Pick<SeasonScenePlan, 'scenes' | 'episodeSpines'>,
@@ -110,6 +133,29 @@ function compileCharacterPresenceContracts(
   const firstSeen = new Set<string>();
   const contracts: NarrativeCharacterPresenceContract[] = [];
   const scenes = [...scenePlan.scenes].sort((a, b) => a.episodeNumber - b.episodeNumber || a.order - b.order || a.id.localeCompare(b.id));
+  const preferredIntroductionScene = new Map<string, string>();
+
+  // Character-introduction ownership closes over the final ESC turn, not the
+  // planner's provisional cast list. A later architecture projection may move
+  // an introduction while leaving the old `npcsInvolved` hint behind; derived
+  // presence contracts must follow the canonical event text.
+  for (const character of roster) {
+    const introduction = (plan.characterIntroductions ?? []).find((entry) =>
+      resolveRosterCharacter(entry.characterId || entry.characterName, roster)?.id === character.id,
+    );
+    const episodeNumber = introduction?.introducedInEpisode ?? (character.id === plan.protagonist?.id ? 1 : undefined);
+    const episodeScenes = scenes.filter((scene) => episodeNumber == null || scene.episodeNumber === episodeNumber);
+    const explicitOwner = episodeScenes.find((scene) => {
+      const spine = scenePlan.episodeSpines?.[scene.episodeNumber];
+      const spineUnit = scene.spineUnitId ? spine?.units.find((unit) => unit.id === scene.spineUnitId) : undefined;
+      return textNamesCharacter(canonicalCharacterPresenceText(scene, spineUnit), character);
+    });
+    const castFallback = episodeScenes.find((scene) =>
+      (scene.npcsInvolved ?? []).some((ref) => resolveRosterCharacter(ref, roster)?.id === character.id),
+    );
+    const owner = explicitOwner ?? castFallback;
+    if (owner) preferredIntroductionScene.set(character.id, owner.id);
+  }
 
   for (const scene of scenes) {
     const spine = scenePlan.episodeSpines?.[scene.episodeNumber];
@@ -118,6 +164,8 @@ function compileCharacterPresenceContracts(
     for (const ref of refs) {
       const resolved = resolveRosterCharacter(ref, roster);
       if (!resolved || firstSeen.has(resolved.id)) continue;
+      const preferredSceneId = preferredIntroductionScene.get(resolved.id);
+      if (preferredSceneId && preferredSceneId !== scene.id) continue;
       firstSeen.add(resolved.id);
       const intro = (plan.characterIntroductions ?? []).find((entry) =>
         resolveRosterCharacter(entry.characterId || entry.characterName, roster)?.id === resolved.id,

@@ -354,6 +354,30 @@ describe('storyCircleBeatContracts', () => {
     expect(requiredBeatTexts).not.toContain(bundled);
   });
 
+  it('splits exploration from a later named meeting and follows the canonical scene turns', () => {
+    const source = 'She explores the streets of Bucharest and wanders into a bookshop where she meets Stela and Mika.';
+    const plan = {
+      totalEpisodes: 1,
+      storyCircleBeatContracts: [{
+        id: 'story-circle-you-bucharest', beat: 'you', sourceText: source, targetEpisodeNumber: 1,
+        requiredRealization: ['season_plan', 'scene_turn', 'final_prose'], eventAtoms: [source], targetSceneIds: [], blockingLevel: 'treatment',
+      }],
+    } as unknown as SeasonPlan;
+    const scenes = [
+      { ...scene('s1-2', 1, 1, 'setup'), turnContract: { turnEvent: 'She explores the streets of Bucharest', centralTurn: 'She explores Bucharest.' } },
+      { ...scene('s1-3', 1, 2, 'turn'), turnContract: { turnEvent: 'She wanders into a bookshop where she meets Stela and Mika', centralTurn: 'She meets Stela and Mika.' } },
+    ] as any;
+
+    assignStoryCircleBeatContractsToScenes(plan, scenes);
+
+    expect(scenes[0].storyCircleBeatContracts?.map((contract: StoryCircleBeatRealizationContract) => contract.sourceText)).toEqual([
+      expect.stringMatching(/explores the streets/i),
+    ]);
+    expect(scenes[1].storyCircleBeatContracts?.map((contract: StoryCircleBeatRealizationContract) => contract.sourceText)).toEqual([
+      expect.stringMatching(/wanders into a bookshop/i),
+    ]);
+  });
+
   it('does not split descriptive appositives as separate action atoms', () => {
     const contracts = buildStoryCircleBeatContracts({
       totalEpisodes: 1,

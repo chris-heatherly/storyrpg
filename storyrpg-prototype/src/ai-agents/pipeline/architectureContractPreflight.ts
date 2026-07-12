@@ -1,9 +1,14 @@
-import type { RequiredBeat, SceneEventOwnershipProfile, SceneTurnContract } from '../../types/scenePlan';
+import type { NarrativeCharacterPresenceContract } from '../../types/narrativeContract';
+import type { RequiredBeat, SceneEventOwnershipProfile, SceneTurnContract, StoryCircleBeatRealizationContract } from '../../types/scenePlan';
 import type { RelationshipPacingContract } from '../../types/scenePlan';
 import { uniqueMajorLocationCues } from '../utils/sceneLocationCues';
 
 export type ArchitectureConflictCode =
   | 'PLAN_RELATIONSHIP_STAGE_CONTRADICTION'
+  | 'PLAN_RELATIONSHIP_LABEL_POLICY_CONFLICT'
+  | 'PLAN_CHARACTER_PRESENCE_OWNER_CONFLICT'
+  | 'PLAN_STORY_CIRCLE_OWNER_CONFLICT'
+  | 'PLAN_MILESTONE_ROUTE_CONFLICT'
   | 'PLAN_MULTI_LOCATION_SCENE'
   | 'PLAN_READER_TEXT_SOURCE_LEAK'
   | 'PLAN_UNREALIZABLE_EVENT_SURFACE'
@@ -34,6 +39,9 @@ interface ArchitectureSceneLike {
   sceneEventOwnership?: SceneEventOwnershipProfile;
   turnContract?: SceneTurnContract;
   relationshipPacing?: RelationshipPacingContract[];
+  npcsInvolved?: string[];
+  characterPresenceContracts?: NarrativeCharacterPresenceContract[];
+  storyCircleBeatContracts?: StoryCircleBeatRealizationContract[];
   canonicalEvidenceRequirements?: Array<{
     eventId: string;
     acceptedPatterns: string[];
@@ -51,7 +59,8 @@ interface ArchitectureSceneLike {
     sourceSynopsis?: string;
     authoredAnchor?: string;
   };
-  choicePoint?: { description?: string };
+  choicePoint?: { description?: string; type?: string };
+  choiceType?: string;
 }
 
 function clean(value: unknown): string {
@@ -191,6 +200,17 @@ function relationshipConflicts(scene: ArchitectureSceneLike): ArchitectureConfli
   const texts = planningText(scene);
   const conflicts: ArchitectureConflict[] = [];
   for (const contract of scene.relationshipPacing ?? []) {
+    const allowed = new Set((contract.allowedLabels ?? []).map((label) => clean(label).toLowerCase()));
+    const overlap = (contract.blockedLabels ?? []).filter((label) => allowed.has(clean(label).toLowerCase()));
+    if (overlap.length > 0) {
+      conflicts.push({
+        code: 'PLAN_RELATIONSHIP_LABEL_POLICY_CONFLICT',
+        sceneId: scene.id,
+        message: `Scene ${scene.id} relationship contract ${contract.id} both permits and blocks: ${overlap.join(', ')}.`,
+        evidence: overlap,
+        repairInstruction: 'Derive allowed and blocked labels from the same canonical milestone stage before authoring.',
+      });
+    }
     for (const label of contract.blockedLabels ?? []) {
       const hit = texts.find((text) => blockedLabelPattern(label).test(text) && !isNegatedMention(text, label));
       if (!hit) continue;
@@ -218,6 +238,62 @@ function milestoneConflicts(scene: ArchitectureSceneLike): ArchitectureConflict[
       evidence: [`milestone=${milestone.targetStage}`, `contract=${contract.targetStage}`, milestone.sourceText],
       repairInstruction: 'Choose one canonical target stage and project it to both the milestone and relationship pacing contract before prose generation.',
     });
+  }
+  for (const contract of scene.relationshipPacing ?? []) {
+    const milestone = contract.milestone;
+    if (milestone?.routeRealizationPolicy !== 'all_routes') continue;
+    if ((scene.choicePoint?.type ?? scene.choiceType) === 'relationship') continue;
+    conflicts.push({
+      code: 'PLAN_MILESTONE_ROUTE_CONFLICT',
+      sceneId: scene.id,
+      message: `Scene ${scene.id} owns unconditional milestone ${milestone.id} but does not own a relationship choice surface.`,
+      evidence: [milestone.sourceText, `routePolicy=${milestone.routeRealizationPolicy}`],
+      repairInstruction: 'Project a relationship choice surface to the canonical event owner, or mark the source milestone selected_route only when the source is genuinely conditional.',
+    });
+  }
+  return conflicts;
+}
+
+function identityKey(value: string | undefined): string {
+  return clean(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/^char[-_ ]/, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function presenceConflicts(scene: ArchitectureSceneLike): ArchitectureConflict[] {
+  const cast = new Set((scene.npcsInvolved ?? []).map(identityKey));
+  const conflicts: ArchitectureConflict[] = [];
+  for (const contract of scene.characterPresenceContracts ?? []) {
+    const assignedHere = contract.sceneId === scene.id;
+    const castHere = cast.has(identityKey(contract.characterId)) || cast.has(identityKey(contract.characterName));
+    if (assignedHere && castHere) continue;
+    conflicts.push({
+      code: 'PLAN_CHARACTER_PRESENCE_OWNER_CONFLICT',
+      sceneId: scene.id,
+      message: `Scene ${scene.id} carries presence contract ${contract.id} for ${contract.characterName}, but its canonical scene/cast ownership disagrees.`,
+      evidence: [`contractScene=${contract.sceneId}`, `cast=${(scene.npcsInvolved ?? []).join(', ') || 'none'}`],
+      repairInstruction: 'Reproject the character presence contract from the final ESC event owner and canonical cast before SceneWriter runs.',
+    });
+  }
+  return conflicts;
+}
+
+function storyCircleOwnerConflicts(scenes: ArchitectureSceneLike[]): ArchitectureConflict[] {
+  const owners = new Map<string, string>();
+  const conflicts: ArchitectureConflict[] = [];
+  for (const scene of scenes) {
+    for (const contract of scene.storyCircleBeatContracts ?? []) {
+      const prior = owners.get(contract.id);
+      const targetAgrees = contract.targetSceneIds.includes(scene.id);
+      if (!targetAgrees || (prior && prior !== scene.id)) {
+        conflicts.push({
+          code: 'PLAN_STORY_CIRCLE_OWNER_CONFLICT',
+          sceneId: scene.id,
+          message: `Story Circle contract ${contract.id} does not have one coherent canonical scene owner.`,
+          evidence: [`scene=${scene.id}`, `targets=${contract.targetSceneIds.join(', ') || 'none'}`, `priorOwner=${prior ?? 'none'}`],
+          repairInstruction: 'Split compound Story Circle text into atomic obligations and bind each atom to its matching ESC event owner.',
+        });
+      }
+      owners.set(contract.id, prior ?? scene.id);
+    }
   }
   return conflicts;
 }
@@ -286,10 +362,12 @@ export function validateEpisodeArchitectureContract(scenes: ArchitectureSceneLik
     .flatMap((scene) => [
       ...relationshipConflicts(scene),
       ...milestoneConflicts(scene),
+      ...presenceConflicts(scene),
       ...spatialConflicts(scene),
       ...sourceLeakConflicts(scene),
       ...evidenceSurfaceConflicts(scene),
     ])
+    .concat(storyCircleOwnerConflicts(scenes))
     .concat(duplicateSceneTurnConflicts(scenes))
     .sort((a, b) => a.sceneId.localeCompare(b.sceneId) || a.code.localeCompare(b.code) || a.message.localeCompare(b.message));
 }

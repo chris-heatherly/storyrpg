@@ -2,6 +2,27 @@ import { describe, expect, it } from 'vitest';
 import { validateOwnerRealizationTasks } from './realizationTaskGate';
 
 describe('validateOwnerRealizationTasks', () => {
+  it('requires an unconditional milestone and canonical member evidence on every option', () => {
+    const task = {
+      id: 'task:milestone:all-options', contractId: 'milestone', episodeNumber: 1,
+      ownerStage: 'choice_author' as const, repairHandler: 'choice_reauthor' as const, sceneId: 's1-5',
+      evidenceAtoms: [
+        { id: 'milestone-id', description: 'milestone', acceptedPatterns: ['milestone:formation'], kind: 'lexical' as const, required: true },
+        { id: 'mika-move', description: 'movement', acceptedPatterns: ['consequence:char-mika'], kind: 'lexical' as const, required: true },
+        { id: 'mika-evidence', description: 'evidence', acceptedPatterns: ['evidence:char-mika'], kind: 'lexical' as const, required: true },
+      ],
+      target: { scope: 'all_options' as const, surfaces: ['choice_text' as const] }, sourceContractIds: ['milestone'], blocking: true,
+    };
+    const choice = (id: string, complete: boolean) => ({
+      id, text: 'Choose how the club begins.', relationshipMilestoneId: complete ? 'formation' : undefined,
+      consequences: complete ? [{ type: 'relationship', npcId: 'char-mika', dimension: 'trust', change: 1 }] : [],
+      relationshipValueEvidence: complete ? [{ npcId: 'char-mika', axis: 'trust', evidenceTags: ['respected_agency'], reason: 'She listens.' }] : [],
+    });
+
+    expect(validateOwnerRealizationTasks({ sceneId: 's1-5', tasks: [task], choiceSet: { choices: [choice('a', true), choice('b', true)] }, currentStage: 'choice_author' })).toEqual([]);
+    expect(validateOwnerRealizationTasks({ sceneId: 's1-5', tasks: [task], choiceSet: { choices: [choice('a', true), choice('b', false)] }, currentStage: 'choice_author' })[0]?.code).toBe('OWNER_REALIZATION_MISSING');
+  });
+
   it('blocks a missing owner event before checkpoint', () => {
     const findings = validateOwnerRealizationTasks({
       sceneId: 's1-7',

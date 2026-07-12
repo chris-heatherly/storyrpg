@@ -1896,8 +1896,8 @@ ${input.sceneBlueprint.relationshipPacing?.length ? `
 ## Relationship Pacing Contracts
 Design relationship consequences and aftermath at the earned stage, not the future desired stage.
 ${input.sceneBlueprint.relationshipPacing.map((c) => `- ${c.npcId ? `NPC ${c.npcId}` : `Group ${c.groupId}`}: ${c.startStage} -> ${c.targetStage}; max relationship delta this scene ${c.maxDeltaThisScene}; allowed labels: ${c.allowedLabels.join(', ')}; blocked labels: ${c.blockedLabels.join(', ')}; evidence: ${c.requiredEvidence.join('; ')}`).join('\n')}
-- When a contract includes an authored milestone, one qualifying option MUST carry relationshipMilestoneId and relationshipGroupId, plus canonical relationship movement and relationshipValueEvidence for every named member. A generic relationship/expression choice does not earn group membership.
-${input.sceneBlueprint.relationshipPacing.filter((c) => c.milestone).map((c) => `  MILESTONE ${c.milestone!.id}: group ${c.groupId}; members ${c.milestone!.memberNpcIds.join(', ')}; choice scene ${c.milestone!.choiceSceneId}; required evidence tags ${c.milestone!.requiredEvidenceTags.join(', ')}.`).join('\n')}
+- When a contract includes an authored milestone, qualifying options MUST carry relationshipMilestoneId and relationshipGroupId, plus canonical relationship movement and relationshipValueEvidence for every named member. A generic relationship/expression choice does not earn group membership.
+${input.sceneBlueprint.relationshipPacing.filter((c) => c.milestone).map((c) => `  MILESTONE ${c.milestone!.id}: group ${c.groupId}; members ${c.milestone!.memberNpcIds.join(', ')}; choice scene ${c.milestone!.choiceSceneId}; route policy ${c.milestone!.routeRealizationPolicy ?? 'selected_route'}; required evidence tags ${c.milestone!.requiredEvidenceTags.join(', ')}.${c.milestone!.routeRealizationPolicy === 'all_routes' ? ' This event is canonical on EVERY option: vary tone, cost, leadership, or identity, but do not offer an option that prevents or rejects formation.' : ''}`).join('\n')}
 - Relationship choices must show behavioral aftermath: changed distance, invitation, withholding, teasing, remembered detail, vulnerability, challenge, or refusal.
 - A relationship choice that claims meaning must include both a numeric relationship consequence and relationshipValueEvidence. The numeric consequence answers what hidden trust/affection/respect/fear changed; relationshipValueEvidence answers what dramatic kind of moment occurred.
 - Use relationshipValueEvidence to mark the McKee-square surface the choice earned: mutual aid or confession requires agency-respecting evidence; withheld care requires absence/avoidance evidence; hostility requires sabotage/attack/retaliation evidence; protective control or aid-with-strings requires coercion, guilt, agency removal, or conditional-help evidence.
@@ -2157,6 +2157,14 @@ ${callbackList ? `
 Callbacks available for small echoes:
 ${callbackList}
 ` : ''}
+${input.sceneBlueprint.relationshipPacing?.some((contract) => contract.milestone) ? `
+## Authored Relationship Milestone
+${input.sceneBlueprint.relationshipPacing.filter((contract) => contract.milestone).map((contract) => {
+    const milestone = contract.milestone!;
+    return `- ${milestone.id}: group ${contract.groupId}; members ${milestone.memberNpcIds.join(', ')}; route policy ${milestone.routeRealizationPolicy ?? 'selected_route'}.${milestone.routeRealizationPolicy === 'all_routes' ? ' EVERY option must still realize formation; choices vary how it happens and what it costs, never whether it happens.' : ''}`;
+  }).join('\n')}
+Use only the exact canonical NPC ids listed under Characters Present in every relationship consequence and relationshipValueEvidence entry.
+` : ''}
 
 ## Required Shape
 Top level fields: beatId, choiceType, choices, overallStakes, designNotes.
@@ -2262,6 +2270,8 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
     if (uniqueIds.size !== ids.length) {
       throw new Error('Choice IDs must be unique');
     }
+
+    this.normalizeCanonicalChoiceParticipants(choiceSet, input);
 
     // === STRUCTURAL ENFORCEMENT: branching is a property, not a type ===
     
@@ -2676,33 +2686,94 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
     const milestone = contract?.milestone;
     if (!contract?.groupId || !milestone || choiceSet.choices.length === 0) return;
 
-    const choice = choiceSet.choices.find((candidate) =>
+    const selectedChoice = choiceSet.choices.find((candidate) =>
       candidate.relationshipMilestoneId === milestone.id
       || /\b(?:join|form|found|name|christen|choose|stay|accept|together|club|circle|crew)\b/i.test(
         `${candidate.text ?? ''} ${candidate.choiceIntent ?? ''}`,
       )
     ) ?? choiceSet.choices[0];
-    choice.choiceType = 'relationship';
-    choice.relationshipMilestoneId = milestone.id;
-    choice.relationshipGroupId = contract.groupId;
+    const choices = milestone.routeRealizationPolicy === 'all_routes'
+      ? choiceSet.choices
+      : [selectedChoice];
 
     const maxDelta = Math.max(1, Math.min(6, Math.abs(contract.maxDeltaThisScene || 6)));
-    for (const npcId of milestone.memberNpcIds) {
-      const hasMovement = (choice.consequences ?? []).some((consequence) =>
-        consequence.type === 'relationship' && consequence.npcId === npcId
-      );
-      if (!hasMovement) {
-        choice.consequences = [
-          ...(choice.consequences ?? []),
-          { type: 'relationship', npcId, dimension: contract.mechanicDimensions[0] ?? 'trust', change: maxDelta },
-        ];
+    for (const choice of choices) {
+      choice.choiceType = 'relationship';
+      choice.relationshipMilestoneId = milestone.id;
+      choice.relationshipGroupId = contract.groupId;
+      for (const rawNpcId of milestone.memberNpcIds) {
+        const npcId = this.canonicalNpcIdForInput(rawNpcId, input);
+        if (!npcId) {
+          throw new Error(`Relationship milestone "${milestone.id}" references unknown member "${rawNpcId}".`);
+        }
+        const hasMovement = (choice.consequences ?? []).some((consequence) =>
+          consequence.type === 'relationship' && consequence.npcId === npcId
+        );
+        if (!hasMovement) {
+          choice.consequences = [
+            ...(choice.consequences ?? []),
+            { type: 'relationship', npcId, dimension: contract.mechanicDimensions[0] ?? 'trust', change: maxDelta },
+          ];
+        }
+        this.ensureRelationshipValueEvidence(
+          choice,
+          npcId,
+          contract.mechanicDimensions[0] ?? 'trust',
+          true,
+        );
       }
-      this.ensureRelationshipValueEvidence(
-        choice,
-        npcId,
-        contract.mechanicDimensions[0] ?? 'trust',
-        true,
-      );
+    }
+  }
+
+  private canonicalNpcIdForInput(value: string | undefined, input: ChoiceAuthorInput): string | undefined {
+    if (!value) return undefined;
+    const key = this.relationshipPacingKey(value);
+    return input.npcsInScene.find((npc) =>
+      this.relationshipPacingKey(npc.id) === key || this.relationshipPacingKey(npc.name) === key
+    )?.id;
+  }
+
+  /** Normalize known aliases in structured choice metadata and reject foreign
+   * participants before the result reaches the relationship ledger. Reader
+   * prose is never deterministically rewritten here. */
+  private normalizeCanonicalChoiceParticipants(choiceSet: ChoiceSet, input: ChoiceAuthorInput): void {
+    const normalize = (value: string | undefined, field: string): string | undefined => {
+      if (!value) return value;
+      const canonical = this.canonicalNpcIdForInput(value, input);
+      if (!canonical) {
+        throw new Error(`${field} references unknown NPC "${value}". Use only the canonical scene roster: ${input.npcsInScene.map((npc) => `${npc.name} (${npc.id})`).join(', ')}.`);
+      }
+      return canonical;
+    };
+    const normalizeConsequence = (consequence: Consequence, field: string): void => {
+      if (consequence.type === 'relationship' || consequence.type === 'relationshipEvidence') {
+        consequence.npcId = normalize(consequence.npcId, `${field}.npcId`)!;
+      }
+    };
+    const normalizeCondition = (condition: unknown, field: string): void => {
+      if (!condition || typeof condition !== 'object') return;
+      const raw = condition as { type?: string; npcId?: string; conditions?: unknown[]; condition?: unknown };
+      if (raw.type === 'relationship' && raw.npcId) raw.npcId = normalize(raw.npcId, `${field}.npcId`);
+      for (const child of raw.conditions ?? []) normalizeCondition(child, `${field}.conditions`);
+      if (raw.condition) normalizeCondition(raw.condition, `${field}.condition`);
+    };
+    for (const choice of choiceSet.choices ?? []) {
+      for (const [index, consequence] of (choice.consequences ?? []).entries()) {
+        normalizeConsequence(consequence, `choice ${choice.id}.consequences[${index}]`);
+      }
+      for (const [index, delayed] of (choice.delayedConsequences ?? []).entries()) {
+        normalizeConsequence(delayed.consequence, `choice ${choice.id}.delayedConsequences[${index}]`);
+      }
+      for (const [index, evidence] of (choice.relationshipValueEvidence ?? []).entries()) {
+        evidence.npcId = normalize(evidence.npcId, `choice ${choice.id}.relationshipValueEvidence[${index}].npcId`)!;
+      }
+      for (const [index, reaction] of (choice.witnessReactions ?? []).entries()) {
+        reaction.npcId = normalize(reaction.npcId, `choice ${choice.id}.witnessReactions[${index}].npcId`)!;
+      }
+      for (const [index, hint] of (choice.residueHints ?? []).entries()) {
+        if (hint.targetNpcId) hint.targetNpcId = normalize(hint.targetNpcId, `choice ${choice.id}.residueHints[${index}].targetNpcId`);
+      }
+      normalizeCondition(choice.conditions, `choice ${choice.id}.conditions`);
     }
   }
 

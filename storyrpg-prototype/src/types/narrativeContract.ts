@@ -55,6 +55,7 @@ export type NarrativeRouteEvidencePolicy =
  */
 export type NarrativeEvidenceTarget =
   | { scope: 'owner'; surfaces: NarrativeRealizationSurface[] }
+  | { scope: 'all_options'; surfaces: NarrativeRealizationSurface[] }
   | { scope: 'route_path'; outcomeTier: string; surfaces: NarrativeRealizationSurface[] }
   | { scope: 'route_terminal'; outcomeTier: string; surfaces: NarrativeRealizationSurface[] }
   | { scope: 'any_route'; outcomeTiers: string[]; surfaces: NarrativeRealizationSurface[] };

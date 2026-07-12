@@ -150,8 +150,132 @@ export function compileNarrativeRealizationTasks(
     }
   }
 
+  for (const presence of graph.characterPresenceContracts ?? []) {
+    if (presence.mode !== 'named_on_page') continue;
+    tasks.push({
+      id: `task:${presence.id}:named-introduction`,
+      contractId: presence.id,
+      episodeNumber: presence.episodeNumber,
+      ownerStage: 'scene_writer',
+      repairHandler: 'scene_prose',
+      sceneId: presence.sceneId,
+      evidenceScope: { npcId: presence.characterId },
+      artifactPath: `episodes[${presence.episodeNumber}].scenes[${presence.sceneId}]`,
+      evidenceAtoms: [{
+        id: `${presence.id}:name`,
+        description: `Name ${presence.characterName} on-page in the canonical introduction scene`,
+        acceptedPatterns: [...presence.requiredEvidence],
+        sourceText: presence.characterName,
+        kind: 'lexical',
+        required: true,
+      }],
+      target: { scope: 'owner', surfaces: ['beat_text', 'dialogue'] },
+      sourceContractIds: [...presence.sourceContractIds],
+      blocking: true,
+    });
+  }
+
+  for (const transition of graph.transitionContracts ?? []) {
+    const evidence = [
+      ...(transition.requiredBridgeEvidence ?? []),
+      ...(transition.stateContracts ?? []).flatMap((state) => state.requiredEvidence ?? []),
+    ].filter(Boolean);
+    if (!transition.blocking || evidence.length === 0) continue;
+    tasks.push({
+      id: `task:${transition.id}:bridge`,
+      contractId: transition.id,
+      episodeNumber: transition.episodeNumber,
+      ownerStage: 'scene_writer',
+      repairHandler: 'scene_prose',
+      sceneId: transition.toSceneId,
+      artifactPath: `episodes[${transition.episodeNumber}].scenes[${transition.toSceneId}]`,
+      evidenceAtoms: [...new Set(evidence)].map((pattern, index) => ({
+        id: `${transition.id}:bridge:${index + 1}`,
+        description: `Carry the ${transition.fromSceneId} to ${transition.toSceneId} transition on-page: ${pattern}`,
+        acceptedPatterns: [pattern],
+        kind: 'semantic' as const,
+        required: true,
+      })),
+      target: { scope: 'owner', surfaces: ['beat_text', 'dialogue'] },
+      sourceContractIds: [...transition.sourceContractIds],
+      blocking: true,
+    });
+  }
+
   for (const scene of scenes) {
+    for (const contract of scene.storyCircleBeatContracts ?? []) {
+      if (contract.blockingLevel === 'warning' || !contract.requiredRealization.includes('final_prose')) continue;
+      tasks.push({
+        id: `task:${contract.id}:story-circle`,
+        contractId: contract.id,
+        episodeNumber: scene.episodeNumber,
+        ownerStage: 'scene_writer',
+        repairHandler: 'scene_prose',
+        sceneId: scene.id,
+        artifactPath: `episodes[${scene.episodeNumber}].scenes[${scene.id}]`,
+        evidenceAtoms: (contract.eventAtoms.length > 0 ? contract.eventAtoms : [contract.sourceText]).map((atom, index) => ({
+          id: `${contract.id}:event:${index + 1}`,
+          description: `Realize Story Circle ${contract.beat} event: ${atom}`,
+          acceptedPatterns: [atom],
+          sourceText: contract.sourceText,
+          kind: 'semantic' as const,
+          required: true,
+        })),
+        target: { scope: 'owner', surfaces: ['beat_text', 'dialogue', 'text_variant'] },
+        sourceContractIds: [contract.id],
+        blocking: true,
+      });
+    }
     for (const pacing of scene.relationshipPacing ?? []) {
+      const milestone = pacing.milestone;
+      if (milestone?.routeRealizationPolicy === 'all_routes') {
+        const atoms: NarrativeEvidenceAtom[] = [
+          {
+            id: `${milestone.id}:milestone-id`,
+            description: `Every option realizes milestone ${milestone.id}`,
+            acceptedPatterns: [`milestone:${milestone.id}`],
+            kind: 'lexical',
+            required: true,
+          },
+          {
+            id: `${milestone.id}:group-id`,
+            description: `Every option targets canonical group ${pacing.groupId ?? milestone.subjectId}`,
+            acceptedPatterns: [`group:${pacing.groupId ?? milestone.subjectId}`],
+            kind: 'lexical',
+            required: true,
+          },
+          ...milestone.memberNpcIds.flatMap((npcId) => ([
+            {
+              id: `${milestone.id}:movement:${npcId}`,
+              description: `Every option moves canonical member ${npcId}`,
+              acceptedPatterns: [`consequence:${npcId}`],
+              kind: 'lexical' as const,
+              required: true,
+            },
+            {
+              id: `${milestone.id}:evidence:${npcId}`,
+              description: `Every option emits relationship evidence for ${npcId}`,
+              acceptedPatterns: [`evidence:${npcId}`],
+              kind: 'lexical' as const,
+              required: true,
+            },
+          ])),
+        ];
+        tasks.push({
+          id: `task:${milestone.id}:all-options`,
+          contractId: milestone.id,
+          episodeNumber: scene.episodeNumber,
+          ownerStage: 'choice_author',
+          repairHandler: 'choice_reauthor',
+          sceneId: scene.id,
+          evidenceScope: { groupId: pacing.groupId },
+          artifactPath: `episodes[${scene.episodeNumber}].scenes[${scene.id}].choices`,
+          evidenceAtoms: atoms,
+          target: { scope: 'all_options', surfaces: ['choice_text'] },
+          sourceContractIds: [pacing.id, milestone.id],
+          blocking: true,
+        });
+      }
       if (pacing.blockedLabels.length === 0) continue;
       const atoms = pacing.blockedLabels.map((label, index) => ({
         id: `${pacing.id}:blocked:${index + 1}`,

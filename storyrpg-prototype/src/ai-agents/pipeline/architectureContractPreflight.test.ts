@@ -2,6 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { validateCanonicalEpisodeSceneOrder, validateEpisodeArchitectureContract } from './architectureContractPreflight';
 
 describe('validateEpisodeArchitectureContract', () => {
+  it('rejects a named-presence contract projected onto a scene whose canonical cast omits that character', () => {
+    const conflicts = validateEpisodeArchitectureContract([{
+      id: 's1-2', npcsInvolved: ['Kylie Marinescu'],
+      characterPresenceContracts: [{
+        id: 'presence:stela', characterId: 'char-stela-pavel', characterName: 'Stela Pavel', episodeNumber: 1,
+        sceneId: 's1-2', mode: 'named_on_page', readerNameAllowed: true, requiredEvidence: ['Stela Pavel'], forbiddenEvidence: [],
+        sourceContractIds: ['intro:stela'], provenance: { source: 'season_plan', confidence: 'authoritative' },
+      }],
+    }]);
+
+    expect(conflicts.map((conflict) => conflict.code)).toContain('PLAN_CHARACTER_PRESENCE_OWNER_CONFLICT');
+  });
+
   it('rejects relationship labels that contradict the scene pacing contract', () => {
     const conflicts = validateEpisodeArchitectureContract([{
       id: 's1-2',

@@ -832,9 +832,17 @@ function removeMilestoneSentence(value: string | undefined, sourceText: string):
 export function compileAuthoredRelationshipMilestones(
   scenes: PlannedScene[],
   protagonist?: SeasonPlan['protagonist'],
+  characterIntroductions: SeasonPlan['characterIntroductions'] = [],
 ): RelationshipMilestoneContract[] {
   const ordered = [...scenes].sort((a, b) => (a.episodeNumber - b.episodeNumber) || (a.order - b.order));
   const protagonistKeys = protagonistRelationshipKeys(protagonist);
+  const canonicalNpcId = (value: string): string => {
+    const key = slugId(value);
+    const match = characterIntroductions.find((entry) =>
+      slugId(entry.characterId) === key || slugId(entry.characterName) === key,
+    );
+    return match?.characterId ?? value;
+  };
   const milestones: RelationshipMilestoneContract[] = [];
 
   for (let index = 0; index < ordered.length; index += 1) {
@@ -855,16 +863,19 @@ export function compileAuthoredRelationshipMilestones(
     const explicitlyNamed = candidateNpcIds.filter((npcId) =>
       new RegExp(`\\b${npcId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[-_]+/g, '[-_\\s]+')}\\b`, 'i').test(sourceText)
     );
-    const memberNpcIds = (explicitlyNamed.length > 0 ? explicitlyNamed : candidateNpcIds)
+    const memberNpcIds = Array.from(new Set((explicitlyNamed.length > 0 ? explicitlyNamed : candidateNpcIds)
       .filter((npcId) => npcId && !isProtagonistRelationshipRef(npcId, protagonistKeys))
+      .map(canonicalNpcId)))
       .slice(0, 4);
     const prior = ordered.slice(0, index);
     const introductionSceneIds = prior
-      .filter((scene) => memberNpcIds.some((npcId) => (scene.npcsInvolved ?? []).includes(npcId)))
+      .filter((scene) => memberNpcIds.some((npcId) =>
+        (scene.npcsInvolved ?? []).some((ref) => canonicalNpcId(ref) === npcId),
+      ))
       .map((scene) => scene.id);
     const testSceneIds = [
       ...prior.filter((scene) =>
-        memberNpcIds.some((npcId) => (scene.npcsInvolved ?? []).includes(npcId))
+        memberNpcIds.some((npcId) => (scene.npcsInvolved ?? []).some((ref) => canonicalNpcId(ref) === npcId))
         && RELATIONSHIP_TEST_RE.test(relationshipTextForScene(scene))
       ).map((scene) => scene.id),
       ...(RELATIONSHIP_TEST_RE.test(sourceText) ? [owner.id] : []),
@@ -888,6 +899,7 @@ export function compileAuthoredRelationshipMilestones(
       testSceneIds: Array.from(new Set(testSceneIds)),
       choiceSceneId: owner.id,
       memberNpcIds,
+      routeRealizationPolicy: 'all_routes',
       requiredEvidenceTags: ['respected_agency'],
     };
     milestones.push(milestone);
@@ -903,6 +915,16 @@ export function compileAuthoredRelationshipMilestones(
     groupContract.source = 'choice';
     groupContract.targetStage = milestone.targetStage;
     groupContract.milestone = milestone;
+    if (milestone.targetStage === 'friend') {
+      groupContract.allowedLabels = Array.from(new Set([
+        ...(groupContract.allowedLabels ?? []),
+        'friends',
+        groupId.replace(/-/g, ' '),
+      ]));
+      groupContract.blockedLabels = (groupContract.blockedLabels ?? []).filter((label) =>
+        !/^(?:friend|friends|friends now|settled membership|one of us)$/i.test(label.trim()),
+      );
+    }
     groupContract.requiredEvidence = Array.from(new Set([
       ...(groupContract.requiredEvidence ?? []),
       'the group-defining option must move every named member relationship canonically',
@@ -2708,7 +2730,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
       storyCircleRole: ep.storyCircleRole,
     });
   }
-  compileAuthoredRelationshipMilestones(scenes, plan.protagonist);
+  compileAuthoredRelationshipMilestones(scenes, plan.protagonist, plan.characterIntroductions);
   normalizeRelationshipPacingStages(scenes);
   attachSceneConstructionProfiles(scenes);
 
@@ -2791,6 +2813,14 @@ export function rebuildTreatmentSeasonScenePlan(plan: SeasonPlan): SeasonPlan {
           return rehydratedArtifactPlan
             ? JSON.parse(JSON.stringify(plan)) as SeasonPlan
             : plan;
+        }
+        if (existing.narrativeContractGraph?.compilerVersion !== NARRATIVE_CONTRACT_COMPILER_VERSION) {
+          // Compiler revisions can change derived ownership, atomization,
+          // roster ids, and realization tasks even when the ESC source hash is
+          // stable. Reusing the old scene skeleton would merely wrap stale
+          // derived contracts in a new graph version. Rebuild deterministically
+          // from the unchanged source plan instead.
+          return rebuildTreatmentSeasonScenePlan({ ...plan, scenePlan: undefined });
         }
       return migrateLegacySeasonNarrativeContracts(plan);
     }

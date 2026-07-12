@@ -599,6 +599,49 @@ describe('ChoiceAuthor.normalizeConsequenceTier (1.3 flag → callback)', () => 
 });
 
 describe('ChoiceAuthor relationship consequence repair', () => {
+  it('realizes an unconditional group milestone on every option', () => {
+    const author: any = new ChoiceAuthor(config);
+    const milestone = {
+      id: 'dusk-club-formation', kind: 'group_formation', sourceText: 'They form the Dusk Club.',
+      subjectType: 'group', subjectId: 'dusk-club', targetStage: 'friend', introductionSceneIds: ['s1-2'],
+      testSceneIds: ['s1-4'], choiceSceneId: 's1-5', memberNpcIds: ['Stela Pavel', 'Mika Dragan'],
+      routeRealizationPolicy: 'all_routes', requiredEvidenceTags: ['respected_agency'],
+    };
+    const choiceSet = makeChoiceSet({ beatId: 'b1', choiceType: 'relationship', choices: [
+      { id: 'lead', text: 'Name the club with a grin', choiceType: 'relationship', consequences: [] },
+      { id: 'listen', text: 'Let Stela choose the toast', choiceType: 'relationship', consequences: [] },
+      { id: 'cost', text: 'Accept the name despite fear', choiceType: 'relationship', consequences: [] },
+    ] });
+    const input = makeInput({
+      sceneBlueprint: { id: 's1-5', name: 'Dusk Club', choicePoint: { type: 'relationship', stakes: { want: 'belong', cost: 'risk trust', identity: 'choose connection' } }, relationshipPacing: [{
+        id: 'rel-dusk', source: 'choice', groupId: 'dusk-club', startStage: 'spark', targetStage: 'friend', allowedLabels: ['friends'], blockedLabels: [], requiredEvidence: [], minScenesSinceIntroduction: 2, maxDeltaThisScene: 6, mechanicDimensions: ['trust'], milestone,
+      }] },
+      npcsInScene: [
+        { id: 'char-stela-pavel', name: 'Stela Pavel', pronouns: 'she/her', description: 'Guarded ally' },
+        { id: 'char-mika-dragan', name: 'Mika Dragan', pronouns: 'she/her', description: 'Sharp ally' },
+      ],
+    });
+
+    author.validateChoices(choiceSet, input);
+
+    expect(choiceSet.choices.every((choice: any) => choice.relationshipMilestoneId === milestone.id)).toBe(true);
+    expect(choiceSet.choices.every((choice: any) => choice.consequences.some((consequence: any) => consequence.npcId === 'char-stela-pavel'))).toBe(true);
+    expect(choiceSet.choices.every((choice: any) => choice.relationshipValueEvidence.some((evidence: any) => evidence.npcId === 'char-mika-dragan'))).toBe(true);
+  });
+
+  it('rejects foreign structured participants instead of leaking them into the ledger', () => {
+    const author: any = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({ beatId: 'b1', choiceType: 'relationship', choices: [{
+      id: 'foreign', text: 'Trust the person beside you', choiceType: 'relationship',
+      consequences: [{ type: 'relationship', npcId: 'char-zayn-al-jamil', dimension: 'trust', change: 2 }],
+    }] });
+    const input = makeInput({ npcsInScene: [
+      { id: 'char-mika-dragan', name: 'Mika Dragan', pronouns: 'she/her', description: 'Sharp ally' },
+    ] });
+
+    expect(() => author.validateChoices(choiceSet, input)).toThrow(/unknown NPC "char-zayn-al-jamil"/);
+  });
+
   it('emits canonical movement and evidence for every member of a compiled group milestone', () => {
     const author: any = new ChoiceAuthor(config);
     const milestone = {

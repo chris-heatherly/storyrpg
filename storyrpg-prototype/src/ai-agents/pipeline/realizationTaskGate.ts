@@ -128,6 +128,26 @@ function taskTextGroups(input: { sceneContent?: unknown; choiceSet?: unknown; en
       terminalSurfaces,
     )];
   }
+  if (target.scope === 'all_options') {
+    const raw = input.choiceSet && typeof input.choiceSet === 'object'
+      ? (input.choiceSet as { choices?: unknown[] }).choices
+      : undefined;
+    return (raw ?? []).map((choice) => {
+      if (!choice || typeof choice !== 'object') return [];
+      const record = choice as Record<string, unknown>;
+      const structured = [
+        typeof record.relationshipMilestoneId === 'string' ? `milestone:${record.relationshipMilestoneId}` : undefined,
+        typeof record.relationshipGroupId === 'string' ? `group:${record.relationshipGroupId}` : undefined,
+        ...((record.consequences as Array<Record<string, unknown>> | undefined) ?? [])
+          .filter((consequence) => consequence?.type === 'relationship')
+          .map((consequence) => typeof consequence.npcId === 'string' ? `consequence:${consequence.npcId}` : undefined),
+        ...((record.relationshipValueEvidence as Array<Record<string, unknown>> | undefined) ?? [])
+          .map((evidence) => typeof evidence?.npcId === 'string' ? `evidence:${evidence.npcId}` : undefined),
+      ].filter((value): value is string => typeof value === 'string');
+      const text = textsForSurfaces(collectNarrativeEvidenceSurfaceIndex({ choiceSet: { choices: [choice] } }), target.surfaces);
+      return [...text, normalize(structured.join(' '))];
+    });
+  }
   return target.outcomeTiers.map((outcomeTier) => textsForSurfaces(
     collectRouteEvidenceSurfaceIndex({ ...input, outcomeTier }),
     target.surfaces,
@@ -172,7 +192,11 @@ export function validateOwnerRealizationTasks(input: {
     const bestPositive = evaluations.reduce((best, candidate) => candidate.missing.length < best.missing.length ? candidate : best, evaluations[0] ?? { missing: task.evidenceAtoms.filter((atom) => atom.required && atom.polarity !== 'forbidden').map((atom) => atom.id), forbidden: [] });
     const missing = task.target.scope === 'any_route' && evaluations.some((evaluation) => evaluation.missing.length === 0)
       ? []
-      : bestPositive.missing;
+      : task.target.scope === 'all_options'
+        ? (evaluations.length > 0
+          ? [...new Set(evaluations.flatMap((evaluation) => evaluation.missing))]
+          : task.evidenceAtoms.filter((atom) => atom.required && atom.polarity !== 'forbidden').map((atom) => atom.id))
+        : bestPositive.missing;
     const forbidden = [...new Set(evaluations.flatMap((evaluation) => evaluation.forbidden))];
     if (missing.length > 0) {
       const outcomeTier = outcomeTierForTask(task);

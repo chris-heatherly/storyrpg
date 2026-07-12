@@ -310,6 +310,29 @@ describe('NarrativeContractCompiler', () => {
     expect(compileEpisodeEventPlan(graph, scenes, 1).characterPresenceContracts).toHaveLength(1);
   });
 
+  it('projects a named introduction to the canonical event that names the character, not an earlier stale cast hint', () => {
+    const planned = plan([1]);
+    planned.protagonist = { id: 'char-kylie', name: 'Kylie Marinescu', description: '' };
+    planned.characterIntroductions = [
+      { characterId: 'char-stela', characterName: 'Stela Pavel', introducedInEpisode: 1, role: 'ally' },
+    ];
+    const spine: EpisodeSpineContract = {
+      episodeNumber: 1, sourceHash: 'ep1', episodeStoryCircleBeats: ['you'], polarityFacets: [],
+      units: [
+        { id: 'ep1-u2', order: 1, text: 'Kylie explores the streets of Bucharest.', kind: 'explore', storyCircleFacets: [], prerequisites: [], sceneKind: 'standard' },
+        { id: 'ep1-u3', order: 2, text: 'Kylie enters a bookshop and meets Stela Pavel.', kind: 'meet', storyCircleFacets: [], prerequisites: ['ep1-u2'], sceneKind: 'standard' },
+      ],
+    };
+    const scenes = [
+      scene({ id: 's1-2', episodeNumber: 1, order: 1, spineUnitId: 'ep1-u2', dramaticPurpose: 'Kylie explores Bucharest.', npcsInvolved: ['char-stela'] }),
+      scene({ id: 's1-3', episodeNumber: 1, order: 2, spineUnitId: 'ep1-u3', dramaticPurpose: 'Kylie meets Stela Pavel.', npcsInvolved: ['char-stela'] }),
+    ];
+
+    const graph = compileNarrativeContractGraph(planned, scenePlan(scenes, { 1: spine }));
+    expect(graph.characterPresenceContracts.find((contract) => contract.characterId === 'char-stela')?.sceneId).toBe('s1-3');
+    expect(graph.realizationTasks?.some((task) => task.id === 'task:presence:ep1:s1-3:char-stela:named-introduction')).toBe(true);
+  });
+
   it('compiles premise, canonical state, downstream seed, and transition projections together', () => {
     const planned = plan([1, 2]);
     planned.protagonist = { id: 'protagonist', name: 'Avery', description: '' };

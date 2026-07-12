@@ -35,7 +35,7 @@ const BEAT_LABELS: Record<StoryCircleBeat, RegExp[]> = {
 
 const STATE_CHANGE_RE =
   /\b(goes viral|go viral|skips? a day|genre changes?|changes?|reveals?|confesses?|confession|offers?|frames?|hospitalized|turns?|dies?|dark|saved?|rescued?|runs?|walks? out|chooses?|choice|ends?|final post|dawn|truths?|mirror|contract|freed|forgiven|surrender|refuse|humanity|voice)\b/i;
-const ACTION_VERB_RE = /\b(?:accepts?|adopts?|arrives?|asks?|assaults?|attacks?|buzzes?|calls?|closes?|confronts?|cuts?|declines?|deflects?|delivers?|drops?|finds?|follows?|forms?|gathers?|gives?|hands?|interrupts?|kisses?|lands?|launches?|leaps?|leaves?|names?|offers?|opens?|pins?|presses?|publishes?|refuses?|rescues?|scrolls?|sees?|starts?|swaps?|takes?|turns?|unpacks?|vanishes?|walks?|warns?|writes?)\b/i;
+const ACTION_VERB_RE = /\b(?:accepts?|adopts?|arrives?|asks?|assaults?|attacks?|befriends?|buzzes?|calls?|closes?|confronts?|cuts?|declines?|deflects?|delivers?|drops?|enters?|explores?|finds?|follows?|forms?|gathers?|gives?|hands?|interrupts?|kisses?|lands?|launches?|leaps?|leaves?|meets?|names?|offers?|opens?|pins?|presses?|publishes?|refuses?|rescues?|scrolls?|sees?|starts?|swaps?|takes?|turns?|unpacks?|vanishes?|walks?|wanders?|warns?|writes?)\b/i;
 
 export interface EpisodeCircleContractScene {
   id: string;
@@ -365,8 +365,28 @@ function sceneText(scene: PlannedScene): string {
   ].filter(Boolean).join(' ');
 }
 
+function canonicalSceneTurnText(scene: PlannedScene): string {
+  return [
+    scene.turnContract?.turnEvent,
+    scene.turnContract?.centralTurn,
+    scene.sceneConstructionProfile?.primaryTurn.text,
+    ...(scene.requiredBeats ?? [])
+      .filter((beat) => beat.tier === 'authored' || beat.tier === 'signature' || beat.tier === 'coldopen')
+      .map((beat) => beat.mustDepict || beat.sourceTurn),
+  ].filter(Boolean).join(' ');
+}
+
 function scoreScene(contract: StoryCircleBeatRealizationContract, scene: PlannedScene): number {
   let score = treatmentFieldCloseMatch(contract.sourceText, sceneText(scene), storyCircleBeatMatchThreshold(contract)) ? 1 : 0;
+  // Once ESC has decomposed the treatment, its canonical scene turn outranks
+  // broad Story Circle role heuristics. This keeps a compound season beat from
+  // pulling a later event back into an earlier scene that merely shares setup
+  // vocabulary.
+  if (treatmentFieldCloseMatch(
+    contract.sourceText,
+    canonicalSceneTurnText(scene),
+    Math.max(0.4, storyCircleBeatMatchThreshold(contract) - 0.15),
+  )) score += 4;
   score += eventCueScore(contract.sourceText, sceneText(scene));
   if (contract.targetEpisodeNumber === scene.episodeNumber) score += 0.4;
   if (scene.kind === 'encounter' && (contract.beat === 'search' || contract.beat === 'take' || contract.beat === 'return')) score += 0.35;

@@ -59,6 +59,7 @@ export function normalizePersistedEpisodeEventPlan(plan: EpisodeEventPlan): Epis
 
 export function describeNarrativeEvidenceTarget(target: NarrativeEvidenceTarget): string {
   if (target.scope === 'owner') return `owner surfaces=${target.surfaces.join(', ')}`;
+  if (target.scope === 'all_options') return `every choice option surfaces=${target.surfaces.join(', ')}`;
   if (target.scope === 'any_route') {
     return `any route [${target.outcomeTiers.join(', ')}] surfaces=${target.surfaces.join(', ')}`;
   }

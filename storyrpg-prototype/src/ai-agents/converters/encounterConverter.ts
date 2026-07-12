@@ -447,7 +447,10 @@ export function convertEncounterStructureToEncounter(
   const phase: EncounterPhase = {
     id: `${structure.sceneId}-phase-1`,
     name: sceneBlueprint.name,
-    description: sceneBlueprint.description,
+    // Runtime encounter prose must come from the EncounterArchitect output.
+    // sceneBlueprint.description is planning context and may contain treatment
+    // synopsis text that is forbidden in reader-facing surfaces.
+    description: authoredDescription,
     situationImage: '',
     beats: encounterBeats,
     onSuccess: {

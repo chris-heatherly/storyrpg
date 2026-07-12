@@ -789,6 +789,7 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
     const maxPromptChars = request.maxPromptChars || defaults.maxPromptChars;
     const searchType = request.searchType || 'GRAPH_COMPLETION';
     const nodeNames = providerNodeNames(request);
+    const nodeFilterMode = this.config.nodeFilterMode || 'off';
     const packet = emptyPacket();
     packet.datasetNames = datasets;
 
@@ -813,33 +814,30 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
         if (!response.ok) throw new Error(`Cognee search failed: ${response.status} ${await response.text()}`);
         return normalizeSearchResults(await response.json());
       };
-      let snippets = await search(nodeNames);
-      // Node sets vary across Cognee versions and older indexed corpora. A
-      // semantic retry is preferable to treating memory as absent; provenance
-      // retains that the strict facet filter was not usable.
-      if (!snippets.length && nodeNames.length) {
-        snippets = await search([]);
-        packet.queryLog.push({
-          query,
-          searchType,
-          topK,
-          resultCount: snippets.length,
-          datasets,
-          nodeNames,
-          emptyReason: snippets.length ? undefined : 'provider_empty',
-          fallbackUsed: true,
-        });
-      } else {
-        packet.queryLog.push({
-          query,
-          searchType,
-          topK,
-          resultCount: snippets.length,
-          datasets,
-          nodeNames,
-          emptyReason: snippets.length ? undefined : 'provider_empty',
-        });
+      // Cognee's current graph-node filters do not match the node_set schema
+      // used by our persisted records. Production recall is therefore semantic
+      // and dataset-scoped. Filter behavior can be measured explicitly without
+      // suppressing useful context, or enforced only in dedicated diagnostics.
+      const semanticSnippets = await search([]);
+      let snippets = semanticSnippets;
+      let filterResultCount: number | undefined;
+      if (nodeFilterMode !== 'off' && nodeNames.length) {
+        const filteredSnippets = await search(nodeNames);
+        filterResultCount = filteredSnippets.length;
+        if (nodeFilterMode === 'enforce') snippets = filteredSnippets;
       }
+      packet.queryLog.push({
+        query,
+        searchType,
+        topK,
+        resultCount: snippets.length,
+        datasets,
+        nodeNames: nodeFilterMode === 'off' ? [] : nodeNames,
+        emptyReason: snippets.length ? undefined : 'provider_empty',
+        // Retains compatibility with the run ledger while observe mode measures
+        // the currently ineffective filter independently of prompt delivery.
+        fallbackUsed: nodeFilterMode === 'observe' && semanticSnippets.length > 0 && filterResultCount === 0,
+      });
       packet.sourceSnippets.push(...snippets);
     }
 

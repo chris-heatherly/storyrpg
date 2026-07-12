@@ -182,6 +182,7 @@ describe('encounterConverter', () => {
     expect(encounter.type).toBe('romantic');
     expect(encounter.style).toBe('romantic');
     expect(encounter.description).toBe('Rain traps you on the balcony with a truth neither of you can postpone.');
+    expect(encounter.phases[0].description).toBe('Rain traps you on the balcony with a truth neither of you can postpone.');
     const firstBeat = encounter.phases[0].beats[0] as any;
     expect(firstBeat.visualContract?.visualMoment).toBe('Two people on the edge of confession.');
     expect(firstBeat.storyboardFrameId).toBe('sb-commit');

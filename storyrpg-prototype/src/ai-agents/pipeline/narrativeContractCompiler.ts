@@ -16,6 +16,7 @@ import type {
   NarrativeSeedContract,
   NarrativeStateContract,
   NarrativeTransitionContract,
+  NarrativeTransitionStateContract,
   NarrativeTwistContract,
 } from '../../types/narrativeContract';
 import {
@@ -30,8 +31,9 @@ import { isGenericScenePlannerText, isQuestionShapedTurnText } from '../utils/sc
 import { PipelineError } from './errors';
 import { resolveCharacterIntroMode, resolveRosterCharacter } from '../utils/npcIntroductionLedger';
 import { buildCharacterTreatmentContractsForPlan } from '../utils/characterTreatmentContracts';
+import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v3';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v4';
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',
@@ -343,6 +345,7 @@ function eventEvidenceRequirements(eventId: string, cue: NarrativeEventCue | und
       kind: 'action',
       acceptedPatterns: ['rescue', 'rescued', 'intervenes', 'saved', 'pulled you clear', 'shielded you'],
       requiredSurface: 'all_routes',
+      routeEvidencePosition: 'path',
       blocking: true,
     });
     requirements.push({
@@ -351,6 +354,7 @@ function eventEvidenceRequirements(eventId: string, cue: NarrativeEventCue | und
       kind: 'action',
       acceptedPatterns: ['threshold', 'door', 'apartment', 'vanishes', 'disappears', 'gone'],
       requiredSurface: 'all_routes',
+      routeEvidencePosition: 'terminal',
       blocking: true,
     });
   }
@@ -460,6 +464,10 @@ const PREMISE_STOPWORDS = new Set([
   'must', 'only', 'over', 'that', 'their', 'there', 'these', 'this', 'through', 'what',
   'when', 'where', 'which', 'while', 'with', 'would', 'your', 'the', 'and', 'for', 'was',
   'were', 'is', 'are', 'has', 'had', 'her', 'his', 'its', 'not', 'but', 'than', 'then',
+  // Causal bridge words create brittle n-grams ("engagement made", "made
+  // feel") that are not independently meaningful evidence. Keep the adjacent
+  // authored nouns/adjectives so paraphrased prose can satisfy the premise.
+  'made', 'make', 'makes', 'feel', 'feels', 'felt',
 ]);
 
 function premiseEvidencePatterns(sourceText: string): string[] {
@@ -611,7 +619,31 @@ function compileTransitionContracts(scenes: PlannedScene[]): NarrativeTransition
       const to = ordered[index];
       const locationChanged = clean(from.locations?.[0]) !== clean(to.locations?.[0]);
       const timeChanged = clean(from.timeOfDay) !== clean(to.timeOfDay) && Boolean(from.timeOfDay && to.timeOfDay);
-      if (!locationChanged && !timeChanged && !clean(to.timeJump)) continue;
+      const fromStates = new Map((from.continuityStates ?? []).map((state) => [state.subject, state]));
+      const stateContracts: NarrativeTransitionStateContract[] = (to.continuityStates ?? [])
+        .flatMap((state) => {
+          const previous = fromStates.get(state.subject);
+          if (previous?.disposition === state.disposition) return [];
+          return [{
+            id: `continuity:${slug(from.id)}:to:${slug(to.id)}:${slug(state.subject)}`,
+            subject: state.subject,
+            fromDisposition: previous?.disposition,
+            toDisposition: state.disposition,
+            requiredEvidence: uniqueStrings([
+              ...(previous?.requiredEvidence ?? []),
+              ...(state.requiredEvidence ?? []),
+              state.disposition,
+            ]),
+            blocking: state.blocking !== false,
+            sourceContractIds: [
+              `scene:${from.id}`,
+              `scene:${to.id}`,
+              ...(previous ? [previous.id] : []),
+              state.id,
+            ],
+          } satisfies NarrativeTransitionStateContract];
+        });
+      if (!locationChanged && !timeChanged && !clean(to.timeJump) && stateContracts.length === 0) continue;
       output.push({
         id: `transition:ep${episodeNumber}:${slug(from.id)}:to:${slug(to.id)}`,
         episodeNumber,
@@ -622,7 +654,8 @@ function compileTransitionContracts(scenes: PlannedScene[]): NarrativeTransition
         fromTimeOfDay: from.timeOfDay,
         toTimeOfDay: to.timeOfDay,
         requiredBridgeEvidence: uniqueStrings([to.timeJump, to.locations?.[0], to.timeOfDay]),
-        blocking: locationChanged || timeChanged,
+        stateContracts,
+        blocking: locationChanged || timeChanged || stateContracts.some((state) => state.blocking),
         sourceContractIds: [`scene:${from.id}`, `scene:${to.id}`],
       });
     }
@@ -1218,6 +1251,7 @@ export function compileNarrativeContractGraph(
     compilationIssues.push(...episodeOrder.issues);
   }
   graph.events = orderedGraphEvents;
+  graph.realizationTasks = compileNarrativeRealizationTasks(graph, scenes);
   graph.sourceHash = stableHash({
     compilerVersion: graph.compilerVersion,
     scenePlanSourceHash: scenePlan.sourceHash,
@@ -1232,6 +1266,7 @@ export function compileNarrativeContractGraph(
     transitionContracts: graph.transitionContracts,
     choiceResidueContracts: graph.choiceResidueContracts,
     twistContracts: graph.twistContracts,
+    realizationTasks: graph.realizationTasks,
     dependencies: graph.dependencies,
   });
   graph.validation.issues = [...compilationIssues, ...validateGraph(graph)];
@@ -1259,6 +1294,7 @@ export function compileEpisodeEventPlan(
   const transitionContracts = (graph.transitionContracts ?? []).filter((contract) => contract.episodeNumber === episodeNumber);
   const choiceResidueContracts = (graph.choiceResidueContracts ?? []).filter((contract) => contract.sourceEpisodeNumber === episodeNumber || contract.targetEpisodeNumbers.includes(episodeNumber));
   const twistContracts = (graph.twistContracts ?? []).filter((contract) => contract.episodeNumber === episodeNumber);
+  const realizationTasks = (graph.realizationTasks ?? []).filter((task) => task.episodeNumber === episodeNumber);
   const { ordered, issues } = topologicalEvents(events);
   const assignments = ordered
     .filter((event): event is NarrativeEventContract & { ownerSceneId: string } => Boolean(event.ownerSceneId))
@@ -1334,6 +1370,7 @@ export function compileEpisodeEventPlan(
     transitionContracts,
     choiceResidueContracts,
     twistContracts,
+    realizationTasks,
     validation: {
       passed: ![...issues, ...assignmentIssues].some((issue) => issue.severity === 'error'),
       issues: [...issues, ...assignmentIssues],

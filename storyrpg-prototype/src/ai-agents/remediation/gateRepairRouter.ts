@@ -782,6 +782,15 @@ export class GateRepairRouter {
     }
 
     if (validator === 'NarrativeContractValidator') {
+      if (issue.repairHandler === 'encounter_route' || issue.outcomeTier) {
+        return directive('same_scene_retry', issue, 'Encounter route realization is owned by the exact encounter outcome surface and requires a focused route rewrite.');
+      }
+      if (issue.repairHandler === 'relationship_pacing' || issue.contractId && /relationshipLabel/i.test(issue.message ?? '')) {
+        return directive('same_scene_retry', issue, 'Relationship pacing is scene-local; rewrite the exact offending surface at the currently earned stage.');
+      }
+      if (issue.repairHandler === 'premise_realization') {
+        return directive('same_scene_retry', issue, 'Premise realization is owned by the opening scene and must be rewritten with its missing evidence atoms.');
+      }
       if (/episode topology|planned scenes|generic pressure/i.test(issueText)) {
         return directive('episode_replan', issue, 'Canonical authored topology is invalid; rebuild the episode scene plan before prose generation.');
       }

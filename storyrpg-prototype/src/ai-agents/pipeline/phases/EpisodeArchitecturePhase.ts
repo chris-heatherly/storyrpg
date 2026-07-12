@@ -37,8 +37,11 @@ import {
 import type { GateShadowRecord } from '../../remediation/gateShadowLedger';
 import { type GenerationPlan, setEpisodeScenes } from '../generationPlan';
 import { PipelineError, type PipelineFailureMetadata } from '../errors';
-import { applyEpisodeEventPlans } from '../narrativeContractCompiler';
+import { applyEpisodeEventPlans, reprojectEpisodeEventPlan, validateCanonicalEpisodeBlueprintProjection } from '../narrativeContractCompiler';
 import { scenesForEpisode } from '../seasonScenePlanBuilder';
+import { validateCanonicalEpisodeSceneOrder, validateEpisodeArchitectureContract, type ArchitectureConflict } from '../architectureContractPreflight';
+import { projectBlueprintOntoLockedEpisodePlan } from '../episodeArchitectureProjection';
+import { captureEpisodeContractSurface, diffEpisodeContractSurface } from '../episodeContractMutationGuard';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import { PipelineContext } from './index';
 
@@ -109,12 +112,19 @@ export class EpisodeArchitecturePhase {
     const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
 
     // Build season plan directives for this specific episode
-    const seasonPlanDirectives = buildSeasonPlanDirectives(brief, (message) => {
+    const rawSeasonPlanDirectives = buildSeasonPlanDirectives(brief, (message) => {
       console.warn(
         `[Pipeline] Season plan has no entry for episode ${brief.episode.number} — available episodes: ${brief.seasonPlan?.episodes.map((e) => e.episodeNumber).join(', ')}`,
       );
       context.emit({ type: 'warning', phase: 'architecture', message });
     });
+    // StoryArchitect has bounded working-projection repairs that may replace
+    // `seasonPlanDirectives.episodeEventPlan`. Never pass those mutable
+    // references back into the canonical season plan; the locked plan commits
+    // only after the returned blueprint has passed projection validation.
+    const seasonPlanDirectives = rawSeasonPlanDirectives
+      ? JSON.parse(JSON.stringify(rawSeasonPlanDirectives)) as NonNullable<typeof rawSeasonPlanDirectives>
+      : undefined;
     if (seasonPlanDirectives) {
       const encCount = seasonPlanDirectives.plannedEncounters?.length || 0;
       const branchCount = seasonPlanDirectives.incomingBranchEffects?.length || 0;
@@ -192,7 +202,9 @@ export class EpisodeArchitecturePhase {
     };
 
     let result: AgentResponse<EpisodeBlueprint> | undefined;
+    let architectureConflicts: ArchitectureConflict[] = [];
     const maxArchitectureAttempts = 3;
+    const baseArchitectureUserPrompt = architectureInput.userPrompt || '';
     for (let attempt = 1; attempt <= maxArchitectureAttempts; attempt += 1) {
       result = await withTimeout(
         this.deps.storyArchitect.execute(architectureInput),
@@ -200,7 +212,98 @@ export class EpisodeArchitecturePhase {
         attempt === 1 ? 'StoryArchitect.execute' : `StoryArchitect.execute(branch-repair-${attempt})`
       );
 
-      if (result.success && result.data) break;
+      if (result.success && result.data) {
+        // StoryArchitect's raw response can omit locked relationship pacing
+        // projections that are reattached during blueprint sealing. Validate
+        // against the canonical scene plan as well, or a source turn such as
+        // "become friends" can reach content generation with a spark-only
+        // relationship contract and fail much later in final validation.
+        const plannedSceneById = new Map(
+          (brief.seasonPlan?.scenePlan?.scenes ?? []).map((scene) => [scene.id, scene]),
+        );
+        const contractScenes = result.data.scenes.map((scene) => {
+          const planned = plannedSceneById.get(scene.id);
+          return {
+            ...scene,
+            relationshipPacing: scene.relationshipPacing?.length
+              ? scene.relationshipPacing
+              : planned?.relationshipPacing,
+            sceneEventOwnership: scene.sceneEventOwnership ?? planned?.sceneEventOwnership,
+          };
+        });
+        const lockedEpisodePlan = brief.seasonPlan?.scenePlan?.episodeEventPlans?.[brief.episode.number];
+        const topologyConflicts = validateCanonicalEpisodeSceneOrder(contractScenes, lockedEpisodePlan);
+        if (lockedEpisodePlan && topologyConflicts.length > 0 && topologyConflicts.every((conflict) => conflict.code === 'PLAN_SCENE_ORDER_DRIFT')) {
+          const projection = projectBlueprintOntoLockedEpisodePlan(
+            result.data,
+            lockedEpisodePlan,
+            scenesForEpisode(brief.seasonPlan!.scenePlan!, brief.episode.number),
+          );
+          if (projection.missingPlannedSceneIds.length === 0 && projection.restoredSceneIds.length > 0) {
+            result.data.scenes = projection.scenes;
+            context.emit({
+              type: 'debug',
+              phase: 'episode_architecture',
+              message: `Restored ${projection.restoredSceneIds.length} omitted canonical scene shell(s) before architecture validation.`,
+              data: { restoredSceneIds: projection.restoredSceneIds },
+            });
+          }
+        }
+        const projectedScenes = result.data.scenes.map((scene) => {
+          const planned = plannedSceneById.get(scene.id);
+          return {
+            ...scene,
+            relationshipPacing: scene.relationshipPacing?.length
+              ? scene.relationshipPacing
+              : planned?.relationshipPacing,
+            sceneEventOwnership: scene.sceneEventOwnership ?? planned?.sceneEventOwnership,
+          };
+        });
+        architectureConflicts = [
+          ...validateEpisodeArchitectureContract(projectedScenes),
+          ...validateCanonicalEpisodeSceneOrder(projectedScenes, lockedEpisodePlan),
+        ].sort((a, b) => a.sceneId.localeCompare(b.sceneId) || a.code.localeCompare(b.code) || a.message.localeCompare(b.message));
+        if (lockedEpisodePlan && architectureConflicts.length === 0 && brief.seasonPlan?.scenePlan?.narrativeContractGraph) {
+          const projectionIssues = reprojectEpisodeEventPlan(
+            brief.seasonPlan.scenePlan.narrativeContractGraph,
+            lockedEpisodePlan,
+            result.data.scenes,
+            brief.episode.number,
+          );
+          const blueprintProjectionIssues = validateCanonicalEpisodeBlueprintProjection(
+            lockedEpisodePlan,
+            result.data.scenes,
+            brief.episode.number,
+          );
+          architectureConflicts = [...projectionIssues, ...blueprintProjectionIssues]
+            .filter((issue) => issue.severity === 'error')
+            .map((issue) => ({
+              code: 'PLAN_SCENE_ORDER_DRIFT',
+              sceneId: issue.sceneId || brief.episode.title,
+              message: issue.message,
+              evidence: [issue.code],
+              repairInstruction: 'Restore the locked episode scene vector before continuing architecture.',
+            }));
+        }
+        if (architectureConflicts.length === 0) break;
+        if (attempt >= maxArchitectureAttempts) break;
+        const conflictSummary = architectureConflicts
+          .slice(0, 8)
+          .map((conflict) => `${conflict.code} ${conflict.sceneId}: ${conflict.message}`)
+          .join('\n');
+        context.emit({
+          type: 'regeneration_triggered',
+          phase: 'architecture',
+          message: `Retrying StoryArchitect for ${architectureConflicts.length} deterministic architecture contract conflict(s) (${attempt}/${maxArchitectureAttempts}).`,
+          data: { conflicts: architectureConflicts },
+        });
+        architectureInput.userPrompt = `${baseArchitectureUserPrompt}\n\nCRITICAL ARCHITECTURE CONTRACT REPAIR:\n` +
+          `The previous blueprint contained contradictions that would make downstream prose impossible to validate. ` +
+          `Return a corrected blueprint with the same authored events and episode intent, but repair the plan before writing scenes.\n` +
+          `${architectureConflicts.slice(0, 8).map((conflict) => `- ${conflict.message} Evidence: ${conflict.evidence.join(' | ')} Repair: ${conflict.repairInstruction}`).join('\n')}\n` +
+          `Conflict summary:\n${conflictSummary}`;
+        continue;
+      }
 
       const errorText = result.error || '';
       const failure = result.metadata?.failure as PipelineFailureMetadata | undefined;
@@ -282,6 +385,27 @@ export class EpisodeArchitecturePhase {
           `at least two distinct future leadsTo scene IDs, branch scene incomingChoiceContext, and a later bottleneck/reconvergence scene.`;
     }
 
+    if (architectureConflicts.length > 0) {
+      throw new PipelineError(
+        `Episode architecture contract failed with ${architectureConflicts.length} deterministic conflict(s): ${architectureConflicts.slice(0, 5).map((conflict) => conflict.message).join(' | ')}`,
+        'episode_architecture',
+        {
+          agent: 'StoryArchitect',
+          context: {
+            episodeNumber: brief.episode.number,
+            conflicts: architectureConflicts,
+          },
+          failure: {
+            code: 'episode_plan_invalid',
+            ownerStage: 'episode_plan',
+            retryClass: 'recompile_episode_plan',
+            issueCodes: architectureConflicts.map((conflict) => conflict.code),
+            repairTarget: 'episode-architecture-contract',
+          },
+        },
+      );
+    }
+
     if (!result!.success || !result!.data) {
       throw new PipelineError(
         `Story Architect failed: ${result!.error}`,
@@ -303,25 +427,43 @@ export class EpisodeArchitecturePhase {
       );
     }
 
-    // StoryArchitect may collapse an unowned generic shell and replace the
-    // episode projection object while sealing the blueprint. Keep the
-    // season-level projection in sync before downstream content/fidelity
-    // phases read brief.seasonPlan.scenePlan. Otherwise the blueprint and
-    // runtime can have seven scenes while final validation still expects a
-    // stale shell from the pre-collapse EpisodeEventPlan.
+    // The model can elaborate a blueprint, but it cannot replace the locked
+    // season projection. Reproject ownership once more at the commit boundary
+    // so blueprint, episode plan, and season plan are committed together.
     const canonicalScenePlan = brief.seasonPlan?.scenePlan;
-    const canonicalEpisodePlan = result!.data.episodeEventPlan;
+    const canonicalEpisodePlan = canonicalScenePlan?.episodeEventPlans?.[brief.episode.number];
+    let canonicalMutationSnapshot = undefined as ReturnType<typeof captureEpisodeContractSurface> | undefined;
     if (canonicalScenePlan && canonicalEpisodePlan) {
-      canonicalScenePlan.episodeEventPlans = {
-        ...(canonicalScenePlan.episodeEventPlans ?? {}),
-        [brief.episode.number]: canonicalEpisodePlan,
-      };
+      const projection = projectBlueprintOntoLockedEpisodePlan(
+        result!.data,
+        canonicalEpisodePlan,
+        scenesForEpisode(canonicalScenePlan, brief.episode.number),
+      );
+      if (projection.missingPlannedSceneIds.length > 0 || projection.outsidePlanSceneIds.length > 0) {
+        throw new PipelineError(
+          `Locked episode topology cannot be projected: missing planned scenes [${projection.missingPlannedSceneIds.join(', ')}], outside-plan scenes [${projection.outsidePlanSceneIds.join(', ')}].`,
+          'episode_architecture',
+          {
+            agent: 'NarrativeContractCompiler',
+            failure: {
+              code: 'episode_plan_invalid',
+              ownerStage: 'episode_plan',
+              retryClass: 'none',
+              issueCodes: ['PLAN_SCENE_ORDER_DRIFT'],
+              repairTarget: 'episode-architecture-contract',
+            },
+          },
+        );
+      }
+      result!.data.scenes = projection.scenes;
+      result!.data.episodeEventPlan = canonicalEpisodePlan;
+      canonicalMutationSnapshot = captureEpisodeContractSurface(result!.data, canonicalEpisodePlan);
       const canonicalEpisode = brief.seasonPlan?.episodes.find((episode) => episode.episodeNumber === brief.episode.number);
       if (canonicalEpisode) canonicalEpisode.plannedScenes = scenesForEpisode(canonicalScenePlan, brief.episode.number);
       context.emit({
         type: 'debug',
         phase: 'episode_architecture',
-        message: `Synchronized season EpisodeEventPlan projection for episode ${brief.episode.number} after blueprint sealing (${canonicalEpisodePlan.sceneOrder.length} scenes).`,
+        message: `Committed locked EpisodeEventPlan projection for episode ${brief.episode.number} (${canonicalEpisodePlan.sceneOrder.length} scenes).`,
         data: { sceneOrder: canonicalEpisodePlan.sceneOrder, sourceGraphHash: canonicalEpisodePlan.sourceGraphHash },
       });
     }
@@ -356,6 +498,24 @@ export class EpisodeArchitecturePhase {
       void this.deps.recordGateShadowSafe?.(record);
     });
     const episodeSlice = episodeTypeCounts(this.deps.seasonChoicePlan, brief.episode.number);
+    const plannedChoiceTypeByScene = new Map(
+      (canonicalScenePlan ? scenesForEpisode(canonicalScenePlan, brief.episode.number) : [])
+        .map((scene) => {
+          const hasGroupFormation = (scene.relationshipPacing ?? [])
+            .some((contract) => contract.milestone?.kind === 'group_formation');
+          return [scene.id, scene.choiceType ?? (hasGroupFormation ? 'relationship' : undefined)] as const;
+        })
+        .filter((entry): entry is readonly [string, 'expression' | 'relationship' | 'strategic' | 'dilemma'] => Boolean(entry[1])),
+    );
+    for (const scene of result!.data.scenes) {
+      const authoredChoiceType = plannedChoiceTypeByScene.get(scene.id);
+      if (authoredChoiceType && scene.choicePoint) {
+        // This private planning marker is consumed only by assignChoiceTypes;
+        // the canonical choice type remains the scene-plan contract and is
+        // never inferred from the episode-wide percentage budget.
+        (scene as SceneBlueprint & { authoredChoiceType?: typeof authoredChoiceType }).authoredChoiceType = authoredChoiceType;
+      }
+    }
     const choiceTypeChanges = assignChoiceTypes(result!.data.scenes as never, undefined, episodeSlice).filter((r) => r.from !== r.to);
     if (choiceTypeChanges.length > 0) {
       context.emit({ type: 'debug', phase: 'episode_architecture', message: `Rebalanced ${choiceTypeChanges.length} choice-point type(s) toward target taxonomy` });
@@ -363,6 +523,29 @@ export class EpisodeArchitecturePhase {
     const relationshipPacingReconciled = reconcileRelationshipPacingWithChoiceTypes(result!.data.scenes as never);
     if (relationshipPacingReconciled > 0) {
       context.emit({ type: 'debug', phase: 'episode_architecture', message: `Reconciled ${relationshipPacingReconciled} relationship-pacing contract(s) with final choice taxonomy` });
+    }
+    if (canonicalMutationSnapshot && canonicalEpisodePlan) {
+      const mutationIssues = diffEpisodeContractSurface(
+        canonicalMutationSnapshot,
+        captureEpisodeContractSurface(result!.data, canonicalEpisodePlan),
+      );
+      if (mutationIssues.length > 0) {
+        throw new PipelineError(
+          `Canonical episode contract mutated after architecture commit: ${mutationIssues.map((issue) => issue.message).join(' | ')}`,
+          'episode_architecture',
+          {
+            agent: 'EpisodeContractMutationGuard',
+            context: { episodeNumber: brief.episode.number, issues: mutationIssues },
+            failure: {
+              code: 'episode_plan_invalid',
+              ownerStage: 'episode_plan',
+              retryClass: 'none',
+              issueCodes: mutationIssues.map((issue) => issue.code),
+              repairTarget: 'episode-architecture-contract',
+            },
+          },
+        );
+      }
     }
 
     // Fill this episode's scenes into the structure plan (estimate-then-fill:

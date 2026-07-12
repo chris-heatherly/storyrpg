@@ -1031,6 +1031,15 @@ export interface PlannedScene {
    */
   timeJump?: string;
 
+  /** Explicit object/relationship dispositions that must survive transitions. */
+  continuityStates?: Array<{
+    id: string;
+    subject: string;
+    disposition: string;
+    requiredEvidence?: string[];
+    blocking?: boolean;
+  }>;
+
   /**
    * Scene ids (this season) that this scene PLANTS for — i.e. setups this scene
    * establishes that a later scene discharges. The forward half of the

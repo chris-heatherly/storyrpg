@@ -103,6 +103,30 @@ function collectBeatText(texts: string[], raw: unknown): void {
   collectChoiceTreeTexts(texts, beat.choices);
 }
 
+function routeOutcomeKeys(tier: string): string[] {
+  if (tier === 'victory' || tier === 'success') return ['success', 'victory'];
+  if (tier === 'partialVictory' || tier === 'complicated') return ['complicated', 'partialVictory'];
+  if (tier === 'defeat' || tier === 'failure') return ['failure', 'defeat'];
+  return [tier];
+}
+
+/** Keep only embedded choice outcomes that can lead to the requested route. */
+function collectBeatTextForRoute(texts: string[], raw: unknown, tier: string): void {
+  const beat = raw as EncounterBeatLike | undefined;
+  if (!beat) return;
+  pushReaderText(texts, beat.text);
+  pushReaderText(texts, beat.setupText);
+  pushReaderText(texts, beat.escalationText);
+  collectVariants(texts, beat.textVariants);
+  collectVariants(texts, beat.setupTextVariants);
+  collectVariants(texts, beat.escalationTextVariants);
+  for (const choice of beat.choices ?? []) {
+    pushReaderText(texts, choice.text);
+    pushReaderText(texts, choice.lockedText);
+    for (const key of routeOutcomeKeys(tier)) collectOutcomeTexts(texts, choice.outcomes?.[key]);
+  }
+}
+
 /**
  * Collect prose the reader can actually see in a scene: ordinary beats, encounter
  * setup/outcome trees, phase outcomes, and storylet beats.
@@ -160,20 +184,20 @@ export function collectReaderFacingTextsForEncounterOutcomeTier(
   const encounter = scene.encounter as EncounterLike | undefined;
   if (!encounter) return byTier;
 
-  const shared: string[] = [];
-  for (const beat of scene.beats ?? []) collectBeatText(shared, beat);
-  for (const beat of encounter.beats ?? []) collectBeatText(shared, beat);
-  for (const phase of encounter.phases ?? []) {
-    for (const beat of phase.beats ?? []) collectBeatText(shared, beat);
-  }
-
   const storylets = encounter.storylets && typeof encounter.storylets === 'object'
     ? encounter.storylets as Record<string, { beats?: unknown[] } | undefined>
     : {};
   const outcomes = encounter.outcomes ?? {};
 
   for (const tier of tiers) {
-    const texts = [...shared];
+    const texts: string[] = [];
+    for (const beat of scene.beats ?? []) collectBeatTextForRoute(texts, beat, tier);
+    for (const beat of encounter.beats ?? []) collectBeatTextForRoute(texts, beat, tier);
+    for (const phase of encounter.phases ?? []) {
+      for (const beat of phase.beats ?? []) collectBeatTextForRoute(texts, beat, tier);
+      if (tier === 'victory' || tier === 'success') pushReaderText(texts, phase.onSuccess?.outcomeText);
+      if (tier === 'defeat' || tier === 'failure') pushReaderText(texts, phase.onFailure?.outcomeText);
+    }
     collectOutcomeTexts(texts, outcomes[tier]);
     // Alias success↔victory / complicated↔partialVictory for architect variants.
     if (tier === 'victory') collectOutcomeTexts(texts, outcomes.success);

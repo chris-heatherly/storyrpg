@@ -77,6 +77,26 @@ describe('assignChoiceTypes', () => {
     expect(counts.relationship).toBe(1);
   });
 
+  it('pins authored relationship choice types ahead of the episode budget allocator', () => {
+    const s = [
+      {
+        id: 'group-formation',
+        authoredChoiceType: 'relationship' as ChoiceType,
+        choicePoint: { type: 'expression' as ChoiceType },
+      },
+      { id: 'generic', choicePoint: { type: 'dilemma' as ChoiceType } },
+    ];
+
+    assignChoiceTypes(s, DEFAULT_CHOICE_TYPE_TARGET, {
+      expression: 2,
+      relationship: 0,
+      strategic: 0,
+      dilemma: 0,
+    });
+
+    expect(s[0].choicePoint.type).toBe('relationship');
+  });
+
   it('does not force a dilemma for tiny episodes (<3 choice points)', () => {
     const s = scenes(2);
     assignChoiceTypes(s, DEFAULT_CHOICE_TYPE_TARGET, { expression: 1, relationship: 1, strategic: 0, dilemma: 0 });

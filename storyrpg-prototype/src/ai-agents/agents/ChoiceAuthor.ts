@@ -570,8 +570,30 @@ Before finalizing:
 
       console.log(`[ChoiceAuthor] Choice set has ${choiceSet.choices?.length || 0} choices`);
 
-      // Validate the choices (structural)
-      this.validateChoices(choiceSet, input);
+      // Validate the choices (structural). Production authoring must not synthesize
+      // reader-facing reaction/residue prose. If normalization changes routing and
+      // makes a previously conditional field required, the completeness check below
+      // routes the set through the focused ChoiceAuthor repair surface.
+      this.validateChoices(choiceSet, input, { allowSyntheticReaderTextFallbacks: false });
+
+      const postNormalizationIssues = this.collectChoiceAuthoringCompletenessIssues(choiceSet, input);
+      if (postNormalizationIssues.length > 0) {
+        console.warn(
+          `[ChoiceAuthor] ${input.beatId}: normalization left required authoring fields incomplete — ` +
+          `running a focused prose repair. ${postNormalizationIssues.join('; ')}`,
+        );
+        const revisionResult = await this.executeRevision(input, choiceSet, postNormalizationIssues);
+        const revisedIssues = revisionResult.data
+          ? this.collectChoiceAuthoringCompletenessIssues(revisionResult.data, input)
+          : postNormalizationIssues;
+        if (!revisionResult.success || !revisionResult.data || revisedIssues.length > 0) {
+          throw new Error(
+            `ChoiceAuthor post-normalization repair still omitted required authoring fields: ${revisedIssues.join('; ')}`,
+          );
+        }
+        choiceSet = revisionResult.data;
+        rawResponse = revisionResult.rawResponse ?? rawResponse;
+      }
       this.validateAuthoredFlagSemantics(choiceSet, input);
 
       // Choice variants and residue fields are a separate producer surface
@@ -1217,12 +1239,6 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
         };
         choice.tintFlag = tintsByType[choiceSet.choiceType] || 'tint:boldness';
         console.warn(`[ChoiceAuthor] Choice "${choice.id}" missing tintFlag — using fallback "${choice.tintFlag}"`);
-      }
-
-      // Auto-generate reactionText fallback for non-branching choices
-      if (!choice.nextSceneId && !choice.reactionText) {
-        choice.reactionText = 'The moment settles, its weight already reshaping what comes next.';
-        console.warn(`[ChoiceAuthor] Choice "${choice.id}" missing reactionText — using fallback`);
       }
 
       // Enforce: all choices in a set share the set's choiceType.
@@ -2182,7 +2198,12 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
 - Use second person for the protagonist, with varied sentence openers.`;
   }
 
-  private validateChoices(choiceSet: ChoiceSet, input: ChoiceAuthorInput): void {
+  private validateChoices(
+    choiceSet: ChoiceSet,
+    input: ChoiceAuthorInput,
+    options: { allowSyntheticReaderTextFallbacks?: boolean } = {},
+  ): void {
+    const allowSyntheticReaderTextFallbacks = options.allowSyntheticReaderTextFallbacks ?? true;
     const relationshipSignalText = [
       input.sceneBlueprint.choicePoint?.type,
       input.sceneBlueprint.choicePoint?.consequenceDomain,
@@ -2270,7 +2291,7 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
     }
     // Mechanic-pressure metadata may attach a default magnitude of 6; clamp
     // relationship deltas AFTER that so planned maxDeltaThisScene wins.
-    this.ensureMechanicPressureMetadata(choiceSet, input);
+    this.ensureMechanicPressureMetadata(choiceSet, input, { allowSyntheticReaderTextFallbacks });
     this.capRelationshipConsequences(choiceSet, input);
 
     if (sceneCallsForRelationshipPayoff) {
@@ -2503,7 +2524,7 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
     }
 
     for (const choice of choiceSet.choices) {
-      if (choiceSet.choiceType !== 'expression' && (!choice.residueHints || choice.residueHints.length === 0)) {
+      if (allowSyntheticReaderTextFallbacks && choiceSet.choiceType !== 'expression' && (!choice.residueHints || choice.residueHints.length === 0)) {
         choice.residueHints = [{
           kind: choice.reminderPlan?.later ? 'later_text_variant' : 'immediate_prose_echo',
           description:
@@ -2711,7 +2732,12 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
     return capped;
   }
 
-  private ensureMechanicPressureMetadata(choiceSet: ChoiceSet, input: ChoiceAuthorInput): number {
+  private ensureMechanicPressureMetadata(
+    choiceSet: ChoiceSet,
+    input: ChoiceAuthorInput,
+    options: { allowSyntheticReaderTextFallbacks?: boolean } = {},
+  ): number {
+    const allowSyntheticReaderTextFallbacks = options.allowSyntheticReaderTextFallbacks ?? true;
     if (choiceSet.choiceType === 'expression') return 0;
     const sceneContracts = input.sceneBlueprint.mechanicPressure ?? [];
     let repaired = 0;
@@ -2728,7 +2754,7 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
         repaired += 1;
       }
 
-      if (!choice.residueHints?.length) {
+      if (allowSyntheticReaderTextFallbacks && !choice.residueHints?.length) {
         choice.residueHints = [{
           kind: choice.nextSceneId ? 'later_text_variant' : 'immediate_prose_echo',
           description: this.residueDescriptionForChoice(choice, choice.mechanicPressure[0]),
@@ -3356,7 +3382,7 @@ Return ONLY valid JSON, no markdown, no extra text.
       revisedChoiceSet = this.normalizeChoiceSet(revisedChoiceSet, input);
 
       // Validate structural requirements
-      this.validateChoices(revisedChoiceSet, input);
+      this.validateChoices(revisedChoiceSet, input, { allowSyntheticReaderTextFallbacks: false });
 
       console.log(`[ChoiceAuthor] Revision complete`);
       return {

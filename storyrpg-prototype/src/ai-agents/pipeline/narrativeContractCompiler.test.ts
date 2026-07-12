@@ -268,7 +268,7 @@ describe('NarrativeContractCompiler', () => {
       sourceMaterial: { reminderLater: 'The contact remembers that trust.' }, authoringGuidance: 'Carry the trust into the later meeting.', requiredSurface: ['beat_text'], priority: 'major',
     }];
     const scenes = [
-      scene({ id: 'ep1-opening', episodeNumber: 1, order: 0, locations: ['bookshop'], timeOfDay: 'afternoon', dramaticPurpose: 'Avery arrives and starts over.' }),
+      scene({ id: 'ep1-opening', episodeNumber: 1, order: 0, locations: ['bookshop'], timeOfDay: 'afternoon', dramaticPurpose: 'Avery arrives and starts over.', continuityStates: [{ id: 'luggage-arrives', subject: 'luggage', disposition: 'with Avery', requiredEvidence: ['luggage'] }] }),
       scene({ id: 'ep1-night', episodeNumber: 1, order: 1, locations: ['rooftop bar'], timeOfDay: 'night', timeJump: 'later that night', dramaticPurpose: 'Avery makes the choice.' }),
       scene({ id: 'ep2-payoff', episodeNumber: 2, order: 0, locations: ['bookshop'], timeOfDay: 'morning', dramaticPurpose: 'The contact remembers the trust.' }),
     ];
@@ -278,5 +278,28 @@ describe('NarrativeContractCompiler', () => {
     expect(canonical.seedContracts?.map((contract) => contract.id)).toContain('seed:residue-trust');
     expect(canonical.transitionContracts?.some((contract) => contract.toSceneId === 'ep1-night')).toBe(true);
     expect(canonical.sourceHash).toBe(compileNarrativeContractGraph(planned, scenePlan(scenes)).sourceHash);
+  });
+
+  it('compiles explicit continuity-state changes into the receiving transition', () => {
+    const planned = plan([1]);
+    const scenes = [
+      scene({
+        id: 's1', episodeNumber: 1, order: 0, locations: ['station'],
+        continuityStates: [{ id: 'bag-start', subject: 'luggage', disposition: 'left at station', requiredEvidence: ['luggage'] }],
+      }),
+      scene({
+        id: 's2', episodeNumber: 1, order: 1, locations: ['apartment'],
+        continuityStates: [{ id: 'bag-end', subject: 'luggage', disposition: 'inside the apartment', requiredEvidence: ['luggage', 'inside'] }],
+      }),
+    ];
+
+    const transition = compileNarrativeContractGraph(planned, scenePlan(scenes)).transitionContracts?.[0];
+    expect(transition?.stateContracts).toEqual([expect.objectContaining({
+      subject: 'luggage',
+      fromDisposition: 'left at station',
+      toDisposition: 'inside the apartment',
+      blocking: true,
+    })]);
+    expect(transition?.blocking).toBe(true);
   });
 });

@@ -7,9 +7,10 @@ import type {
   NarrativeSeedContract,
   NarrativeStateContract,
 } from '../../types/narrativeContract';
-import { collectReaderFacingTexts, collectReaderFacingTerminalTextsForEncounterOutcomeTier } from './encounterTextSurfaces';
+import { collectReaderFacingTexts, collectReaderFacingTextsForEncounterOutcomeTier, collectReaderFacingTerminalTextsForEncounterOutcomeTier } from './encounterTextSurfaces';
 import { BaseValidator, buildFailureResult, buildSuccessResult, type ValidationIssue, type ValidationResult } from './BaseValidator';
 import { isGenericScenePlannerText, isQuestionShapedTurnText } from '../utils/sceneContractBuilders';
+import { validateOwnerRealizationTasks } from '../pipeline/realizationTaskGate';
 
 function normalize(value: string): string {
   return value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -120,6 +121,51 @@ export class NarrativeContractValidator extends BaseValidator {
     const issues: ValidationIssue[] = [];
     const graph = input.graph ?? input.scenePlan?.narrativeContractGraph;
     if (!graph) return buildSuccessResult(100);
+    const taskByContractId = new Map((graph.realizationTasks ?? []).map((task) => [task.contractId, task]));
+
+    // Owner-stage tasks must be rechecked after every late mutator (critic,
+    // continuity, cliffhanger, and final-contract repairs). The content phase
+    // gate proves the producer emitted the evidence, while this final pass
+    // proves no downstream phase erased it before packaging. Premise and
+    // relationship tasks keep their existing specialized diagnostics; event
+    // tasks are added here to avoid duplicate findings while preserving the
+    // exact repair handler and artifact target.
+    for (const episode of input.story.episodes ?? []) {
+      for (const scene of episode.scenes ?? []) {
+        const eventTasks = (graph.realizationTasks ?? []).filter((task) =>
+          task.sceneId === scene.id && task.eventId,
+        );
+        if (eventTasks.length === 0) continue;
+        const findings = validateOwnerRealizationTasks({
+          sceneId: scene.id,
+          tasks: eventTasks,
+          sceneContent: scene,
+          encounter: scene.encounter,
+          mode: 'final_regression',
+        });
+        for (const finding of findings) {
+          const task = eventTasks.find((candidate) => candidate.id === finding.taskId);
+          const issue = (finding.blocking ? this.error.bind(this) : this.warning.bind(this))(
+            `Canonical owner realization drift in scene "${scene.id}": ${finding.message}`,
+            `ownerRealization:ep${episode.number}:${scene.id}:${finding.taskId}`,
+            'Repair the assigned owner surface without changing the event identity, route policy, or cross-episode dependency.',
+          );
+          issue.metadata = {
+            taskId: finding.taskId,
+            contractId: finding.contractId,
+            eventId: task?.eventId,
+            episodeNumber: episode.number,
+            sceneId: scene.id,
+            outcomeTier: finding.outcomeTier,
+            artifactPath: finding.field,
+            repairHandler: task?.repairHandler,
+            missingEvidenceAtoms: finding.missingEvidenceAtoms,
+            requiredEvidenceAtoms: task?.evidenceAtoms.filter((atom) => atom.required).map((atom) => atom.id),
+          };
+          issues.push(issue);
+        }
+      }
+    }
 
     for (const schedule of graph.identityScheduleContracts ?? []) {
       for (const episode of input.story.episodes ?? []) {
@@ -212,13 +258,31 @@ export class NarrativeContractValidator extends BaseValidator {
         ? this.error(
           `Premise contract "${premise.fieldName}" was not realized in its opening surface: "${premise.sourceText}".`,
           `premise:ep${premise.episodeNumber}:${premise.targetSceneIds[0] ?? 'episode'}:${premise.id}`,
-          'Rewrite the assigned opening scene so the authored identity, role, origin pressure, or wound is concrete on-page; do not leave it in metadata.',
-        )
+            'Rewrite the assigned opening scene so the authored identity, role, origin pressure, or wound is concrete on-page; do not leave it in metadata.',
+          )
         : this.warning(
           `Premise contract "${premise.fieldName}" has no concrete reader-facing evidence in episode ${premise.episodeNumber}: "${premise.sourceText}".`,
           `premise:ep${premise.episodeNumber}:${premise.targetSceneIds[0] ?? 'episode'}:${premise.id}`,
           'Add a specific behavioral, occupational, relational, or wound detail without exposing planning language.',
         ));
+      const issue = issues[issues.length - 1];
+      const task = taskByContractId.get(premise.id);
+      if (issue) {
+        const text = targetScenes.join(' ');
+        const missingEvidenceAtoms = (task?.evidenceAtoms ?? [])
+          .filter((atom) => atom.required && !atom.acceptedPatterns.some((pattern) => evidenceHit(pattern, text)))
+          .map((atom) => atom.id);
+        issue.metadata = {
+          taskId: task?.id,
+          contractId: premise.id,
+          episodeNumber: premise.episodeNumber,
+          sceneId: premise.targetSceneIds[0],
+          artifactPath: task?.artifactPath,
+          repairHandler: task?.repairHandler,
+          missingEvidenceAtoms,
+          requiredEvidenceAtoms: task?.evidenceAtoms.filter((atom) => atom.required).map((atom) => atom.id),
+        };
+      }
     }
 
     const generatedEpisodes = new Set((input.story.episodes ?? []).map((episode) => episode.number));
@@ -314,6 +378,22 @@ export class NarrativeContractValidator extends BaseValidator {
       const actualLocation = normalize(scene.timeline?.location ?? '');
       const expectedTime = normalize(transition.toTimeOfDay ?? '');
       const actualTime = normalize(scene.timeline?.timeOfDay ?? '');
+      for (const stateContract of transition.stateContracts ?? []) {
+        const hasEvidence = stateContract.requiredEvidence.length === 0
+          || stateContract.requiredEvidence.some((pattern) => evidenceHit(pattern, sceneText(scene)));
+        if (hasEvidence) continue;
+        issues.push(stateContract.blocking
+          ? this.error(
+            `Continuity state "${stateContract.subject}" did not carry its required transition evidence into scene "${transition.toSceneId}".`,
+            `transition-state:${stateContract.id}`,
+            'Rewrite the receiving scene so the object, relationship, or disposition visibly persists across the transition.',
+          )
+          : this.warning(
+            `Continuity state "${stateContract.subject}" has no visible transition evidence in scene "${transition.toSceneId}".`,
+            `transition-state:${stateContract.id}`,
+            'Add a natural visible reminder of the carried state.',
+          ));
+      }
       const locationMismatch = Boolean(expectedLocation && actualLocation && expectedLocation !== actualLocation && !actualLocation.includes(expectedLocation) && !expectedLocation.includes(actualLocation));
       const timeMismatch = Boolean(expectedTime && actualTime && expectedTime !== actualTime);
       if (!locationMismatch && !timeMismatch) continue;
@@ -371,7 +451,13 @@ export class NarrativeContractValidator extends BaseValidator {
       ));
     }
 
-    const viralEvents = graph.events.filter((event) => event.cue === 'blogAftermath' && /viral|readership|audience|followers?|shares?|views?/i.test(event.sourceText));
+    const hasExecutableEventTask = (eventId: string): boolean =>
+      (graph.realizationTasks ?? []).some((task) => task.eventId === eventId);
+    const viralEvents = graph.events.filter((event) =>
+      !hasExecutableEventTask(event.id)
+      && event.cue === 'blogAftermath'
+      && /viral|readership|audience|followers?|shares?|views?/i.test(event.sourceText),
+    );
     for (const event of viralEvents) {
       const prose = episodeScenes(input.story, event.episodeNumber).map(sceneText).join(' ');
       if (!/\bviral\b|goes?\s+viral/i.test(prose)) {
@@ -384,6 +470,7 @@ export class NarrativeContractValidator extends BaseValidator {
     }
 
     for (const event of graph.events.filter((candidate) => candidate.cue === 'lateNightWriting')) {
+      if (hasExecutableEventTask(event.id)) continue;
       const aliasRequirement = event.evidenceRequirements?.find((requirement) => requirement.kind === 'exact_alias');
       if (!aliasRequirement) continue;
       const prose = event.ownerSceneId
@@ -398,23 +485,49 @@ export class NarrativeContractValidator extends BaseValidator {
       }
     }
 
-    for (const event of graph.events.filter((candidate) => candidate.routeRealizationPolicy === 'all_routes')) {
+    for (const event of graph.events.filter((candidate) =>
+      candidate.routeRealizationPolicy === 'all_routes' && !hasExecutableEventTask(candidate.id),
+    )) {
       const owner = event.ownerSceneId
         ? episodeScenes(input.story, event.episodeNumber).find((scene) => scene.id === event.ownerSceneId)
         : undefined;
       if (!owner?.encounter) continue;
       const tiers = event.requiredOutcomeTiers ?? [];
       for (const tier of tiers) {
+        const routeTexts = collectReaderFacingTextsForEncounterOutcomeTier(owner, [tier]).get(tier) ?? [];
+        const routeText = normalize(routeTexts.join(' '));
         const terminalText = normalize(collectReaderFacingTerminalTextsForEncounterOutcomeTier(owner, tier).join(' '));
-        if (!terminalText) continue;
-        const hasRescue = /\b(?:rescu|interven|saved|pulled|dragged|shielded|carried|walked you home)\w*/i.test(terminalText);
+        if (!routeText && !terminalText) continue;
+        const hasRescue = /\b(?:rescu|interven|saved|pulled|dragged|shielded|carried|walked you home)\w*/i.test(routeText);
         const hasThreshold = /\b(?:threshold|door|apartment|hallway|gone|vanish|disappear|empty)\w*/i.test(terminalText);
         if (hasRescue && hasThreshold) continue;
-        issues.push(this.error(
+        const issue = this.error(
           `Threat event "${event.id}" is not realized on terminal route "${tier}"; required rescue and disappearance/threshold evidence is missing.`,
           `routeRealization:ep${event.episodeNumber}:${event.id}:${tier}`,
-          'Author a route-specific terminal outcome for this tier. Shared encounter setup does not satisfy a terminal route obligation.',
-        ));
+          'Author the missing route evidence on its declared surface: rescue may occur on the reachable path, while threshold/disappearance must remain in the terminal aftermath.',
+        );
+        const requirement = event.evidenceRequirements?.find((candidate) => candidate.id.endsWith('rescue'));
+        const task = requirement
+          ? (graph.realizationTasks ?? []).find((candidate) =>
+            candidate.contractId === requirement.id
+            && candidate.outcomeTier === tier,
+          )
+          : undefined;
+        issue.metadata = {
+          taskId: task?.id,
+          contractId: requirement?.id ?? event.id,
+          eventId: event.id,
+          episodeNumber: event.episodeNumber,
+          sceneId: event.ownerSceneId,
+          outcomeTier: tier,
+          artifactPath: task?.artifactPath,
+          repairHandler: 'encounter_route',
+          missingEvidenceAtoms: [
+            ...(!hasRescue ? [`${event.id}:rescue`] : []),
+            ...(!hasThreshold ? [`${event.id}:threshold-disappearance`] : []),
+          ],
+        };
+        issues.push(issue);
       }
     }
 
@@ -422,35 +535,59 @@ export class NarrativeContractValidator extends BaseValidator {
     // label is episode-local: a later scene must not leapfrog a contract that
     // was earned only in an encounter or branch-specific surface. Scan only
     // reader-facing text and ignore explicit negation, which is pacing-correct.
-    const blockedRelationshipLabels = new Map<number, Array<{ label: string; contractId: string }>>();
+    const blockedRelationshipLabels = new Map<number, Array<{ label: string; contractId: string; permittedSceneOrder: number }>>();
     for (const planned of input.scenePlan?.scenes ?? []) {
       for (const pacing of planned.relationshipPacing ?? []) {
         for (const label of pacing.blockedLabels ?? []) {
           const existing = blockedRelationshipLabels.get(planned.episodeNumber) ?? [];
-          existing.push({ label, contractId: pacing.id });
+          existing.push({ label, contractId: pacing.id, permittedSceneOrder: planned.order });
           blockedRelationshipLabels.set(planned.episodeNumber, existing);
         }
       }
     }
     for (const [episodeNumber, labels] of blockedRelationshipLabels) {
-      const texts = episodeScenes(input.story, episodeNumber).flatMap((scene) => sceneText(scene).split(/(?<=[.!?])\s+/));
-      for (const { label, contractId } of labels) {
+      const scenes = episodeScenes(input.story, episodeNumber);
+      for (const { label, contractId, permittedSceneOrder } of labels) {
         const labelPattern = normalize(label);
-        const hit = texts.find((text) => {
-          const normalized = normalize(text);
-          if (!normalized.includes(labelPattern)) return false;
-          const prefix = normalized.slice(0, normalized.indexOf(labelPattern));
-          return !/(?:\bnot|\bnever|\bno|\bnot yet|\bcould become|\bmight become)\s+(?:your|our|my|a|an|the)?\s*$/i.test(prefix);
+        const plannedOrderByScene = new Map((input.scenePlan?.scenes ?? [])
+          .filter((scene) => scene.episodeNumber === episodeNumber)
+          .map((scene) => [scene.id, scene.order]));
+        const hitScene = scenes.find((scene) => {
+          const order = plannedOrderByScene.get(scene.id) ?? scenes.indexOf(scene);
+          if (order > permittedSceneOrder) return false;
+          return sceneText(scene).split(/(?<=[.!?])\s+/).some((text) => {
+            const normalized = normalize(text);
+            if (!normalized.includes(labelPattern)) return false;
+            const prefix = normalized.slice(0, normalized.indexOf(labelPattern));
+            return !/(?:\bnot|\bnever|\bno|\bnot yet|\bcould become|\bmight become)\s+(?:your|our|my|a|an|the)?\s*$/i.test(prefix);
+          });
         });
-        if (!hit) continue;
-        issues.push(this.error(
+        if (!hitScene) continue;
+        const sceneId = hitScene.id;
+        const issue = this.error(
           `Blocked relationship label "${label}" appears in reader-facing episode ${episodeNumber} prose before contract "${contractId}" permits it.`,
-          `relationshipLabel:ep${episodeNumber}:${contractId}:${labelPattern}`,
+          `relationshipLabel:ep${episodeNumber}:${sceneId}:${contractId}:${labelPattern}`,
           'Rewrite the line at the currently earned relationship stage; preserve attraction, pressure, or provisional alliance without declaring the blocked label.',
-        ));
+        );
+        const task = (graph.realizationTasks ?? []).find((candidate) =>
+          candidate.contractId === contractId && candidate.repairHandler === 'relationship_pacing',
+        );
+        issue.metadata = {
+          taskId: task?.id,
+          contractId,
+          episodeNumber,
+          sceneId,
+          artifactPath: task?.artifactPath,
+          repairHandler: 'relationship_pacing',
+        };
+        issues.push(issue);
       }
     }
 
-    return issues.length === 0 ? buildSuccessResult(100) : buildFailureResult(issues, 0);
+    const blockingIssues = issues.filter((issue) => issue.severity === 'error');
+    if (blockingIssues.length === 0) {
+      return { ...buildSuccessResult(100), issues };
+    }
+    return buildFailureResult(issues, 0);
   }
 }

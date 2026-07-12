@@ -160,4 +160,43 @@ describe('reconcileRelationshipPacingWithChoiceTypes', () => {
     expect(scenes[0].relationshipPacing[0].source).toBe('choice');
     expect(scenes[0].relationshipPacing[0].targetStage).toBe('friend');
   });
+
+  it('keeps a capped group milestone aligned with its provisional pacing stage', () => {
+    const milestone = {
+      id: 'scene-f-milestone',
+      kind: 'group_formation' as const,
+      sourceText: 'The three become friends.',
+      subjectType: 'group' as const,
+      subjectId: 'dusk-club',
+      targetStage: 'friend' as const,
+      introductionSceneIds: ['scene-a'],
+      testSceneIds: ['scene-b'],
+      choiceSceneId: 'scene-f',
+      memberNpcIds: ['mika'],
+      requiredEvidenceTags: ['respected_agency' as const],
+    };
+    const scenes = [{
+      id: 'scene-f',
+      choicePoint: { type: 'expression' as const },
+      relationshipPacing: [{
+        id: 'scene-f-rel-group',
+        source: 'choice' as const,
+        groupId: 'dusk-club',
+        startStage: 'unmet' as const,
+        targetStage: 'friend' as const,
+        allowedLabels: ['friend'],
+        blockedLabels: ['friend'],
+        requiredEvidence: [],
+        minScenesSinceIntroduction: 1,
+        maxDeltaThisScene: 6,
+        mechanicDimensions: ['trust' as const],
+        milestone,
+      }],
+    }];
+
+    reconcileRelationshipPacingWithChoiceTypes(scenes);
+
+    expect(scenes[0].relationshipPacing[0].targetStage).toBe('spark');
+    expect(scenes[0].relationshipPacing[0].milestone?.targetStage).toBe('spark');
+  });
 });

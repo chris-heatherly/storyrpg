@@ -3057,6 +3057,59 @@ describe('StoryArchitect blueprint branch-adequacy guard', () => {
     }
 	  });
 
+  it('preserves a planned relationship choice type for authored group milestones', () => {
+    const architect = new StoryArchitect(config);
+    const milestone = {
+      id: 's1-4-milestone-dusk-club',
+      kind: 'group_formation' as const,
+      sourceText: 'The three become friends and form the Dusk Club.',
+      subjectType: 'group' as const,
+      subjectId: 'dusk-club',
+      targetStage: 'friend' as const,
+      introductionSceneIds: ['s1-2'],
+      testSceneIds: ['s1-3'],
+      choiceSceneId: 's1-4',
+      memberNpcIds: ['stela', 'mika'],
+      requiredEvidenceTags: ['respected_agency' as const],
+    };
+    const input = makeInput({
+      episodeNumber: 1,
+      seasonPlanDirectives: {
+        plannedScenes: [{
+          ...plannedStandard('s1-4', 0, 'development'),
+          hasChoice: true,
+          choiceType: 'relationship',
+          requiredBeats: [{
+            id: 's1-4-rb1',
+            sourceTurn: milestone.sourceText,
+            mustDepict: milestone.sourceText,
+            tier: 'authored',
+          }],
+          relationshipPacing: [{
+            id: 's1-4-rel-dusk-club',
+            source: 'choice',
+            groupId: 'dusk-club',
+            startStage: 'unmet',
+            targetStage: 'friend',
+            allowedLabels: ['invitation', 'fragile beginning'],
+            blockedLabels: ['friends now'],
+            requiredEvidence: [],
+            minScenesSinceIntroduction: 1,
+            maxDeltaThisScene: 6,
+            mechanicDimensions: ['trust'],
+            milestone,
+          }],
+        }],
+      } as any,
+    });
+
+    const blueprint = (architect as any).buildBlueprintFromPlannedScenes(input);
+    const scene = blueprint.scenes[0];
+    expect(scene.choicePoint?.type).toBe('relationship');
+    expect(scene.relationshipPacing?.[0]?.targetStage).toBe('friend');
+    expect(scene.relationshipPacing?.[0]?.milestone?.targetStage).toBe('friend');
+  });
+
   it('elaborate path returns advisory warnings through the normal warning channel', async () => {
     const architect = new StoryArchitect(config);
     const input = makeInput({

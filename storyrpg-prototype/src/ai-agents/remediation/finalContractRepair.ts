@@ -49,6 +49,14 @@ export interface ContractRepairReport {
     /** Exact object path inspected by the validator (for field-owned repair). */
     fieldPath?: string;
     episodeNumber?: number;
+    taskId?: string;
+    contractId?: string;
+    eventId?: string;
+    outcomeTier?: string;
+    artifactPath?: string;
+    repairHandler?: string;
+    missingEvidenceAtoms?: string[];
+    requiredEvidenceAtoms?: string[];
   }>;
 }
 
@@ -152,6 +160,10 @@ export function contractRepairIssueFingerprint(issue: ContractRepairIssue): stri
     issue.beatId ?? '',
     issue.fieldPath ?? '',
     compactFingerprintText(moment),
+    issue.taskId ?? '',
+    issue.contractId ?? '',
+    issue.eventId ?? '',
+    issue.outcomeTier ?? '',
   ].join('::');
 }
 
@@ -400,6 +412,8 @@ export async function runFinalContractRepair(opts: {
   onRoundSnapshot?: (snapshot: ContractRepairRoundSnapshot, story: Story, report: ContractRepairReport) => Promise<void> | void;
   /** Fail when a handler claims success without changing validator-visible story data. */
   requireMutationEvidence?: boolean;
+  /** Reject a candidate that introduces any new blocking fingerprint. */
+  rejectIntroducedBlockingIssues?: boolean;
 }): Promise<FinalContractRepairOutcome> {
   const maxAttempts = opts.maxAttempts ?? 2;
   let story = opts.story;
@@ -424,8 +438,10 @@ export async function runFinalContractRepair(opts: {
 
     const roundInputHash = finalContractRepairInputHash(story);
     const roundBefore = cloneForRepairEvidence(story);
+    const allBeforeIssueKeys = report.blockingIssues.map(contractRepairIssueFingerprint);
     const beforeIssueKeys = round.issues.map(contractRepairIssueFingerprint);
     let roundChanged = false;
+    const roundRecords: Array<Omit<RemediationLedgerRecord, 'timestamp'>> = [];
     let anyHandlerReportedAttempts = false;
     const attemptedThisRound = new Set<string>();
     const handlerReportedPaths = new Set<string>();
@@ -458,14 +474,45 @@ export async function runFinalContractRepair(opts: {
       if (result.changed) {
         roundChanged = true;
         story = result.story;
-        if (result.record) records.push(result.record);
+        if (result.record) roundRecords.push(result.record);
       }
     }
 
     if (!roundChanged) break; // fixpoint: nothing left any handler can fix
     // Revalidate before charging issue fingerprints. A handler only consumes
     // budget after the canonical validators have observed its candidate.
-    report = await opts.revalidate(story);
+    const candidateReport = await opts.revalidate(story);
+    const candidateIssueKeys = candidateReport.blockingIssues.map(contractRepairIssueFingerprint);
+    const beforeIssueSet = new Set(allBeforeIssueKeys);
+    const introducedCandidateKeys = candidateIssueKeys.filter((key) => !beforeIssueSet.has(key));
+    if (opts.rejectIntroducedBlockingIssues && introducedCandidateKeys.length > 0) {
+      // A repair is transactional: do not commit a locally improved scene that
+      // creates a new blocking obligation elsewhere in the story.
+      story = roundBefore;
+      opts.onRoundSnapshot?.({
+        schemaVersion: FINAL_CONTRACT_REPAIR_SNAPSHOT_VERSION,
+        validatorVersion: FINAL_CONTRACT_VALIDATOR_VERSION,
+        round: attempts,
+        inputHash: roundInputHash,
+        beforeIssueKeys,
+        afterIssueKeys: beforeIssueKeys,
+        attemptedIssueKeys: [],
+        changedFieldPaths: [],
+        handlerAttempts,
+        clearedIssueKeys: [],
+        introducedIssueKeys: introducedCandidateKeys,
+        revalidationDelta: {
+          beforeBlocking: beforeIssueKeys.length,
+          afterBlocking: beforeIssueKeys.length,
+          cleared: 0,
+          introduced: introducedCandidateKeys.length,
+        },
+        passed: false,
+      }, story, report);
+      break;
+    }
+    report = candidateReport;
+    records.push(...roundRecords);
     const observedChangedPaths = collectChangedFieldPaths(roundBefore, story);
     const changedFieldPaths = Array.from(new Set([...handlerReportedPaths, ...observedChangedPaths])).sort();
     if (opts.requireMutationEvidence && changedFieldPaths.length === 0) {
@@ -484,7 +531,6 @@ export async function runFinalContractRepair(opts: {
     }
     const afterIssueKeys = report.blockingIssues.map(contractRepairIssueFingerprint);
     const afterIssueSet = new Set(afterIssueKeys);
-    const beforeIssueSet = new Set(beforeIssueKeys);
     const snapshot: ContractRepairRoundSnapshot = {
       schemaVersion: FINAL_CONTRACT_REPAIR_SNAPSHOT_VERSION,
       validatorVersion: FINAL_CONTRACT_VALIDATOR_VERSION,

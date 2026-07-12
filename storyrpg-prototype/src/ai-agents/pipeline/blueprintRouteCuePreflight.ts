@@ -259,6 +259,17 @@ function replaceTarget(scene: SceneBlueprint, from: string, to: string[]): void 
   scene.leadsTo = Array.from(next);
 }
 
+function isCanonicalSceneLock(scene: SceneBlueprint): boolean {
+  return Boolean(
+    scene.narrativeEventPlanVersion != null
+    || (scene.narrativeEventIds?.length ?? 0) > 0
+    || (scene.sceneEventOwnership?.ownedEvents?.length ?? 0) > 0
+    || (scene.requiredBeats ?? []).some((beat) => beat.tier === 'authored' || beat.tier === 'signature')
+    || scene.planningOrigin
+    || scene.isEncounter,
+  );
+}
+
 export function mergeDuplicatePublicAftermathScenes(blueprint: EpisodeBlueprint): number {
   const firstByCue = new Map<RouteCue, SceneBlueprint>();
   const toRemove = new Set<string>();
@@ -271,7 +282,7 @@ export function mergeDuplicatePublicAftermathScenes(blueprint: EpisodeBlueprint)
       firstByCue.set('blogAftermath', scene);
       continue;
     }
-    if (scene.choicePoint || scene.isEncounter) continue;
+    if (scene.choicePoint || isCanonicalSceneLock(scene)) continue;
     mergeSceneObligations(first, scene);
     const replacements = (scene.leadsTo ?? []).filter((target) => target !== scene.id);
     for (const candidate of blueprint.scenes ?? []) replaceTarget(candidate, scene.id, replacements);

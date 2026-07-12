@@ -77,6 +77,12 @@ function capGroupWithoutGroupChoice(contract: RelationshipPacingContract): void 
     'intimate',
     'settled membership',
   ]));
+  // The milestone is the same authored relationship contract viewed through
+  // the group-formation ledger. Keeping it at `friend` while the scene is
+  // capped at `spark` creates an impossible plan: the title invites settled
+  // membership while the prose contract forbids it. Project the conservative
+  // stage to both surfaces before any LLM sees the scene.
+  if (contract.milestone) contract.milestone.targetStage = contract.targetStage;
 }
 
 export function reconcileRelationshipPacingWithChoiceTypes(scenes: SceneWithRelationshipPacing[]): number {

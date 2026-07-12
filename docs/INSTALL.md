@@ -414,13 +414,15 @@ Proxy-spawned generation workers also enqueue Cognee writes through a
 proxy-owned durable outbox. The outbox drains and cognifies only after active
 story workers are idle, so a busy Cognee writer cannot block scene generation.
 
-Cognee recall is scoped by stable content facets (artifact/fact IDs and kinds),
-not by the requesting agent's name. The pipeline first uses current in-process
-typed facts, then makes one bounded semantic Cognee query per agent phase. If
-an older graph's facet filter is empty, it retries once without that filter and
-records the fallback in memory telemetry. A non-empty health check alone does
-not prove useful recall: inspect the generation quality ledger for recall and
-empty-recall counts after a test run.
+Cognee recall first uses current in-process typed facts, then makes one bounded,
+semantic query scoped to the relevant project/source/run datasets. Production
+recall does not use Cognee graph-node filters: the running sidecar has not
+matched StoryRPG's persisted node-set schema, and filtering therefore caused
+empty results. `STORYRPG_MEMORY_COGNEE_NODE_FILTER_MODE=observe` performs an
+extra diagnostic-only filtered search without affecting prompt context;
+`enforce` is for provider diagnostics only. A non-empty health check alone does
+not prove useful recall: inspect the generation quality ledger for recall,
+empty-recall, and filter-fallback counts after a test run.
 
 ### 4.d) Optional — LoRA Auto-Training Sidecar
 

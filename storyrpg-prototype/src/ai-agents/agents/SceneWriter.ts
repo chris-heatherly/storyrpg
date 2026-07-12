@@ -1878,6 +1878,11 @@ ${input.sceneBlueprint.canonicalEvidenceRequirements?.length ? `
 These requirements belong to this scene's assigned event contracts. Realize them in the stated surface; evidence in another scene, metadata, or a sibling encounter route does not count. Keep the wording natural and fiction-first.
 ${input.sceneBlueprint.canonicalEvidenceRequirements.map((requirement) => `- ${requirement.eventId} / ${requirement.kind}: use one of [${requirement.acceptedPatterns.join(', ')}] on ${requirement.requiredSurface || 'the owner scene'}.`).join('\n')}
 ` : ''}
+${input.sceneBlueprint.realizationTasks?.length ? `
+### Immutable Realization Tasks (owner-stage contract)
+These task IDs are assigned to this scene by the canonical narrative graph. Show the required evidence on the required surface; do not satisfy a task through synopsis, metadata, recap, or another scene. Return the IDs as diagnostics only after the prose actually realizes them.
+${input.sceneBlueprint.realizationTasks.map((task) => `- ${task.id}: surfaces=${task.requiredSurface.join(', ')}; route=${task.routePolicy}; evidence=${task.evidenceAtoms.map((atom) => atom.acceptedPatterns.join(' / ')).join(' | ')}`).join('\n')}
+` : ''}
 ${input.sceneBlueprint.turnContract ? `
 ### Scene Turn Contract
 - **Central turn**: ${input.sceneBlueprint.turnContract.centralTurn}

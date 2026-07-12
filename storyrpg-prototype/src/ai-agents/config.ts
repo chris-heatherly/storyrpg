@@ -1035,6 +1035,8 @@ export interface MemoryConfig {
   cognifyOnWrite?: boolean;
   /** Per-worker cap for concurrent historical-memory recalls. */
   searchConcurrency?: number;
+  /** Cognee graph-node filter policy. Off keeps production recall semantic and dataset-scoped. */
+  nodeFilterMode?: 'off' | 'observe' | 'enforce';
   /** Server-internal proxy endpoint that durably queues Cognee writes. */
   outboxUrl?: string;
   /** Ephemeral proxy token for the server-internal outbox endpoint. */
@@ -1124,6 +1126,9 @@ export function resolveMemoryConfig(env: Record<string, string | undefined>): Me
     cognifyEnabled: env.STORYRPG_MEMORY_COGNIFY !== '0',
     cognifyOnWrite: env.STORYRPG_MEMORY_COGNIFY_ON_WRITE === '1',
     searchConcurrency: Math.max(1, Number.parseInt(env.STORYRPG_MEMORY_SEARCH_CONCURRENCY || '2', 10) || 2),
+    nodeFilterMode: env.STORYRPG_MEMORY_COGNEE_NODE_FILTER_MODE === 'observe' || env.STORYRPG_MEMORY_COGNEE_NODE_FILTER_MODE === 'enforce'
+      ? env.STORYRPG_MEMORY_COGNEE_NODE_FILTER_MODE
+      : 'off',
     outboxUrl: env.STORYRPG_MEMORY_OUTBOX_URL || undefined,
     outboxToken: env.STORYRPG_MEMORY_OUTBOX_TOKEN || undefined,
     maxPromptChars: Number.parseInt(env.STORYRPG_MEMORY_MAX_PROMPT_CHARS || '6000', 10) || 6000,

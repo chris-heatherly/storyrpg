@@ -731,6 +731,25 @@ describe('FinalStoryContractValidator', () => {
     ]));
   });
 
+  it('preserves canonical realization routing metadata in final blockers', async () => {
+    const report = await new FinalStoryContractValidator().validate({
+      story: validStory(),
+      treatmentSourced: true,
+      fidelityFindings: [{
+        validator: 'NarrativeContractValidator', severity: 'error',
+        message: 'Threat route is missing rescue evidence.', episodeNumber: 1, sceneId: 'enc-1',
+        taskId: 'task:rescue:route:victory', contractId: 'event:ep1-u7:rescue', eventId: 'event:ep1-u7',
+        outcomeTier: 'victory', repairHandler: 'encounter_route', missingEvidenceAtoms: ['event:ep1-u7:rescue'],
+      }],
+    });
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        validator: 'NarrativeContractValidator', sceneId: 'enc-1', outcomeTier: 'victory',
+        repairHandler: 'encounter_route', taskId: 'task:rescue:route:victory',
+      }),
+    ]));
+  });
+
   it('blocks planning-register prose leaked into beats, variants, encounters, and visual metadata', async () => {
     const story = validStory();
     const scene = story.episodes[0].scenes[0] as any;

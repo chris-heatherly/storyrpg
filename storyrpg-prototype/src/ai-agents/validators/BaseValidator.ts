@@ -10,6 +10,21 @@ export interface ValidationIssue {
   message: string;
   location?: string;
   suggestion?: string;
+  /** Structured routing metadata. Legacy location strings remain for readers. */
+  metadata?: {
+    taskId?: string;
+    contractId?: string;
+    eventId?: string;
+    dependencyId?: string;
+    episodeNumber?: number;
+    sceneId?: string;
+    beatId?: string;
+    outcomeTier?: string;
+    artifactPath?: string;
+    repairHandler?: string;
+    missingEvidenceAtoms?: string[];
+    requiredEvidenceAtoms?: string[];
+  };
 }
 
 export interface ValidationResult {

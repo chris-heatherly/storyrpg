@@ -127,6 +127,43 @@ describe('EpisodeArchitecturePhase', () => {
     ]);
   });
 
+  it('retries when a successful blueprint contains contradictory relationship architecture', async () => {
+    const invalidBlueprint = makeBlueprint();
+    invalidBlueprint.scenes[0] = {
+      ...invalidBlueprint.scenes[0],
+      name: 'Stela and Kylie become friends',
+      relationshipPacing: [{
+        id: 'rel-stela',
+        source: 'treatment',
+        npcId: 'stela',
+        startStage: 'unmet',
+        targetStage: 'spark',
+        allowedLabels: ['spark'],
+        blockedLabels: ['friend'],
+        requiredEvidence: [],
+        minScenesSinceIntroduction: 0,
+        maxDeltaThisScene: 8,
+        mechanicDimensions: ['trust'],
+      }],
+    };
+    const execute = vi.fn()
+      .mockResolvedValueOnce({ success: true, data: invalidBlueprint })
+      .mockResolvedValueOnce({ success: true, data: makeBlueprint() });
+    const deps = makeDeps({ storyArchitect: { execute } as any });
+    const events: PipelineEvent[] = [];
+
+    await new EpisodeArchitecturePhase(deps).run(
+      makeBrief(), { worldRules: [], tensions: [] } as any, { characters: [] } as any, makeContext(events),
+    );
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect((execute.mock.calls[1] as unknown[])[0]).toMatchObject({
+      userPrompt: expect.stringContaining('CRITICAL ARCHITECTURE CONTRACT REPAIR'),
+    });
+    expect(events.some((event) => event.type === 'regeneration_triggered'
+      && String((event as any).message).includes('architecture contract conflict'))).toBe(true);
+  });
+
   it('does not retry deterministic planned-scene density failures with prompt mutation', async () => {
     const execute = vi.fn(async () => ({
       success: false,

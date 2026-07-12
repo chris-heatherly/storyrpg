@@ -225,6 +225,14 @@ export interface FinalStoryContractIssue {
   beatId?: string;
   validator?: string;
   suggestion?: string;
+  taskId?: string;
+  contractId?: string;
+  eventId?: string;
+  outcomeTier?: string;
+  artifactPath?: string;
+  repairHandler?: string;
+  missingEvidenceAtoms?: string[];
+  requiredEvidenceAtoms?: string[];
 }
 
 export interface FinalStoryContractReport {
@@ -323,6 +331,14 @@ export interface FinalStoryContractInput {
     sourceKind?: FinalContractSourceKind;
     repairTarget?: FinalContractRepairTarget;
     hasConcreteObligation?: boolean;
+    taskId?: string;
+    contractId?: string;
+    eventId?: string;
+    outcomeTier?: string;
+    artifactPath?: string;
+    repairHandler?: string;
+    missingEvidenceAtoms?: string[];
+    requiredEvidenceAtoms?: string[];
   }>;
   /** Optional shadow input from pre-generation fidelity checks; raw gating remains unchanged. */
   planTimeFidelityFindings?: Array<{
@@ -2236,6 +2252,14 @@ export class FinalStoryContractValidator {
         suggestion: finding.suggestion,
         episodeNumber: finding.episodeNumber,
         sceneId: finding.sceneId,
+        taskId: finding.taskId,
+        contractId: finding.contractId,
+        eventId: finding.eventId,
+        outcomeTier: finding.outcomeTier,
+        artifactPath: finding.artifactPath,
+        repairHandler: finding.repairHandler,
+        missingEvidenceAtoms: finding.missingEvidenceAtoms,
+        requiredEvidenceAtoms: finding.requiredEvidenceAtoms,
       });
     }
   }

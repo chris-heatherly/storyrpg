@@ -161,12 +161,12 @@ describe('CogneeHttpMemoryProvider', () => {
     expect(packet?.queryLog[0]).toMatchObject({ query: 'branching failures', resultCount: 1 });
   });
 
-  it('retries once without restrictive graph facets when a filtered Cognee search is empty', async () => {
+  it('uses one semantic dataset-scoped search by default even when stable facets are available', async () => {
     let searchCount = 0;
     const fetchMock = vi.fn(async (url: string) => {
       if (url.endsWith('/api/v1/search')) {
         searchCount += 1;
-        return okResponse(searchCount === 1 ? [] : [{ search_result: 'Indexed source obligation.' }]);
+        return okResponse([{ search_result: 'Indexed source obligation.' }]);
       }
       return okResponse();
     });
@@ -180,10 +180,35 @@ describe('CogneeHttpMemoryProvider', () => {
     });
 
     const searchCalls = callsTo(fetchMock, '/api/v1/search');
-    expect(searchCalls).toHaveLength(2);
-    expect(JSON.parse(searchCalls[0][1].body).nodeNames).toEqual(['fact-kind:source-obligation']);
-    expect(JSON.parse(searchCalls[1][1].body).nodeNames).toBeUndefined();
+    expect(searchCalls).toHaveLength(1);
+    expect(JSON.parse(searchCalls[0][1].body).nodeNames).toBeUndefined();
     expect(packet?.sourceSnippets).toEqual(['Indexed source obligation.']);
+    expect(packet?.queryLog[0]).toMatchObject({ fallbackUsed: false, resultCount: 1 });
+  });
+
+  it('can observe ineffective graph facets without changing semantic prompt context', async () => {
+    let searchCount = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/api/v1/search')) {
+        searchCount += 1;
+        return okResponse(searchCount === 1 ? [{ search_result: 'Semantic source obligation.' }] : []);
+      }
+      return okResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = new CogneeHttpMemoryProvider(makeConfig({ nodeFilterMode: 'observe' }).memory!);
+    const packet = await provider.recall({
+      datasets: ['storyrpg-project'],
+      queries: ['source obligations'],
+      nodeNames: ['fact-kind:source-obligation'],
+    });
+
+    const searchCalls = callsTo(fetchMock, '/api/v1/search');
+    expect(searchCalls).toHaveLength(2);
+    expect(JSON.parse(searchCalls[0][1].body).nodeNames).toBeUndefined();
+    expect(JSON.parse(searchCalls[1][1].body).nodeNames).toEqual(['fact-kind:source-obligation']);
+    expect(packet?.sourceSnippets).toEqual(['Semantic source obligation.']);
     expect(packet?.queryLog[0]).toMatchObject({ fallbackUsed: true, resultCount: 1 });
   });
 });
@@ -287,7 +312,7 @@ describe('PipelineMemory', () => {
     expect(character).toContain('black bob');
   });
 
-  it('builds scoped agent recall with role datasets, node names, and prompt policy', async () => {
+  it('builds scoped semantic agent recall with role datasets and prompt policy', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       text: async () => '',
@@ -314,12 +339,7 @@ describe('PipelineMemory', () => {
       'storyrpg-validator-history',
       'storyrpg-agent-history',
     ]));
-    expect(body.nodeNames).toEqual(expect.arrayContaining([
-      'episode:3',
-      'scene:scene-2',
-      'character:mara-voss',
-      'artifact:episode-blueprint',
-    ]));
+    expect(body.nodeNames).toBeUndefined();
     expect(context.renderedPromptBlock).toContain('Retrieved Pipeline Memory');
     expect(context.renderedPromptBlock).toContain('Advisory context; do not contradict fixed canon.');
   });
@@ -383,6 +403,12 @@ describe('resolveMemoryConfig', () => {
     const config = resolveMemoryConfig({});
     expect(config.searchConcurrency).toBe(2);
     expect(config.cognifyOnWrite).toBe(false);
+    expect(config.nodeFilterMode).toBe('off');
+  });
+
+  it('permits graph-filter observation only when explicitly configured', () => {
+    expect(resolveMemoryConfig({ STORYRPG_MEMORY_COGNEE_NODE_FILTER_MODE: 'observe' }).nodeFilterMode).toBe('observe');
+    expect(resolveMemoryConfig({ STORYRPG_MEMORY_COGNEE_NODE_FILTER_MODE: 'invalid' }).nodeFilterMode).toBe('off');
   });
 });
 

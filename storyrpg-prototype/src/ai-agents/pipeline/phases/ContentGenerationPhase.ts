@@ -282,6 +282,7 @@ import {
   validateSceneProducerOutput,
   type ProducerBlockerFinding,
 } from '../producerBlockerChecks';
+import { validateOwnerRealizationTasks, type RealizationTaskGateFinding } from '../realizationTaskGate';
 import { SeasonChoicePlan, episodeTypeCounts } from '../seasonChoicePlan';
 import {
   SeasonSkillPlan,
@@ -2230,6 +2231,70 @@ export class ContentGenerationPhase {
           }
         }
 
+        // Owner-stage realization gate: canonical evidence tasks are actionable
+        // scene contracts, not final-only diagnostics. Give SceneWriter a bounded
+        // repair opportunity before choices, media, or checkpointing can amplify
+        // an under-realized opening/event/relationship surface.
+        if (sceneBlueprint.realizationTasks?.some((task) => task.ownerStage === 'scene_writer')) {
+          let ownerTaskFindings = validateOwnerRealizationTasks({
+            sceneId: sceneBlueprint.id,
+            tasks: sceneBlueprint.realizationTasks.filter((task) => task.ownerStage === 'scene_writer'),
+            sceneContent,
+            mode: 'owner',
+            currentStage: 'scene_writer',
+          }).filter((finding) => finding.blocking);
+          for (let attempt = 1; attempt <= 2 && ownerTaskFindings.length > 0; attempt += 1) {
+            const feedback = ownerTaskFindings.map((finding) => {
+              const task = sceneBlueprint.realizationTasks?.find((candidate) => candidate.id === finding.taskId);
+              const evidence = task?.evidenceAtoms.map((atom) => `${atom.polarity === 'forbidden' ? 'AVOID' : 'SHOW'} ${atom.acceptedPatterns.join(' / ')}`).join('; ');
+              return `- ${finding.taskId}: ${finding.message}${task?.evidenceAtoms[0]?.sourceText ? ` Source contract: ${task.evidenceAtoms[0].sourceText}` : ''}${evidence ? ` Required evidence: ${evidence}` : ''}`;
+            }).join('\n');
+            context.emit({
+              type: 'regeneration_triggered',
+              phase: 'scenes',
+              message: `Scene ${sceneBlueprint.id} missed ${ownerTaskFindings.length} canonical realization task(s) — retrying owner-stage prose (${attempt}/2)`,
+              data: { findings: ownerTaskFindings },
+            });
+            const ownerTaskRetry = await withTimeout(
+              this.deps.sceneWriter.execute({
+                ...sceneWriterInput,
+                storyContext: {
+                  ...sceneWriterInput.storyContext,
+                  userPrompt: `${sceneWriterInput.storyContext.userPrompt || ''}\n\nOWNER-STAGE REALIZATION REPAIR:\n${feedback}\nShow the evidence as concrete action, dialogue, sensory detail, or visible consequence. Do not paste planning text or contract labels into the prose.`,
+                },
+              }),
+              PIPELINE_TIMEOUTS.llmAgent,
+              `SceneWriter.execute(${sceneBlueprint.id} owner-realization-retry-${attempt})`,
+            );
+            if (!ownerTaskRetry.success || !ownerTaskRetry.data) continue;
+            const retryFindings = validateOwnerRealizationTasks({
+              sceneId: sceneBlueprint.id,
+              tasks: sceneBlueprint.realizationTasks.filter((task) => task.ownerStage === 'scene_writer'),
+              sceneContent: ownerTaskRetry.data,
+              mode: 'owner',
+              currentStage: 'scene_writer',
+            }).filter((finding) => finding.blocking);
+            if (retryFindings.length < ownerTaskFindings.length) {
+              Object.assign(sceneContent, ownerTaskRetry.data);
+              sceneContent.sceneId = sceneBlueprint.id;
+              sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
+              sceneContent.locationId = sceneSettingContext.locationId;
+              sceneContent.settingContext = sceneSettingContext;
+              sceneContent.requiredBeats = sceneRealizationBlueprint.requiredBeats;
+              sceneContent.signatureMoment = sceneRealizationBlueprint.signatureMoment;
+              ownerTaskFindings = retryFindings;
+            }
+          }
+          if (ownerTaskFindings.length > 0) {
+            context.emit({
+              type: 'warning',
+              phase: 'scenes',
+              message: `Scene ${sceneBlueprint.id} still misses ${ownerTaskFindings.length} canonical realization task(s) after owner-stage repair; final contract remains blocking.`,
+              data: { findings: ownerTaskFindings },
+            });
+          }
+        }
+
         // Add branch metadata for visual differentiation
         const isSceneBottleneck = blueprint.bottleneckScenes?.includes(sceneBlueprint.id) || sceneBlueprint.purpose === 'bottleneck';
         const incomingToScene = blueprint.scenes.filter(s => s.leadsTo?.includes(sceneBlueprint.id));
@@ -3504,6 +3569,7 @@ export class ContentGenerationPhase {
             tier: beat.tier,
           })),
           canonicalEventEvidenceRequirements: sceneBlueprint.canonicalEvidenceRequirements,
+          realizationTasks: sceneBlueprint.realizationTasks,
           signatureMoment: sceneBlueprint.signatureMoment,
           centralConflict: sceneBlueprint.encounterCentralConflict || plannedEnc?.centralConflict,
           encounterSpineProfile: sceneBlueprint.encounterProfile
@@ -3759,6 +3825,27 @@ export class ContentGenerationPhase {
               if (this.deps.incrementalValidator) {
                 this.deps.trackEncounterFlagConsequences(sanitizedStructure);
               }
+              // Quarantine recovery bypasses the normal encounterResult path;
+              // record its incremental scene lock here so the episode lock can
+              // distinguish a recovered encounter from a missing scene.
+              if (this.deps.incrementalValidator && incrementalConfig.encounterValidation) {
+                const encounterValidation = this.deps.incrementalValidator.validators.encounter.validateEncounter(sanitizedStructure);
+                this.deps.recordSceneValidationResult({
+                  sceneId: sceneBlueprint.id,
+                  episodeNumber: brief.episode.number,
+                  sceneName: sceneBlueprint.name,
+                  encounter: encounterValidation,
+                  overallPassed: encounterValidation.passed,
+                  regenerationRequested: encounterValidation.passed ? 'none' : 'encounter',
+                  validationTimeMs: 0,
+                });
+                context.emit({
+                  type: 'incremental_validation',
+                  phase: 'encounter',
+                  message: `Encounter ${sceneBlueprint.id} quarantine recovery: ${encounterValidation.passed ? 'PASSED' : 'ISSUES FOUND'} (${encounterValidation.beatCount} beats)`,
+                  data: { passed: encounterValidation.passed, beatCount: encounterValidation.beatCount, issues: encounterValidation.issues },
+                });
+              }
               if (this.deps.generationPlan) {
                 setSceneBeats(
                   this.deps.generationPlan,
@@ -3826,7 +3913,7 @@ export class ContentGenerationPhase {
             // Get the placeholder scene content for this encounter
             const encounterSceneContent = sceneContents.find(sc => sc.sceneId === sceneBlueprint.id);
             
-            if (encounterSceneContent) {
+            if (encounterSceneContent || sceneBlueprint.isEncounter) {
               // Create a validation result for the encounter scene
               const sceneValidation: SceneValidationResult = {
                 sceneId: sceneBlueprint.id,
@@ -4139,6 +4226,54 @@ export class ContentGenerationPhase {
       const completedScene = sceneContents.find((sc) => sc.sceneId === sceneBlueprint.id);
       const completedChoice = completedScene ? findChoiceSetForScene(choiceSets, completedScene) : undefined;
       const completedEncounter = encounters.get(sceneBlueprint.id);
+      const realizationFindings: RealizationTaskGateFinding[] = validateOwnerRealizationTasks({
+        sceneId: sceneBlueprint.id,
+        tasks: sceneBlueprint.realizationTasks,
+        sceneContent: completedScene,
+        choiceSet: completedChoice,
+        encounter: completedEncounter,
+        mode: 'owner',
+      });
+      const realizationBlockers = realizationFindings.filter((finding) => finding.blocking);
+      const realizationAdvisories = realizationFindings.filter((finding) => !finding.blocking);
+      if (realizationAdvisories.length > 0) {
+        context.emit({
+          type: 'warning',
+          phase: 'content',
+          message: `Scene ${sceneBlueprint.id} has ${realizationAdvisories.length} advisory realization finding(s).`,
+          data: { findings: realizationAdvisories },
+        });
+      }
+      if (realizationBlockers.length > 0) {
+        if (outputDirectory) {
+          await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-realization-blockers.json`, {
+            schemaVersion: 1,
+            episodeNumber: densityEpisodeNumber,
+            sceneId: sceneBlueprint.id,
+            findings: realizationBlockers,
+          });
+        }
+        const first = realizationBlockers[0];
+        throw new PipelineError(
+          `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} failed assigned realization task ${first.taskId}: ${first.message}`,
+          first.outcomeTier ? 'encounters' : 'scenes',
+          {
+            agent: first.outcomeTier ? 'EncounterArchitect' : 'SceneWriter',
+            context: {
+              sceneId: sceneBlueprint.id,
+              findings: realizationBlockers,
+              retryBudget: 1,
+            },
+            failure: {
+              code: 'prose_realization_failed',
+              ownerStage: first.outcomeTier ? 'scene_content' : 'scene_content',
+              retryClass: 'repair_scene_prose',
+              issueCodes: realizationBlockers.map((finding) => finding.code),
+              repairTarget: first.taskId,
+            },
+          },
+        );
+      }
       const producerBlockers: ProducerBlockerFinding[] = [
         ...(completedScene ? validateSceneProducerOutput(sceneBlueprint.id, completedScene) : []),
         ...(completedChoice ? validateChoiceProducerOutput(sceneBlueprint.id, completedChoice) : []),

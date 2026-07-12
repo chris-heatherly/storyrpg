@@ -273,11 +273,9 @@ describe('validateBlueprintRouteCueOrder', () => {
       scene('scene-arrival', 'The protagonist arrives at the airport with two bags.', ['scene-public-a']),
       {
         ...scene('scene-public-a', 'By evening, the anonymous post has gone viral and the views keep climbing.', ['scene-public-b']),
-        requiredBeats: [{ id: 'required-a', tier: 'authored', sourceTurn: 'The public response becomes visible.', mustDepict: 'The public response becomes visible.' }],
       },
       {
         ...scene('scene-public-b', 'The readership number climbs until the post becomes a public signal.', ['scene-next']),
-        requiredBeats: [{ id: 'required-b', tier: 'authored', sourceTurn: 'The public response creates new pressure.', mustDepict: 'The public response creates new pressure.' }],
       },
       scene('scene-next', 'The next scene starts after the public aftermath.'),
     ]);
@@ -285,7 +283,25 @@ describe('validateBlueprintRouteCueOrder', () => {
     expect(mergeDuplicatePublicAftermathScenes(bp)).toBe(1);
     expect(bp.scenes.map((s) => s.id)).toEqual(['scene-arrival', 'scene-public-a', 'scene-next']);
     expect(bp.scenes[1].leadsTo).toEqual(['scene-next']);
-    expect(bp.scenes[1].requiredBeats?.map((beat) => beat.id)).toEqual(['required-a', 'required-b']);
     expect(validateBlueprintRouteCueOrder(bp)).toEqual([]);
+  });
+
+  it('does not merge a duplicate aftermath scene carrying canonical obligations', () => {
+    const bp = blueprint([
+      scene('scene-arrival', 'The protagonist arrives at the airport with two bags.', ['scene-public-a']),
+      scene('scene-public-a', 'By evening, the anonymous post has gone viral and the views keep climbing.', ['scene-public-b']),
+      {
+        ...scene('scene-public-b', 'The readership number climbs until the post becomes a public signal.', ['scene-next']),
+        narrativeEventIds: ['ep1.blog_aftermath'],
+        narrativeEventPlanVersion: 3,
+        sceneEventOwnership: {
+          ownedEvents: [{ eventContractId: 'ep1.blog_aftermath' }],
+        } as any,
+      },
+      scene('scene-next', 'The next scene starts after the public aftermath.'),
+    ]);
+
+    expect(mergeDuplicatePublicAftermathScenes(bp)).toBe(0);
+    expect(bp.scenes.map((s) => s.id)).toEqual(['scene-arrival', 'scene-public-a', 'scene-public-b', 'scene-next']);
   });
 });

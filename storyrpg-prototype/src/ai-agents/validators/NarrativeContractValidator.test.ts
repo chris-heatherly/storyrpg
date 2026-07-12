@@ -140,6 +140,28 @@ describe('NarrativeContractValidator', () => {
     expect(result.issues.some((issue) => /terminal route "defeat"/i.test(issue.message))).toBe(true);
   });
 
+  it('accepts path-level rescue plus terminal threshold evidence without duplicating rescue prose', () => {
+    const canonical = graph();
+    canonical.events.push({
+      id: 'ep1-threat-path', episodeNumber: 1, sourceOrder: 2,
+      sourceText: 'You are attacked, rescued, and brought to the threshold before the stranger vanishes.',
+      sourceContractIds: ['threat'], realizationMode: 'depiction', ownershipPolicy: 'exactly_one_scene',
+      prerequisiteEventIds: [], targetSceneIds: ['s1'], targetSpineUnitIds: [], ownerSceneId: 's1', cue: 'threatEncounter',
+      routeRealizationPolicy: 'all_routes', requiredOutcomeTiers: ['victory', 'defeat'],
+      provenance: { source: 'treatment_contract', confidence: 'authoritative' },
+    });
+    const input = story(['The attack comes fast. By evening, the post has gone viral.']);
+    input.episodes[0].scenes[0].encounter = {
+      phases: [{ beats: [{ text: 'A dark-clad rescuer intervenes and pulls you clear.' }] }],
+      outcomes: {
+        victory: { narrativeText: 'At your apartment door, he is suddenly gone.' },
+        defeat: { narrativeText: 'You reach the apartment threshold. The stranger vanishes into the empty street.' },
+      },
+    } as never;
+    const result = new NarrativeContractValidator().validate({ story: input, graph: canonical });
+    expect(result.issues.some((issue) => /ep1-threat-path.*terminal route/i.test(issue.message))).toBe(false);
+  });
+
   it('blocks a question-shaped shell only when it has no canonical depiction event', () => {
     const input = story(['The rooftop meeting ends with a new danger.']);
     input.episodes[0].scenes[0].name = 'Can Kylie start over after the rooftop?';
@@ -184,6 +206,91 @@ describe('NarrativeContractValidator', () => {
     } as unknown as SeasonScenePlan;
     const result = new NarrativeContractValidator().validate({ story: input, scenePlan, graph: graph() });
     expect(result.issues.some((issue) => /sealed runtime episode|runtime ownership/i.test(issue.message))).toBe(true);
+  });
+
+  it('emits an exact scene and relationship repair target for a premature label', () => {
+    const canonical = graph();
+    const scenePlan = {
+      scenes: [{
+        id: 's2', episodeNumber: 1, order: 1, relationshipPacing: [{
+          id: 'rel:stela', source: 'treatment', startStage: 'acquaintance', targetStage: 'friend',
+          allowedLabels: ['friend'], blockedLabels: ['friend'], requiredEvidence: [],
+          minScenesSinceIntroduction: 1, maxDeltaThisScene: 1, mechanicDimensions: ['trust'],
+        }],
+      }],
+      narrativeContractGraph: canonical,
+    } as unknown as SeasonScenePlan;
+    canonical.realizationTasks = [{
+      id: 'task:rel:stela:relationship-labels', contractId: 'rel:stela', episodeNumber: 1,
+      ownerStage: 'scene_writer', repairHandler: 'relationship_pacing', sceneId: 's2',
+      evidenceAtoms: [], requiredSurface: ['beat_text'], routePolicy: 'owner_surface', sourceContractIds: ['rel:stela'], blocking: true,
+    }];
+    const input = story(['Arrival.', 'Stela calls you her friend.']);
+    const result = new NarrativeContractValidator().validate({ story: input, scenePlan, graph: canonical });
+    const issue = result.issues.find((candidate) => /Blocked relationship label/.test(candidate.message));
+    expect(issue?.metadata?.sceneId).toBe('s2');
+    expect(issue?.metadata?.repairHandler).toBe('relationship_pacing');
+    expect(issue?.metadata?.taskId).toBe('task:rel:stela:relationship-labels');
+  });
+
+  it('rechecks event realization after late scene mutation and preserves the owner repair target', () => {
+    const canonical = graph();
+    canonical.realizationTasks = [{
+      id: 'task:ep1-blog:audience', contractId: 'ep1-blog', eventId: 'ep1-blog', episodeNumber: 1,
+      ownerStage: 'scene_writer', repairHandler: 'scene_prose', sceneId: 's1',
+      evidenceAtoms: [{ id: 'viral', description: 'viral reach', acceptedPatterns: ['viral', 'readers'], kind: 'route', required: true }],
+      requiredSurface: ['beat_text'], routePolicy: 'owner_surface', sourceContractIds: ['ep1-blog'], blocking: true,
+    }];
+    const result = new NarrativeContractValidator().validate({ story: story(['You publish the post, but the night stays quiet.']), graph: canonical });
+    const issue = result.issues.find((candidate) => /Canonical owner realization drift/.test(candidate.message));
+    expect(issue?.metadata?.taskId).toBe('task:ep1-blog:audience');
+    expect(issue?.metadata?.repairHandler).toBe('scene_prose');
+    expect(issue?.metadata?.missingEvidenceAtoms).toEqual(['viral']);
+  });
+
+  it('uses realization tasks as the sole executable route check for version-3 graphs', () => {
+    const canonical = graph();
+    canonical.version = 3;
+    canonical.events.push({
+      id: 'ep1-threat', episodeNumber: 1, sourceOrder: 2,
+      sourceText: 'The stranger vanishes at the threshold.', sourceContractIds: ['threat'],
+      realizationMode: 'depiction', ownershipPolicy: 'exactly_one_scene', prerequisiteEventIds: [],
+      targetSceneIds: ['s1'], targetSpineUnitIds: [], ownerSceneId: 's1', cue: 'threatEncounter',
+      routeRealizationPolicy: 'all_routes', requiredOutcomeTiers: ['victory'],
+      provenance: { source: 'treatment_contract', confidence: 'authoritative' },
+    });
+    canonical.realizationTasks = [{
+      id: 'task:ep1-threat:threshold:victory', contractId: 'ep1-threat:threshold', eventId: 'ep1-threat', episodeNumber: 1,
+      ownerStage: 'encounter_architect', repairHandler: 'encounter_route', sceneId: 's1', outcomeTier: 'victory',
+      evidenceAtoms: [{ id: 'threshold', description: 'threshold departure', acceptedPatterns: ['vanishes'], kind: 'route', required: true }],
+      target: { scope: 'route_terminal', outcomeTier: 'victory', surfaces: ['terminal_storylet'] },
+      requiredSurface: ['terminal_storylet'], routePolicy: 'terminal_required', sourceContractIds: ['threat'], blocking: true,
+    }];
+    const input = story(['The attack ends. By evening, the post has gone viral.']);
+    input.episodes[0].scenes[0].encounter = { outcomes: { victory: { outcomeText: 'He walks you to the door.' } } } as never;
+
+    const result = new NarrativeContractValidator().validate({ story: input, graph: canonical });
+    const routeIssues = result.issues.filter((issue) =>
+      issue.metadata?.eventId === 'ep1-threat' || /Threat event "ep1-threat"/.test(issue.message),
+    );
+    expect(routeIssues).toHaveLength(1);
+    expect(routeIssues[0]?.metadata?.taskId).toBe('task:ep1-threat:threshold:victory');
+  });
+
+  it('keeps nonblocking realization tasks advisory during final regression', () => {
+    const canonical = graph();
+    canonical.realizationTasks = [{
+      id: 'task:advisory', contractId: 'ep1-blog', eventId: 'ep1-blog', episodeNumber: 1,
+      ownerStage: 'scene_writer', repairHandler: 'scene_prose', sceneId: 's1',
+      evidenceAtoms: [{ id: 'readers', description: 'audience reach', acceptedPatterns: ['readers'], kind: 'lexical', required: true }],
+      target: { scope: 'owner', surfaces: ['beat_text'] },
+      requiredSurface: ['beat_text'], routePolicy: 'owner_surface', sourceContractIds: ['ep1-blog'], blocking: false,
+    }];
+
+    const result = new NarrativeContractValidator().validate({ story: story(['You publish the post.']), graph: canonical });
+    expect(result.valid).toBe(true);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]?.severity).toBe('warning');
   });
 
   it('blocks an authored premise that exists only in plan metadata', () => {

@@ -29,7 +29,7 @@ import {
   buildEncounterStoryletDraftJsonSchema,
   buildEncounterStructureJsonSchema,
 } from '../schemas/encounterSchemas';
-import type { NarrativeCharacterPresenceContract } from '../../types/narrativeContract';
+import type { NarrativeCharacterPresenceContract, NarrativeRealizationTask } from '../../types/narrativeContract';
 
 /**
  * Distinctive, non-interpolated fragments of the deterministic fallback prose
@@ -211,6 +211,8 @@ export interface EncounterArchitectInput {
     acceptedPatterns: string[];
     requiredSurface?: string;
   }>;
+  /** Immutable owner-stage realization tasks projected from the canonical graph. */
+  realizationTasks?: NarrativeRealizationTask[];
   /** A single staged signature device/image the encounter must show. */
   signatureMoment?: string;
   /**
@@ -1154,7 +1156,8 @@ export class EncounterArchitect extends BaseAgent {
       (beat) => beat.tier !== 'connective' && beat.mustDepict?.trim(),
     );
     const evidence = input.canonicalEventEvidenceRequirements ?? [];
-    if (!input.centralConflict?.trim() && !input.signatureMoment?.trim() && beats.length === 0 && evidence.length === 0) {
+    const realizationTasks = input.realizationTasks ?? [];
+    if (!input.centralConflict?.trim() && !input.signatureMoment?.trim() && beats.length === 0 && evidence.length === 0 && realizationTasks.length === 0) {
       return '';
     }
     const lines: string[] = [
@@ -1184,6 +1187,16 @@ export class EncounterArchitect extends BaseAgent {
       );
       for (const requirement of evidence) {
         lines.push(`- ${requirement.eventId} / ${requirement.kind}: ${requirement.acceptedPatterns.join(', ')} (${requirement.requiredSurface || 'owner scene'})`);
+      }
+    }
+    if (realizationTasks.length > 0) {
+      lines.push(
+        '',
+        '## REALIZATION TASKS (IMMUTABLE OWNER CONTRACT)',
+        'The following task IDs are assigned to this encounter. Show their evidence on the required surfaces; do not claim a task through shared synopsis or metadata.',
+      );
+      for (const task of realizationTasks) {
+        lines.push(`- ${task.id}: surfaces=${task.requiredSurface.join(', ')}; route=${task.routePolicy}; evidence=${task.evidenceAtoms.map((atom) => atom.acceptedPatterns.join(' / ')).join(' | ')}`);
       }
     }
     if (this.isSustainedSetPieceInput(input)) {
@@ -3938,6 +3951,66 @@ Realized scene prose: ${input.sceneProse || 'none'}`;
     } catch (err) {
       console.warn(`[EncounterArchitect] reauthorEncounterDescription failed (field unchanged): ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
+    }
+  }
+
+  /** Re-author only one terminal route surface while preserving its route shape. */
+  async reauthorEncounterRoute(input: {
+    encounterTree: unknown;
+    outcomeTier: string;
+    missingEvidence: string[];
+    sourceText?: string;
+    sceneName?: string;
+  }): Promise<number> {
+    const tree = input.encounterTree as Record<string, any>;
+    const aliases: Record<string, string[]> = {
+      victory: ['victory', 'success'],
+      success: ['success', 'victory'],
+      partialVictory: ['partialVictory', 'complicated'],
+      complicated: ['complicated', 'partialVictory'],
+      defeat: ['defeat', 'failure'],
+      failure: ['failure', 'defeat'],
+      escape: ['escape'],
+    };
+    const keys = aliases[input.outcomeTier] ?? [input.outcomeTier];
+    const storylets = tree.storylets && typeof tree.storylets === 'object' ? tree.storylets as Record<string, any> : {};
+    const outcomes = tree.outcomes && typeof tree.outcomes === 'object' ? tree.outcomes as Record<string, any> : {};
+    const key = keys.find((candidate) => storylets[candidate] || outcomes[candidate]);
+    if (!key) return 0;
+    const target = storylets[key] || outcomes[key];
+    const beats = Array.isArray(target.beats) ? target.beats : [];
+    const prompt = `Re-author one encounter aftermath route. Return ONLY JSON with this shape:
+{"narrativeText":"string","outcomeText":"string","beats":[{"id":"existing beat id","text":"string"}]}
+
+Scene: ${input.sceneName || 'encounter'}
+Route: ${input.outcomeTier}
+Missing authored evidence that MUST appear naturally on this route: ${input.missingEvidence.join('; ')}
+Treatment/validator context: ${input.sourceText || 'none'}
+Preserve the existing outcome, costs, choices, beat ids, and emotional tone. Do not mention validators, plans, metadata, mechanics, or the repair process. Do not invent a new route.
+Current route JSON: ${JSON.stringify({ narrativeText: target.narrativeText, outcomeText: target.outcomeText, beats })}`;
+    try {
+      const raw = await this.callLLM([{ role: 'user', content: prompt }], 1);
+      const parsed = this.parseJSON<{ narrativeText?: unknown; outcomeText?: unknown; beats?: Array<{ id?: unknown; text?: unknown }> }>(raw);
+      if (!parsed) return 0;
+      let changed = 0;
+      for (const field of ['narrativeText', 'outcomeText'] as const) {
+        if (typeof parsed[field] === 'string' && parsed[field].trim() && parsed[field] !== target[field]) {
+          target[field] = parsed[field].trim();
+          changed += 1;
+        }
+      }
+      const byId = new Map((parsed.beats ?? []).filter((beat) => typeof beat.id === 'string' && typeof beat.text === 'string').map((beat) => [beat.id as string, beat.text as string]));
+      for (const beat of beats) {
+        const next = byId.get(String(beat.id));
+        if (next && next !== beat.text) {
+          beat.text = next.trim();
+          changed += 1;
+        }
+      }
+      return changed;
+    } catch (err) {
+      console.warn(`[EncounterArchitect] route re-author failed (route unchanged): ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
     }
   }
 

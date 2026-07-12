@@ -249,6 +249,25 @@ describe('runFinalContractRepair', () => {
     })).rejects.toThrow(/claimed success without changing/i);
   });
 
+  it('rejects a repair candidate that introduces a new blocking fingerprint', async () => {
+    const localStory = { id: 'transactional', title: 'Transactional' } as unknown as Story;
+    const introduced: ContractRepairReport = {
+      passed: false,
+      blockingIssues: [{ validator: 'NewValidator', sceneId: 's1-2', message: 'new blocker' }],
+    };
+    const out = await runFinalContractRepair({
+      story: localStory,
+      initialReport: fail,
+      handlers: [({ story: candidate }) => ({ story: { ...candidate }, changed: true })],
+      revalidate: async () => introduced,
+      maxAttempts: 1,
+      rejectIntroducedBlockingIssues: true,
+    });
+    expect(out.passed).toBe(false);
+    expect(out.report.blockingIssues).toEqual(fail.blockingIssues);
+    expect(out.records).toHaveLength(0);
+  });
+
   it('stops early when canSpend denies another round', async () => {
     const out = await runFinalContractRepair({
       story,

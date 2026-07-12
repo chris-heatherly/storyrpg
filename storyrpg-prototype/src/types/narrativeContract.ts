@@ -1,7 +1,7 @@
 /** Generator-only canonical contracts for narrative planning and realization. */
 
-export const NARRATIVE_CONTRACT_GRAPH_VERSION = 2;
-export const EPISODE_EVENT_PLAN_VERSION = 2;
+export const NARRATIVE_CONTRACT_GRAPH_VERSION = 3;
+export const EPISODE_EVENT_PLAN_VERSION = 3;
 export const NARRATIVE_REALIZATION_LEDGER_VERSION = 1;
 
 export type NarrativeEventCue =
@@ -26,6 +26,86 @@ export type NarrativeRealizationMode =
   | 'future_obligation';
 
 export type NarrativeOwnershipPolicy = 'exactly_one_scene' | 'no_scene_owner';
+
+export type NarrativeRealizationOwnerStage =
+  | 'season_plan'
+  | 'episode_architecture'
+  | 'scene_writer'
+  | 'choice_author'
+  | 'encounter_architect'
+  | 'final_contract';
+
+export type NarrativeRealizationSurface =
+  | 'beat_text'
+  | 'dialogue'
+  | 'choice_text'
+  | 'encounter_setup'
+  | 'encounter_phase'
+  | 'encounter_outcome'
+  | 'terminal_storylet'
+  | 'text_variant';
+
+export type NarrativeRouteEvidencePolicy =
+  | 'owner_surface'
+  | 'path_required'
+  | 'terminal_required'
+  | 'any_route';
+
+/**
+ * Canonical executable evidence target. Unlike the legacy combination of
+ * `requiredSurface`, `routePolicy`, and `outcomeTier`, this union cannot express
+ * a path/terminal policy without also naming the route it applies to.
+ */
+export type NarrativeEvidenceTarget =
+  | { scope: 'owner'; surfaces: NarrativeRealizationSurface[] }
+  | { scope: 'route_path'; outcomeTier: string; surfaces: NarrativeRealizationSurface[] }
+  | { scope: 'route_terminal'; outcomeTier: string; surfaces: NarrativeRealizationSurface[] }
+  | { scope: 'any_route'; outcomeTiers: string[]; surfaces: NarrativeRealizationSurface[] };
+
+export interface NarrativeEvidenceAtom {
+  id: string;
+  description: string;
+  acceptedPatterns: string[];
+  sourceText?: string;
+  kind: 'lexical' | 'semantic' | 'relationship_label' | 'route';
+  required: boolean;
+  polarity?: 'required' | 'forbidden';
+}
+
+/**
+ * The smallest blocking unit that can be assigned, authored, validated, and
+ * repaired by one pipeline stage. The LLM may report these ids, but validators
+ * derive satisfaction from the committed artifact rather than trusting that
+ * report.
+ */
+export interface NarrativeRealizationTask {
+  id: string;
+  contractId: string;
+  episodeNumber: number;
+  ownerStage: NarrativeRealizationOwnerStage;
+  repairHandler: 'episode_replan' | 'premise_realization' | 'relationship_pacing' | 'encounter_route' | 'scene_prose' | 'final_contract';
+  sceneId?: string;
+  beatId?: string;
+  eventId?: string;
+  outcomeTier?: string;
+  /** Relationship-label evidence is evaluated near this subject, not against
+   * unrelated names or groups mentioned elsewhere in the same scene. */
+  evidenceScope?: { npcId?: string; groupId?: string };
+  artifactPath?: string;
+  evidenceAtoms: NarrativeEvidenceAtom[];
+  /** Minimum number of positive evidence atoms required when the task models
+   * a threshold contract such as a premise. Omitted means every required atom
+   * must be present. */
+  minimumEvidenceHits?: number;
+  /** Canonical executable placement for newly compiled tasks. */
+  target?: NarrativeEvidenceTarget;
+  /** @deprecated Version-2 compatibility only; use `target`. */
+  requiredSurface: NarrativeRealizationSurface[];
+  /** @deprecated Version-2 compatibility only; use `target`. */
+  routePolicy: NarrativeRouteEvidencePolicy;
+  sourceContractIds: string[];
+  blocking: boolean;
+}
 
 export type NarrativeCharacterPresenceMode =
   | 'named_on_page'
@@ -150,6 +230,18 @@ export interface NarrativeTransitionContract {
   fromTimeOfDay?: string;
   toTimeOfDay?: string;
   requiredBridgeEvidence: string[];
+  /** Explicit non-location continuity changes that the bridge must carry. */
+  stateContracts?: NarrativeTransitionStateContract[];
+  blocking: boolean;
+  sourceContractIds: string[];
+}
+
+export interface NarrativeTransitionStateContract {
+  id: string;
+  subject: string;
+  fromDisposition?: string;
+  toDisposition?: string;
+  requiredEvidence: string[];
   blocking: boolean;
   sourceContractIds: string[];
 }
@@ -222,6 +314,8 @@ export interface NarrativeEvidenceRequirement {
   requiredExactText?: boolean;
   /** Scope of the reader-facing surface on which this evidence must appear. */
   requiredSurface?: 'owner_scene' | 'all_routes' | 'any_route';
+  /** Explicit route placement for newly compiled all-route evidence. */
+  routeEvidencePosition?: 'path' | 'terminal';
   blocking: boolean;
 }
 
@@ -275,6 +369,7 @@ export interface NarrativeContractGraph {
   transitionContracts?: NarrativeTransitionContract[];
   choiceResidueContracts?: NarrativeChoiceResidueContract[];
   twistContracts?: NarrativeTwistContract[];
+  realizationTasks?: NarrativeRealizationTask[];
   dependencies: NarrativeDependencyContract[];
   validation: { passed: boolean; issues: NarrativeContractIssue[] };
 }
@@ -312,6 +407,7 @@ export interface EpisodeEventPlan {
   transitionContracts?: NarrativeTransitionContract[];
   choiceResidueContracts?: NarrativeChoiceResidueContract[];
   twistContracts?: NarrativeTwistContract[];
+  realizationTasks?: NarrativeRealizationTask[];
   validation: { passed: boolean; issues: NarrativeContractIssue[] };
 }
 

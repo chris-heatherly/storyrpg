@@ -48,6 +48,7 @@ import { missingRequiredMoments, type SceneContractSource } from '../remediation
 import { buildOutcomeTextRepairHandler } from '../remediation/outcomeTextRepairHandler';
 import { buildEncounterCostRepairHandler } from '../remediation/encounterCostRepairHandler';
 import { buildEncounterMetadataRepairHandler } from '../remediation/encounterMetadataRepairHandler';
+import { buildEncounterRouteRepairHandler } from '../remediation/encounterRouteRepairHandler';
 import { buildSceneTurnContractRepairHandler } from '../remediation/sceneTurnContractRepairHandler';
 import { repairDetectedTransitionBridgeContinuity } from '../remediation/transitionBridgeRepairHandler';
 import { buildRelationshipPacingLabelRepairHandler } from '../remediation/relationshipPacingLabelRepairHandler';
@@ -1312,6 +1313,21 @@ export class FinalContract {
             emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
           })),
         );
+        if (report.blockingIssues.some((issue) => issue.repairHandler === 'encounter_route' || issue.outcomeTier)) {
+          handlers.push(
+            guardLlmHandler(buildEncounterRouteRepairHandler({
+              author: () => {
+                try {
+                  return new EncounterArchitect({ ...this.deps.config.agents.storyArchitect, maxTokens: 8192 });
+                } catch (err) {
+                  console.warn(`[Pipeline] Encounter route contract repair: EncounterArchitect unavailable — ${err instanceof Error ? err.message : String(err)}`);
+                  return null;
+                }
+              },
+              emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+            })),
+          );
+        }
       }
       // Generic planner central turns are blueprint METADATA the scene-prose
       // handler explicitly skips (no prose rewrite can change the contract the
@@ -1353,6 +1369,7 @@ export class FinalContract {
         dedupeIssueFingerprints: true,
         canSpend: () => shouldAttemptRemediation(this.deps.remediationBudget),
         requireMutationEvidence: true,
+        rejectIntroducedBlockingIssues: true,
         onRoundSnapshot: this.deps.saveRepairRoundSnapshot,
       });
       report = outcome.report as FinalStoryContractReport;

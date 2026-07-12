@@ -85,6 +85,7 @@ import type {
   NarrativeCharacterPresenceContract,
   NarrativeCharacterRoleConstraint,
   NarrativeIdentityScheduleContract,
+  NarrativeRealizationTask,
 } from '../../types/narrativeContract';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
 import { TreatmentFidelityValidator } from '../validators/TreatmentFidelityValidator';
@@ -648,6 +649,8 @@ export interface SceneBlueprint {
     acceptedPatterns: string[];
     requiredSurface?: string;
   }>;
+  /** Immutable owner-stage realization tasks projected from the canonical graph. */
+  realizationTasks?: NarrativeRealizationTask[];
   relationshipPacing?: RelationshipPacingContract[];
   mechanicPressure?: MechanicPressureContract[];
   authoredTreatmentFields?: AuthoredTreatmentFieldContract[];
@@ -4196,6 +4199,19 @@ Remember: The encounter is the heart. Design outward from it.
         narrativeRole: p.narrativeRole,
         planningOrigin: p.planningOrigin,
         plannedHasChoice: p.hasChoice,
+        // Preserve the canonical choice taxonomy while materializing the
+        // planned scene. Without this, treatment-authored relationship
+        // milestones are reclassified as generic dilemmas and the pacing
+        // policy correctly (but incorrectly for the source plan) caps them
+        // before content generation.
+        choicePoint: p.hasChoice && p.choiceType
+          ? {
+              type: p.choiceType,
+              stakes: { want: '', cost: '', identity: '' },
+              description: '',
+              optionHints: [],
+            }
+          : undefined,
         dramaticPurpose: localPurpose,
         setsUp: p.setsUp,
         paysOff: p.paysOff,
@@ -4648,6 +4664,7 @@ Remember: The encounter is the heart. Design outward from it.
         ...(scene.sceneEventOwnership?.sourceContractIds ?? []),
       ]));
       const graph = input.seasonPlanDirectives?.narrativeContractGraph;
+      scene.realizationTasks = (graph?.realizationTasks ?? []).filter((task) => task.sceneId === scene.id);
       scene.canonicalEvidenceRequirements = allowed.flatMap((eventId) => {
         const event = graph?.events.find((candidate) => candidate.id === eventId);
         return (event?.evidenceRequirements ?? []).map((requirement) => ({

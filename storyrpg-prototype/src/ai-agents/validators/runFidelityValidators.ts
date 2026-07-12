@@ -101,6 +101,15 @@ export interface FidelityFinding {
   sourceKind?: FinalContractSourceKind;
   repairTarget?: FinalContractRepairTarget;
   hasConcreteObligation?: boolean;
+  taskId?: string;
+  contractId?: string;
+  eventId?: string;
+  beatId?: string;
+  outcomeTier?: string;
+  artifactPath?: string;
+  repairHandler?: string;
+  missingEvidenceAtoms?: string[];
+  requiredEvidenceAtoms?: string[];
 }
 
 export interface RunFidelityValidatorsResult {
@@ -671,6 +680,7 @@ function toFindings(validator: string, issues: ValidationIssue[], downgradeToWar
           ? { episodeNumber: sceneRef.episodeNumber, sceneId: sceneRef.sceneId }
           : undefined
       ),
+      ...(issue.metadata ?? {}),
     });
   }
   return out;

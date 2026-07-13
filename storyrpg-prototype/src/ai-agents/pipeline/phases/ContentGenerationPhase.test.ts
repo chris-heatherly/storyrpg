@@ -421,6 +421,7 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
   it('does not run ChoiceAuthor or mark the scene complete after unresolved prose ownership', async () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
     const calls: string[] = [];
+    const sceneWriterPrompts: string[] = [];
     const invalidScene = {
       sceneId: 's1-3', sceneName: 'The Bookshop', startingBeatId: 'b1',
       beats: [{ id: 'b1', text: 'Kylie watches traffic slide past the club windows.' }],
@@ -429,7 +430,11 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
     };
     const phase = new ContentGenerationPhase({
       sceneWriter: {
-        execute: async () => { calls.push('sceneWriter'); return { success: true, data: structuredClone(invalidScene) }; },
+        execute: async (input: { storyContext?: { userPrompt?: string } }) => {
+          calls.push('sceneWriter');
+          sceneWriterPrompts.push(input.storyContext?.userPrompt ?? '');
+          return { success: true, data: structuredClone(invalidScene) };
+        },
         setContractLoadTemperature: () => undefined,
       },
       choiceAuthor: {
@@ -487,5 +492,14 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
     } as never)).rejects.toThrow(/OwnerStageRealizationBlocker/);
     expect(calls.filter((call) => call === 'choiceAuthor')).toHaveLength(0);
     expect(calls.filter((call) => call === 'sceneWriter').length).toBeGreaterThanOrEqual(3);
+    expect(sceneWriterPrompts.slice(1)).toEqual(expect.arrayContaining([
+      expect.stringContaining('CURRENT ACCEPTED READER-FACING SURFACE'),
+    ]));
+    expect(sceneWriterPrompts.slice(1)).toEqual(expect.arrayContaining([
+      expect.stringContaining('Kylie watches traffic slide past the club windows.'),
+    ]));
+    expect(sceneWriterPrompts.slice(1)).toEqual(expect.arrayContaining([
+      expect.stringContaining('smallest prose edit'),
+    ]));
   });
 });

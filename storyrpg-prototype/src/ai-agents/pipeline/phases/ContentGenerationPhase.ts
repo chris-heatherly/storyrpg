@@ -367,6 +367,24 @@ function ownerRealizationRepairFeedback(
   return `${finding.taskId}: ${finding.message}${requirements.length > 0 ? ` ${requirements.join('; ')}` : ''}`;
 }
 
+function ownerStageRepairBaseline(sceneContent: {
+  sceneId: string;
+  transitionIn?: string;
+  beats?: Array<{ id: string; text: string; textVariants?: Array<{ text?: string }> }>;
+  eventEvidence?: unknown;
+}): string {
+  return JSON.stringify({
+    sceneId: sceneContent.sceneId,
+    transitionIn: sceneContent.transitionIn,
+    beats: (sceneContent.beats ?? []).map((beat) => ({
+      id: beat.id,
+      text: beat.text,
+      textVariants: beat.textVariants?.map((variant) => ({ text: variant.text })),
+    })),
+    eventEvidence: sceneContent.eventEvidence,
+  });
+}
+
 // ========================================
 // DEPENDENCY TYPES
 // ========================================
@@ -2387,6 +2405,7 @@ export class ContentGenerationPhase {
             const feedback = [repairTarget]
               .map((finding) => `- ${ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks)}`)
               .join('\n');
+            const acceptedSurface = ownerStageRepairBaseline(sceneContent);
             context.emit({
               type: 'regeneration_triggered',
               phase: 'scenes',
@@ -2398,7 +2417,7 @@ export class ContentGenerationPhase {
                 ...sceneWriterInput,
                 storyContext: {
                   ...sceneWriterInput.storyContext,
-                  userPrompt: `${sceneWriterInput.storyContext.userPrompt || ''}\n\nOWNER-STAGE REALIZATION REPAIR:\n${feedback}\nRepair only the missing evidence above. Put an accepted realization directly in reader-facing beat.text, spoken dialogue, or textVariants[].text; primaryAction, visualMoment, relationshipDynamic, emotionalRead, and other metadata do not count. Show it naturally as concrete action, dialogue, sensory detail, or visible consequence. Do not paste planning text or contract labels into the prose.`,
+                  userPrompt: `${sceneWriterInput.storyContext.userPrompt || ''}\n\nOWNER-STAGE REALIZATION REPAIR:\n${feedback}\nRepair only the missing evidence above. Put an accepted realization directly in reader-facing beat.text, spoken dialogue, or textVariants[].text; primaryAction, visualMoment, relationshipDynamic, emotionalRead, and other metadata do not count. Show it naturally as concrete action, dialogue, sensory detail, or visible consequence. Do not paste planning text or contract labels into the prose.\n\nCURRENT ACCEPTED READER-FACING SURFACE:\n${acceptedSurface}\nEvery other immutable realization task and evidence atom currently passes against this surface. Preserve its canonical names, location orientation, relationship stage, event actions, and consequences. Return the complete SceneContent with the smallest prose edit that resolves the target; do not replace or summarize already-valid beats.`,
                 },
               }),
               PIPELINE_TIMEOUTS.llmAgent,

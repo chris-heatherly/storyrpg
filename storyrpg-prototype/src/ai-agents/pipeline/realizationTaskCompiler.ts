@@ -233,6 +233,21 @@ function partitionEventAtoms(
   const choiceResolutionIds = new Set(atoms
     .filter((atom) => atom.semanticRole === 'relationship_change' || atom.semanticRole === 'state_change' || atom.semanticRole === 'aftermath')
     .map((atom) => atom.id));
+  // Producer assignment must preserve the proposition DAG. An atom that
+  // depends on post-choice evidence cannot remain on the earlier SceneWriter
+  // surface, even when its own semantic role would normally be pre-choice.
+  // Close the post-choice set over dependents before creating producer tasks.
+  let addedDependent = true;
+  while (addedDependent) {
+    addedDependent = false;
+    for (const atom of atoms) {
+      if (choiceResolutionIds.has(atom.id)) continue;
+      if ((atom.prerequisiteAtomIds ?? []).some((id) => choiceResolutionIds.has(id))) {
+        choiceResolutionIds.add(atom.id);
+        addedDependent = true;
+      }
+    }
+  }
   return {
     owner: atoms
       .filter((atom) => !choiceResolutionIds.has(atom.id))

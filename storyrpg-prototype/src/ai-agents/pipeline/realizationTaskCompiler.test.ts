@@ -168,6 +168,47 @@ describe('compileNarrativeRealizationTasks', () => {
     });
   });
 
+  it('moves downstream dependents onto the choice-resolution producer', () => {
+    const sourceText = 'The trial changes the group, and they name the pact afterward.';
+    const graph = {
+      events: [{
+        id: 'event:pact', episodeNumber: 1, sourceOrder: 1, sourceText,
+        sourceContractIds: ['treatment:pact'], realizationMode: 'depiction',
+        ownershipPolicy: 'exactly_one_scene', prerequisiteEventIds: [], targetSceneIds: ['scene-pact'],
+        targetSpineUnitIds: [], ownerSceneId: 'scene-pact', provenance: { source: 'treatment_contract', confidence: 'authoritative' },
+        realizationAtoms: [
+          { id: 'event:pact:semantic:1', description: 'Change the group', acceptedPatterns: ['become allies'], sourceText, kind: 'semantic', semanticRole: 'relationship_change', prerequisiteAtomIds: [], required: true },
+          { id: 'event:pact:semantic:2', description: 'Name the pact', acceptedPatterns: ['name the pact'], sourceText, kind: 'semantic', semanticRole: 'action', prerequisiteAtomIds: ['event:pact:semantic:1'], required: true },
+        ],
+      }],
+      dependencies: [],
+    } as unknown as NarrativeContractGraph;
+
+    const tasks = compileNarrativeRealizationTasks(graph, [{
+      id: 'scene-pact', episodeNumber: 1, order: 0, kind: 'standard',
+      relationshipPacing: [{
+        id: 'relationship:pact', source: 'treatment', groupId: 'pact', startStage: 'spark', targetStage: 'ally',
+        allowedLabels: ['ally'], blockedLabels: [], requiredEvidence: [], minScenesSinceIntroduction: 1, maxDeltaThisScene: 1,
+        mechanicDimensions: ['trust'], milestone: {
+          id: 'milestone:pact', kind: 'group_formation', sourceText, subjectType: 'group', subjectId: 'pact',
+          targetStage: 'ally', introductionSceneIds: ['scene-intro'], testSceneIds: ['scene-pact'], choiceSceneId: 'scene-pact',
+          memberNpcIds: ['npc-a'], routeRealizationPolicy: 'all_routes', requiredEvidenceTags: ['respected_agency'],
+        },
+      }],
+    }] as any).filter((task) => task.canonicalEventId === 'event:pact');
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: 'task:event:pact:choice-resolution',
+      ownerStage: 'choice_author',
+      prerequisiteTaskIds: [],
+      evidenceAtoms: [
+        expect.objectContaining({ id: 'event:pact:semantic:1', temporalSlot: 'choice_resolution' }),
+        expect.objectContaining({ id: 'event:pact:semantic:2', temporalSlot: 'choice_resolution' }),
+      ],
+    });
+  });
+
   it('coalesces equivalent repeated planning projections without weakening the task', () => {
     const pacing = {
       id: 'relationship:circle', source: 'treatment', groupId: 'lantern-circle', startStage: 'spark', targetStage: 'trust',

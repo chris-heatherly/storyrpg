@@ -1,7 +1,41 @@
 import { describe, expect, it } from 'vitest';
-import { validateOwnerRealizationTasks } from './realizationTaskGate';
+import {
+  prioritizeOwnerRepairFindings,
+  shouldAdoptOwnerRepairCandidate,
+  validateOwnerRealizationTasks,
+} from './realizationTaskGate';
+import { compileEventRealizationAtoms } from './eventAtomCompiler';
 
 describe('validateOwnerRealizationTasks', () => {
+  it('adopts a repair only when its target fingerprint clears without new blockers', () => {
+    const finding = (fingerprint: string) => ({ fingerprint, taskId: fingerprint, code: 'OWNER_REALIZATION_MISSING' as const } as any);
+    expect(shouldAdoptOwnerRepairCandidate({
+      previous: [finding('event'), finding('presence')],
+      candidate: [finding('presence')],
+      targetFingerprint: 'event',
+    })).toBe(true);
+    expect(shouldAdoptOwnerRepairCandidate({
+      previous: [finding('event')],
+      candidate: [finding('event')],
+      targetFingerprint: 'event',
+    })).toBe(false);
+    expect(shouldAdoptOwnerRepairCandidate({
+      previous: [finding('event')],
+      candidate: [finding('new-blocker')],
+      targetFingerprint: 'event',
+    })).toBe(false);
+  });
+
+  it('repairs canonical event evidence before supporting presence evidence', () => {
+    const eventFinding = { fingerprint: 'event', taskId: 'event-task' } as any;
+    const presenceFinding = { fingerprint: 'presence', taskId: 'presence-task' } as any;
+    const tasks = [
+      { id: 'presence-task' },
+      { id: 'event-task', canonicalEventId: 'event:1' },
+    ] as any;
+    expect(prioritizeOwnerRepairFindings([presenceFinding, eventFinding], tasks)[0]).toBe(eventFinding);
+  });
+
   it('requires an unconditional milestone and canonical member evidence on every option', () => {
     const task = {
       id: 'task:milestone:all-options', contractId: 'milestone', episodeNumber: 1,
@@ -73,6 +107,32 @@ describe('validateOwnerRealizationTasks', () => {
       sceneContent: { beats: [{ id: 'b1', text: 'Kylie walks home beneath the streetlights, thinking about the stranger.' }] },
     });
     expect(drift[0]?.code).toBe('OWNER_REALIZATION_MISSING');
+    expect(drift[0]?.evidenceDiagnostics?.[0]).toEqual(expect.objectContaining({
+      atomId: 'event:writing:source-event',
+      matched: false,
+    }));
+    expect(drift[0]?.evidenceDiagnostics?.[0]?.missingTerms.length).toBeGreaterThan(0);
+  });
+
+  it('accepts natural prose that independently realizes every atom of a compound event', () => {
+    const sourceText = 'She wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika.';
+    const atoms = compileEventRealizationAtoms({
+      eventId: 'event:ep1-u3', sourceText, knownLocations: ['Lumina Books', 'Valescu Club'],
+    });
+    const findings = validateOwnerRealizationTasks({
+      sceneId: 's1-3',
+      tasks: [{
+        id: 'task:event:ep1-u3:owner-event', contractId: 'event:ep1-u3', canonicalEventId: 'event:ep1-u3',
+        episodeNumber: 1, ownerStage: 'scene_writer', repairHandler: 'scene_prose', sceneId: 's1-3',
+        evidenceAtoms: atoms, evidenceGroups: [{ id: 'event:ep1-u3:all', description: 'all actions', requirement: 'all', atomIds: atoms.map((atom) => atom.id), blocking: true, sourceContractIds: [] }],
+        target: { scope: 'owner', surfaces: ['beat_text', 'dialogue'] }, sourceContractIds: [], blocking: true,
+      }],
+      sceneContent: { beats: [{
+        id: 'b1',
+        text: 'Kylie walks into Lumina Books. The bookshop is owned by Stela, who welcomes her instead of chasing her back into the rain. Stela introduces Kylie to the secret nightlife of Valescu Club, then introduces Kylie to Mika.',
+      }] },
+    });
+    expect(findings).toEqual([]);
   });
 
   it('treats blocked relationship labels as forbidden rather than required', () => {
@@ -333,5 +393,29 @@ describe('validateOwnerRealizationTasks', () => {
     const final = validateOwnerRealizationTasks({ ...shared, mode: 'final_regression' });
 
     expect(owner.map((finding) => finding.fingerprint)).toEqual(final.map((finding) => finding.fingerprint));
+  });
+
+  it('evaluates grouped owner evidence without trusting claimed event metadata', () => {
+    const task = {
+      id: 'task:event:bookshop:owner-event', contractId: 'event:bookshop', eventId: 'event:bookshop', episodeNumber: 1,
+      ownerStage: 'scene_writer' as const, repairHandler: 'scene_prose' as const, sceneId: 's1-3',
+      evidenceAtoms: [
+        { id: 'bookshop', description: 'bookshop', acceptedPatterns: ['bookshop'], kind: 'semantic' as const, required: true },
+        { id: 'stela', description: 'Stela', acceptedPatterns: ['Stela'], kind: 'lexical' as const, required: true },
+      ],
+      evidenceGroups: [{
+        id: 'event:bookshop:owner', description: 'Bookshop event', requirement: 'all' as const,
+        atomIds: ['bookshop', 'stela'], blocking: true, sourceContractIds: ['event:bookshop'],
+      }],
+      target: { scope: 'owner' as const, surfaces: ['beat_text' as const] },
+      sourceContractIds: ['event:bookshop'], blocking: true,
+    };
+
+    expect(validateOwnerRealizationTasks({
+      sceneId: 's1-3', tasks: [task], sceneContent: { claimedEventIds: ['event:bookshop'], beats: [{ text: 'She enters the bookshop.' }] },
+    })[0]?.missingEvidenceAtoms).toEqual(['stela']);
+    expect(validateOwnerRealizationTasks({
+      sceneId: 's1-3', tasks: [task], sceneContent: { claimedEventIds: ['event:bookshop'], beats: [{ text: 'She enters the bookshop. Stela looks up.' }] },
+    })).toEqual([]);
   });
 });

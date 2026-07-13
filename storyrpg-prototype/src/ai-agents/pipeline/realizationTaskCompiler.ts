@@ -4,6 +4,7 @@ import type {
   NarrativeEventContract,
   NarrativeEvidenceAtom,
   NarrativeEvidenceRequirement,
+  NarrativeEvidenceGroup,
   NarrativeRealizationOwnerStage,
   NarrativeRealizationSurface,
   NarrativeRealizationTask,
@@ -84,6 +85,16 @@ function ownerSurfacesForEvent(scene: PlannedScene | undefined): NarrativeRealiz
  * paraphrase matching.
  */
 function genericEventAtoms(event: NarrativeEventContract): NarrativeEvidenceAtom[] {
+  if (event.realizationAtoms?.length) {
+    return event.realizationAtoms.map((atom) => ({
+      ...atom,
+      acceptedPatterns: [...atom.acceptedPatterns],
+      subjectIds: atom.subjectIds ? [...atom.subjectIds] : undefined,
+      participantIds: atom.participantIds ? [...atom.participantIds] : undefined,
+      prerequisiteAtomIds: atom.prerequisiteAtomIds ? [...atom.prerequisiteAtomIds] : undefined,
+      referencedLocations: atom.referencedLocations ? [...atom.referencedLocations] : undefined,
+    }));
+  }
   const sourceText = event.sourceText.trim();
   if (!sourceText) return [];
   return [{
@@ -94,6 +105,107 @@ function genericEventAtoms(event: NarrativeEventContract): NarrativeEvidenceAtom
     kind: 'semantic',
     required: true,
   }];
+}
+
+function evidenceTokens(value: string): Set<string> {
+  return new Set(value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(/\s+/)
+    .map((word) => word.replace(/(?:ing|ed|es|s)$/i, ''))
+    .filter((word) => word.length >= 4 && !['about', 'after', 'from', 'into', 'that', 'their', 'there', 'this', 'with'].includes(word)));
+}
+
+function sourceOverlap(left: string, right: string): number {
+  const leftTokens = evidenceTokens(left);
+  const rightTokens = evidenceTokens(right);
+  if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
+  let intersection = 0;
+  for (const token of leftTokens) if (rightTokens.has(token)) intersection += 1;
+  return intersection / Math.min(leftTokens.size, rightTokens.size);
+}
+
+function storyCircleProjectionText(contract: { sourceText: string; eventAtoms: string[] }): string {
+  return [contract.sourceText, ...contract.eventAtoms].filter(Boolean).join(' ');
+}
+
+function ownerTaskForEvent(
+  tasks: NarrativeRealizationTask[],
+  event: NarrativeEventContract,
+  scene: PlannedScene | undefined,
+): NarrativeRealizationTask | undefined {
+  return tasks.find((task) =>
+    task.canonicalEventId === event.id
+    && task.sceneId === event.ownerSceneId
+    && task.target.scope === 'owner'
+    && task.ownerStage === sceneStage(scene),
+  );
+}
+
+function ensureOwnerTask(
+  tasks: NarrativeRealizationTask[],
+  event: NarrativeEventContract,
+  scene: PlannedScene | undefined,
+): NarrativeRealizationTask | undefined {
+  if (!event.ownerSceneId || event.realizationMode !== 'depiction') return undefined;
+  const existing = ownerTaskForEvent(tasks, event, scene);
+  if (existing) return existing;
+  const evidenceAtoms = genericEventAtoms(event);
+  if (evidenceAtoms.length === 0) return undefined;
+  const task: NarrativeRealizationTask = {
+    id: `task:${event.id}:owner-event`,
+    contractId: event.id,
+    canonicalEventId: event.id,
+    projectionOf: [],
+    sourceKinds: ['event'],
+    episodeNumber: event.episodeNumber,
+    ownerStage: sceneStage(scene),
+    repairHandler: scene?.kind === 'encounter' || scene?.encounter ? 'encounter_route' : 'scene_prose',
+    sceneId: event.ownerSceneId,
+    eventId: event.id,
+    artifactPath: `episodes[${event.episodeNumber}].scenes[${event.ownerSceneId}]`,
+    evidenceAtoms,
+    evidenceGroups: [{
+      id: `${event.id}:owner`,
+      description: `All blocking projections for ${event.id} resolve on one owner surface.`,
+      requirement: 'all',
+      atomIds: evidenceAtoms.map((atom) => atom.id),
+      blocking: true,
+      sourceContractIds: [...event.sourceContractIds],
+    }],
+    target: { scope: 'owner', surfaces: ownerSurfacesForEvent(scene) },
+    sourceContractIds: [...event.sourceContractIds],
+    blocking: true,
+  };
+  tasks.push(task);
+  return task;
+}
+
+function mergeProjectionIntoOwnerTask(
+  task: NarrativeRealizationTask,
+  projectionId: string,
+  sourceKind: NonNullable<NarrativeRealizationTask['sourceKinds']>[number],
+  sourceContractIds: string[],
+  _projectionAtoms: string[],
+): void {
+  task.projectionOf = Array.from(new Set([...(task.projectionOf ?? []), projectionId]));
+  task.sourceKinds = Array.from(new Set([...(task.sourceKinds ?? []), sourceKind]));
+  task.sourceContractIds = Array.from(new Set([...task.sourceContractIds, ...sourceContractIds]));
+  // Projection prose contributes provenance, not alternative proof. Folding a
+  // Story Circle summary into the first event atom lets one broad phrase waive
+  // independently required actions and recreates the mega-atom ambiguity this
+  // compiler exists to remove.
+  const group: NarrativeEvidenceGroup = {
+    id: `${task.canonicalEventId ?? task.contractId}:owner`,
+    description: `All blocking projections for ${task.canonicalEventId ?? task.contractId} resolve on one owner surface.`,
+    requirement: 'all',
+    atomIds: task.evidenceAtoms.filter((atom) => atom.polarity !== 'forbidden').map((atom) => atom.id),
+    blocking: task.blocking,
+    sourceContractIds: [...task.sourceContractIds],
+  };
+  task.evidenceGroups = [group];
 }
 
 function targetForEventRequirement(
@@ -146,23 +258,7 @@ export function compileNarrativeRealizationTasks(
   for (const event of graph.events) {
     if (event.realizationMode === 'depiction' && !(event.evidenceRequirements?.length) && event.ownerSceneId) {
       const scene = sceneById.get(event.ownerSceneId);
-      const evidenceAtoms = genericEventAtoms(event);
-      if (evidenceAtoms.length > 0) {
-        tasks.push({
-          id: `task:${event.id}:owner-event`,
-          contractId: event.id,
-          episodeNumber: event.episodeNumber,
-          ownerStage: sceneStage(scene),
-          repairHandler: scene?.kind === 'encounter' || scene?.encounter ? 'encounter_route' : 'scene_prose',
-          sceneId: event.ownerSceneId,
-          eventId: event.id,
-          artifactPath: `episodes[${event.episodeNumber}].scenes[${event.ownerSceneId}]`,
-          evidenceAtoms,
-          target: { scope: 'owner', surfaces: ownerSurfacesForEvent(scene) },
-          sourceContractIds: [...event.sourceContractIds],
-          blocking: true,
-        });
-      }
+      ensureOwnerTask(tasks, event, scene);
     }
     for (const requirement of event.evidenceRequirements ?? []) {
       const scene = event.ownerSceneId ? sceneById.get(event.ownerSceneId) : undefined;
@@ -173,6 +269,8 @@ export function compileNarrativeRealizationTasks(
         tasks.push({
           id: `task:${requirement.id}${outcomeTier ? `:route:${outcomeTier}` : ''}`,
           contractId: requirement.id,
+          canonicalEventId: event.id,
+          sourceKinds: ['event'],
           episodeNumber: event.episodeNumber,
           ownerStage: sceneStage(scene),
           repairHandler: scene?.kind === 'encounter' || scene?.encounter ? 'encounter_route' : 'scene_prose',
@@ -254,9 +352,28 @@ export function compileNarrativeRealizationTasks(
   for (const scene of scenes) {
     for (const contract of scene.storyCircleBeatContracts ?? []) {
       if (contract.blockingLevel === 'warning' || !contract.requiredRealization.includes('final_prose')) continue;
+      const projectionText = storyCircleProjectionText(contract);
+      const matchingEvent = graph.events
+        .filter((event) => event.realizationMode === 'depiction' && event.ownerSceneId === scene.id)
+        .map((event) => ({ event, overlap: sourceOverlap(event.sourceText, projectionText) }))
+        .sort((left, right) => right.overlap - left.overlap)[0];
+      if (matchingEvent && matchingEvent.overlap >= 0.55) {
+        const ownerTask = ensureOwnerTask(tasks, matchingEvent.event, scene);
+        if (ownerTask) {
+          mergeProjectionIntoOwnerTask(
+            ownerTask,
+            contract.id,
+            'story_circle',
+            [contract.id],
+            [contract.sourceText, ...contract.eventAtoms],
+          );
+          continue;
+        }
+      }
       tasks.push({
         id: `task:${contract.id}:story-circle`,
         contractId: contract.id,
+        sourceKinds: ['story_circle'],
         episodeNumber: scene.episodeNumber,
         ownerStage: 'scene_writer',
         repairHandler: 'scene_prose',
@@ -351,5 +468,14 @@ export function compileNarrativeRealizationTasks(
     }
   }
 
+  const canonicalOwnerTasks = new Set<string>();
+  for (const task of tasks) {
+    if (!task.blocking || !task.canonicalEventId || !task.id.endsWith(':owner-event')) continue;
+    const key = `${task.episodeNumber}|${task.sceneId ?? ''}|${task.ownerStage}|${task.canonicalEventId}`;
+    if (canonicalOwnerTasks.has(key)) {
+      throw new Error(`[NarrativeTaskCompiler] Duplicate canonical owner task for ${task.canonicalEventId} in scene ${task.sceneId}.`);
+    }
+    canonicalOwnerTasks.add(key);
+  }
   return tasks.sort((a, b) => a.episodeNumber - b.episodeNumber || a.id.localeCompare(b.id));
 }

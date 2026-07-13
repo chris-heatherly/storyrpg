@@ -99,6 +99,11 @@ export function buildSceneContentJsonSchema(maxBeats: number): StructuredJsonSch
           items: { type: 'string' },
           description: 'Canonical event IDs assigned to this scene and realized in its prose. Never invent IDs.',
         },
+        claimedEventIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Canonical event IDs the model claims its prose realizes. Claims remain subject to prose validation.',
+        },
         eventEvidence: {
           type: 'array',
           maxItems: 12,
@@ -108,6 +113,8 @@ export function buildSceneContentJsonSchema(maxBeats: number): StructuredJsonSch
             required: ['eventId', 'evidence'],
             properties: {
               eventId: { type: 'string' },
+              taskId: { type: 'string' },
+              atomId: { type: 'string' },
               beatIds: { type: 'array', items: { type: 'string' }, maxItems: 6 },
               evidence: { type: 'string' },
             },

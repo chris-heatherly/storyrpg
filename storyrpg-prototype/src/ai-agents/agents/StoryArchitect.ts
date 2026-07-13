@@ -641,6 +641,12 @@ export interface SceneBlueprint {
   narrativeEventPlanVersion?: number;
   /** Structured elaboration acknowledgement; always constrained by the episode plan. */
   realizedEventIds?: string[];
+  /** Immutable canonical event assignment for this scene. */
+  assignedEventIds?: string[];
+  /** Story Architect/SceneWriter claims, distinct from prose verification. */
+  claimedEventIds?: string[];
+  /** Deterministic prose-gate output; architecture does not author this field. */
+  verifiedEventIds?: string[];
   supportingContractIds?: string[];
   /** Blocking reader-facing evidence compiled from the owning event contracts. */
   canonicalEvidenceRequirements?: Array<{
@@ -4230,7 +4236,10 @@ Remember: The encounter is the heart. Design outward from it.
         narrativeEventIds: p.narrativeEventIds,
         narrativeEventOrder: p.narrativeEventOrder,
         narrativeEventPlanVersion: p.narrativeEventPlanVersion,
-        realizedEventIds: p.narrativeEventIds,
+        assignedEventIds: p.narrativeEventIds,
+        claimedEventIds: [],
+        verifiedEventIds: [],
+        realizedEventIds: [],
         supportingContractIds: p.sceneEventOwnership?.sourceContractIds,
         relationshipPacing: p.relationshipPacing,
         mechanicPressure: arcPressureBinding.mechanicPressure,
@@ -4649,12 +4658,15 @@ Remember: The encounter is the heart. Design outward from it.
     for (const scene of blueprint.scenes ?? []) {
       const allowed = assignedByScene.get(scene.id) ?? [];
       const allowedSet = new Set(allowed);
-      const requested = scene.realizedEventIds ?? scene.narrativeEventIds ?? allowed;
+      const requested = scene.claimedEventIds ?? scene.realizedEventIds ?? [];
       const foreign = requested.filter((eventId) => !allowedSet.has(eventId));
       if (foreign.length > 0) {
         issues.push(`Scene "${scene.id}" returned event ID(s) outside its immutable assignment: ${foreign.join(', ')}.`);
       }
-      scene.realizedEventIds = [...allowed];
+      scene.assignedEventIds = [...allowed];
+      scene.claimedEventIds = requested.filter((eventId) => allowedSet.has(eventId));
+      scene.realizedEventIds = [...scene.claimedEventIds];
+      scene.verifiedEventIds = (scene.verifiedEventIds ?? []).filter((eventId) => allowedSet.has(eventId));
       scene.narrativeEventIds = [...allowed];
       scene.narrativeEventPlanVersion = eventPlan.version;
       scene.characterPresenceContracts = (eventPlan.characterPresenceContracts ?? [])

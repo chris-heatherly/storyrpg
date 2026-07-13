@@ -444,8 +444,14 @@ export interface SceneContent {
 
   /** Generator-only acknowledgement of the canonical events realized in this scene. */
   realizedEventIds?: string[];
+  /** Immutable assignment copied from the episode event plan. */
+  assignedEventIds?: string[];
+  /** Agent claims, kept separate from deterministic verification. */
+  claimedEventIds?: string[];
+  /** Prose-gate verified event IDs. SceneWriter does not set these. */
+  verifiedEventIds?: string[];
   /** Beat-local evidence claims used for diagnostics; prose gates remain authoritative. */
-  eventEvidence?: Array<{ eventId: string; beatIds?: string[]; evidence: string }>;
+  eventEvidence?: Array<{ eventId: string; taskId?: string; atomId?: string; beatIds?: string[]; evidence: string }>;
 
   // Branch metadata for visual differentiation
   branchType?: 'dark' | 'hopeful' | 'neutral' | 'tragic' | 'redemption';
@@ -1113,9 +1119,23 @@ Return exactly one complete SceneContent JSON object with:
     if (content.realizedEventIds && !Array.isArray(content.realizedEventIds)) {
       content.realizedEventIds = [String(content.realizedEventIds)];
     }
+    if (content.assignedEventIds && !Array.isArray(content.assignedEventIds)) {
+      content.assignedEventIds = [String(content.assignedEventIds)];
+    }
+    if (content.claimedEventIds && !Array.isArray(content.claimedEventIds)) {
+      content.claimedEventIds = [String(content.claimedEventIds)];
+    }
+    if (content.verifiedEventIds && !Array.isArray(content.verifiedEventIds)) {
+      content.verifiedEventIds = [String(content.verifiedEventIds)];
+    }
     if (content.eventEvidence && !Array.isArray(content.eventEvidence)) {
       content.eventEvidence = [content.eventEvidence as unknown as { eventId: string; evidence: string }];
     }
+    const assignedEventIds = input?.sceneBlueprint.assignedEventIds
+      ?? input?.sceneBlueprint.narrativeEventIds
+      ?? [];
+    content.assignedEventIds = [...assignedEventIds];
+    content.verifiedEventIds = [];
 
     if (content.transitionIn && typeof content.transitionIn !== 'string') {
       content.transitionIn = String(content.transitionIn);
@@ -1897,6 +1917,8 @@ ${input.sceneBlueprint.canonicalEvidenceRequirements.map((requirement) => `- ${r
 ${input.sceneBlueprint.realizationTasks?.length ? `
 ### Immutable Realization Tasks (owner-stage contract)
 These task IDs are assigned to this scene by the canonical narrative graph. Show the required evidence on the required surface; do not satisfy a task through synopsis, metadata, recap, or another scene. Return the IDs as diagnostics only after the prose actually realizes them.
+Canonical event IDs allowed in claimedEventIds/eventEvidence: ${(input.sceneBlueprint.assignedEventIds ?? input.sceneBlueprint.narrativeEventIds ?? []).join(', ') || 'none'}.
+Task IDs and planning labels are never event IDs and must not appear in claimedEventIds/eventEvidence.eventId.
 ${input.sceneBlueprint.realizationTasks.map((task) => `- ${task.id}: ${describeNarrativeEvidenceTarget(task.target)}; evidence=${task.evidenceAtoms.map((atom) => atom.acceptedPatterns.join(' / ')).join(' | ')}`).join('\n')}
 ` : ''}
 ${input.sceneBlueprint.turnContract ? `
@@ -2208,7 +2230,7 @@ Create the scene content following the SceneContent schema. Include:
 9. Optional visualContinuity metadata when it clarifies beat-to-beat flow; keep panelMode as "single" unless an explicit UX/config flag says otherwise
 10. When unresolved callback hooks are listed above, author at least one TextVariant whose \`callbackHookId\` matches an existing hook id. \`callbackHookId\` is ONLY for those listed ledger hooks — a variant gated on a state/outcome flag (\`encounter_*\`, \`route_*\`, \`treatment_branch_*\`, \`tint:*\`) keeps that flag in its condition and sets NO callbackHookId (✓ condition: "encounter_x_partialVictory" with no callbackHookId; ✗ callbackHookId: "encounter_x_partialVictory")
 11. sceneTakeaways and transitionIn when they clarify purpose and flow
-12. realizedEventIds containing only the event IDs assigned to this scene, plus eventEvidence claims with short beat-local evidence for each realized event
+12. claimedEventIds (or legacy realizedEventIds) containing only event IDs assigned to this scene, plus eventEvidence claims containing the exact eventId, taskId, atomId, supporting beatIds, and a short excerpt. Never claim an event unless the prose actually realizes it.
 
 Respond with valid JSON matching the SceneContent type. Return raw JSON only: no markdown fences, no commentary, no trailing prose.
 `;
@@ -2216,11 +2238,14 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
 
   private validateContent(content: SceneContent, input: SceneWriterInput): void {
     const allowedEventIds = new Set(
-      (input.sceneBlueprint.realizationTasks ?? [])
-        .map((task) => task.eventId)
-        .filter((eventId): eventId is string => Boolean(eventId)),
+      input.sceneBlueprint.assignedEventIds
+      ?? input.sceneBlueprint.narrativeEventIds
+      ?? [],
     );
-    for (const eventId of content.realizedEventIds ?? []) {
+    const claimedEventIds = content.claimedEventIds ?? content.realizedEventIds ?? [];
+    const allowedTaskIds = new Set((input.sceneBlueprint.realizationTasks ?? []).map((task) => task.id));
+    const allowedAtomIds = new Set((input.sceneBlueprint.realizationTasks ?? []).flatMap((task) => task.evidenceAtoms.map((atom) => atom.id)));
+    for (const eventId of claimedEventIds) {
       if (!allowedEventIds.has(eventId)) {
         throw new Error(`Scene ${content.sceneId} acknowledged unassigned canonical event ${eventId}`);
       }
@@ -2228,6 +2253,12 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
     for (const claim of content.eventEvidence ?? []) {
       if (!claim || !allowedEventIds.has(claim.eventId)) {
         throw new Error(`Scene ${content.sceneId} supplied evidence for unassigned canonical event ${claim?.eventId ?? 'unknown'}`);
+      }
+      if (claim.taskId && !allowedTaskIds.has(claim.taskId)) {
+        throw new Error(`Scene ${content.sceneId} supplied evidence for unassigned realization task ${claim.taskId}`);
+      }
+      if (claim.atomId && !allowedAtomIds.has(claim.atomId)) {
+        throw new Error(`Scene ${content.sceneId} supplied evidence for unassigned realization atom ${claim.atomId}`);
       }
     }
 

@@ -406,3 +406,66 @@ describe('ContentGenerationPhase treatment density gate', () => {
     expect(emitted.some((event) => event.message?.includes('blocked content generation'))).toBe(true);
   });
 });
+
+describe('ContentGenerationPhase canonical owner transaction', () => {
+  it('does not run ChoiceAuthor or mark the scene complete after unresolved prose ownership', async () => {
+    const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
+    const calls: string[] = [];
+    const invalidScene = {
+      sceneId: 's1-3', sceneName: 'The Bookshop', startingBeatId: 'b1',
+      beats: [{ id: 'b1', text: 'Kylie watches traffic slide past the club windows.' }],
+      moodProgression: ['uncertain'], charactersInvolved: ['Kylie'], keyMoments: [], continuityNotes: [],
+      claimedEventIds: [], eventEvidence: [],
+    };
+    const phase = new ContentGenerationPhase({
+      sceneWriter: {
+        execute: async () => { calls.push('sceneWriter'); return { success: true, data: structuredClone(invalidScene) }; },
+        setContractLoadTemperature: () => undefined,
+      },
+      choiceAuthor: {
+        execute: async () => { calls.push('choiceAuthor'); return { success: true, data: { choices: [] } }; },
+        setEpisodeSkillTargets: () => undefined,
+      },
+      encounterArchitect: { execute: async () => { calls.push('encounterArchitect'); return { success: true, data: {} }; } },
+      getThreadPlanner: () => ({}), getTwistArchitect: () => ({}), getCharacterArcTracker: () => ({}),
+      incrementalValidator: null, sceneValidationResults: [], seasonSkillPlan: undefined, encounterTelemetry: [],
+      cachedPipelineMemory: null, callbackLedger: { threads: [] } as never,
+      dependencySchedulerStats: { hasCycle: false, waveCount: 0, fallbackToSerial: false },
+      episodeArcTargets: new Map(), episodeTwistPlans: new Map(), generationPlan: null, remediationBudget: null,
+      seasonChoicePlan: undefined, seasonThreadLedger: { threads: [] } as never,
+      assertSceneDependencyInvariants: () => undefined, buildBranchFallbackChoiceSet: () => undefined,
+      buildDeterministicChoiceSet: () => undefined, buildChoiceAuthorNpcs: () => [], buildCompactWorldContext: () => '',
+      buildEncounterPriorStateContext: () => undefined, captureEncounterTelemetry: () => undefined,
+      checkCancellation: async () => undefined, deriveStoryVerbsForBrief: () => [], emitPhaseProgress: () => undefined,
+      emitPlanUpdate: () => undefined, episodeCheckpointFile: () => '', establishedCanonForPrompt: () => undefined,
+      getPhase4DefaultCollisions: () => [], getTargetBeatCountForScene: () => 1,
+      getUnresolvedCallbacksForPrompt: () => undefined, inferBranchType: () => 'neutral', isEpisodeFinalScene: () => false,
+      loadResumeUnit: () => undefined, recordRemediationSafe: async () => undefined,
+      recordSceneValidationResult: () => undefined, resolveWorldLocationForScene: () => undefined,
+      runSceneCriticPass: async () => undefined, sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
+      saveResumeUnit: async () => undefined, throwIfFailFast: () => undefined, trackEncounterFlagConsequences: () => undefined,
+    } as never);
+    const task = {
+      id: 'task:event:ep1-u3:owner-event', contractId: 'event:ep1-u3', canonicalEventId: 'event:ep1-u3', eventId: 'event:ep1-u3',
+      episodeNumber: 1, ownerStage: 'scene_writer', repairHandler: 'scene_prose', sceneId: 's1-3',
+      evidenceAtoms: [{ id: 'event:ep1-u3:atom:1', description: 'Enter the bookshop', acceptedPatterns: ['Kylie enters the bookshop'], kind: 'semantic', required: true }],
+      target: { scope: 'owner', surfaces: ['beat_text'] }, sourceContractIds: ['ep1-u3'], blocking: true,
+    };
+    const blueprint = { scenes: [{
+      id: 's1-3', name: 'The Bookshop', description: 'Kylie enters the bookshop.', location: 'Lumina Books',
+      mood: 'curious', purpose: 'branch', npcsPresent: [], leadsTo: [], requiredBeats: [],
+      assignedEventIds: ['event:ep1-u3'], narrativeEventIds: ['event:ep1-u3'], realizationTasks: [task],
+      choicePoint: { type: 'relationship', description: 'Choose how to answer.', optionHints: ['Open up', 'Deflect'] },
+    }] } as never;
+    const brief = {
+      episode: { number: 1, title: 'Episode' }, options: {}, protagonist: { id: 'kylie', name: 'Kylie', pronouns: 'she/her' },
+      story: { title: 'Story', genre: 'romance', tone: 'tense' }, world: { premise: 'A dangerous city.' },
+    } as never;
+
+    await expect(phase.run(brief, { locations: [] } as never, { characters: [] } as never, blueprint, undefined, undefined, 1, {
+      config: { generation: {} }, emit: () => undefined,
+    } as never)).rejects.toThrow(/OwnerStageRealizationBlocker/);
+    expect(calls.filter((call) => call === 'choiceAuthor')).toHaveLength(0);
+    expect(calls.filter((call) => call === 'sceneWriter').length).toBeGreaterThanOrEqual(3);
+  });
+});

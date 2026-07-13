@@ -54,7 +54,11 @@ function buildMissingSceneShell(scene: PlannedScene): SceneBlueprint {
     narrativeEventIds: scene.narrativeEventIds ? [...scene.narrativeEventIds] : undefined,
     narrativeEventOrder: scene.narrativeEventOrder,
     narrativeEventPlanVersion: scene.narrativeEventPlanVersion,
-    realizedEventIds: scene.narrativeEventIds ? [...scene.narrativeEventIds] : undefined,
+    assignedEventIds: scene.narrativeEventIds ? [...scene.narrativeEventIds] : undefined,
+    claimedEventIds: [],
+    verifiedEventIds: [],
+    // Legacy field retained as an actual claim surface, never as an assignment.
+    realizedEventIds: [],
     supportingContractIds: sceneEventOwnership?.sourceContractIds
       ? [...sceneEventOwnership.sourceContractIds]
       : undefined,

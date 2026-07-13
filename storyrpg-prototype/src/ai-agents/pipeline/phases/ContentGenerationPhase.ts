@@ -283,7 +283,13 @@ import {
   validateSceneProducerOutput,
   type ProducerBlockerFinding,
 } from '../producerBlockerChecks';
-import { validateOwnerRealizationTasks, type RealizationTaskGateFinding } from '../realizationTaskGate';
+import {
+  prioritizeOwnerRepairFindings,
+  shouldAdoptOwnerRepairCandidate,
+  validateOwnerRealizationTasks,
+  type RealizationTaskGateFinding,
+} from '../realizationTaskGate';
+import { stableHash } from '../artifacts/store';
 import { createValidatorExecutionRecord } from '../../validators/validatorExecutionRecords';
 
 export type ContentGenerationResult = {
@@ -2151,7 +2157,10 @@ export class ContentGenerationPhase {
         // gets a tiny bounded SceneWriter retry loop whose feedback names the
         // exact missing content words — a retry here costs one scene; the same
         // miss at the final contract costs the whole run (bite-me-g13).
-        if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')) {
+        const canonicalSceneWriterTasks = (sceneBlueprint.realizationTasks ?? [])
+          .filter((task) => task.ownerStage === 'scene_writer');
+        const hasCanonicalEventTask = canonicalSceneWriterTasks.some((task) => Boolean(task.canonicalEventId));
+        if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK') && !hasCanonicalEventTask) {
           let missing = missingRequiredMoments(sceneRealizationBlueprint, sceneContent.beats);
           if (missing.length > 0) {
             // R8: an under-realized first draft is a SceneCritic candidate
@@ -2280,25 +2289,26 @@ export class ContentGenerationPhase {
         // scene contracts, not final-only diagnostics. Give SceneWriter a bounded
         // repair opportunity before choices, media, or checkpointing can amplify
         // an under-realized opening/event/relationship surface.
-        if (sceneBlueprint.realizationTasks?.some((task) => task.ownerStage === 'scene_writer')) {
-          let ownerTaskFindings = validateOwnerRealizationTasks({
+        if (canonicalSceneWriterTasks.length > 0) {
+          let ownerTaskFindings = prioritizeOwnerRepairFindings(validateOwnerRealizationTasks({
             sceneId: sceneBlueprint.id,
-            tasks: sceneBlueprint.realizationTasks.filter((task) => task.ownerStage === 'scene_writer'),
+            tasks: canonicalSceneWriterTasks,
             sceneContent,
             mode: 'owner',
             currentStage: 'scene_writer',
-          }).filter((finding) => finding.blocking);
+          }).filter((finding) => finding.blocking), canonicalSceneWriterTasks);
           for (let attempt = 1; attempt <= 2 && ownerTaskFindings.length > 0; attempt += 1) {
-            const feedback = ownerTaskFindings.map((finding) => {
-              const task = sceneBlueprint.realizationTasks?.find((candidate) => candidate.id === finding.taskId);
+            const repairTarget = ownerTaskFindings[0];
+            const feedback = [repairTarget].map((finding) => {
+              const task = canonicalSceneWriterTasks.find((candidate) => candidate.id === finding.taskId);
               const evidence = task?.evidenceAtoms.map((atom) => `${atom.polarity === 'forbidden' ? 'AVOID' : 'SHOW'} ${atom.acceptedPatterns.join(' / ')}`).join('; ');
               return `- ${finding.taskId}: ${finding.message}${task?.evidenceAtoms[0]?.sourceText ? ` Source contract: ${task.evidenceAtoms[0].sourceText}` : ''}${evidence ? ` Required evidence: ${evidence}` : ''}`;
             }).join('\n');
             context.emit({
               type: 'regeneration_triggered',
               phase: 'scenes',
-              message: `Scene ${sceneBlueprint.id} missed ${ownerTaskFindings.length} canonical realization task(s) — retrying owner-stage prose (${attempt}/2)`,
-              data: { findings: ownerTaskFindings },
+              message: `Scene ${sceneBlueprint.id} is repairing canonical realization fingerprint ${repairTarget.fingerprint} (${attempt}/2)`,
+              data: { repairTarget, findings: ownerTaskFindings },
             });
             const ownerTaskRetry = await withTimeout(
               this.deps.sceneWriter.execute({
@@ -2314,12 +2324,33 @@ export class ContentGenerationPhase {
             if (!ownerTaskRetry.success || !ownerTaskRetry.data) continue;
             const retryFindings = validateOwnerRealizationTasks({
               sceneId: sceneBlueprint.id,
-              tasks: sceneBlueprint.realizationTasks.filter((task) => task.ownerStage === 'scene_writer'),
+              tasks: canonicalSceneWriterTasks,
               sceneContent: ownerTaskRetry.data,
               mode: 'owner',
               currentStage: 'scene_writer',
             }).filter((finding) => finding.blocking);
-            if (retryFindings.length < ownerTaskFindings.length) {
+            const adoptCandidate = shouldAdoptOwnerRepairCandidate({
+              previous: ownerTaskFindings,
+              candidate: retryFindings,
+              targetFingerprint: repairTarget.fingerprint,
+            });
+            if (outputDirectory) {
+              await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-owner-repair-attempt-${attempt}.json`, {
+                schemaVersion: 2,
+                episodeNumber: densityEpisodeNumber,
+                sceneId: sceneBlueprint.id,
+                attempt,
+                repairTarget,
+                previousFindings: ownerTaskFindings,
+                candidateFindings: retryFindings,
+                adopted: adoptCandidate,
+                candidateHash: stableHash(ownerTaskRetry.data),
+                candidate: ownerTaskRetry.data,
+                assignedEventIds: sceneBlueprint.assignedEventIds ?? sceneBlueprint.narrativeEventIds ?? [],
+                realizationTasks: canonicalSceneWriterTasks,
+              });
+            }
+            if (adoptCandidate) {
               Object.assign(sceneContent, ownerTaskRetry.data);
               sceneContent.sceneId = sceneBlueprint.id;
               sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
@@ -2327,17 +2358,45 @@ export class ContentGenerationPhase {
               sceneContent.settingContext = sceneSettingContext;
               sceneContent.requiredBeats = sceneRealizationBlueprint.requiredBeats;
               sceneContent.signatureMoment = sceneRealizationBlueprint.signatureMoment;
-              ownerTaskFindings = retryFindings;
+              ownerTaskFindings = prioritizeOwnerRepairFindings(retryFindings, canonicalSceneWriterTasks);
             }
           }
           if (ownerTaskFindings.length > 0) {
-            context.emit({
-              type: 'warning',
-              phase: 'scenes',
-              message: `Scene ${sceneBlueprint.id} still misses ${ownerTaskFindings.length} canonical realization task(s) after owner-stage repair; final contract remains blocking.`,
-              data: { findings: ownerTaskFindings },
-            });
+            if (outputDirectory) {
+              await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-realization-blockers.json`, {
+                schemaVersion: 2,
+                episodeNumber: densityEpisodeNumber,
+                sceneId: sceneBlueprint.id,
+                candidateHash: stableHash(sceneContent),
+                candidate: sceneContent,
+                findings: ownerTaskFindings,
+                assignedEventIds: sceneBlueprint.assignedEventIds ?? sceneBlueprint.narrativeEventIds ?? [],
+                realizationTasks: canonicalSceneWriterTasks,
+              });
+            }
+            const first = ownerTaskFindings[0];
+            throw new PipelineError(
+              `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} failed assigned realization task ${first.taskId}: ${first.message}`,
+              'scenes',
+              {
+                agent: 'SceneWriter',
+                context: { sceneId: sceneBlueprint.id, findings: ownerTaskFindings, retryBudget: 2 },
+                failure: {
+                  code: 'prose_realization_failed',
+                  ownerStage: 'scene_writer',
+                  retryClass: 'repair_scene_prose',
+                  issueCodes: ownerTaskFindings.map((finding) => finding.code),
+                  artifactRefs: outputDirectory
+                    ? [`episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-realization-blockers.json`]
+                    : [],
+                  repairTarget: first.taskId,
+                },
+              },
+            );
           }
+          sceneContent.verifiedEventIds = Array.from(new Set(canonicalSceneWriterTasks
+            .map((task) => task.canonicalEventId ?? task.eventId)
+            .filter((eventId): eventId is string => Boolean(eventId))));
         }
 
         // Add branch metadata for visual differentiation
@@ -4393,28 +4452,49 @@ export class ContentGenerationPhase {
       if (realizationBlockers.length > 0) {
         if (outputDirectory) {
           await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-realization-blockers.json`, {
-            schemaVersion: 1,
+            schemaVersion: 2,
             episodeNumber: densityEpisodeNumber,
             sceneId: sceneBlueprint.id,
+            candidateHash: stableHash({ sceneContent: completedScene, choiceSet: completedChoice, encounter: completedEncounter }),
+            candidate: { sceneContent: completedScene, choiceSet: completedChoice, encounter: completedEncounter },
             findings: realizationBlockers,
+            assignedEventIds: sceneBlueprint.assignedEventIds ?? sceneBlueprint.narrativeEventIds ?? [],
+            realizationTasks: sceneBlueprint.realizationTasks ?? [],
           });
         }
         const first = realizationBlockers[0];
+        const ownerAgent = first.ownerStage === 'choice_author'
+          ? 'ChoiceAuthor'
+          : first.ownerStage === 'encounter_architect'
+            ? 'EncounterArchitect'
+            : 'SceneWriter';
+        const ownerPhase = first.ownerStage === 'choice_author'
+          ? 'choices'
+          : first.ownerStage === 'encounter_architect'
+            ? 'encounters'
+            : 'scenes';
         throw new PipelineError(
           `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} failed assigned realization task ${first.taskId}: ${first.message}`,
-          first.outcomeTier ? 'encounters' : 'scenes',
+          ownerPhase,
           {
-            agent: first.outcomeTier ? 'EncounterArchitect' : 'SceneWriter',
+            agent: ownerAgent,
             context: {
               sceneId: sceneBlueprint.id,
               findings: realizationBlockers,
-              retryBudget: 1,
+              retryBudget: 2,
             },
             failure: {
-              code: 'prose_realization_failed',
-              ownerStage: first.outcomeTier ? 'scene_content' : 'scene_content',
-              retryClass: 'repair_scene_prose',
+              code: first.ownerStage === 'scene_writer' ? 'prose_realization_failed' : 'owner_realization_failed',
+              ownerStage: first.ownerStage,
+              retryClass: first.ownerStage === 'choice_author'
+                ? 'repair_choice'
+                : first.ownerStage === 'encounter_architect'
+                  ? 'repair_encounter_route'
+                  : 'repair_scene_prose',
               issueCodes: realizationBlockers.map((finding) => finding.code),
+              artifactRefs: outputDirectory
+                ? [`episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-realization-blockers.json`]
+                : [],
               repairTarget: first.taskId,
             },
           },

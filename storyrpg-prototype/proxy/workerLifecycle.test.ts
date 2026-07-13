@@ -30,6 +30,18 @@ function makeLifecycle() {
 }
 
 describe('workerLifecycle resume checkpoint normalization', () => {
+  it('uses server provider credentials over stale non-empty client keys', () => {
+    const agents = {
+      sceneWriter: { provider: 'gemini', model: 'gemini-test', apiKey: 'stale-client-key' },
+      storyArchitect: { provider: 'anthropic', model: 'claude-test', apiKey: 'client-anthropic' },
+    };
+    __test__.applyAuthoritativeNarrativeProviderKeys(agents, {
+      gemini: 'server-gemini-key', anthropic: 'server-anthropic-key', openai: '', openrouter: '',
+    });
+    expect(agents.sceneWriter.apiKey).toBe('server-gemini-key');
+    expect(agents.storyArchitect.apiKey).toBe('server-anthropic-key');
+  });
+
   it('hashes worker settings deterministically and changes on media/council changes', () => {
     const base = { agents: { writer: { provider: 'gemini', model: 'gemini-2.5-pro', apiKey: 'key' } }, imageGen: { enabled: false }, qualityCouncil: { enabled: false } };
     expect(__test__.computeWorkerJobConfigHash('generation', base)).toBe(__test__.computeWorkerJobConfigHash('generation', { qualityCouncil: { enabled: false }, imageGen: { enabled: false }, agents: base.agents }));

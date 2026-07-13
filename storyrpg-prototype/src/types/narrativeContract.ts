@@ -66,8 +66,34 @@ export interface NarrativeEvidenceAtom {
   acceptedPatterns: string[];
   sourceText?: string;
   kind: 'lexical' | 'semantic' | 'relationship_label' | 'route';
+  /** Typed semantic role used by executable-plan and owner-stage validators. */
+  semanticRole?:
+    | 'action'
+    | 'introduction'
+    | 'information_transfer'
+    | 'state_change'
+    | 'relationship_change'
+    | 'location_entry'
+    | 'location_reference'
+    | 'decision'
+    | 'aftermath';
+  subjectIds?: string[];
+  participantIds?: string[];
+  prerequisiteAtomIds?: string[];
+  stagedLocation?: string;
+  referencedLocations?: string[];
   required: boolean;
   polarity?: 'required' | 'forbidden';
+}
+
+export interface NarrativeEvidenceGroup {
+  id: string;
+  description: string;
+  requirement: 'all' | 'any' | 'minimum';
+  atomIds: string[];
+  minimumEvidenceHits?: number;
+  blocking: boolean;
+  sourceContractIds: string[];
 }
 
 /**
@@ -79,6 +105,11 @@ export interface NarrativeEvidenceAtom {
 export interface NarrativeRealizationTask {
   id: string;
   contractId: string;
+  /** Canonical depiction event represented by this task, when applicable. */
+  canonicalEventId?: string;
+  /** Projection contracts merged into the canonical task for provenance only. */
+  projectionOf?: string[];
+  sourceKinds?: Array<'event' | 'story_circle' | 'treatment' | 'presence' | 'transition' | 'relationship' | 'premise'>;
   episodeNumber: number;
   ownerStage: NarrativeRealizationOwnerStage;
   repairHandler: 'premise_realization' | 'relationship_pacing' | 'encounter_route' | 'scene_prose' | 'choice_reauthor';
@@ -90,6 +121,7 @@ export interface NarrativeRealizationTask {
   evidenceScope?: { npcId?: string; groupId?: string };
   artifactPath?: string;
   evidenceAtoms: NarrativeEvidenceAtom[];
+  evidenceGroups?: NarrativeEvidenceGroup[];
   /** Minimum number of positive evidence atoms required when the task models
    * a threshold contract such as a premise. Omitted means every required atom
    * must be present. */
@@ -310,6 +342,8 @@ export interface NarrativeEventContract {
   requiredOutcomeTiers?: string[];
   /** Deterministic reader-facing evidence required before this event resolves. */
   evidenceRequirements?: NarrativeEvidenceRequirement[];
+  /** Atomic executable evidence compiled from the authored event source. */
+  realizationAtoms?: NarrativeEvidenceAtom[];
   provenance: {
     source: 'episode_spine' | 'treatment_contract' | 'season_plan' | 'legacy_migration';
     confidence: 'authoritative' | 'deterministic' | 'heuristic';

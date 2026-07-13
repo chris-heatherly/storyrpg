@@ -83,4 +83,38 @@ describe('compileNarrativeRealizationTasks', () => {
       sourceText: 'Kylie writes the first post about the rescue.',
     });
   });
+
+  it('merges a Story Circle projection into the canonical owner task for the same event', () => {
+    const eventText = 'She wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika.';
+    const graph = {
+      events: [{
+        id: 'event:ep1-u3', episodeNumber: 1, sourceOrder: 3, sourceText: eventText,
+        sourceContractIds: ['ep1-u3', 's1-3-turn'], realizationMode: 'depiction',
+        ownershipPolicy: 'exactly_one_scene', prerequisiteEventIds: [], targetSceneIds: ['s1-3'],
+        targetSpineUnitIds: [], ownerSceneId: 's1-3', cue: 'storyTurn',
+        evidenceRequirements: [], provenance: { source: 'episode_spine', confidence: 'authoritative' },
+      }],
+      dependencies: [],
+    } as unknown as NarrativeContractGraph;
+    const scenes = [{
+      id: 's1-3', episodeNumber: 1, order: 2, kind: 'standard', relationshipPacing: [],
+      storyCircleBeatContracts: [{
+        id: 'story-circle-you-ep1-u3', beat: 'you', sourceText: eventText,
+        eventAtoms: [eventText.replace('who befriends her and', 'and')],
+        requiredRealization: ['final_prose'], blockingLevel: 'treatment',
+      }],
+    }] as any;
+
+    const tasks = compileNarrativeRealizationTasks(graph, scenes);
+    const ownerTasks = tasks.filter((task) => task.canonicalEventId === 'event:ep1-u3');
+
+    expect(ownerTasks).toHaveLength(1);
+    expect(ownerTasks[0]).toMatchObject({
+      id: 'task:event:ep1-u3:owner-event',
+      projectionOf: ['story-circle-you-ep1-u3'],
+      sourceKinds: ['event', 'story_circle'],
+    });
+    expect(ownerTasks[0].evidenceAtoms[0]?.acceptedPatterns).toEqual(expect.arrayContaining([eventText]));
+    expect(tasks.some((task) => task.id === 'task:story-circle-you-ep1-u3:story-circle')).toBe(false);
+  });
 });

@@ -87,6 +87,27 @@ function isMissingApiKey(value) {
     || v === '[redacted]';
 }
 
+function applyAuthoritativeNarrativeProviderKeys(agents, keys) {
+  if (!agents || typeof agents !== 'object') return;
+  for (const agentName of Object.keys(agents)) {
+    const agentCfg = agents[agentName];
+    if (!agentCfg || typeof agentCfg !== 'object') continue;
+    const provider = String(agentCfg.provider || '').toLowerCase();
+    const serverKey = provider === 'anthropic'
+      ? keys.anthropic
+      : provider === 'gemini' || provider === 'google'
+        ? keys.gemini
+        : provider === 'openai'
+          ? keys.openai
+          : provider === 'openrouter'
+            ? keys.openrouter
+            : '';
+    // Provider credentials are server-owned. Client persistence may select a
+    // route/model, but a stale browser key must not override a healthy worker.
+    if (!isMissingApiKey(serverKey)) agentCfg.apiKey = serverKey;
+  }
+}
+
 function buildWorkerConfigSnapshot(config) {
   if (!config || typeof config !== 'object') return undefined;
 
@@ -1672,21 +1693,12 @@ function createWorkerLifecycle({
       || process.env.EXPO_PUBLIC_ATLAS_CLOUD_API_KEY
       || '';
 
-    if (agents && typeof agents === 'object') {
-      for (const agentName of Object.keys(agents)) {
-        const agentCfg = agents[agentName];
-        if (!agentCfg || typeof agentCfg !== 'object') continue;
-        if (agentCfg.provider === 'anthropic' && isMissingApiKey(agentCfg.apiKey)) {
-          agentCfg.apiKey = envAnthropicKey;
-        } else if ((agentCfg.provider === 'gemini' || agentCfg.provider === 'google') && isMissingApiKey(agentCfg.apiKey)) {
-          agentCfg.apiKey = envGeminiKey;
-        } else if (agentCfg.provider === 'openai' && isMissingApiKey(agentCfg.apiKey)) {
-          agentCfg.apiKey = envOpenAiKey;
-        } else if (agentCfg.provider === 'openrouter' && isMissingApiKey(agentCfg.apiKey)) {
-          agentCfg.apiKey = envOpenRouterKey;
-        }
-      }
-    }
+    applyAuthoritativeNarrativeProviderKeys(agents, {
+      anthropic: envAnthropicKey,
+      gemini: envGeminiKey,
+      openai: envOpenAiKey,
+      openrouter: envOpenRouterKey,
+    });
 
     if (cfg.imageGen && typeof cfg.imageGen === 'object') {
       if (isMissingApiKey(cfg.imageGen.apiKey)) {
@@ -2210,5 +2222,6 @@ module.exports = {
     didWorkerStepSucceed,
     normalizeResumeStepsForOutputs,
     computeWorkerJobConfigHash,
+    applyAuthoritativeNarrativeProviderKeys,
   },
 };

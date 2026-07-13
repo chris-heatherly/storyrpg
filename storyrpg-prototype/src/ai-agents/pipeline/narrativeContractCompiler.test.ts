@@ -174,6 +174,46 @@ describe('NarrativeContractCompiler', () => {
     expect(plans[1].sceneContexts.find((context) => context.sceneId === 's1-1')?.ownedEventIds).toEqual(['event:ep1-u1']);
   });
 
+  it('repairs a referenced destination mistaken for the staged event location', () => {
+    const spine: EpisodeSpineContract = {
+      episodeNumber: 1, sourceHash: 'ep1', episodeStoryCircleBeats: ['you'], polarityFacets: [],
+      units: [
+        { id: 'ep1-u2', order: 1, text: 'Kylie explores the streets of Bucharest.', kind: 'explore', storyCircleFacets: [], prerequisites: [], sceneKind: 'standard' },
+        { id: 'ep1-u3', order: 2, text: 'She wanders into a bookshop owned by Stela who befriends her and introduces Kylie to the secret nightlife world of Valescu Club and her other friend Mika.', kind: 'meet', storyCircleFacets: [], prerequisites: ['ep1-u2'], sceneKind: 'standard' },
+      ],
+    };
+    const scenes = [
+      scene({ id: 's1-2', episodeNumber: 1, order: 1, spineUnitId: 'ep1-u2', locations: ['Lumina Books'], dramaticPurpose: 'Kylie explores Bucharest.' }),
+      scene({ id: 's1-3', episodeNumber: 1, order: 2, spineUnitId: 'ep1-u3', locations: ['Valescu Club'], dramaticPurpose: spine.units[1].text }),
+    ];
+
+    const compiled = compileAndApplyNarrativeContracts(plan([1]), scenePlan(scenes, { 1: spine }));
+    expect(compiled.scenes.find((candidate) => candidate.id === 's1-3')?.locations).toEqual(['Lumina Books']);
+    expect(compiled.narrativeContractGraph?.validation.issues).toContainEqual(expect.objectContaining({
+      code: 'scene_location_repaired_from_reference',
+      sceneId: 's1-3',
+      severity: 'warning',
+    }));
+    expect(compiled.episodeEventPlans?.[1].validation.passed).toBe(true);
+  });
+
+  it('blocks an event whose staged location remains incompatible with its owner scene', () => {
+    const scenes = [scene({
+      id: 's1', episodeNumber: 1, order: 0, locations: ['Rooftop Bar'],
+      dramaticPurpose: 'Kylie enters Lumina Books and finds the hidden ledger.',
+    })];
+    // Include the canonical location in the season catalog without making it
+    // the owner scene or a referenced destination eligible for auto-repair.
+    const locationCatalog = scene({ id: 's2', episodeNumber: 2, order: 0, locations: ['Lumina Books'], dramaticPurpose: 'Later aftermath.' });
+    const graph = compileNarrativeContractGraph(plan([1, 2]), scenePlan([...scenes, locationCatalog]));
+    const eventPlan = compileEpisodeEventPlan(graph, scenes, 1);
+    expect(eventPlan.validation.passed).toBe(false);
+    expect(eventPlan.validation.issues).toContainEqual(expect.objectContaining({
+      code: 'scene_location_event_mismatch',
+      sceneId: 's1',
+    }));
+  });
+
   it('does not let an exact prose match move an explicitly bound spine event', () => {
     const spine: EpisodeSpineContract = {
       episodeNumber: 1,

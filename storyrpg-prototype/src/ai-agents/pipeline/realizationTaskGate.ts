@@ -20,7 +20,43 @@ export interface RealizationTaskGateFinding {
   message: string;
   missingEvidenceAtoms?: string[];
   matchedForbiddenAtoms?: string[];
+  evidenceDiagnostics?: EvidenceMatchDiagnostic[];
   fingerprint: string;
+}
+
+export interface EvidenceMatchDiagnostic {
+  atomId: string;
+  matched: boolean;
+  bestPattern?: string;
+  score: number;
+  matchedTerms: string[];
+  missingTerms: string[];
+}
+
+export function prioritizeOwnerRepairFindings(
+  findings: RealizationTaskGateFinding[],
+  tasks: NarrativeRealizationTask[],
+): RealizationTaskGateFinding[] {
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  return [...findings].sort((left, right) => {
+    const leftTask = taskById.get(left.taskId);
+    const rightTask = taskById.get(right.taskId);
+    const leftPriority = leftTask?.canonicalEventId ? 0 : left.code === 'OWNER_FORBIDDEN_EVIDENCE_PRESENT' ? 1 : 2;
+    const rightPriority = rightTask?.canonicalEventId ? 0 : right.code === 'OWNER_FORBIDDEN_EVIDENCE_PRESENT' ? 1 : 2;
+    return leftPriority - rightPriority || left.fingerprint.localeCompare(right.fingerprint);
+  });
+}
+
+/** A repair may clear its target, but may never introduce a new blocker. */
+export function shouldAdoptOwnerRepairCandidate(input: {
+  previous: RealizationTaskGateFinding[];
+  candidate: RealizationTaskGateFinding[];
+  targetFingerprint: string;
+}): boolean {
+  const previousFingerprints = new Set(input.previous.map((finding) => finding.fingerprint));
+  const candidateFingerprints = new Set(input.candidate.map((finding) => finding.fingerprint));
+  if (candidateFingerprints.has(input.targetFingerprint)) return false;
+  return [...candidateFingerprints].every((fingerprint) => previousFingerprints.has(fingerprint));
 }
 
 function outcomeTierForTask(task: NarrativeRealizationTask): string | undefined {
@@ -74,6 +110,23 @@ function evidenceMatches(pattern: string, text: string): boolean {
   const hits = words.filter((word) => hayWords.has(word)
     || [...hayWords].some((candidate) => candidate.startsWith(word) || word.startsWith(candidate) || stem(candidate) === stem(word)));
   return hits.length / words.length >= 0.6;
+}
+
+function evidenceMatchScore(pattern: string, text: string): Omit<EvidenceMatchDiagnostic, 'atomId' | 'matched' | 'bestPattern'> {
+  const needle = normalize(pattern);
+  const haystack = normalize(text);
+  if (!needle || !haystack) return { score: 0, matchedTerms: [], missingTerms: needle.split(' ').filter(Boolean) };
+  const terms = [...new Set(needle.split(' ').filter((word) => word.length >= 4))];
+  if (haystack.includes(needle)) return { score: 1, matchedTerms: terms, missingTerms: [] };
+  const hayWords = new Set(haystack.split(' '));
+  const stem = (word: string): string => word.replace(/(?:ing|ed|es|s)$/i, '').replace(/i$/, 'y');
+  const matchedTerms = terms.filter((word) => hayWords.has(word)
+    || [...hayWords].some((candidate) => candidate.startsWith(word) || word.startsWith(candidate) || stem(candidate) === stem(word)));
+  return {
+    score: terms.length > 0 ? matchedTerms.length / terms.length : 0,
+    matchedTerms,
+    missingTerms: terms.filter((term) => !matchedTerms.includes(term)),
+  };
 }
 
 function scopeTerms(task: NarrativeRealizationTask): string[] {
@@ -154,15 +207,25 @@ function taskTextGroups(input: { sceneContent?: unknown; choiceSet?: unknown; en
   ));
 }
 
-function evaluateTaskGroup(task: NarrativeRealizationTask, texts: string[]): { missing: string[]; forbidden: string[] } {
+function evaluateTaskGroup(task: NarrativeRealizationTask, texts: string[]): { missing: string[]; forbidden: string[]; diagnostics: EvidenceMatchDiagnostic[] } {
   const missing: string[] = [];
   const forbidden: string[] = [];
+  const diagnostics: EvidenceMatchDiagnostic[] = [];
   const positiveAtoms = task.evidenceAtoms.filter((atom) => atom.polarity !== 'forbidden');
   const matchedPositiveAtoms = new Set<string>();
   for (const atom of task.evidenceAtoms) {
-    const matched = atom.acceptedPatterns.some((pattern) =>
-      texts.some((text) => relationshipEvidenceMatches(task, pattern, text, atom.kind)),
-    );
+    let best: EvidenceMatchDiagnostic = { atomId: atom.id, matched: false, score: 0, matchedTerms: [], missingTerms: [] };
+    for (const pattern of atom.acceptedPatterns) {
+      for (const text of texts) {
+        const matched = relationshipEvidenceMatches(task, pattern, text, atom.kind);
+        const score = evidenceMatchScore(pattern, text);
+        if (matched || score.score > best.score) {
+          best = { atomId: atom.id, matched, bestPattern: pattern, ...score, score: matched ? Math.max(score.score, 1) : score.score };
+        }
+      }
+    }
+    const matched = best.matched;
+    diagnostics.push(best);
     if (atom.polarity === 'forbidden') {
       if (matched) forbidden.push(atom.id);
     } else {
@@ -173,7 +236,20 @@ function evaluateTaskGroup(task: NarrativeRealizationTask, texts: string[]): { m
   if (task.minimumEvidenceHits != null && matchedPositiveAtoms.size < task.minimumEvidenceHits) {
     missing.push(...positiveAtoms.filter((atom) => !matchedPositiveAtoms.has(atom.id)).map((atom) => atom.id));
   }
-  return { missing, forbidden };
+  for (const group of task.evidenceGroups ?? []) {
+    const groupAtoms = group.atomIds
+      .map((atomId) => task.evidenceAtoms.find((atom) => atom.id === atomId))
+      .filter((atom): atom is NarrativeRealizationTask['evidenceAtoms'][number] => Boolean(atom && atom.polarity !== 'forbidden'));
+    const matched = groupAtoms.filter((atom) => matchedPositiveAtoms.has(atom.id));
+    const requiredHits = group.minimumEvidenceHits ?? (group.requirement === 'all' ? groupAtoms.length : 1);
+    const groupSatisfied = group.requirement === 'any'
+      ? matched.length >= 1
+      : matched.length >= requiredHits;
+    if (!groupSatisfied) {
+      missing.push(...groupAtoms.filter((atom) => !matchedPositiveAtoms.has(atom.id)).map((atom) => atom.id));
+    }
+  }
+  return { missing: [...new Set(missing)], forbidden: [...new Set(forbidden)], diagnostics };
 }
 
 export function validateOwnerRealizationTasks(input: {
@@ -189,7 +265,7 @@ export function validateOwnerRealizationTasks(input: {
   for (const task of input.tasks ?? []) {
     if ((input.mode ?? 'owner') === 'owner' && input.currentStage && task.ownerStage !== input.currentStage) continue;
     const evaluations = taskTextGroups({ ...input, task }).map((texts) => evaluateTaskGroup(task, texts));
-    const bestPositive = evaluations.reduce((best, candidate) => candidate.missing.length < best.missing.length ? candidate : best, evaluations[0] ?? { missing: task.evidenceAtoms.filter((atom) => atom.required && atom.polarity !== 'forbidden').map((atom) => atom.id), forbidden: [] });
+    const bestPositive = evaluations.reduce((best, candidate) => candidate.missing.length < best.missing.length ? candidate : best, evaluations[0] ?? { missing: task.evidenceAtoms.filter((atom) => atom.required && atom.polarity !== 'forbidden').map((atom) => atom.id), forbidden: [], diagnostics: [] });
     const missing = task.target.scope === 'any_route' && evaluations.some((evaluation) => evaluation.missing.length === 0)
       ? []
       : task.target.scope === 'all_options'
@@ -211,6 +287,7 @@ export function validateOwnerRealizationTasks(input: {
         field: task.artifactPath || 'scene',
         message: `Owner-stage realization task ${task.id} is missing required evidence: ${missing.join(', ')}.`,
         missingEvidenceAtoms: missing,
+        evidenceDiagnostics: bestPositive.diagnostics.filter((diagnostic) => missing.includes(diagnostic.atomId)),
         fingerprint: realizationTaskFindingFingerprint({
           code: 'OWNER_REALIZATION_MISSING', taskId: task.id, sceneId: input.sceneId, outcomeTier, evidenceAtomIds: missing,
         }),
@@ -229,6 +306,7 @@ export function validateOwnerRealizationTasks(input: {
         field: task.artifactPath || 'scene',
         message: `Owner-stage realization task ${task.id} contains forbidden evidence: ${forbidden.join(', ')}.`,
         matchedForbiddenAtoms: forbidden,
+        evidenceDiagnostics: evaluations.flatMap((evaluation) => evaluation.diagnostics).filter((diagnostic) => forbidden.includes(diagnostic.atomId)),
         fingerprint: realizationTaskFindingFingerprint({
           code: 'OWNER_FORBIDDEN_EVIDENCE_PRESENT', taskId: task.id, sceneId: input.sceneId, outcomeTier, evidenceAtomIds: forbidden,
         }),

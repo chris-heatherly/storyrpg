@@ -1523,6 +1523,25 @@ describe('SceneWriter structural guards', () => {
     expect(normalized.transitionIn).toBe('42');
   });
 
+  it('rejects evidence claims that use task or atom ids outside the immutable assignment', () => {
+    const writer = new SceneWriter({
+      provider: 'anthropic', model: 'test-model', apiKey: 'test-key', maxTokens: 1024, temperature: 0,
+    });
+    const input = {
+      sceneBlueprint: {
+        id: 's1', assignedEventIds: ['event:1'], realizationTasks: [{
+          id: 'task:event:1', evidenceAtoms: [{ id: 'event:1:atom:1' }],
+        }],
+      },
+    } as any;
+    const content = {
+      sceneId: 's1', beats: [], eventEvidence: [{
+        eventId: 'event:1', taskId: 'task:foreign', atomId: 'event:1:atom:1', evidence: 'A claim.',
+      }],
+    } as any;
+    expect(() => (writer as any).validateContent(content, input)).toThrow(/unassigned realization task task:foreign/);
+  });
+
   it('strips agent-facing pressure notes from player-facing beat text and prompts', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',

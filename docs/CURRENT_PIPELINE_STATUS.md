@@ -105,8 +105,20 @@ active representation of surface and route placement; the former
 `requiredSurface` + `routePolicy` + top-level `outcomeTier` combination is
 accepted only by the checkpoint migration boundary.
 
-The content phase validates each task at its owning stage and supplies bounded
-feedback retries before accepting or checkpointing the artifact. Route evidence
+Compiler v10 decomposes compound depiction events into ordered, independently
+verifiable action atoms. Location evidence distinguishes the place where action
+is staged from a destination that is only mentioned or introduced. The episode
+executability gate rejects unresolved event/location and transition conflicts;
+the narrow case where a referenced destination was mistakenly selected as the
+owner location is repaired deterministically before the immutable plan commits.
+
+The content phase validates each task at its owning stage and supplies bounded,
+fingerprint-targeted feedback retries before accepting or checkpointing the
+artifact. A candidate is adopted only when it clears the targeted fingerprint
+without introducing another blocker. Unresolved SceneWriter-owned tasks abort
+before ChoiceAuthor, callback accounting, completion status, or checkpointing.
+Failed candidates and per-atom match diagnostics are persisted for deterministic
+replay. Route evidence
 is evaluated per playable outcome and cannot be borrowed across routes or from
 an undeclared surface. `NarrativeContractValidator` repeats the same canonical
 gate after late story mutations as a regression net, and the owner-stage
@@ -192,6 +204,11 @@ limits live in `providerThrottle.ts` and the image service adapters.
 
 Workers persist job state, checkpoints, dead-letter state, checkpoint output
 files, and sanitized timelines through `proxy/workerLifecycle.js`.
+
+Provider/model selection remains part of the immutable job configuration, while
+provider credentials are server-owned during worker hydration. When a matching
+server credential exists it overrides stale browser-persisted key material before
+the config hash and provider preflight are evaluated.
 
 The proxy also normalizes stale/orphaned jobs on startup and periodically
 prunes completed jobs, orphaned checkpoints, stale MidAPI callbacks, and old

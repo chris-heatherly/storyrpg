@@ -34,8 +34,9 @@ import { resolveCharacterIntroMode, resolveRosterCharacter } from '../utils/npcI
 import { buildCharacterTreatmentContractsForPlan } from '../utils/characterTreatmentContracts';
 import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 import { plannedGroupFormation } from '../utils/relationshipPacingStagePolicy';
+import { compileEventRealizationAtoms, stagedLocationsForAtoms } from './eventAtomCompiler';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v8';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v10';
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',
@@ -79,6 +80,40 @@ function sceneSourceText(scene: PlannedScene, spineUnit?: EpisodeSpineUnit): str
     || scene.dramaticPurpose
     || scene.title,
   );
+}
+
+function eventRealizationAtoms(
+  eventId: string,
+  sourceText: string,
+  scene: PlannedScene,
+  knownLocations: string[],
+) {
+  const authoredTexts = uniqueStrings([
+    sourceText,
+    scene.turnContract?.turnEvent,
+    scene.signatureMoment,
+    ...(scene.requiredBeats ?? [])
+      .filter((beat) => beat.contractKind !== 'identity_constraint')
+      .map((beat) => beat.mustDepict || beat.sourceTurn),
+  ]);
+  const atoms = authoredTexts.flatMap((text, sourceIndex) => compileEventRealizationAtoms({
+    eventId: `${eventId}:source:${sourceIndex + 1}`,
+    sourceText: text,
+    knownLocations,
+  }));
+  const seen = new Set<string>();
+  return atoms
+    .filter((atom) => {
+      const key = clean(atom.acceptedPatterns[0]).toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((atom, index) => ({
+      ...atom,
+      id: `${eventId}:atom:${index + 1}`,
+      prerequisiteAtomIds: index > 0 ? [`${eventId}:atom:${index}`] : [],
+    }));
 }
 
 function sceneCharacterPresenceText(scene: PlannedScene, spineUnit?: EpisodeSpineUnit): string {
@@ -1184,6 +1219,7 @@ export function compileNarrativeContractGraph(
   const compilationIssues: NarrativeContractIssue[] = [];
   const spineEventIds = new Map<string, string>();
   const scenes = [...scenePlan.scenes].sort((a, b) => a.episodeNumber - b.episodeNumber || a.order - b.order || a.id.localeCompare(b.id));
+  const knownLocations = uniqueStrings(scenes.flatMap((scene) => scene.locations ?? []));
 
   const spineEntries: Array<{ scene: PlannedScene; spineUnit?: EpisodeSpineUnit }> = [];
   const consumedSpineUnitIds = new Set<string>();
@@ -1242,6 +1278,9 @@ export function compileNarrativeContractGraph(
       ownerSceneId: depiction ? ownerScene.id : undefined,
       cue: splitLateNightPayoff ? 'lateNightWriting' : cue ?? (!spineUnit ? diagnosticCue(text) : undefined),
       evidenceRequirements: eventEvidenceRequirements(id, splitLateNightPayoff ? 'lateNightWriting' : cue, originalText),
+      realizationAtoms: depiction
+        ? eventRealizationAtoms(id, splitLateNightPayoff ? writingOnlyText(originalText) : text, ownerScene, knownLocations)
+        : undefined,
       routeRealizationPolicy: routeRealizationPolicy(splitLateNightPayoff ? 'lateNightWriting' : cue, originalText),
       requiredOutcomeTiers: routeRealizationPolicy(splitLateNightPayoff ? 'lateNightWriting' : cue, originalText) === 'all_routes'
         ? ['victory', 'partialVictory', 'success', 'complicated', 'defeat', 'escape', 'failure']
@@ -1268,6 +1307,31 @@ export function compileNarrativeContractGraph(
         prerequisiteEventIds: [id],
         cue: 'blogAftermath',
         evidenceRequirements: eventEvidenceRequirements(aftermathId, 'blogAftermath', aftermathText),
+        realizationAtoms: eventRealizationAtoms(aftermathId, aftermathText, ownerScene, knownLocations),
+      });
+    }
+  }
+
+  // A destination mentioned by an event is not necessarily its staged scene.
+  // Repair the narrow, deterministic case where the owner was assigned to a
+  // referenced destination while the event atoms identify exactly one staged
+  // location. Ambiguous mismatches remain blocking validation errors.
+  for (const event of events) {
+    if (!event.ownerSceneId || event.realizationMode !== 'depiction') continue;
+    const owner = scenes.find((scene) => scene.id === event.ownerSceneId);
+    const staged = stagedLocationsForAtoms(event.realizationAtoms);
+    if (!owner || staged.length !== 1 || owner.locations?.[0] === staged[0]) continue;
+    const referenced = new Set((event.realizationAtoms ?? []).flatMap((atom) => atom.referencedLocations ?? []));
+    if (owner.locations?.[0] && referenced.has(owner.locations[0])) {
+      const from = owner.locations[0];
+      owner.locations = [staged[0]];
+      compilationIssues.push({
+        code: 'scene_location_repaired_from_reference',
+        severity: 'warning',
+        message: `Scene "${owner.id}" location was repaired from referenced destination "${from}" to staged event location "${staged[0]}".`,
+        eventId: event.id,
+        episodeNumber: event.episodeNumber,
+        sceneId: owner.id,
       });
     }
   }
@@ -1414,6 +1478,59 @@ export function compileNarrativeContractGraph(
   return graph;
 }
 
+function sameLocation(left: string | undefined, right: string | undefined): boolean {
+  if (!left || !right) return false;
+  return slug(left) === slug(right);
+}
+
+/** Validate that immutable event obligations can actually be staged by their owner scenes. */
+export function validateEpisodePlanExecutability(
+  graph: NarrativeContractGraph,
+  scenes: PlannedScene[],
+  episodeNumber: number,
+): NarrativeContractIssue[] {
+  const issues: NarrativeContractIssue[] = [];
+  const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
+  for (const event of graph.events.filter((candidate) => candidate.episodeNumber === episodeNumber && candidate.realizationMode === 'depiction')) {
+    const owner = event.ownerSceneId ? sceneById.get(event.ownerSceneId) : undefined;
+    if (!owner) continue;
+    const staged = stagedLocationsForAtoms(event.realizationAtoms);
+    if (staged.length > 1) {
+      issues.push({
+        code: 'event_multiple_staged_locations',
+        severity: 'error',
+        message: `Event "${event.id}" requires meaningful action at multiple staged locations (${staged.join(', ')}); split or explicitly model the event before prose generation.`,
+        eventId: event.id,
+        episodeNumber,
+        sceneId: owner.id,
+      });
+      continue;
+    }
+    const plannedLocation = owner.locations?.[0];
+    if (staged.length === 1 && !sameLocation(staged[0], plannedLocation)) {
+      issues.push({
+        code: 'scene_location_event_mismatch',
+        severity: 'error',
+        message: `Event "${event.id}" stages action at "${staged[0]}" but owner scene "${owner.id}" is planned at "${plannedLocation || 'unspecified'}".`,
+        eventId: event.id,
+        episodeNumber,
+        sceneId: owner.id,
+      });
+    }
+  }
+  for (const transition of graph.transitionContracts?.filter((candidate) => candidate.episodeNumber === episodeNumber) ?? []) {
+    const from = sceneById.get(transition.fromSceneId);
+    const to = sceneById.get(transition.toSceneId);
+    if (from && transition.fromLocation && !sameLocation(from.locations?.[0], transition.fromLocation)) {
+      issues.push({ code: 'transition_from_location_mismatch', severity: 'error', message: `Transition "${transition.id}" starts at "${transition.fromLocation}" but scene "${from.id}" is planned at "${from.locations?.[0] || 'unspecified'}".`, episodeNumber, sceneId: from.id });
+    }
+    if (to && transition.toLocation && !sameLocation(to.locations?.[0], transition.toLocation)) {
+      issues.push({ code: 'transition_to_location_mismatch', severity: 'error', message: `Transition "${transition.id}" ends at "${transition.toLocation}" but scene "${to.id}" is planned at "${to.locations?.[0] || 'unspecified'}".`, episodeNumber, sceneId: to.id });
+    }
+  }
+  return issues;
+}
+
 export function compileEpisodeEventPlan(
   graph: NarrativeContractGraph,
   scenes: PlannedScene[],
@@ -1456,6 +1573,7 @@ export function compileEpisodeEventPlan(
       assignmentIssues.push({ code: 'depiction_without_scene_assignment', severity: 'error', message: `Depiction event "${event.id}" is not assigned to a scene in episode ${episodeNumber}.`, eventId: event.id, episodeNumber });
     }
   }
+  const executableIssues = validateEpisodePlanExecutability(graph, scenes, episodeNumber);
   const eventById = new Map(ordered.map((event) => [event.id, event]));
   const eventOrderByScene = new Map<string, number>();
   for (const assignment of assignments) {
@@ -1512,8 +1630,8 @@ export function compileEpisodeEventPlan(
     twistContracts,
     realizationTasks,
     validation: {
-      passed: ![...issues, ...assignmentIssues].some((issue) => issue.severity === 'error'),
-      issues: [...issues, ...assignmentIssues],
+      passed: ![...issues, ...assignmentIssues, ...executableIssues].some((issue) => issue.severity === 'error'),
+      issues: [...issues, ...assignmentIssues, ...executableIssues],
     },
   };
   return plan;
@@ -1604,6 +1722,9 @@ export function reprojectEpisodeEventPlan<T extends {
   id: string;
   episodeNumber?: number;
   narrativeEventIds?: string[];
+  assignedEventIds?: string[];
+  claimedEventIds?: string[];
+  verifiedEventIds?: string[];
   realizedEventIds?: string[];
   narrativeEventOrder?: number;
   narrativeEventPlanVersion?: number;
@@ -1671,7 +1792,11 @@ export function reprojectEpisodeEventPlan<T extends {
       }));
     const forbidden = priorEvents.filter((event) => DUPLICATE_SENSITIVE_CUES.has(event.cue));
     scene.narrativeEventIds = ownedIds;
-    scene.realizedEventIds = ownedIds.filter((eventId) => (scene.realizedEventIds ?? ownedIds).includes(eventId));
+    scene.assignedEventIds = [...ownedIds];
+    const claimed = scene.claimedEventIds ?? scene.realizedEventIds ?? [];
+    scene.claimedEventIds = claimed.filter((eventId) => ownedIds.includes(eventId));
+    scene.realizedEventIds = [...scene.claimedEventIds];
+    scene.verifiedEventIds = (scene.verifiedEventIds ?? []).filter((eventId) => ownedIds.includes(eventId));
     scene.narrativeEventPlanVersion = eventPlan.version;
     scene.narrativeEventOrder = ownedIds.length > 0
       ? Math.min(...ownedIds.map((eventId) => eventPlan.orderedEventIds.indexOf(eventId)).filter((index) => index >= 0))
@@ -1704,7 +1829,12 @@ export function reprojectEpisodeEventPlan<T extends {
 export function validateCanonicalEpisodeBlueprintProjection<T extends {
   id: string;
   episodeNumber?: number;
+  location?: string;
+  locations?: string[];
   narrativeEventIds?: string[];
+  assignedEventIds?: string[];
+  claimedEventIds?: string[];
+  verifiedEventIds?: string[];
   realizedEventIds?: string[];
   narrativeEventOrder?: number;
   characterPresenceContracts?: NarrativeCharacterPresenceContract[];
@@ -1775,7 +1905,26 @@ export function validateCanonicalEpisodeBlueprintProjection<T extends {
   }
   for (const scene of scenes) {
     const allowed = new Set(assignmentByScene.get(scene.id) ?? []);
-    const declared = new Set([...(scene.narrativeEventIds ?? []), ...(scene.realizedEventIds ?? [])]);
+    const blueprintLocation = scene.location ?? scene.locations?.[0];
+    const stagedLocations = Array.from(new Set((eventPlan.realizationTasks ?? [])
+      .filter((task) => task.sceneId === scene.id && task.canonicalEventId && task.target.scope === 'owner')
+      .flatMap((task) => task.evidenceAtoms.map((atom) => atom.stagedLocation).filter((value): value is string => Boolean(value)))));
+    if (stagedLocations.length === 1 && blueprintLocation && !sameLocation(stagedLocations[0], blueprintLocation)) {
+      issues.push({
+        code: 'blueprint_scene_location_event_mismatch',
+        severity: 'error',
+        message: `Blueprint scene "${scene.id}" is at "${blueprintLocation}" but its canonical event stages action at "${stagedLocations[0]}".`,
+        sceneId: scene.id,
+        episodeNumber,
+      });
+    }
+    const declared = new Set([
+      ...(scene.narrativeEventIds ?? []),
+      ...(scene.assignedEventIds ?? []),
+      ...(scene.claimedEventIds ?? []),
+      ...(scene.verifiedEventIds ?? []),
+      ...(scene.realizedEventIds ?? []),
+    ]);
     const projected = new Set((scene.sceneEventOwnership?.ownedEvents ?? []).map((event) => event.eventContractId ?? event.key).filter(Boolean) as string[]);
     for (const eventId of [...declared, ...projected]) {
       if (!allowed.has(eventId)) {
@@ -1841,10 +1990,10 @@ export function compileAndApplyNarrativeContracts(
       agent: 'NarrativeContractCompiler',
       failure: {
         code: 'episode_plan_invalid',
-        ownerStage: 'season_plan',
-        retryClass: 'none',
+        ownerStage: 'episode_plan',
+        retryClass: 'recompile_episode_plan',
         issueCodes: invalidPlans.flatMap((eventPlan) => eventPlan.validation.issues.map((issue) => issue.code)),
-        repairTarget: 'season-plan',
+        repairTarget: `episode-plan:${invalidPlans.map((eventPlan) => eventPlan.episodeNumber).join(',')}`,
       },
       context: { invalidEpisodes: invalidPlans.map((eventPlan) => eventPlan.episodeNumber) },
     });

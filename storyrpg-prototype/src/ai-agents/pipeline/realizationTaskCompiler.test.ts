@@ -211,6 +211,30 @@ describe('compileNarrativeRealizationTasks', () => {
     });
   });
 
+  it('writes one explicit verification authority on every blocking atom', () => {
+    const graph = {
+      events: [{
+        id: 'event:club', episodeNumber: 1, ownerSceneId: 'club', sourceText: 'They form the Dusk Club.',
+        realizationMode: 'depiction', sourceContractIds: ['treatment'],
+      }],
+      dependencies: [],
+      characterPresenceContracts: [{
+        id: 'presence:mika', characterId: 'mika', characterName: 'Mika', episodeNumber: 1,
+        sceneId: 'club', mode: 'named_on_page', readerNameAllowed: true,
+        requiredEvidence: ['Mika'], forbiddenEvidence: [], sourceContractIds: ['treatment'],
+        provenance: { source: 'treatment', confidence: 'authoritative' },
+      }],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 'club', episodeNumber: 1, order: 0, kind: 'standard' },
+    ] as any);
+
+    expect(tasks.flatMap((candidate) => candidate.evidenceAtoms).map((atom) => atom.verificationAuthority))
+      .toEqual(expect.arrayContaining(['semantic_judge', 'literal']));
+    expect(tasks.every((candidate) => candidate.evidenceAtoms.every((atom) => Boolean(atom.verificationAuthority))))
+      .toBe(true);
+  });
+
   it('rejects a blocking task whose target scene does not exist', () => {
     const graph = {
       events: [], dependencies: [], characterPresenceContracts: [{

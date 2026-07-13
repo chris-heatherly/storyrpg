@@ -18,11 +18,12 @@ function graphWithEvent() {
   } as any;
 }
 
-function episodeWithText(text: string): any {
+function episodeWithText(text: string, verifiedEventIds: string[] = []): any {
   return {
     number: 1,
     scenes: [{
       id: 's1', beats: [{ id: 'b1', text }],
+      verifiedEventIds,
       sceneEventOwnership: { ownedEvents: [{ eventContractId: 'event:writing', text: 'Kylie writes the first post about the rescue.' }] },
     }],
   };
@@ -35,8 +36,12 @@ describe('deriveEpisodeContextOut canonical realization status', () => {
     expect(output.materializedEventIds).toEqual([]);
   });
 
-  it('materializes the event when owner-surface evidence is present', () => {
-    const output = deriveEpisodeContextOut({ storyId: 'story', episode: episodeWithText('Kylie opens her laptop and writes the first post about the rescue.'), graph: graphWithEvent() });
+  it('materializes the event from its producer-stage semantic receipt', () => {
+    const output = deriveEpisodeContextOut({
+      storyId: 'story',
+      episode: episodeWithText('Kylie opens her laptop and writes the first post about the rescue.', ['event:writing']),
+      graph: graphWithEvent(),
+    });
     expect(output.materializedEventIds).toEqual(['event:writing']);
     expect(output.blockedEventIds).toEqual([]);
   });

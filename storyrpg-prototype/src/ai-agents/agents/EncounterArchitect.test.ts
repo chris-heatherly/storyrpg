@@ -832,7 +832,7 @@ describe('Phase prompt builders', () => {
     expect(prompt).toContain('escape');
   });
 
-  it('routes immutable outcome evidence into its owning Phase 4 storylet and validates the authored draft', () => {
+  it('routes immutable outcome evidence into its owning Phase 4 storylet without lexical semantic gating', () => {
     const rescueTask = {
       id: 'task:rescue:victory', contractId: 'event:rescue', episodeNumber: 1,
       ownerStage: 'encounter_architect', repairHandler: 'encounter_route', sceneId: input.sceneId,
@@ -863,8 +863,9 @@ describe('Phase prompt builders', () => {
     const missing = (architect as any).hydratePhase4StoryletDraft(taskedInput, 'victory', {
       beats: [{ text: 'You reach safety while the night settles behind you.' }],
     });
-    expect(() => (architect as any).validatePhase4StoryletSlot(missing, 'victory', taskedInput))
-      .toThrow(/missed canonical route evidence/);
+    // Phase 4 still validates structure synchronously. Meaning is judged on the
+    // assembled encounter by the owner-stage semantic coordinator.
+    expect(() => (architect as any).validatePhase4StoryletSlot(missing, 'victory', taskedInput)).not.toThrow();
 
     const realized = (architect as any).hydratePhase4StoryletDraft(taskedInput, 'victory', {
       beats: [{ text: 'The stranger rescues you, pulls you clear, and walks you to the apartment door before he vanishes.' }],

@@ -69,11 +69,11 @@ describe('confirmHeuristicFidelityFindings', () => {
     expect(claims[0].authoredMoment).toBe('Rorik and Lysandra argue over the river crossing route and tear the map.');
   });
 
-  it('keeps RequiredBeat findings blocking when the judge is looser than deterministic scoring', async () => {
+  it('does not let deterministic scoring veto an interpretive judge verdict', async () => {
     const judge = {
       execute: vi.fn().mockResolvedValue({
         success: true,
-        data: { verdicts: [{ id: 'claim-0', dramatized: true, evidence: 'privacy pressure' }] },
+        data: { verdicts: [{ id: 'claim-0', dramatized: true, evidence: 'They make camp in silence.' }] },
       }),
     };
     const report = {
@@ -94,9 +94,9 @@ describe('confirmHeuristicFidelityFindings', () => {
       judge: () => judge as never,
     });
 
-    expect(outcome).toEqual({ judged: 1, downgraded: 0 });
-    expect(report.blockingIssues).toHaveLength(1);
-    expect(report.passed).toBe(false);
+    expect(outcome).toEqual({ judged: 1, downgraded: 1 });
+    expect(report.blockingIssues).toHaveLength(0);
+    expect(report.passed).toBe(true);
   });
 
   it('keeps judge-confirmed misses blocking', async () => {
@@ -117,7 +117,7 @@ describe('confirmHeuristicFidelityFindings', () => {
     expect(report.passed).toBe(false);
   });
 
-  it('is conservative on judge failure — everything stays blocking', async () => {
+  it('classifies judge failure as inconclusive infrastructure rather than a prose miss', async () => {
     const judge = { execute: vi.fn().mockResolvedValue({ success: false, error: 'LLM down' }) };
     const report = { passed: false, blockingIssues: [beatFinding('s2-1')], warnings: [] as unknown[] };
     const outcome = await confirmHeuristicFidelityFindings({
@@ -125,7 +125,7 @@ describe('confirmHeuristicFidelityFindings', () => {
       story: makeStory(),
       judge: () => judge as never,
     });
-    expect(outcome.downgraded).toBe(0);
+    expect(outcome).toEqual({ judged: 1, downgraded: 0, inconclusive: 1 });
     expect(report.blockingIssues).toHaveLength(1);
     expect(report.passed).toBe(false);
   });

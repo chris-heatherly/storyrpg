@@ -35,13 +35,13 @@ describe('narrative contract migration', () => {
     expect(normalized).not.toHaveProperty('outcomeTier');
   });
 
-  it('returns canonical tasks unchanged and formats their target deterministically', () => {
+  it('adds explicit version-8 authority to canonical tasks and formats their target deterministically', () => {
     const canonical: NarrativeRealizationTask = {
       ...shared,
       target: { scope: 'route_terminal', outcomeTier: 'victory', surfaces: ['terminal_storylet'] },
     };
 
-    expect(normalizePersistedRealizationTask(canonical)).toBe(canonical);
+    expect(normalizePersistedRealizationTask(canonical).evidenceAtoms[0].verificationAuthority).toBe('semantic_judge');
     expect(describeNarrativeEvidenceTarget(canonical.target)).toBe('terminal route=victory surfaces=terminal_storylet');
   });
 
@@ -88,7 +88,7 @@ describe('narrative contract migration', () => {
     } as any;
 
     const migrated = normalizePersistedSeasonScenePlan(legacyPlan);
-    expect(migrated.narrativeContractGraph).toMatchObject({ version: 7 });
+    expect(migrated.narrativeContractGraph).toMatchObject({ version: 8 });
     expect(migrated.narrativeContractGraph?.transitionContracts?.[0]).toMatchObject({
       bridgePolicy: 'orientation_only',
       locationRequirement: { canonicalValue: 'Cismigiu Gardens', required: true },
@@ -96,6 +96,7 @@ describe('narrative contract migration', () => {
     expect(migrated.narrativeContractGraph?.realizationTasks?.[0]).toMatchObject({
       ownerStage: 'encounter_architect', repairHandler: 'encounter_route',
       target: { scope: 'owner', surfaces: ['encounter_entry'] },
+      evidenceAtoms: [expect.objectContaining({ verificationAuthority: 'literal' })],
     });
     expect(normalizePersistedSeasonScenePlan(migrated)).toEqual(migrated);
   });

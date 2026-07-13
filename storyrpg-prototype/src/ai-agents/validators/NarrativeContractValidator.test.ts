@@ -257,7 +257,7 @@ describe('NarrativeContractValidator', () => {
     expect(result.issues.some((issue) => /Blocked relationship label/.test(issue.message))).toBe(false);
   });
 
-  it('rechecks event realization after late scene mutation and preserves the owner repair target', () => {
+  it('does not reinterpret semantic event realization in the synchronous final validator', () => {
     const canonical = graph();
     canonical.realizationTasks = [{
       id: 'task:ep1-blog:audience', contractId: 'ep1-blog', eventId: 'ep1-blog', episodeNumber: 1,
@@ -266,14 +266,10 @@ describe('NarrativeContractValidator', () => {
       target: { scope: 'owner', surfaces: ['beat_text'] }, sourceContractIds: ['ep1-blog'], blocking: true,
     }];
     const result = new NarrativeContractValidator().validate({ story: story(['You publish the post, but the night stays quiet.']), graph: canonical });
-    const issue = result.issues.find((candidate) => /Canonical owner realization drift/.test(candidate.message));
-    expect(issue?.metadata?.taskId).toBe('task:ep1-blog:audience');
-    expect(issue?.metadata?.repairHandler).toBe('scene_prose');
-    expect(issue?.metadata?.missingEvidenceAtoms).toEqual(['viral']);
-    expect(issue?.metadata?.realizationFingerprint).toContain('task:ep1-blog:audience');
+    expect(result.issues.find((candidate) => /Canonical owner realization drift/.test(candidate.message))).toBeUndefined();
   });
 
-  it('uses realization tasks as the sole executable route check for version-3 graphs', () => {
+  it('leaves executable semantic route checks to the asynchronous coordinator', () => {
     const canonical = graph();
     canonical.version = 3;
     canonical.events.push({
@@ -298,8 +294,7 @@ describe('NarrativeContractValidator', () => {
     const routeIssues = result.issues.filter((issue) =>
       issue.metadata?.eventId === 'ep1-threat' || /Threat event "ep1-threat"/.test(issue.message),
     );
-    expect(routeIssues).toHaveLength(1);
-    expect(routeIssues[0]?.metadata?.taskId).toBe('task:ep1-threat:threshold:victory');
+    expect(routeIssues).toHaveLength(0);
   });
 
   it('keeps nonblocking realization tasks advisory during final regression', () => {

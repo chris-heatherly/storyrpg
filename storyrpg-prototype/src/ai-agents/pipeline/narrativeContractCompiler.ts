@@ -37,7 +37,7 @@ import { plannedGroupFormation } from '../utils/relationshipPacingStagePolicy';
 import { compileEventRealizationAtoms, stagedLocationsForAtoms } from './eventAtomCompiler';
 import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v19';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v20';
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',

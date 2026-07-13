@@ -383,6 +383,21 @@ export interface ValidatorExecutionRecord {
     candidateHash: string;
     taskIds: string[];
     findingFingerprints: string[];
+    semanticVerdicts?: Array<{
+      taskId: string;
+      atomId: string;
+      groupKey: string;
+      disposition: 'confirmed' | 'refuted' | 'partial' | 'inconclusive' | 'stale';
+      verdict: 'fulfilled' | 'partial' | 'not_fulfilled' | 'contradicted' | 'uncertain';
+      evidenceRefs: string[];
+      evidenceQuotes: string[];
+      missingCriteria: string[];
+      judgePolicyVersion: string;
+      judgeProvider: string;
+      judgeModel: string;
+      judgeResponseHash: string;
+      sampleCount: number;
+    }>;
   };
   issues: ValidatorExecutionIssue[];
   repair?: {

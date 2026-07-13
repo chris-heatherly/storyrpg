@@ -6,9 +6,14 @@ import type {
   NarrativeRealizationTask,
   PersistedNarrativeRealizationTask,
 } from '../../types/narrativeContract';
+import {
+  EPISODE_EVENT_PLAN_VERSION,
+  NARRATIVE_CONTRACT_GRAPH_VERSION,
+} from '../../types/narrativeContract';
 import type { SeasonScenePlan } from '../../types/scenePlan';
 import { ENCOUNTER_OUTCOME_TIERS } from '../validators/encounterTextSurfaces';
 import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
+import { withNarrativeVerificationAuthority } from './realizationVerificationAuthority';
 
 function normalized(value: string | undefined): string {
   return (value ?? '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -84,29 +89,53 @@ function legacyTarget(task: LegacyNarrativeRealizationTaskV2): NarrativeEvidence
 export function normalizePersistedRealizationTask(
   task: PersistedNarrativeRealizationTask,
 ): NarrativeRealizationTask {
-  if (isCanonicalTask(task)) return task;
-  const { outcomeTier: _outcomeTier, requiredSurface: _requiredSurface, routePolicy: _routePolicy, ...shared } = task;
-  return { ...shared, target: legacyTarget(task) };
+  const canonical = isCanonicalTask(task)
+    ? task
+    : (() => {
+        const { outcomeTier: _outcomeTier, requiredSurface: _requiredSurface, routePolicy: _routePolicy, ...shared } = task;
+        return { ...shared, target: legacyTarget(task) };
+      })();
+  const evidenceAtoms = canonical.evidenceAtoms.map(withNarrativeVerificationAuthority);
+  if (isCanonicalTask(task) && evidenceAtoms.every((atom, index) => atom === canonical.evidenceAtoms[index])) {
+    return canonical;
+  }
+  return { ...canonical, evidenceAtoms };
 }
 
 export function normalizePersistedNarrativeContractGraph(
   graph: NarrativeContractGraph,
 ): NarrativeContractGraph {
-  if (!graph.realizationTasks?.length) return graph;
-  const realizationTasks = graph.realizationTasks.map((task) =>
+  const realizationTasks = (graph.realizationTasks ?? []).map((task) =>
     normalizePersistedRealizationTask(task as PersistedNarrativeRealizationTask),
   );
-  if (realizationTasks.every((task, index) => task === graph.realizationTasks?.[index])) return graph;
-  return { ...graph, realizationTasks };
+  const current = graph.version === NARRATIVE_CONTRACT_GRAPH_VERSION
+    && realizationTasks.every((task, index) => task === graph.realizationTasks?.[index]);
+  if (current) return graph;
+  return {
+    ...graph,
+    version: NARRATIVE_CONTRACT_GRAPH_VERSION,
+    compilerVersion: graph.version === NARRATIVE_CONTRACT_GRAPH_VERSION
+      ? graph.compilerVersion
+      : `${graph.compilerVersion}:migration-v8`,
+    realizationTasks,
+  };
 }
 
 export function normalizePersistedEpisodeEventPlan(plan: EpisodeEventPlan): EpisodeEventPlan {
-  if (!plan.realizationTasks?.length) return plan;
-  const realizationTasks = plan.realizationTasks.map((task) =>
+  const realizationTasks = (plan.realizationTasks ?? []).map((task) =>
     normalizePersistedRealizationTask(task as PersistedNarrativeRealizationTask),
   );
-  if (realizationTasks.every((task, index) => task === plan.realizationTasks?.[index])) return plan;
-  return { ...plan, realizationTasks };
+  const current = plan.version === EPISODE_EVENT_PLAN_VERSION
+    && realizationTasks.every((task, index) => task === plan.realizationTasks?.[index]);
+  if (current) return plan;
+  return {
+    ...plan,
+    version: EPISODE_EVENT_PLAN_VERSION,
+    compilerVersion: plan.version === EPISODE_EVENT_PLAN_VERSION
+      ? plan.compilerVersion
+      : `${plan.compilerVersion}:migration-v8`,
+    realizationTasks,
+  };
 }
 
 /** Normalize the nested episode projections carried by a persisted season scene plan. */

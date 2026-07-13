@@ -35,6 +35,7 @@ import {
 import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter';
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { QARunner, QAReport, ContinuityChecker } from '../agents/QAAgents';
+import { SemanticRealizationJudge } from '../agents/SemanticRealizationJudge';
 import { aggregateProseCraftReports, aggregateResponsivenessReports } from '../agents/QualityJudges';
 import { SourceMaterialAnalyzer, SourceMaterialInput } from '../agents/SourceMaterialAnalyzer';
 import { SeasonPlan } from '../../types/seasonPlan';
@@ -711,6 +712,7 @@ export class FullStoryPipeline {
   private sceneWriter: SceneWriter;
   private choiceAuthor: ChoiceAuthor;
   private qaRunner: QARunner;
+  private semanticRealizationJudge: SemanticRealizationJudge;
   private sourceMaterialAnalyzer: SourceMaterialAnalyzer;
   private branchManager: BranchManager;
   private sceneCritic?: SceneCritic;
@@ -1027,6 +1029,9 @@ export class FullStoryPipeline {
     // C2/C3: QA grader uses its own config when provided (cheaper / decorrelated
     // from the author model); falls back to storyArchitect config otherwise.
     this.qaRunner = new QARunner(this.config.agents.qaRunner || this.config.agents.storyArchitect);
+    this.semanticRealizationJudge = new SemanticRealizationJudge(
+      this.config.agents.qaRunner || this.config.agents.storyArchitect,
+    );
     // maxTokens 32000 (was 16384): the structure-analysis JSON for rich multi-episode treatments was hitting the 16384 cap mid-string (truncated → unparseable).
     const sourceMaterialConfig = { ...this.config.agents.storyArchitect, maxTokens: 32000 };
     this.sourceMaterialAnalyzer = new SourceMaterialAnalyzer(sourceMaterialConfig);
@@ -4220,6 +4225,7 @@ export class FullStoryPipeline {
       sceneWriter: this.sceneWriter,
       choiceAuthor: this.choiceAuthor,
       encounterArchitect: this.encounterArchitect,
+      semanticRealizationJudge: this.semanticRealizationJudge,
       getThreadPlanner: () => this.getThreadPlanner(),
       getTwistArchitect: () => this.getTwistArchitect(),
       getCharacterArcTracker: () => this.getCharacterArcTracker(),

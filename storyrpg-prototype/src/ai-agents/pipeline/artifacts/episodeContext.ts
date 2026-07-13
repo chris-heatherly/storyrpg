@@ -6,7 +6,6 @@ import type {
   NarrativeRealizationRecord,
 } from '../../../types/narrativeContract';
 import { collectReaderFacingTexts } from '../../validators/encounterTextSurfaces';
-import { validateOwnerRealizationTasks } from '../realizationTaskGate';
 
 export interface ContextObligation {
   id: string;
@@ -201,21 +200,17 @@ export function deriveEpisodeContextOut(params: {
   const realizationEvidence: EpisodeContextOut['realizationEvidence'] = [];
   const graphEvents = new Map((params.graph?.events ?? []).map((event) => [event.id, event]));
 
-  const eventEvidenceStatus = (event: NarrativeEventContract, prose: string): 'resolved' | 'partially_realized' | 'blocked' => {
+  const eventEvidenceStatus = (event: NarrativeEventContract, scene: Episode['scenes'][number], prose: string): 'resolved' | 'partially_realized' | 'blocked' => {
     const requirements = event.evidenceRequirements ?? [];
     const ownerTasks = (params.graph?.realizationTasks ?? []).filter((task) =>
       task.eventId === event.id && task.target.scope === 'owner' && task.blocking,
     );
     if (requirements.length === 0 && ownerTasks.length > 0) {
-      const ownerFindings = validateOwnerRealizationTasks({
-        sceneId: event.ownerSceneId ?? 'unknown',
-        tasks: ownerTasks,
-        sceneContent: params.episode.scenes.find((scene) => scene.id === event.ownerSceneId),
-        mode: 'final_regression',
-      });
-      const missing = ownerFindings.filter((finding) => finding.code === 'OWNER_REALIZATION_MISSING');
-      if (missing.length === 0) return 'resolved';
-      return missing.length < ownerTasks.length ? 'partially_realized' : 'blocked';
+      // Context projection is synchronous and must never reinterpret prose.
+      // Consume the producer-stage semantic receipt projected as
+      // verifiedEventIds; ownership metadata alone is not realization proof.
+      const verifiedEventIds = (scene as typeof scene & { verifiedEventIds?: string[] }).verifiedEventIds ?? [];
+      return verifiedEventIds.includes(event.id) ? 'resolved' : 'blocked';
     }
     const failed = requirements.filter((requirement) =>
       requirement.blocking
@@ -240,7 +235,7 @@ export function deriveEpisodeContextOut(params: {
       if (!eventId) continue;
       assignedEventIds.push(eventId);
       const contract = graphEvents.get(eventId);
-      const status = contract ? eventEvidenceStatus(contract, prose) : 'resolved';
+      const status = contract ? eventEvidenceStatus(contract, scene, prose) : 'resolved';
       if (status === 'resolved') materializedEventIds.push(eventId);
       if (status === 'partially_realized') partiallyRealizedEventIds.push(eventId);
       if (status === 'blocked') blockedEventIds.push(eventId);

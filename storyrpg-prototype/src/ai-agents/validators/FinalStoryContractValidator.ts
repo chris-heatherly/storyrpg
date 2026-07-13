@@ -209,6 +209,7 @@ export type FinalStoryContractIssueType =
   | 'continuity_error'
   | 'transition_continuity_violation'
   | 'scene_turn_realization_violation'
+  | 'semantic_realization_violation'
   | 'mechanic_pressure_violation'
   | 'treatment_field_utilization_violation'
   | 'treatment_event_ledger_violation'

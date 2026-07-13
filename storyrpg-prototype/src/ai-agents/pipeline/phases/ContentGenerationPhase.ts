@@ -24,6 +24,7 @@ import { ThreadLedger } from '../../../types/narrativeThread';
 import type { ValidatorExecutionRecord } from '../../../types/validation';
 import { isPlanningRegisterText } from '../../constants/planningRegisterText';
 import { AgentResponse } from '../../agents/BaseAgent';
+import type { SemanticRealizationJudgeLike } from '../../agents/SemanticRealizationJudge';
 import { BranchAnalysis, ReconvergencePoint } from '../../agents/BranchManager';
 import { CharacterBible } from '../../agents/CharacterDesigner';
 import { ChoiceAuthor, ChoiceAuthorInput, ChoiceSet } from '../../agents/ChoiceAuthor';
@@ -289,6 +290,9 @@ import {
   validateOwnerRealizationTasks,
   type RealizationTaskGateFinding,
 } from '../realizationTaskGate';
+import { validateSemanticRealizationTasks } from '../semanticValidationCoordinator';
+import { inferNarrativeVerificationAuthority } from '../realizationVerificationAuthority';
+import type { NarrativeRealizationOwnerStage, NarrativeRealizationTask } from '../../../types/narrativeContract';
 import { stableHash } from '../artifacts/store';
 import { createValidatorExecutionRecord } from '../../validators/validatorExecutionRecords';
 
@@ -338,6 +342,26 @@ import {
 } from './sceneWriterInputCompaction';
 import { PipelineContext } from './index';
 
+function ownerRealizationRepairFeedback(
+  finding: RealizationTaskGateFinding,
+  tasks: NarrativeRealizationTask[] | undefined,
+): string {
+  const task = tasks?.find((candidate) => candidate.id === finding.taskId);
+  const atomIds = new Set([
+    ...(finding.missingEvidenceAtoms ?? []),
+    ...(finding.matchedForbiddenAtoms ?? []),
+  ]);
+  const atoms = task?.evidenceAtoms.filter((atom) => atomIds.size === 0 || atomIds.has(atom.id)) ?? [];
+  const requirements = atoms.map((atom) => {
+    const authority = inferNarrativeVerificationAuthority(atom);
+    if (authority === 'semantic_judge') {
+      return `${atom.polarity === 'forbidden' ? 'DO NOT COMMUNICATE' : 'MEANING TO REALIZE'}: ${atom.description}`;
+    }
+    return `${atom.polarity === 'forbidden' ? 'AVOID' : 'REQUIRE'} ${authority}: ${atom.acceptedPatterns.join(' / ')}`;
+  });
+  return `${finding.taskId}: ${finding.message}${requirements.length > 0 ? ` ${requirements.join('; ')}` : ''}`;
+}
+
 // ========================================
 // DEPENDENCY TYPES
 // ========================================
@@ -356,6 +380,7 @@ export interface ContentGenerationPhaseDeps {
   sceneWriter: Pick<SceneWriter, 'execute' | 'setContractLoadTemperature'>;
   choiceAuthor: Pick<ChoiceAuthor, 'execute' | 'setEpisodeSkillTargets'>;
   encounterArchitect: Pick<EncounterArchitect, 'execute' | 'reauthorFallbackCostFields'>;
+  semanticRealizationJudge: SemanticRealizationJudgeLike;
   getThreadPlanner: () => ThreadPlannerLike;
   getTwistArchitect: () => TwistArchitectLike;
   getCharacterArcTracker: () => CharacterArcTrackerLike;
@@ -494,6 +519,43 @@ export class ContentGenerationPhase {
   readonly name = 'content_generation';
 
   constructor(private readonly deps: ContentGenerationPhaseDeps) {}
+
+  private async validateNarrativeRealization(input: {
+    sceneId: string;
+    tasks?: NarrativeRealizationTask[];
+    sceneContent?: unknown;
+    choiceSet?: unknown;
+    encounter?: unknown;
+    mode?: 'owner' | 'final_regression';
+    currentStage?: NarrativeRealizationOwnerStage;
+    candidateHash?: string;
+  }) {
+    const deterministicFindings = validateOwnerRealizationTasks(input);
+    const semantic = await validateSemanticRealizationTasks({
+      ...input,
+      judge: this.deps.semanticRealizationJudge,
+    });
+    const inconclusive = semantic.findings.filter((finding) => finding.code === 'SEMANTIC_VALIDATION_INCONCLUSIVE');
+    if (inconclusive.length > 0) {
+      throw new PipelineError(
+        `[SemanticValidationInconclusive] ${input.sceneId} could not obtain a stable semantic verdict; content was not regenerated.`,
+        'validation',
+        {
+          agent: 'SemanticRealizationJudge',
+          context: { sceneId: input.sceneId, findings: inconclusive, receipt: semantic.receipt },
+          failure: {
+            code: 'semantic_validation_inconclusive',
+            ownerStage: input.currentStage ?? 'scene_content',
+            retryClass: 'none',
+            issueCodes: ['SEMANTIC_VALIDATION_INCONCLUSIVE'],
+            artifactRefs: [],
+            repairTarget: inconclusive[0]?.taskId ?? input.sceneId,
+          },
+        },
+      );
+    }
+    return { findings: [...deterministicFindings, ...semantic.findings], semanticReceipt: semantic.receipt };
+  }
 
   private async memoryContextFor(
     role: AgentMemoryRole,
@@ -1376,17 +1438,18 @@ export class ContentGenerationPhase {
           });
         }
         const resumedChoiceBlockers = resumedChoice
-          ? validateOwnerRealizationTasks({
+          ? (await this.validateNarrativeRealization({
               sceneId: sceneBlueprint.id,
               tasks: sceneBlueprint.realizationTasks,
               sceneContent: resumedScene,
               choiceSet: resumedChoice,
               mode: 'owner',
               currentStage: 'choice_author',
-            }).filter((finding) => finding.blocking)
+              candidateHash: stableHash(resumedChoice),
+            })).findings.filter((finding) => finding.blocking)
           : [];
         const resumedEncounterBlockers = resumedEncounter
-          ? validateOwnerRealizationTasks({
+          ? (await this.validateNarrativeRealization({
               sceneId: sceneBlueprint.id,
               tasks: sceneBlueprint.realizationTasks,
               sceneContent: resumedScene,
@@ -1394,7 +1457,8 @@ export class ContentGenerationPhase {
               encounter: resumedEncounter,
               mode: 'owner',
               currentStage: 'encounter_architect',
-            }).filter((finding) => finding.blocking)
+              candidateHash: stableHash(resumedEncounter),
+            })).findings.filter((finding) => finding.blocking)
           : [];
         if (resumedChoiceBlockers.length > 0 || resumedEncounterBlockers.length > 0) {
           context.emit({
@@ -2305,24 +2369,19 @@ export class ContentGenerationPhase {
             introducedFingerprints: string[];
             adopted: boolean;
           }> = [];
-          let ownerTaskFindings = prioritizeOwnerRepairFindings(validateOwnerRealizationTasks({
+          let ownerTaskFindings = prioritizeOwnerRepairFindings((await this.validateNarrativeRealization({
             sceneId: sceneBlueprint.id,
             tasks: canonicalSceneWriterTasks,
             sceneContent,
             mode: 'owner',
             currentStage: 'scene_writer',
-          }).filter((finding) => finding.blocking), canonicalSceneWriterTasks);
+            candidateHash: stableHash(sceneContent),
+          })).findings.filter((finding) => finding.blocking), canonicalSceneWriterTasks);
           for (let attempt = 1; attempt <= 2 && ownerTaskFindings.length > 0; attempt += 1) {
             const repairTarget = ownerTaskFindings[0];
-            const feedback = [repairTarget].map((finding) => {
-              const task = canonicalSceneWriterTasks.find((candidate) => candidate.id === finding.taskId);
-              const missingAtomIds = new Set(finding.missingEvidenceAtoms ?? []);
-              const targetedAtoms = task?.evidenceAtoms.filter((atom) =>
-                missingAtomIds.size === 0 || missingAtomIds.has(atom.id),
-              );
-              const evidence = targetedAtoms?.map((atom) => `${atom.polarity === 'forbidden' ? 'AVOID' : 'SHOW'} ${atom.acceptedPatterns.join(' / ')}`).join('; ');
-              return `- ${finding.taskId}: ${finding.message}${task?.evidenceAtoms[0]?.sourceText ? ` Source contract: ${task.evidenceAtoms[0].sourceText}` : ''}${evidence ? ` Required evidence: ${evidence}` : ''}`;
-            }).join('\n');
+            const feedback = [repairTarget]
+              .map((finding) => `- ${ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks)}`)
+              .join('\n');
             context.emit({
               type: 'regeneration_triggered',
               phase: 'scenes',
@@ -2343,20 +2402,22 @@ export class ContentGenerationPhase {
             if (!ownerTaskRetry.success || !ownerTaskRetry.data) continue;
             const candidateSnapshot = JSON.parse(JSON.stringify(ownerTaskRetry.data)) as typeof ownerTaskRetry.data;
             const candidateHash = stableHash(candidateSnapshot);
-            const retryFindings = validateOwnerRealizationTasks({
+            const retryFindings = (await this.validateNarrativeRealization({
               sceneId: sceneBlueprint.id,
               tasks: canonicalSceneWriterTasks,
               sceneContent: candidateSnapshot,
               mode: 'owner',
               currentStage: 'scene_writer',
-            }).filter((finding) => finding.blocking);
-            const replayFindings = validateOwnerRealizationTasks({
+              candidateHash,
+            })).findings.filter((finding) => finding.blocking);
+            const replayFindings = (await this.validateNarrativeRealization({
               sceneId: sceneBlueprint.id,
               tasks: canonicalSceneWriterTasks,
               sceneContent: JSON.parse(JSON.stringify(candidateSnapshot)),
               mode: 'owner',
               currentStage: 'scene_writer',
-            }).filter((finding) => finding.blocking);
+              candidateHash,
+            })).findings.filter((finding) => finding.blocking);
             if (stableHash(retryFindings) !== stableHash(replayFindings)) {
               throw new PipelineError(
                 `[OwnerStageValidatorSnapshotMismatch] ${sceneBlueprint.id} produced non-replayable realization findings.`,
@@ -2518,18 +2579,19 @@ export class ContentGenerationPhase {
         const requiredCanonicalStateIds = (brief.seasonPlan?.scenePlan?.narrativeContractGraph?.stateContracts ?? [])
           .filter((state) => state.sourceEpisodeNumber === brief.episode.number && state.requiredSetterSurface === 'choice_consequence')
           .map((state) => state.canonicalStateId);
-        const validateChoiceCandidate = (choiceSet: ChoiceSet): {
+        const validateChoiceCandidate = async (choiceSet: ChoiceSet): Promise<{
           ownerBlockers: RealizationTaskGateFinding[];
           producerBlockers: ProducerBlockerFinding[];
-        } => ({
-          ownerBlockers: validateOwnerRealizationTasks({
+        }> => ({
+          ownerBlockers: (await this.validateNarrativeRealization({
             sceneId: sceneBlueprint.id,
             tasks: sceneBlueprint.realizationTasks,
             sceneContent,
             choiceSet,
             mode: 'owner',
             currentStage: 'choice_author',
-          }).filter((finding) => finding.blocking),
+            candidateHash: stableHash(choiceSet),
+          })).findings.filter((finding) => finding.blocking),
           producerBlockers: validateChoiceProducerOutput(sceneBlueprint.id, choiceSet),
         });
         const prepareChoiceCandidate = (choiceSet: ChoiceSet, choicePointBeat: GeneratedBeat): ChoiceSet => {
@@ -2708,21 +2770,22 @@ export class ContentGenerationPhase {
             };
 
             const maxChoiceAuthorAttempts = 3;
-            const choiceRealizationFindings = (choiceSet: ChoiceSet | undefined): RealizationTaskGateFinding[] =>
+            const choiceRealizationFindings = async (choiceSet: ChoiceSet | undefined): Promise<RealizationTaskGateFinding[]> =>
               choiceSet
-                ? validateOwnerRealizationTasks({
+                ? (await this.validateNarrativeRealization({
                     sceneId: sceneBlueprint.id,
                     tasks: sceneBlueprint.realizationTasks,
                     sceneContent,
                     choiceSet,
                     mode: 'owner',
                     currentStage: 'choice_author',
-                  })
+                    candidateHash: stableHash(choiceSet),
+                  })).findings
                 : [];
             let choiceAuthorAttempt = 1;
             let choiceResult = await authorChoices(choiceAuthorInput, `ChoiceAuthor.execute(${sceneBlueprint.id})`);
             let choiceOwnerBlockers = choiceResult.success && choiceResult.data
-              ? choiceRealizationFindings(choiceResult.data).filter((finding) => finding.blocking)
+              ? (await choiceRealizationFindings(choiceResult.data)).filter((finding) => finding.blocking)
               : [];
             let choiceProducerBlockers = choiceResult.success && choiceResult.data
               ? validateChoiceProducerOutput(sceneBlueprint.id, choiceResult.data)
@@ -2731,7 +2794,7 @@ export class ContentGenerationPhase {
               choiceAuthorAttempt++;
               const realizationFeedback = choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0
                 ? [
-                    ...choiceOwnerBlockers.map((finding) => `${finding.taskId}: ${finding.message}`),
+                    ...choiceOwnerBlockers.map((finding) => ownerRealizationRepairFeedback(finding, sceneBlueprint.realizationTasks)),
                     ...choiceProducerBlockers.map((finding) => `${finding.fieldPath}: ${finding.message}`),
                   ].join('; ')
                 : undefined;
@@ -2748,7 +2811,7 @@ export class ContentGenerationPhase {
               };
               choiceResult = await authorChoices(retryFeedbackInput, `ChoiceAuthor.execute(${sceneBlueprint.id} retry-${choiceAuthorAttempt})`);
               choiceOwnerBlockers = choiceResult.success && choiceResult.data
-                ? choiceRealizationFindings(choiceResult.data).filter((finding) => finding.blocking)
+                ? (await choiceRealizationFindings(choiceResult.data)).filter((finding) => finding.blocking)
                 : [];
               choiceProducerBlockers = choiceResult.success && choiceResult.data
                 ? validateChoiceProducerOutput(sceneBlueprint.id, choiceResult.data)
@@ -2776,7 +2839,7 @@ export class ContentGenerationPhase {
                 `ChoiceAuthor.execute(${sceneBlueprint.id} branch-regen)`,
               );
               const branchRegenBlockers = branchRegen.success && branchRegen.data
-                ? choiceRealizationFindings(branchRegen.data).filter((finding) => finding.blocking)
+                ? (await choiceRealizationFindings(branchRegen.data)).filter((finding) => finding.blocking)
                 : [];
               const branchRegenProducerBlockers = branchRegen.success && branchRegen.data
                 ? validateChoiceProducerOutput(sceneBlueprint.id, branchRegen.data)
@@ -2815,7 +2878,7 @@ export class ContentGenerationPhase {
                   : undefined);
               if (fallbackChoiceSet) {
                 const preparedFallback = prepareChoiceCandidate(fallbackChoiceSet, choicePointBeat);
-                const fallbackValidation = validateChoiceCandidate(preparedFallback);
+                const fallbackValidation = await validateChoiceCandidate(preparedFallback);
                 if (fallbackValidation.ownerBlockers.length > 0 || fallbackValidation.producerBlockers.length > 0) {
                   throw new PipelineError(
                     `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} deterministic choice fallback cannot satisfy its assigned choice contract.`,
@@ -2829,7 +2892,7 @@ export class ContentGenerationPhase {
               }
             } else {
             const preparedChoiceSet = prepareChoiceCandidate(choiceResult.data, choicePointBeat);
-            const preparedValidation = validateChoiceCandidate(preparedChoiceSet);
+            const preparedValidation = await validateChoiceCandidate(preparedChoiceSet);
             if (preparedValidation.ownerBlockers.length > 0 || preparedValidation.producerBlockers.length > 0) {
               throw new PipelineError(
                 `[ChoiceCommitBlocker] ${sceneBlueprint.id} failed its choice contract after deterministic projections were applied.`,
@@ -2838,7 +2901,7 @@ export class ContentGenerationPhase {
               );
             }
             choiceResult.data = preparedChoiceSet;
-            const choiceAdvisories = choiceRealizationFindings(choiceResult.data).filter((finding) => !finding.blocking);
+            const choiceAdvisories = (await choiceRealizationFindings(choiceResult.data)).filter((finding) => !finding.blocking);
             if (choiceAdvisories.length > 0) {
               context.emit({
                 type: 'warning',
@@ -2934,7 +2997,7 @@ export class ContentGenerationPhase {
 
                     if (revisedChoiceResult.success && revisedChoiceResult.data) {
                       const preparedRevision = prepareChoiceCandidate(revisedChoiceResult.data, choicePointBeat);
-                      const revisionValidation = validateChoiceCandidate(preparedRevision);
+                      const revisionValidation = await validateChoiceCandidate(preparedRevision);
                       if (revisionValidation.ownerBlockers.length > 0 || revisionValidation.producerBlockers.length > 0) {
                         context.emit({
                           type: 'warning',
@@ -3404,7 +3467,7 @@ export class ContentGenerationPhase {
                   }
 
                   const revisedChoiceSet = prepareChoiceCandidate(revisedChoiceResult.data, regenChoicePointBeat);
-                  const revisionValidation = validateChoiceCandidate(revisedChoiceSet);
+                  const revisionValidation = await validateChoiceCandidate(revisedChoiceSet);
                   if (revisionValidation.ownerBlockers.length > 0 || revisionValidation.producerBlockers.length > 0) {
                     context.emit({
                       type: 'warning',
@@ -3968,9 +4031,9 @@ export class ContentGenerationPhase {
         // P3: attempt summaries / phase errors from failed attempts, persisted
         // into the quarantine record and the pipeline error log on abort.
         let lastEncounterFailureDiagnostics: Record<string, unknown> | undefined;
-        const encounterRealizationFindings = (encounter: EncounterStructure | undefined): RealizationTaskGateFinding[] => {
+        const encounterRealizationFindings = async (encounter: EncounterStructure | undefined): Promise<RealizationTaskGateFinding[]> => {
           const ownerSceneContent = sceneContents.find((candidate) => candidate.sceneId === sceneBlueprint.id);
-          return validateOwnerRealizationTasks({
+          return (await this.validateNarrativeRealization({
             sceneId: sceneBlueprint.id,
             tasks: sceneBlueprint.realizationTasks,
             sceneContent: ownerSceneContent,
@@ -3978,7 +4041,8 @@ export class ContentGenerationPhase {
             encounter,
             mode: 'owner',
             currentStage: 'encounter_architect',
-          });
+            candidateHash: stableHash(encounter),
+          })).findings;
         };
         const maxEncounterAttempts = 2;
         for (let encAttempt = 1; encAttempt <= maxEncounterAttempts; encAttempt++) {
@@ -4019,10 +4083,10 @@ export class ContentGenerationPhase {
                 if (!turnRealization.passed) {
                   lastEncounterFailure = `EncounterArchitect under-realized authored encounter turn(s):\n${formatEncounterTurnRealizationFeedback(turnRealization)}\nAuthor the missing moment in setupText, outcome narrativeText, nested nextSituation setupText, or storylet beat prose before returning JSON.`;
                 } else {
-                  const encounterOwnerBlockers = encounterRealizationFindings(attemptResult.data)
+                  const encounterOwnerBlockers = (await encounterRealizationFindings(attemptResult.data))
                     .filter((finding) => finding.blocking);
                   if (encounterOwnerBlockers.length > 0) {
-                    lastEncounterFailure = `EncounterArchitect missed canonical owner-stage realization task(s): ${encounterOwnerBlockers.map((finding) => `${finding.taskId}: ${finding.message}`).join('; ')}`;
+                    lastEncounterFailure = `EncounterArchitect missed canonical owner-stage realization task(s): ${encounterOwnerBlockers.map((finding) => ownerRealizationRepairFeedback(finding, sceneBlueprint.realizationTasks)).join('; ')}`;
                   } else {
                     encounterResult = attemptResult;
                     break;
@@ -4103,7 +4167,7 @@ export class ContentGenerationPhase {
               if (templateHits.length > 0) {
                 return `quarantine retry still contains ${templateHits.length} template-prose signature(s)`;
               }
-              const quarantineOwnerBlockers = encounterRealizationFindings(structure)
+              const quarantineOwnerBlockers = (await encounterRealizationFindings(structure))
                 .filter((finding) => finding.blocking);
               if (quarantineOwnerBlockers.length > 0) {
                 return `quarantine retry missed canonical owner-stage realization task(s): ${quarantineOwnerBlockers.map((finding) => `${finding.taskId}: ${finding.message}`).join('; ')}`;
@@ -4159,7 +4223,7 @@ export class ContentGenerationPhase {
 
         // Only register encounter + run validation if EncounterArchitect succeeded
         if (encounterResult?.success && encounterResult.data) {
-          const encounterAdvisories = encounterRealizationFindings(encounterResult.data)
+          const encounterAdvisories = (await encounterRealizationFindings(encounterResult.data))
             .filter((finding) => !finding.blocking);
           if (encounterAdvisories.length > 0) {
             context.emit({
@@ -4562,7 +4626,7 @@ export class ContentGenerationPhase {
             },
           );
         }
-        const stageFindings = validateOwnerRealizationTasks({
+        const stageValidation = await this.validateNarrativeRealization({
           sceneId: sceneBlueprint.id,
           tasks: ownerTasks,
           sceneContent: completedScene,
@@ -4570,7 +4634,9 @@ export class ContentGenerationPhase {
           encounter: completedEncounter,
           mode: 'owner',
           currentStage: ownerStage,
+          candidateHash: stableHash(candidate),
         });
+        const stageFindings = stageValidation.findings;
         ownerStageFindings.push(...stageFindings);
         validationExecutionRecords.push(createValidatorExecutionRecord({
           policyId: `NarrativeRealizationTask@${ownerStage}`,
@@ -4586,6 +4652,7 @@ export class ContentGenerationPhase {
             candidateHash: stableHash(candidate),
             taskIds: ownerTasks.map((task) => task.id).sort(),
             findingFingerprints: stageFindings.map((finding) => finding.fingerprint).sort(),
+            semanticVerdicts: stageValidation.semanticReceipt.semanticVerdicts,
           },
           issues: stageFindings.map((finding) => ({
             severity: finding.blocking ? 'error' : 'warning',
@@ -4602,14 +4669,15 @@ export class ContentGenerationPhase {
           })),
         }));
       }
-      const realizationFindings: RealizationTaskGateFinding[] = validateOwnerRealizationTasks({
+      const realizationFindings: RealizationTaskGateFinding[] = (await this.validateNarrativeRealization({
         sceneId: sceneBlueprint.id,
         tasks: sceneBlueprint.realizationTasks,
         sceneContent: completedScene,
         choiceSet: completedChoice,
         encounter: completedEncounter,
         mode: 'owner',
-      });
+        candidateHash: stableHash({ completedScene, completedChoice, completedEncounter }),
+      })).findings;
       const ownerFingerprints = ownerStageFindings.map((finding) => finding.fingerprint).sort();
       const regressionFingerprints = realizationFindings.map((finding) => finding.fingerprint).sort();
       if (stableHash(ownerFingerprints) !== stableHash(regressionFingerprints)) {

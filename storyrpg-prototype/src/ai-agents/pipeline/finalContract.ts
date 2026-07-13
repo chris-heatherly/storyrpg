@@ -55,6 +55,7 @@ import { repairDetectedTransitionBridgeContinuity } from '../remediation/transit
 import { buildRelationshipPacingLabelRepairHandler } from '../remediation/relationshipPacingLabelRepairHandler';
 import { buildObligationPayoffRepairHandler } from '../remediation/obligationPayoffRepairHandler';
 import { SceneCritic } from '../agents/SceneCritic';
+import { SemanticRealizationJudge } from '../agents/SemanticRealizationJudge';
 import { FidelityRealizationJudge, confirmHeuristicFidelityFindings } from '../validators/fidelityRealizationJudge';
 import { RouteRestageArbiter, arbitrateRouteRestageFindings } from '../validators/routeRestageArbiter';
 import type { FidelityValidationScope } from '../validators/runFidelityValidators';
@@ -85,6 +86,7 @@ import type { PipelineEvent } from './events';
 import type { FullCreativeBrief } from './FullStoryPipeline';
 import type { SeasonScenePlan } from '../../types/scenePlan';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
+import { validateStorySemanticRealization } from './semanticValidationCoordinator';
 
 type FinalContractWarning = NonNullable<FinalStoryContractReport['warnings']>[number];
 
@@ -1054,8 +1056,98 @@ export class FinalContract {
       } catch (encErr) {
         console.warn(`[Pipeline] EncounterQualityValidator failed (non-fatal): ${(encErr as Error).message}`);
       }
+      const semanticJudge = new SemanticRealizationJudge(
+        this.deps.config.agents.qaRunner || this.deps.config.agents.storyArchitect,
+      );
+      const semanticResults = await validateStorySemanticRealization({
+        story,
+        tasks: input.brief.seasonPlan?.scenePlan?.narrativeContractGraph?.realizationTasks,
+        judge: semanticJudge,
+      });
+      const semanticFindings = semanticResults.flatMap((result) => result.findings);
+      const inconclusiveSemantic = semanticFindings.filter(
+        (finding) => finding.code === 'SEMANTIC_VALIDATION_INCONCLUSIVE',
+      );
+      if (inconclusiveSemantic.length > 0) {
+        throw new PipelineError(
+          `[SemanticValidationInconclusive] Final regression could not obtain a stable semantic verdict for ${inconclusiveSemantic.length} task(s); no prose repair was attempted.`,
+          'validation',
+          {
+            agent: 'SemanticRealizationJudge',
+            context: { findings: inconclusiveSemantic, receipts: semanticResults.map((result) => result.receipt) },
+            failure: {
+              code: 'semantic_validation_inconclusive',
+              ownerStage: 'final_contract',
+              retryClass: 'none',
+              issueCodes: ['SEMANTIC_VALIDATION_INCONCLUSIVE'],
+              artifactRefs: [],
+              repairTarget: inconclusiveSemantic[0]?.taskId,
+            },
+          },
+        );
+      }
+      const realizationTaskById = new Map(
+        (input.brief.seasonPlan?.scenePlan?.narrativeContractGraph?.realizationTasks ?? [])
+          .map((task) => [task.id, task]),
+      );
+      for (const finding of semanticFindings) {
+        const task = realizationTaskById.get(finding.taskId);
+        const issue = {
+          type: 'semantic_realization_violation' as const,
+          severity: finding.blocking ? 'error' as const : 'warning' as const,
+          disposition: 'confirmed' as const,
+          message: finding.message,
+          validator: 'SemanticRealizationJudge',
+          episodeNumber: task?.episodeNumber,
+          sceneId: finding.sceneId,
+          taskId: finding.taskId,
+          contractId: finding.contractId,
+          eventId: task?.eventId,
+          outcomeTier: finding.outcomeTier,
+          artifactPath: finding.field,
+          repairHandler: task?.repairHandler,
+          issueCode: finding.code,
+          ownerStage: finding.ownerStage,
+          retryClass: task?.repairHandler === 'choice_reauthor'
+            ? 'repair_choice' as const
+            : task?.repairHandler === 'encounter_route'
+              ? 'repair_encounter_route' as const
+              : 'repair_scene_prose' as const,
+          missingEvidenceAtoms: finding.missingEvidenceAtoms,
+          requiredEvidenceAtoms: task?.evidenceAtoms.filter((atom) => atom.required).map((atom) => atom.id),
+          realizationFingerprint: finding.fingerprint,
+          matchedForbiddenAtoms: finding.matchedForbiddenAtoms,
+          suggestion: 'Repair the missing meaning on the assigned owner surface; do not copy validator wording into the prose.',
+        };
+        if (finding.blocking) r.blockingIssues.push(issue);
+        else r.warnings.push(issue);
+      }
+      r.passed = r.blockingIssues.length === 0;
       r.executionRecords = [
         ...(freshFidelity.executionRecords ?? []),
+        ...semanticResults.map((result) => createValidatorExecutionRecord({
+          policyId: `SemanticRealizationJudge@${result.receipt.sceneId}@${result.receipt.ownerStage}`,
+          validatorId: 'SemanticRealizationJudge',
+          lifecycle: 'final-contract',
+          role: 'regression-net',
+          placement: 'season-final',
+          mode: 'audit',
+          passed: result.findings.every((finding) => !finding.blocking),
+          realizationReceipt: result.receipt,
+          issues: result.findings.map((finding) => ({
+            severity: finding.blocking ? 'error' : 'warning',
+            code: finding.code,
+            message: finding.message,
+            metadata: {
+              issueCode: finding.code,
+              taskId: finding.taskId,
+              contractId: finding.contractId,
+              sceneId: finding.sceneId,
+              ownerStage: finding.ownerStage,
+              findingFingerprint: finding.fingerprint,
+            },
+          })),
+        })),
         createValidatorExecutionRecord({
           policyId: 'FinalStoryContractValidator@final',
           validatorId: 'FinalStoryContractValidator',
@@ -1107,7 +1199,9 @@ export class FinalContract {
         story: input.story,
         judge: () => {
           try {
-            return new FidelityRealizationJudge(this.deps.config.agents.sceneWriter);
+            return new FidelityRealizationJudge(
+              this.deps.config.agents.qaRunner || this.deps.config.agents.storyArchitect,
+            );
           } catch (err) {
             console.warn(`[Pipeline] Fidelity judge unavailable (findings stay blocking): ${err instanceof Error ? err.message : String(err)}`);
             return null;
@@ -1115,6 +1209,23 @@ export class FinalContract {
         },
         emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
       });
+      if ((outcome.inconclusive ?? 0) > 0) {
+        throw new PipelineError(
+          `[SemanticValidationInconclusive] Fidelity judge could not produce evidence-backed verdicts for ${outcome.inconclusive} finding(s); no prose repair was attempted.`,
+          'validation',
+          {
+            agent: 'SemanticRealizationJudge',
+            failure: {
+              code: 'semantic_validation_inconclusive',
+              ownerStage: 'final_contract',
+              retryClass: 'none',
+              issueCodes: ['SEMANTIC_VALIDATION_INCONCLUSIVE'],
+              artifactRefs: [],
+              repairTarget: 'legacy-fidelity-findings',
+            },
+          },
+        );
+      }
       // Findings that left blocking = judge-refuted; remember them so re-validation
       // (which re-runs the heuristics fresh) does not re-block them.
       const afterJudge = new Set(report.blockingIssues.map(fidelityKey));
@@ -1142,7 +1253,9 @@ export class FinalContract {
         story: input.story,
         arbiter: () => {
           try {
-            return new RouteRestageArbiter(this.deps.config.agents.sceneWriter);
+            return new RouteRestageArbiter(
+              this.deps.config.agents.qaRunner || this.deps.config.agents.storyArchitect,
+            );
           } catch (err) {
             console.warn(`[Pipeline] Route restage arbiter unavailable (uncorroborated cue findings demote to warnings): ${err instanceof Error ? err.message : String(err)}`);
             return null;

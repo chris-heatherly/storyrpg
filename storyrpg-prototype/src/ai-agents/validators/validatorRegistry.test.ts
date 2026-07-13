@@ -114,6 +114,15 @@ describe('validatorRegistry (B4 dispatch map)', () => {
     expect(blockingValidators()).toContain('FinalStoryContractValidator');
   });
 
+  it('declares semantic-judge authority for interpretive realization blockers', () => {
+    const realizationPolicies = VALIDATOR_REGISTRY.filter((entry) =>
+      entry.validator.startsWith('NarrativeRealizationTaskGate')
+      || entry.validator === 'SemanticRealizationJudge',
+    );
+    expect(realizationPolicies).toHaveLength(4);
+    expect(realizationPolicies.every((entry) => entry.verificationAuthority === 'semantic-judge')).toBe(true);
+  });
+
   it('does not list the removed dead SeasonValidator', () => {
     expect(VALIDATOR_REGISTRY.some((e) => e.validator === 'SeasonValidator')).toBe(false);
   });

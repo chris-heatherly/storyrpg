@@ -74,6 +74,11 @@ export type ValidatorMemoryEvidenceMode =
   | 'corroborated-evidence'
   | 'artifact-required';
 
+export type ValidatorVerificationAuthority =
+  | 'deterministic'
+  | 'semantic-judge'
+  | 'advisory-critic';
+
 export interface ValidatorRegistryEntry {
   /**
    * Stable static policy identity. Legacy rows derive this from validator+stage;
@@ -107,6 +112,9 @@ export interface ValidatorRegistryEntry {
    * guidance. Validators still decide from current typed artifacts and policy.
    */
   memoryEvidenceMode?: ValidatorMemoryEvidenceMode;
+  /** Which subsystem has pass/fail authority. Interpretive prose blockers must
+   * use semantic-judge; deterministic prose heuristics may be diagnostic only. */
+  verificationAuthority?: ValidatorVerificationAuthority;
 }
 
 export interface ArtifactValidatorOwnershipEntry {
@@ -166,9 +174,10 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // Canonical narrative realization tasks are enforced by their artifact owner
   // before checkpointing. Each stage uses a bounded re-author route; the final
   // NarrativeContractValidator entry below is only the post-mutation regression net.
-  { validator: 'NarrativeRealizationTaskGate (SceneWriter)', stage: 'phase', tier: 'blocking', remediation: 'regen-scene', maxRemediationAttempts: 2, lifecycle: 'episode-contract', role: 'primary', dispatchedFrom: 'ContentGenerationPhase (SceneWriter output)' },
-  { validator: 'NarrativeRealizationTaskGate (ChoiceAuthor)', stage: 'phase', tier: 'blocking', remediation: 'regen-choices', maxRemediationAttempts: 3, lifecycle: 'episode-contract', role: 'primary', dispatchedFrom: 'ContentGenerationPhase (ChoiceAuthor output)' },
-  { validator: 'NarrativeRealizationTaskGate (EncounterArchitect)', stage: 'phase', tier: 'blocking', remediation: 'regen-encounter', maxRemediationAttempts: 2, lifecycle: 'episode-contract', role: 'primary', dispatchedFrom: 'ContentGenerationPhase (EncounterArchitect output)' },
+  { validator: 'NarrativeRealizationTaskGate (SceneWriter)', stage: 'phase', tier: 'blocking', remediation: 'regen-scene', maxRemediationAttempts: 2, lifecycle: 'episode-contract', role: 'primary', verificationAuthority: 'semantic-judge', dispatchedFrom: 'ContentGenerationPhase (SceneWriter output)' },
+  { validator: 'NarrativeRealizationTaskGate (ChoiceAuthor)', stage: 'phase', tier: 'blocking', remediation: 'regen-choices', maxRemediationAttempts: 3, lifecycle: 'episode-contract', role: 'primary', verificationAuthority: 'semantic-judge', dispatchedFrom: 'ContentGenerationPhase (ChoiceAuthor output)' },
+  { validator: 'NarrativeRealizationTaskGate (EncounterArchitect)', stage: 'phase', tier: 'blocking', remediation: 'regen-encounter', maxRemediationAttempts: 2, lifecycle: 'episode-contract', role: 'primary', verificationAuthority: 'semantic-judge', dispatchedFrom: 'ContentGenerationPhase (EncounterArchitect output)' },
+  { validator: 'SemanticRealizationJudge', stage: 'final', tier: 'blocking', remediation: 'regen-scene', lifecycle: 'final-contract', role: 'regression-net', verificationAuthority: 'semantic-judge', dispatchedFrom: 'ContentGenerationPhase / FinalContract' },
 
   // --- Quick validation (IntegratedBestPracticesValidator.runQuickValidation) ---
   // tier stays 'advisory' (not 'blocking'): runtime enforcement is a guaranteed

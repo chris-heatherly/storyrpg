@@ -1,8 +1,13 @@
 /** Generator-only canonical contracts for narrative planning and realization. */
 
-export const NARRATIVE_CONTRACT_GRAPH_VERSION = 7;
-export const EPISODE_EVENT_PLAN_VERSION = 7;
+export const NARRATIVE_CONTRACT_GRAPH_VERSION = 8;
+export const EPISODE_EVENT_PLAN_VERSION = 8;
 export const NARRATIVE_REALIZATION_LEDGER_VERSION = 1;
+
+export type NarrativeVerificationAuthority =
+  | 'structured'
+  | 'literal'
+  | 'semantic_judge';
 
 export type NarrativeEventCue =
   | 'storyTurn'
@@ -69,6 +74,15 @@ export interface NarrativeEvidenceAtom {
   acceptedPatterns: string[];
   sourceText?: string;
   kind: 'lexical' | 'semantic' | 'relationship_label' | 'route';
+  /**
+   * The only subsystem allowed to decide whether this atom is satisfied.
+   * Version-8 compilers always write this field. It remains optional at the
+   * TypeScript boundary so version-7 checkpoints can be normalized safely.
+   */
+  verificationAuthority?: NarrativeVerificationAuthority;
+  /** Concrete semantic criteria supplied to the judge. These are meaning
+   * requirements, never wording that deterministic code may demand. */
+  semanticCriteria?: string[];
   /** Typed matcher selected by the contract compiler. Generic semantic token
    * overlap is intentionally not authoritative for structured continuity facts. */
   matchStrategy?:
@@ -148,6 +162,22 @@ export interface NarrativeRealizationTask {
   target: NarrativeEvidenceTarget;
   sourceContractIds: string[];
   blocking: boolean;
+}
+
+/** Addressable reader-facing evidence supplied to an interpretive judge. */
+export interface NarrativeEvidenceExcerpt {
+  id: string;
+  taskId: string;
+  sceneId: string;
+  ownerStage: NarrativeRealizationOwnerStage;
+  surface: NarrativeRealizationSurface;
+  groupKey: string;
+  routeKey?: string;
+  beatId?: string;
+  choiceId?: string;
+  outcomeTier?: string;
+  text: string;
+  textHash: string;
 }
 
 /** Serialized version-2 task shape accepted only at artifact boundaries. */

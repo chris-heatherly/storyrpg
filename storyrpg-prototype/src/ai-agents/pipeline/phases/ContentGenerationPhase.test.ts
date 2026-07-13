@@ -317,6 +317,16 @@ describe('ContentGenerationPhase treatment density gate', () => {
         setEpisodeSkillTargets: () => undefined,
       },
       encounterArchitect: { execute: async () => { calls.push('encounterArchitect'); return { success: true, data: {} }; } },
+      semanticRealizationJudge: {
+        identity: () => ({ policyVersion: 'test-v1', provider: 'test', model: 'test' }),
+        execute: async (claims: Array<{ id: string; criteria: string[] }>) => ({
+          success: true,
+          data: { verdicts: claims.map((claim) => ({
+            id: claim.id, verdict: 'not_fulfilled', evidenceRefs: [], evidenceQuotes: [],
+            missingCriteria: claim.criteria, rationale: 'missing',
+          })) },
+        }),
+      },
       getThreadPlanner: () => ({}),
       getTwistArchitect: () => ({}),
       getCharacterArcTracker: () => ({}),
@@ -427,6 +437,16 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
         setEpisodeSkillTargets: () => undefined,
       },
       encounterArchitect: { execute: async () => { calls.push('encounterArchitect'); return { success: true, data: {} }; } },
+      semanticRealizationJudge: {
+        identity: () => ({ policyVersion: 'test-v1', provider: 'test', model: 'test' }),
+        execute: async (claims: Array<{ id: string; criteria: string[] }>) => ({
+          success: true,
+          data: { verdicts: claims.map((claim) => ({
+            id: claim.id, verdict: 'not_fulfilled', evidenceRefs: [], evidenceQuotes: [],
+            missingCriteria: claim.criteria, rationale: 'missing',
+          })) },
+        }),
+      },
       getThreadPlanner: () => ({}), getTwistArchitect: () => ({}), getCharacterArcTracker: () => ({}),
       incrementalValidator: null, sceneValidationResults: [], seasonSkillPlan: undefined, encounterTelemetry: [],
       cachedPipelineMemory: null, callbackLedger: { threads: [] } as never,

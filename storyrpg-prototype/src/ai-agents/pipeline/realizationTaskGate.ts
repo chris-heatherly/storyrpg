@@ -7,9 +7,18 @@ import {
   collectRouteEvidenceSurfaceIndex,
   type NarrativeEvidenceSurfaceIndex,
 } from '../validators/encounterTextSurfaces';
+import {
+  inferNarrativeVerificationAuthority,
+  isDeterministicNarrativeAtom,
+} from './realizationVerificationAuthority';
 
 export interface RealizationTaskGateFinding {
-  code: 'OWNER_REALIZATION_MISSING' | 'OWNER_FORBIDDEN_EVIDENCE_PRESENT';
+  code:
+    | 'OWNER_REALIZATION_MISSING'
+    | 'OWNER_FORBIDDEN_EVIDENCE_PRESENT'
+    | 'SEMANTIC_REALIZATION_MISSING'
+    | 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT'
+    | 'SEMANTIC_VALIDATION_INCONCLUSIVE';
   taskId: string;
   contractId: string;
   sceneId: string;
@@ -29,6 +38,7 @@ export interface EvidenceMatchDiagnostic {
   matched: boolean;
   bestPattern?: string;
   matchStrategy?: NarrativeRealizationTask['evidenceAtoms'][number]['matchStrategy'];
+  verificationAuthority?: NarrativeRealizationTask['evidenceAtoms'][number]['verificationAuthority'];
   score: number;
   matchedTerms: string[];
   missingTerms: string[];
@@ -155,6 +165,35 @@ function locationIdentityMatches(pattern: string, text: string): boolean {
     candidate === term || candidate.startsWith(term) || term.startsWith(candidate)));
 }
 
+function sceneLocationNames(sceneContent: unknown): string[] {
+  if (!sceneContent || typeof sceneContent !== 'object') return [];
+  const scene = sceneContent as Record<string, unknown>;
+  const setting = scene.settingContext && typeof scene.settingContext === 'object'
+    ? scene.settingContext as Record<string, unknown>
+    : undefined;
+  return [scene.locationName, setting?.locationName]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+}
+
+function contextualLocationIdentityMatches(input: {
+  atom: NarrativeRealizationTask['evidenceAtoms'][number];
+  pattern: string;
+  text: string;
+  sceneContent?: unknown;
+}): boolean {
+  if (locationIdentityMatches(input.pattern, input.text)) return true;
+  const canonicalLocations = sceneLocationNames(input.sceneContent);
+  if (!canonicalLocations.some((location) => normalize(location) === normalize(input.pattern))) return false;
+  const requiredTypes = normalize(input.pattern)
+    .split(' ')
+    .filter((term) => GENERIC_LOCATION_TERMS.has(term));
+  if (requiredTypes.length === 0) return false;
+  const normalizedText = normalize(input.text);
+  return requiredTypes.some((term) => new RegExp(
+    `(?:\\b(?:at|back|enter|inside|into|reach|return|within)\\b.{0,48}\\b${term}\\b|\\b(?:her|his|my|our|the|their|your)\\s+(?:\\w+\\s+){0,4}${term}\\b)`,
+  ).test(normalizedText));
+}
+
 function temporalFamily(value: string): 'dawn' | 'morning' | 'day' | 'evening' | 'night' | undefined {
   const normalized = normalize(value);
   if (/\b(?:dawn|sunrise|daybreak)\b/.test(normalized)) return 'dawn';
@@ -213,8 +252,16 @@ function semanticTransitionPresent(pattern: string, text: string): boolean {
   return true;
 }
 
-function relationshipEvidenceMatches(task: NarrativeRealizationTask, atom: NarrativeRealizationTask['evidenceAtoms'][number], pattern: string, text: string): boolean {
-  if (atom.matchStrategy === 'location_identity') return locationIdentityMatches(pattern, text);
+function relationshipEvidenceMatches(
+  task: NarrativeRealizationTask,
+  atom: NarrativeRealizationTask['evidenceAtoms'][number],
+  pattern: string,
+  text: string,
+  sceneContent?: unknown,
+): boolean {
+  if (atom.matchStrategy === 'location_identity') {
+    return contextualLocationIdentityMatches({ atom, pattern, text, sceneContent });
+  }
   if (atom.matchStrategy === 'temporal_orientation') return temporalOrientationMatches(pattern, text);
   if (atom.matchStrategy === 'transition_action') return transitionActionMatches(atom, text);
   if (atom.matchStrategy === 'state_transition') return stateTransitionMatches(atom, pattern, text);
@@ -247,7 +294,7 @@ function textsForSurfaces(
   index: NarrativeEvidenceSurfaceIndex,
   surfaces: NarrativeRealizationTask['target']['surfaces'],
 ): string[] {
-  return surfaces.flatMap((surface) => index[surface]).map(normalize);
+  return surfaces.flatMap((surface) => index[surface]);
 }
 
 function choicesForTaskInput(input: { sceneContent?: unknown; choiceSet?: unknown }): unknown[] {
@@ -313,24 +360,83 @@ function taskTextGroups(input: { sceneContent?: unknown; choiceSet?: unknown; en
   ));
 }
 
-function evaluateTaskGroup(task: NarrativeRealizationTask, texts: string[]): { missing: string[]; forbidden: string[]; diagnostics: EvidenceMatchDiagnostic[] } {
+export interface NarrativeTaskEvidenceTextGroup {
+  groupKey: string;
+  texts: string[];
+  entries: Array<{ surface: NarrativeRealizationTask['target']['surfaces'][number]; text: string }>;
+}
+
+/** Reader-facing candidate groups already restricted to the task's owner,
+ * route, terminal, option, and outcome surfaces. Semantic judges consume this
+ * view; they never receive planning metadata or prose from sibling routes. */
+export function collectNarrativeTaskEvidenceTextGroups(input: {
+  sceneContent?: unknown;
+  choiceSet?: unknown;
+  encounter?: unknown;
+  task: NarrativeRealizationTask;
+}): NarrativeTaskEvidenceTextGroup[] {
+  const target = input.task.target;
+  const indexedEntries = (index: NarrativeEvidenceSurfaceIndex, surfaces: typeof target.surfaces) =>
+    surfaces.flatMap((surface) => index[surface].map((text) => ({ surface, text })));
+  let groups: Array<Array<{ surface: typeof target.surfaces[number]; text: string }>>;
+  if (target.scope === 'owner') {
+    groups = [indexedEntries(collectNarrativeEvidenceSurfaceIndex(input), target.surfaces)];
+  } else if (target.scope === 'route_path') {
+    groups = [indexedEntries(collectRouteEvidenceSurfaceIndex({ ...input, outcomeTier: target.outcomeTier }), target.surfaces)];
+  } else if (target.scope === 'route_terminal') {
+    const terminalSurfaces = target.surfaces.filter((surface) => surface === 'encounter_outcome' || surface === 'terminal_storylet');
+    groups = [indexedEntries(collectRouteEvidenceSurfaceIndex({ ...input, outcomeTier: target.outcomeTier }), terminalSurfaces)];
+  } else if (target.scope === 'all_choice_outcomes') {
+    groups = choicesForTaskInput(input).flatMap((choice) => {
+      if (!choice || typeof choice !== 'object') return [];
+      const outcomeTexts = (choice as { outcomeTexts?: Record<string, unknown> }).outcomeTexts;
+      return ['success', 'partial', 'failure'].map((tier) => {
+        const text = outcomeTexts?.[tier];
+        return typeof text === 'string' ? [{ surface: 'choice_outcome' as const, text }] : [];
+      });
+    });
+  } else if (target.scope === 'all_options') {
+    groups = choicesForTaskInput(input).map((choice) => indexedEntries(
+      collectNarrativeEvidenceSurfaceIndex({ choiceSet: { choices: [choice] } }),
+      target.surfaces,
+    ));
+  } else {
+    groups = target.outcomeTiers.map((outcomeTier) => indexedEntries(
+      collectRouteEvidenceSurfaceIndex({ ...input, outcomeTier }),
+      target.surfaces,
+    ));
+  }
+  return groups.map((entries, index) => ({
+    groupKey: `${target.scope}:${index + 1}`,
+    entries,
+    texts: entries.map((entry) => entry.text),
+  }));
+}
+
+function evaluateTaskGroup(
+  task: NarrativeRealizationTask,
+  texts: string[],
+  sceneContent?: unknown,
+): { missing: string[]; forbidden: string[]; diagnostics: EvidenceMatchDiagnostic[] } {
   const missing: string[] = [];
   const forbidden: string[] = [];
   const diagnostics: EvidenceMatchDiagnostic[] = [];
-  const positiveAtoms = task.evidenceAtoms.filter((atom) => atom.polarity !== 'forbidden');
+  const deterministicAtoms = task.evidenceAtoms.filter(isDeterministicNarrativeAtom);
+  const positiveAtoms = deterministicAtoms.filter((atom) => atom.polarity !== 'forbidden');
   const matchedPositiveAtoms = new Set<string>();
-  for (const atom of task.evidenceAtoms) {
+  for (const atom of deterministicAtoms) {
     let best: EvidenceMatchDiagnostic = {
       atomId: atom.id,
       matched: false,
       matchStrategy: atom.matchStrategy ?? 'default',
+      verificationAuthority: inferNarrativeVerificationAuthority(atom),
       score: 0,
       matchedTerms: [],
       missingTerms: [],
     };
     for (const pattern of atom.acceptedPatterns) {
       for (const text of texts) {
-        const matched = relationshipEvidenceMatches(task, atom, pattern, text);
+        const matched = relationshipEvidenceMatches(task, atom, pattern, text, sceneContent);
         const score = evidenceMatchScore(pattern, text);
         if (matched || score.score > best.score) {
           best = {
@@ -338,6 +444,7 @@ function evaluateTaskGroup(task: NarrativeRealizationTask, texts: string[]): { m
             matched,
             bestPattern: pattern,
             matchStrategy: atom.matchStrategy ?? 'default',
+            verificationAuthority: inferNarrativeVerificationAuthority(atom),
             ...score,
             score: matched ? Math.max(score.score, 1) : score.score,
           };
@@ -359,7 +466,10 @@ function evaluateTaskGroup(task: NarrativeRealizationTask, texts: string[]): { m
   for (const group of task.evidenceGroups ?? []) {
     const groupAtoms = group.atomIds
       .map((atomId) => task.evidenceAtoms.find((atom) => atom.id === atomId))
-      .filter((atom): atom is NarrativeRealizationTask['evidenceAtoms'][number] => Boolean(atom && atom.polarity !== 'forbidden'));
+      .filter((atom): atom is NarrativeRealizationTask['evidenceAtoms'][number] => Boolean(
+        atom && atom.polarity !== 'forbidden' && isDeterministicNarrativeAtom(atom),
+      ));
+    if (groupAtoms.length === 0) continue;
     const matched = groupAtoms.filter((atom) => matchedPositiveAtoms.has(atom.id));
     const requiredHits = group.minimumEvidenceHits ?? (group.requirement === 'all' ? groupAtoms.length : 1);
     const groupSatisfied = group.requirement === 'any'
@@ -384,14 +494,18 @@ export function validateOwnerRealizationTasks(input: {
   const findings: RealizationTaskGateFinding[] = [];
   for (const task of input.tasks ?? []) {
     if ((input.mode ?? 'owner') === 'owner' && input.currentStage && task.ownerStage !== input.currentStage) continue;
-    const evaluations = taskTextGroups({ ...input, task }).map((texts) => evaluateTaskGroup(task, texts));
-    const bestPositive = evaluations.reduce((best, candidate) => candidate.missing.length < best.missing.length ? candidate : best, evaluations[0] ?? { missing: task.evidenceAtoms.filter((atom) => atom.required && atom.polarity !== 'forbidden').map((atom) => atom.id), forbidden: [], diagnostics: [] });
+    const evaluations = taskTextGroups({ ...input, task })
+      .map((texts) => evaluateTaskGroup(task, texts, input.sceneContent));
+    const deterministicRequiredAtomIds = task.evidenceAtoms
+      .filter((atom) => isDeterministicNarrativeAtom(atom) && atom.required && atom.polarity !== 'forbidden')
+      .map((atom) => atom.id);
+    const bestPositive = evaluations.reduce((best, candidate) => candidate.missing.length < best.missing.length ? candidate : best, evaluations[0] ?? { missing: deterministicRequiredAtomIds, forbidden: [], diagnostics: [] });
     const missing = task.target.scope === 'any_route' && evaluations.some((evaluation) => evaluation.missing.length === 0)
       ? []
       : task.target.scope === 'all_options' || task.target.scope === 'all_choice_outcomes'
         ? (evaluations.length > 0
           ? [...new Set(evaluations.flatMap((evaluation) => evaluation.missing))]
-          : task.evidenceAtoms.filter((atom) => atom.required && atom.polarity !== 'forbidden').map((atom) => atom.id))
+          : deterministicRequiredAtomIds)
         : bestPositive.missing;
     const forbidden = [...new Set(evaluations.flatMap((evaluation) => evaluation.forbidden))];
     if (missing.length > 0) {

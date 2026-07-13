@@ -299,6 +299,10 @@ export class NarrativeContractValidator extends BaseValidator {
     }
 
     for (const premise of graph.premiseContracts ?? []) {
+      // Version-8 premise tasks are interpreted by SemanticRealizationJudge.
+      // This legacy token-overlap path remains only for persisted graphs that
+      // do not yet carry an executable realization task.
+      if (taskByContractId.has(premise.id)) continue;
       const targetScenes = premise.targetSceneIds.length > 0
         ? premise.targetSceneIds.map((sceneId) => contractTextForScene(input.story, premise.episodeNumber, sceneId)).filter(Boolean)
         : episodeScenes(input.story, premise.episodeNumber).map(sceneText);
@@ -428,7 +432,8 @@ export class NarrativeContractValidator extends BaseValidator {
       const actualLocation = normalize(scene.timeline?.location ?? '');
       const expectedTime = normalize(transition.toTimeOfDay ?? '');
       const actualTime = normalize(scene.timeline?.timeOfDay ?? '');
-      for (const stateContract of transition.stateContracts ?? []) {
+      const hasExecutableTransitionTask = taskByContractId.has(transition.id);
+      for (const stateContract of hasExecutableTransitionTask ? [] : transition.stateContracts ?? []) {
         const hasEvidence = stateContract.requiredEvidence.length === 0
           || stateContract.requiredEvidence.some((pattern) => evidenceHit(pattern, sceneText(scene)));
         if (hasEvidence) continue;

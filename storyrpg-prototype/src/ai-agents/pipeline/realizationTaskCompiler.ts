@@ -9,6 +9,7 @@ import type {
   NarrativeRealizationSurface,
   NarrativeRealizationTask,
 } from '../../types/narrativeContract';
+import { withNarrativeVerificationAuthority } from './realizationVerificationAuthority';
 
 type SceneOwnedTaskKind = 'event' | 'premise' | 'presence' | 'transition' | 'story_circle' | 'relationship';
 
@@ -904,7 +905,10 @@ export function compileNarrativeRealizationTasks(
     }
   }
 
-  const coalescedTasks = coalesceEquivalentTasks(tasks);
+  const coalescedTasks = coalesceEquivalentTasks(tasks).map((task) => ({
+    ...task,
+    evidenceAtoms: task.evidenceAtoms.map(withNarrativeVerificationAuthority),
+  }));
   const canonicalOwnerTasks = new Set<string>();
   for (const task of coalescedTasks) {
     if (!task.blocking || !task.canonicalEventId || (!task.id.endsWith(':owner-event') && !task.id.endsWith(':choice-resolution'))) continue;
@@ -915,5 +919,12 @@ export function compileNarrativeRealizationTasks(
     canonicalOwnerTasks.add(key);
   }
   assertTaskFeasibility(coalescedTasks, sceneById);
+  for (const task of coalescedTasks) {
+    if (!task.blocking) continue;
+    const missingAuthority = task.evidenceAtoms.find((atom) => !atom.verificationAuthority);
+    if (missingAuthority) {
+      throw new Error(`[NarrativeTaskCompiler] Blocking atom ${missingAuthority.id} has no verification authority.`);
+    }
+  }
   return coalescedTasks.sort((a, b) => a.episodeNumber - b.episodeNumber || a.id.localeCompare(b.id));
 }

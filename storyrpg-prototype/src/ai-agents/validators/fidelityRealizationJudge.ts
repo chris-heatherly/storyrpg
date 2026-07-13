@@ -26,7 +26,7 @@ import { AgentConfig } from '../config';
 import { AgentResponse, BaseAgent } from '../agents/BaseAgent';
 import type { Story } from '../../types/story';
 import { collectEncounterProseStrings } from './EncounterQualityValidator';
-import { momentDepicted, requiredMomentFromMessage } from '../remediation/realizationScoring';
+import { requiredMomentFromMessage } from '../remediation/realizationScoring';
 
 /** Heuristic validators whose blocking findings need judge confirmation. */
 const JUDGE_CONFIRMABLE_VALIDATORS = new Set([
@@ -158,6 +158,9 @@ export interface JudgeConfirmationOutcome {
   judged: number;
   /** Findings the judge refuted (downgraded to warnings). */
   downgraded: number;
+  /** Judge/quote failures. These are validation infrastructure failures, not
+   * confirmed prose misses, and must not spend an author repair attempt. */
+  inconclusive?: number;
 }
 
 /**
@@ -182,9 +185,6 @@ export async function confirmHeuristicFidelityFindings(opts: {
     .slice(0, MAX_CLAIMS_PER_CALL);
   if (candidates.length === 0) return { judged: 0, downgraded: 0 };
 
-  const judge = opts.judge();
-  if (!judge) return { judged: 0, downgraded: 0 };
-
   const claims: RealizationClaim[] = [];
   for (const { issue, index } of candidates) {
     const prose = collectScenePlayerProse(opts.story, issue.sceneId as string, issue.episodeNumber);
@@ -198,22 +198,34 @@ export async function confirmHeuristicFidelityFindings(opts: {
   }
   if (claims.length === 0) return { judged: 0, downgraded: 0 };
 
+  const judge = opts.judge();
+  if (!judge) return { judged: claims.length, downgraded: 0, inconclusive: claims.length };
+
   const result = await judge.execute(claims);
-  if (!result.success || !result.data) return { judged: claims.length, downgraded: 0 };
+  if (!result.success || !result.data) {
+    return { judged: claims.length, downgraded: 0, inconclusive: claims.length };
+  }
+
+  const verdictById = new Map(result.data.verdicts.map((verdict) => [verdict.id, verdict]));
+  const inconclusive = claims.filter((claim) => {
+    const verdict = verdictById.get(claim.id);
+    if (!verdict) return true;
+    if (!verdict.dramatized) return false;
+    return !verdict.evidence || !claim.prose.includes(verdict.evidence);
+  }).length;
 
   const refutedIndices = new Set(
     result.data.verdicts
       .filter((v) => {
-        if (!v.dramatized) return false;
-        const claim = claims.find((c) => c.id === v.id);
-        if (!claim) return false;
-        if (claim.validator !== 'RequiredBeatRealizationValidator') return true;
-        return momentDepicted(claim.validator, claim.authoredMoment, claim.prose);
+        const claim = claims.find((candidate) => candidate.id === v.id);
+        return Boolean(v.dramatized && v.evidence && claim?.prose.includes(v.evidence));
       })
       .map((v) => Number(v.id.replace('claim-', '')))
       .filter((n) => Number.isInteger(n)),
   );
-  if (refutedIndices.size === 0) return { judged: claims.length, downgraded: 0 };
+  if (refutedIndices.size === 0) {
+    return { judged: claims.length, downgraded: 0, ...(inconclusive > 0 ? { inconclusive } : {}) };
+  }
 
   const remaining: JudgeableIssue[] = [];
   opts.report.blockingIssues.forEach((issue, index) => {
@@ -232,5 +244,9 @@ export async function confirmHeuristicFidelityFindings(opts: {
   opts.report.blockingIssues = remaining;
   if (remaining.length === 0) opts.report.passed = true;
 
-  return { judged: claims.length, downgraded: refutedIndices.size };
+  return {
+    judged: claims.length,
+    downgraded: refutedIndices.size,
+    ...(inconclusive > 0 ? { inconclusive } : {}),
+  };
 }

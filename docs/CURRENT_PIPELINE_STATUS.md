@@ -96,16 +96,16 @@ behavior-preserving migrations.
 
 ## Canonical Narrative Realization Contract
 
-`NarrativeContractGraph` and `EpisodeEventPlan` version 7 compile premise,
+`NarrativeContractGraph` and `EpisodeEventPlan` version 8 compile premise,
 event, relationship-pacing, and route obligations into executable
 `NarrativeRealizationTask` records. A task has one owner (`SceneWriter`,
 `ChoiceAuthor`, or `EncounterArchitect`), one discriminated evidence `target`,
-typed evidence atoms, severity, and a repair route. The target is the only
+typed evidence atoms, an explicit verification authority, severity, and a repair route. The target is the only
 active representation of surface and route placement; the former
 `requiredSurface` + `routePolicy` + top-level `outcomeTier` combination is
 accepted only by the checkpoint migration boundary.
 
-Compiler v19 derives non-ESC event identity from stable source text rather than
+Compiler v20 derives non-ESC event identity from stable source text rather than
 scene IDs and decomposes compound depiction events into ordered, independently
 verifiable action atoms. Required beats that describe independent authored
 events retain separate event IDs instead of being folded into a scene's primary
@@ -126,12 +126,17 @@ identity facts remain provenance/evidence but do not become chronological action
 atoms or force planning-register language into reader prose. Interpretive Story
 Circle summaries now fold into the canonical events they describe instead of
 creating duplicate depiction ownership on their incidental projection scene.
-Relationship-change atoms accept observable acceptance and belonging behavior
-when paired with the separately required group-formation event, so valid prose
-does not have to repeat a planning label such as "become friends."
-Ordinary exploration atoms likewise compile location-aware walking, wandering,
-and city-motion alternatives so scenic prose can satisfy the event without
-copying the treatment sentence.
+Each atom declares exactly one authority: `structured` for canonical fields and
+state, `literal` for exact names, labels, and aliases, or `semantic_judge` for
+prose meaning. Deterministic matching never clears or blocks a
+`semantic_judge` atom. The low-temperature QA-model judge receives only
+addressable reader-facing excerpts already restricted to the task's owner
+surface and route, returns a categorical verdict with exact evidence quotes,
+and is checked deterministically for quote integrity. A negative verdict
+requires a second sample; disagreement requires a third. No stable majority
+produces `semantic_validation_inconclusive`, which stops packaging as
+validation infrastructure without spending an author repair attempt. Confirmed
+meaning misses retain the task's existing repair route.
 
 Each event atom now carries an optional producer stage and temporal slot. When a
 route-invariant relationship or state transition happens after a player-facing
@@ -176,25 +181,29 @@ non-identical findings for the same snapshot fail with a typed
 `validator_snapshot_mismatch` error. A candidate is adopted only when it clears
 the targeted fingerprint without introducing another blocker. Unresolved SceneWriter-owned tasks abort
 before ChoiceAuthor, callback accounting, completion status, or checkpointing.
-Failed candidates and per-atom match diagnostics are persisted for deterministic
-replay. Every initial or regenerated choice set passes one transactional
+Failed candidates and per-atom diagnostics are persisted for deterministic
+replay. Semantic verdicts are cached by task, atom, scoped excerpt hash, judge
+policy, provider, model, and schema. Every initial or regenerated choice set passes one transactional
 prepare/validate/commit path: canonical state setters, information markers,
 residue, and route fan-out are applied to a clone; owner and producer gates run
 on that exact clone; only a valid candidate replaces the committed choice set
 and its within-episode plant projection. Route evidence
 is evaluated per playable outcome and cannot be borrowed across routes or from
-an undeclared surface. `NarrativeContractValidator` repeats the same canonical
-gate after late story mutations as a regression net, and the owner-stage
-fingerprint is preserved through final-contract repair accounting. Each owner
-evaluation emits a receipt containing the task IDs, owner stage, candidate hash,
-and finding fingerprints. The per-scene pass is a regression net and must match
+an undeclared surface. `NarrativeContractValidator` repeats deterministic
+contract checks after late story mutations, while the asynchronous final
+contract reuses or refreshes hash-bound semantic receipts as the meaning
+regression net. The owner-stage fingerprint is preserved through final-contract
+repair accounting. Each owner evaluation emits a receipt containing the task
+IDs, owner stage, candidate hash, finding fingerprints, judge identity,
+categorical verdicts, evidence references, response hash, and sample count. The
+per-scene pass is a regression net and must match
 the union of those receipts exactly; missing owner artifacts fail as
 `owner_stage_not_executed`, while divergent fingerprints fail as
 `owner_stage_coverage_mismatch` without a blind LLM retry.
 
 Three older event heuristics (viral payoff, exact codename, and all-route threat
 checks) remain only for persisted graphs that have no compiled realization task.
-They do not execute alongside a version-7 task and are tracked for deletion in
+They do not execute alongside a version-8 task and are tracked for deletion in
 `docs/LEGACY_REMOVAL_REGISTRY.md`.
 
 Validation ownership now has two explicit levels:

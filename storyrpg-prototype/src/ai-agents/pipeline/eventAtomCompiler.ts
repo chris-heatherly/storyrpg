@@ -4,6 +4,8 @@ const ACTION_START = /^(?:arriv(?:e|es|ed)|return(?:s|ed)?|enter(?:s|ed)?|wander
 const ACTION_CONJUNCTION = /\s+and\s+(?=(?:arriv|return|enter|wander|walk|meet|befriend|introduc|find|discover|learn|writ|publish|rescu|attack|form|choos|decid|catch|test|invit|tell))/i;
 const ENTRY_SIGNAL = /\b(?:arriv(?:e|es|ed)(?:\s+at|\s+in)?|return(?:s|ed)?(?:\s+home|\s+to)?|enter(?:s|ed)?|wander(?:s|ed)?\s+into|walk(?:s|ed)?\s+into|step(?:s|ped)?\s+into|reach(?:es|ed)?)\b/i;
 const REFERENCE_SIGNAL = /\b(?:introduc(?:e|es|ed).{0,50}\bto|tell(?:s|ing)?\s+.{0,30}\babout|mention(?:s|ed)?|invite(?:s|d)?\s+.{0,30}\bto|world\s+of|points?\s+(?:her|him|them)?\s*toward)\b/i;
+const HONORIFIC_PERIOD = /\b(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Mt|Gen|Capt|Lt|Col|Rev)\./gi;
+const PROTECTED_PERIOD = '\u0000';
 
 function normalize(value: string): string {
   return value
@@ -40,8 +42,9 @@ function locationMatch(text: string, location: string): { index: number; alias: 
 
 function splitCompoundEvent(sourceText: string): string[] {
   const sentences = sourceText
+    .replace(HONORIFIC_PERIOD, `$1${PROTECTED_PERIOD}`)
     .split(/[.;]+/)
-    .map((part) => part.trim())
+    .map((part) => part.split(PROTECTED_PERIOD).join('.').trim())
     .filter(Boolean);
   const clauses: string[] = [];
   for (const sentence of sentences) {
@@ -126,6 +129,12 @@ function participantNames(value: string, knownLocations: string[]): string[] {
   const excluded = new Set(knownLocations.flatMap((location) => capitalizedNames(location)));
   for (const group of value.matchAll(/\b((?:[A-Z][A-Za-z'’-]+\s+)*(?:Club|Circle|Crew|Society))\b/g)) {
     for (const token of capitalizedNames(group[1])) excluded.add(token);
+  }
+  for (const alias of value.matchAll(/\b(?:codename|alias|headline|title)\s+((?:[A-Z][A-Za-z'’-]*\.?\s*)+)/g)) {
+    for (const token of capitalizedNames(alias[1])) excluded.add(token);
+  }
+  for (const workTitle of value.matchAll(/\b(?:first|new|latest)\s+((?:[A-Z][A-Za-z'’-]+\s+){1,6})(?=post|article|book|blog|column|song|film)\b/g)) {
+    for (const token of capitalizedNames(workTitle[1])) excluded.add(token);
   }
   return capitalizedNames(value).filter((name) => !excluded.has(name));
 }

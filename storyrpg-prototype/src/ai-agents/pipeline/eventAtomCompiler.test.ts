@@ -69,4 +69,15 @@ describe('compileEventRealizationAtoms', () => {
       'wanders the city',
     ]));
   });
+
+  it('preserves honorific aliases without inventing event or participant boundaries', () => {
+    const sourceText = 'At 2am she turns the night into the first City After Dark post under the codename Dr. Nocturne.';
+    const atoms = compileEventRealizationAtoms({ eventId: 'event:publish', sourceText });
+
+    expect(atoms).toHaveLength(1);
+    expect(atoms[0].acceptedPatterns[0]).toBe(sourceText.slice(0, -1));
+    expect(atoms[0].participantIds).not.toEqual(expect.arrayContaining([
+      'City', 'After', 'Dark', 'Dr', 'Nocturne',
+    ]));
+  });
 });

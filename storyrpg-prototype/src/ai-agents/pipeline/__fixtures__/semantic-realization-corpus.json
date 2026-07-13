@@ -1,0 +1,21 @@
+[
+  { "id": "direct-formation", "category": "direct", "proposition": "The group forms the Dusk Club.", "excerpts": ["They form the Dusk Club before leaving the bar."], "expected": "fulfilled" },
+  { "id": "paraphrase-formation", "category": "paraphrase", "proposition": "The group forms the Dusk Club.", "excerpts": ["Glasses rise. ‘To us,’ Mika says, and the Dusk Club is born."], "expected": "fulfilled" },
+  { "id": "indirect-acceptance", "category": "indirect_valid", "proposition": "Mika accepts Kylie into the group.", "excerpts": ["Mika slides the last chair toward you. ‘She stays.’"], "expected": "fulfilled" },
+  { "id": "partial-formation", "category": "partial", "proposition": "The group forms the Dusk Club.", "excerpts": ["They argue over what a club like theirs might be called."], "expected": "partial" },
+  { "id": "summary-only", "category": "summary_only", "proposition": "The group forms the Dusk Club on-page.", "excerpts": ["Years later, Kylie would remember that this was how the club began."], "expected": "not_fulfilled" },
+  { "id": "metadata-only", "category": "metadata_only", "proposition": "The group forms the Dusk Club on-page.", "excerpts": ["Planning metadata says: relationship milestone equals group formation."], "expected": "not_fulfilled" },
+  { "id": "intent-not-completion", "category": "intent_not_completion", "proposition": "The group forms the Dusk Club.", "excerpts": ["‘We should start a club,’ Stela says."], "expected": "not_fulfilled" },
+  { "id": "contradicted-formation", "category": "contradiction", "proposition": "The group forms the Dusk Club.", "excerpts": ["They reject the name and leave without forming any group."], "expected": "contradicted" },
+  { "id": "negated-friendship", "category": "negation", "proposition": "Stela calls Kylie her friend.", "excerpts": ["‘You are not my friend,’ Stela says."], "expected": "contradicted" },
+  { "id": "reference-not-restage", "category": "reference_vs_restage", "proposition": "The park attack happens again in this scene.", "excerpts": ["Kylie mentions the park attack while drafting her post."], "expected": "not_fulfilled" },
+  { "id": "wrong-participant", "category": "wrong_character", "proposition": "Mika gives Kylie the key.", "excerpts": ["Stela gives Kylie the key while Mika watches."], "expected": "not_fulfilled" },
+  { "id": "wrong-location", "category": "wrong_location", "proposition": "Kylie enters Cismigiu Gardens.", "excerpts": ["Kylie enters Herastrau Park."], "expected": "not_fulfilled" },
+  { "id": "wrong-route", "category": "wrong_route", "proposition": "The victory route ends with the stranger vanishing.", "excerpts": ["On defeat, the stranger vanishes into the rain."], "expected": "not_fulfilled" },
+  { "id": "wrong-tier", "category": "wrong_tier", "proposition": "The failure outcome preserves the alliance.", "excerpts": ["The success outcome preserves the alliance."], "expected": "not_fulfilled" },
+  { "id": "wrong-surface", "category": "wrong_surface", "proposition": "The choice outcome forms the club.", "excerpts": ["The scene setup forms the club before any choice."], "expected": "not_fulfilled" },
+  { "id": "invitation-not-formation", "category": "invitation_vs_formation", "proposition": "The group forms the Dusk Club.", "excerpts": ["Mika invites Kylie to meet the others tomorrow."], "expected": "not_fulfilled" },
+  { "id": "chemistry-not-earned", "category": "chemistry_vs_transition", "proposition": "Stela and Kylie become trusted friends.", "excerpts": ["Their banter sparks, but Stela still refuses to trust her."], "expected": "contradicted" },
+  { "id": "setup-not-payoff", "category": "setup_vs_payoff", "proposition": "Kylie publishes the finished post.", "excerpts": ["Kylie opens a blank draft and begins typing."], "expected": "not_fulfilled" },
+  { "id": "encounter-terminal", "category": "encounter_surface", "proposition": "The stranger disappears at Kylie's apartment threshold.", "excerpts": ["At the apartment door, Kylie turns to thank him. The hallway is empty."], "expected": "fulfilled" }
+]

@@ -332,6 +332,69 @@ describe('NarrativeContractCompiler', () => {
     }));
   });
 
+  it('allows an authored event to move through a prerequisite-ordered location sequence', () => {
+    const scenes = [scene({
+      id: 'rescue', episodeNumber: 1, order: 0, locations: ['Cismigiu Gardens'],
+      dramaticPurpose: 'Kylie is attacked in Cismigiu, rescued, and walked home.',
+    })];
+    const graph = compileNarrativeContractGraph(plan([1]), scenePlan(scenes));
+    const event = graph.events[0];
+    event.realizationAtoms = [
+      {
+        id: 'attack', description: 'Kylie is attacked in Cismigiu.', acceptedPatterns: ['attacked'],
+        kind: 'semantic', verificationAuthority: 'semantic_judge', semanticCriteria: ['Kylie is attacked.'],
+        semanticRole: 'action', prerequisiteAtomIds: [], stagedLocation: 'Cismigiu Gardens', required: true,
+      },
+      {
+        id: 'rescue', description: 'A stranger rescues Kylie.', acceptedPatterns: ['rescues'],
+        kind: 'semantic', verificationAuthority: 'semantic_judge', semanticCriteria: ['A stranger saves Kylie.'],
+        semanticRole: 'action', prerequisiteAtomIds: ['attack'], stagedLocation: 'Cismigiu Gardens', required: true,
+      },
+      {
+        id: 'walk-home', description: 'The stranger walks Kylie home.', acceptedPatterns: ['walks her home'],
+        kind: 'semantic', verificationAuthority: 'semantic_judge', semanticCriteria: ['The stranger escorts Kylie home.'],
+        semanticRole: 'action', prerequisiteAtomIds: ['rescue'], stagedLocation: 'Bucharest streets', required: true,
+      },
+    ];
+
+    const eventPlan = compileEpisodeEventPlan(graph, scenes, 1);
+    expect(eventPlan.validation.passed).toBe(true);
+    expect(eventPlan.validation.issues).toContainEqual(expect.objectContaining({
+      code: 'event_sequential_location_transition',
+      severity: 'warning',
+      sceneId: 'rescue',
+    }));
+  });
+
+  it('still blocks unrelated action staged at multiple locations', () => {
+    const scenes = [scene({
+      id: 'split-action', episodeNumber: 1, order: 0, locations: ['Cismigiu Gardens'],
+      dramaticPurpose: 'Kylie is attacked while Victor opens a ledger elsewhere.',
+    })];
+    const graph = compileNarrativeContractGraph(plan([1]), scenePlan(scenes));
+    const event = graph.events[0];
+    event.realizationAtoms = [
+      {
+        id: 'attack', description: 'Kylie is attacked in Cismigiu.', acceptedPatterns: ['attacked'],
+        kind: 'semantic', verificationAuthority: 'semantic_judge', semanticCriteria: ['Kylie is attacked.'],
+        semanticRole: 'action', prerequisiteAtomIds: [], stagedLocation: 'Cismigiu Gardens', required: true,
+      },
+      {
+        id: 'ledger', description: 'Victor opens a ledger.', acceptedPatterns: ['opens a ledger'],
+        kind: 'semantic', verificationAuthority: 'semantic_judge', semanticCriteria: ['Victor opens a ledger.'],
+        semanticRole: 'action', prerequisiteAtomIds: ['attack'], stagedLocation: 'Lipscani Apartment', required: true,
+      },
+    ];
+
+    const eventPlan = compileEpisodeEventPlan(graph, scenes, 1);
+    expect(eventPlan.validation.passed).toBe(false);
+    expect(eventPlan.validation.issues).toContainEqual(expect.objectContaining({
+      code: 'event_multiple_staged_locations',
+      severity: 'error',
+      sceneId: 'split-action',
+    }));
+  });
+
   it('defers future episode executability without weakening the selected episode gate', () => {
     const scenes = [
       scene({ id: 's1', episodeNumber: 1, order: 0, locations: ['Bucharest'], dramaticPurpose: 'Kylie arrives in Bucharest.' }),

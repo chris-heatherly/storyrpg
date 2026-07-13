@@ -43,7 +43,7 @@ import {
   type SemanticContractEventSeed,
 } from './semanticContractIr';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v21';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v22';
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',
@@ -2001,6 +2001,63 @@ function sameLocation(left: string | undefined, right: string | undefined): bool
   return slug(left) === slug(right);
 }
 
+const LOCATION_TRANSITION_SIGNAL = /\b(?:arriv(?:e|es|ed|ing)|bring(?:s|ing)?|brought|carry|carries|carried|drive(?:s|n)?|drove|escort(?:s|ed|ing)?|flee(?:s|ing)?|fled|follow(?:s|ed|ing)?|lead(?:s|ing)?|led|leave(?:s|ing)?|left|reach(?:es|ed|ing)?|return(?:s|ed|ing)?|ride(?:s|ing)?|rode|run(?:s|ning)?|ran|take(?:s|n|ing)?|took|travel(?:s|ed|ing)?|walk(?:s|ed|ing)?)\b/i;
+
+function atomRequiresPriorLocation(
+  atomId: string,
+  priorLocationAtomIds: Set<string>,
+  atomsById: Map<string, NonNullable<NarrativeEventContract['realizationAtoms']>[number]>,
+  visited = new Set<string>(),
+): boolean {
+  if (visited.has(atomId)) return false;
+  visited.add(atomId);
+  const atom = atomsById.get(atomId);
+  if (!atom) return false;
+  for (const prerequisiteId of atom.prerequisiteAtomIds ?? []) {
+    if (priorLocationAtomIds.has(prerequisiteId)
+      || atomRequiresPriorLocation(prerequisiteId, priorLocationAtomIds, atomsById, visited)) return true;
+  }
+  return false;
+}
+
+/**
+ * A scene may move through locations when the authored atoms explicitly model
+ * one continuous journey. This is intentionally stricter than merely seeing a
+ * prerequisite chain: the first atom at each new location must describe travel
+ * and depend on action staged at the preceding location.
+ */
+function isSequentialLocationTransition(event: NarrativeEventContract): boolean {
+  const stagedAtoms = (event.realizationAtoms ?? []).filter((atom) => atom.required && atom.stagedLocation);
+  const locationSequence: string[] = [];
+  for (const atom of stagedAtoms) {
+    const location = atom.stagedLocation!;
+    if (!sameLocation(locationSequence[locationSequence.length - 1], location)) locationSequence.push(location);
+  }
+  if (locationSequence.length < 2) return false;
+  if (new Set(locationSequence.map(slug)).size !== locationSequence.length) return false;
+
+  const atomsById = new Map(stagedAtoms.map((atom) => [atom.id, atom]));
+  for (let locationIndex = 1; locationIndex < locationSequence.length; locationIndex += 1) {
+    const location = locationSequence[locationIndex];
+    const firstAtomAtLocation = stagedAtoms.find((atom) => sameLocation(atom.stagedLocation, location));
+    if (!firstAtomAtLocation) return false;
+    const transitionText = [
+      firstAtomAtLocation.description,
+      firstAtomAtLocation.sourceText,
+      ...(firstAtomAtLocation.semanticCriteria ?? []),
+      ...firstAtomAtLocation.acceptedPatterns,
+    ].filter(Boolean).join(' ');
+    if (!LOCATION_TRANSITION_SIGNAL.test(transitionText)) return false;
+
+    const priorLocation = locationSequence[locationIndex - 1];
+    const priorLocationAtomIds = new Set(
+      stagedAtoms.filter((atom) => sameLocation(atom.stagedLocation, priorLocation)).map((atom) => atom.id),
+    );
+    if (!atomRequiresPriorLocation(firstAtomAtLocation.id, priorLocationAtomIds, atomsById)) return false;
+  }
+  return true;
+}
+
 /** Validate that immutable event obligations can actually be staged by their owner scenes. */
 export function validateEpisodePlanExecutability(
   graph: NarrativeContractGraph,
@@ -2014,6 +2071,17 @@ export function validateEpisodePlanExecutability(
     if (!owner) continue;
     const staged = stagedLocationsForAtoms(event.realizationAtoms);
     if (staged.length > 1) {
+      if (sameLocation(owner.locations?.[0], staged[0]) && isSequentialLocationTransition(event)) {
+        issues.push({
+          code: 'event_sequential_location_transition',
+          severity: 'warning',
+          message: `Event "${event.id}" explicitly moves through a prerequisite-ordered location sequence (${staged.join(' -> ')}).`,
+          eventId: event.id,
+          episodeNumber,
+          sceneId: owner.id,
+        });
+        continue;
+      }
       issues.push({
         code: 'event_multiple_staged_locations',
         severity: 'error',

@@ -120,6 +120,24 @@ function addLocationMetadata(
   }
 }
 
+function inferExplorationStagedLocation(clause: string, knownLocations: string[]): string | undefined {
+  if (!/\b(?:explores?|wanders?|roams?|walks?\s+(?:through|around))\b/i.test(clause)) return undefined;
+
+  const streets = clause.match(/\b(?:streets?|roads?|lanes?|avenues?)\s+of\s+([A-Z][A-Za-z'’-]*(?:\s+[A-Z][A-Za-z'’-]*)*)/);
+  if (streets?.[1]) return `${streets[1].trim()} streets`;
+
+  const stagedKnownLocation = knownLocations.find((location) => {
+    const match = locationMatch(clause, location);
+    if (!match) return false;
+    const context = normalize(clause).slice(Math.max(0, match.index - 70), match.index + match.alias.length + 15);
+    return !REFERENCE_SIGNAL.test(context);
+  });
+  if (stagedKnownLocation) return stagedKnownLocation;
+
+  const directPlace = clause.match(/\b(?:explores?|wanders?|roams?|walks?\s+(?:through|around))\s+(?:the\s+)?([A-Z][A-Za-z'’-]*(?:\s+[A-Z][A-Za-z'’-]*)*)/);
+  return directPlace?.[1]?.trim();
+}
+
 function capitalizedNames(value: string): string[] {
   return Array.from(new Set((value.match(/\b[A-Z][A-Za-z'’-]+\b/g) ?? [])
     .filter((name) => !['She', 'He', 'They', 'The', 'At', 'By'].includes(name))));
@@ -213,6 +231,7 @@ export function compileEventRealizationAtoms(input: {
       required: true,
     };
     addLocationMetadata(atom, clause, input.knownLocations ?? []);
+    atom.stagedLocation ??= inferExplorationStagedLocation(clause, input.knownLocations ?? []);
     atom.acceptedPatterns = semanticAlternatives(atom, clause);
     if (/\bowned\s+by\b/i.test(clause)) {
       const owner = capitalizedNames(clause)[0];

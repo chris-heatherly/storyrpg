@@ -68,6 +68,7 @@ describe('compileEventRealizationAtoms', () => {
       'walks the city streets',
       'wanders the city',
     ]));
+    expect(stagedLocationsForAtoms(atoms)).toEqual(['Bucharest streets']);
   });
 
   it('preserves honorific aliases without inventing event or participant boundaries', () => {

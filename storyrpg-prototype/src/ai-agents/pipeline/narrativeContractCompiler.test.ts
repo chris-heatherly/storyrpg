@@ -300,7 +300,13 @@ describe('NarrativeContractCompiler', () => {
     ];
 
     const compiled = compileAndApplyNarrativeContracts(plan([1]), scenePlan(scenes, { 1: spine }));
+    expect(compiled.scenes.find((candidate) => candidate.id === 's1-2')?.locations).toEqual(['Bucharest streets']);
     expect(compiled.scenes.find((candidate) => candidate.id === 's1-3')?.locations).toEqual(['Lumina Books']);
+    expect(compiled.narrativeContractGraph?.validation.issues).toContainEqual(expect.objectContaining({
+      code: 'scene_location_repaired_from_bound_event',
+      sceneId: 's1-2',
+      severity: 'warning',
+    }));
     expect(compiled.narrativeContractGraph?.validation.issues).toContainEqual(expect.objectContaining({
       code: 'scene_location_repaired_from_reference',
       sceneId: 's1-3',

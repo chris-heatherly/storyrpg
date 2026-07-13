@@ -355,7 +355,12 @@ function ownerRealizationRepairFeedback(
   const requirements = atoms.map((atom) => {
     const authority = inferNarrativeVerificationAuthority(atom);
     if (authority === 'semantic_judge') {
-      return `${atom.polarity === 'forbidden' ? 'DO NOT COMMUNICATE' : 'MEANING TO REALIZE'}: ${atom.description}`;
+      const temporalInstruction = atom.polarity === 'forbidden'
+        ? ''
+        : atom.temporalSlot === 'owner_event' || atom.semanticRole === 'action'
+          ? ' Dramatize the action while it happens; do not begin after it is complete or summarize it as prior activity.'
+          : '';
+      return `${atom.polarity === 'forbidden' ? 'DO NOT COMMUNICATE' : 'MEANING TO REALIZE'}: ${atom.description}.${temporalInstruction}`;
     }
     return `${atom.polarity === 'forbidden' ? 'AVOID' : 'REQUIRE'} ${authority}: ${atom.acceptedPatterns.join(' / ')}`;
   });

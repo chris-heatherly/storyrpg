@@ -1134,6 +1134,25 @@ Return exactly one complete SceneContent JSON object with:
     const assignedEventIds = input?.sceneBlueprint.assignedEventIds
       ?? input?.sceneBlueprint.narrativeEventIds
       ?? [];
+    const assignedEventIdSet = new Set(assignedEventIds);
+    const ownedTasks = (input?.sceneBlueprint.realizationTasks ?? []).filter((task) => task.ownerStage === 'scene_writer');
+    const allowedTaskIds = new Set(ownedTasks.map((task) => task.id));
+    const allowedAtomIds = new Set(ownedTasks.flatMap((task) => task.evidenceAtoms.map((atom) => atom.id)));
+    for (const claim of content.eventEvidence ?? []) {
+      // Evidence labels are model-authored diagnostics, never verification
+      // authority. Preserve foreign event IDs so validateContent rejects an
+      // ownership breach, but discard stale task/atom labels on an assigned
+      // event and let the canonical gates judge the prose itself.
+      if (!claim || !assignedEventIdSet.has(claim.eventId)) continue;
+      if (claim.taskId && !allowedTaskIds.has(claim.taskId)) {
+        console.warn(`[SceneWriter] Dropping unassigned realization task label ${claim.taskId} from evidence for ${claim.eventId}`);
+        delete claim.taskId;
+      }
+      if (claim.atomId && !allowedAtomIds.has(claim.atomId)) {
+        console.warn(`[SceneWriter] Dropping unassigned realization atom label ${claim.atomId} from evidence for ${claim.eventId}`);
+        delete claim.atomId;
+      }
+    }
     content.assignedEventIds = [...assignedEventIds];
     content.verifiedEventIds = [];
 
@@ -1926,7 +1945,8 @@ ${input.sceneBlueprint.realizationTasks?.some((task) => task.ownerStage === 'sce
 These task IDs are assigned to this scene by the canonical narrative graph. Show the required evidence on the required surface; do not satisfy a task through synopsis, metadata, recap, or another scene. Return the IDs as diagnostics only after the prose actually realizes them.
 Canonical event IDs allowed in claimedEventIds/eventEvidence: ${(input.sceneBlueprint.assignedEventIds ?? input.sceneBlueprint.narrativeEventIds ?? []).join(', ') || 'none'}.
 Task IDs and planning labels are never event IDs and must not appear in claimedEventIds/eventEvidence.eventId.
-${input.sceneBlueprint.realizationTasks.filter((task) => task.ownerStage === 'scene_writer').map((task) => `- ${task.id}: ${describeNarrativeEvidenceTarget(task.target)}; evidence=${task.evidenceAtoms.map((atom) => atom.acceptedPatterns.join(' / ')).join(' | ')}`).join('\n')}
+Only use the exact task and atom IDs listed below in eventEvidence. Omit taskId or atomId when uncertain; never substitute a treatment atom, required-beat ID, or planning-contract ID.
+${input.sceneBlueprint.realizationTasks.filter((task) => task.ownerStage === 'scene_writer').map((task) => `- task=${task.id}: ${describeNarrativeEvidenceTarget(task.target)}; ${task.evidenceAtoms.map((atom) => `atom=${atom.id} [${atom.acceptedPatterns.join(' / ')}]`).join(' | ')}`).join('\n')}
 ` : ''}
 ${input.sceneBlueprint.realizationTasks?.some((task) => task.ownerStage === 'choice_author') ? `
 ### Downstream Choice-Resolution Boundary

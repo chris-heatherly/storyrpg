@@ -1542,6 +1542,31 @@ describe('SceneWriter structural guards', () => {
     expect(() => (writer as any).validateContent(content, input)).toThrow(/unassigned realization task task:foreign/);
   });
 
+  it('drops stale task and atom diagnostics during normalization without granting ownership', () => {
+    const writer = new SceneWriter({
+      provider: 'anthropic', model: 'test-model', apiKey: 'test-key', maxTokens: 1024, temperature: 0,
+    });
+    const input = {
+      sceneBlueprint: {
+        id: 's1', assignedEventIds: ['event:1'], realizationTasks: [{
+          id: 'task:event:1', ownerStage: 'scene_writer', evidenceAtoms: [{ id: 'event:1:atom:1' }],
+        }],
+      },
+    } as any;
+    const content = {
+      sceneId: 's1', sceneName: 'Scene', beats: [], startingBeatId: '',
+      eventEvidence: [{
+        eventId: 'event:1', taskId: 'task:legacy', atomId: 'required-beat:atom:1', evidence: 'A claim.',
+      }],
+    } as any;
+
+    const normalized = (writer as any).normalizeContent(content, input);
+    expect(normalized.eventEvidence).toEqual([{
+      eventId: 'event:1', evidence: 'A claim.',
+    }]);
+    expect(normalized.assignedEventIds).toEqual(['event:1']);
+  });
+
   it('strips agent-facing pressure notes from player-facing beat text and prompts', () => {
     const writer = new SceneWriter({
       provider: 'anthropic',

@@ -180,4 +180,47 @@ describe('compileNarrativeRealizationTasks', () => {
 
     expect(tasks.filter((task) => task.id === 'task:relationship:circle:scene-circle:relationship-labels')).toHaveLength(1);
   });
+
+  it('routes a transition into an encounter to EncounterArchitect entry prose', () => {
+    const graph = {
+      events: [],
+      dependencies: [],
+      transitionContracts: [{
+        id: 'transition:club-to-park', episodeNumber: 1, fromSceneId: 'club', toSceneId: 'park-attack',
+        fromLocation: 'Valescu Club', toLocation: 'Cismigiu Gardens', bridgePolicy: 'orientation_only',
+        locationRequirement: { canonicalValue: 'Cismigiu Gardens', acceptedAliases: [], required: true },
+        requiredBridgeEvidence: ['Cismigiu Gardens'], stateContracts: [], blocking: true,
+        sourceContractIds: ['scene:club', 'scene:park-attack'],
+      }],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 'club', episodeNumber: 1, order: 0, kind: 'standard' },
+      { id: 'park-attack', episodeNumber: 1, order: 1, kind: 'encounter', encounter: {} },
+    ] as any);
+
+    expect(tasks.find((task) => task.contractId === 'transition:club-to-park')).toMatchObject({
+      ownerStage: 'encounter_architect',
+      repairHandler: 'encounter_route',
+      artifactPath: 'episodes[1].scenes[park-attack].encounter',
+      target: { scope: 'owner', surfaces: ['encounter_entry'] },
+      evidenceAtoms: [expect.objectContaining({
+        matchStrategy: 'location_identity',
+        semanticRole: 'location_entry',
+        temporalSlot: 'encounter_entry',
+      })],
+    });
+  });
+
+  it('rejects a blocking task whose target scene does not exist', () => {
+    const graph = {
+      events: [], dependencies: [], characterPresenceContracts: [{
+        id: 'presence:missing', characterId: 'npc', characterName: 'Mika', episodeNumber: 1,
+        sceneId: 'missing', mode: 'named_on_page', readerNameAllowed: true,
+        requiredEvidence: ['Mika'], forbiddenEvidence: [], sourceContractIds: ['treatment'],
+        provenance: { source: 'treatment', confidence: 'authoritative' },
+      }],
+    } as unknown as NarrativeContractGraph;
+
+    expect(() => compileNarrativeRealizationTasks(graph, [])).toThrow(/owner_stage_unreachable.*missing scene missing/i);
+  });
 });

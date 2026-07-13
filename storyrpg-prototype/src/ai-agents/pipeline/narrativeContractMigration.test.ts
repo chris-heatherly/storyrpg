@@ -60,4 +60,43 @@ describe('narrative contract migration', () => {
     expect(plan.narrativeContractGraph?.realizationTasks?.[0].target.scope).toBe('route_terminal');
     expect(plan.episodeEventPlans?.[1].realizationTasks?.[0].target.scope).toBe('route_terminal');
   });
+
+  it('recompiles version-6 transition ownership from the target scene kind', () => {
+    const legacyPlan = {
+      scenes: [
+        { id: 'club', episodeNumber: 1, order: 0, kind: 'standard' },
+        { id: 'park', episodeNumber: 1, order: 1, kind: 'encounter', encounter: {} },
+      ],
+      byEpisode: { 1: ['club', 'park'] }, setupPayoffEdges: [],
+      narrativeContractGraph: {
+        version: 6, compilerVersion: 'narrative-contract-compiler-v18', storyId: 'story', sourceHash: 'old-hash',
+        events: [], characterPresenceContracts: [], dependencies: [], validation: { passed: true, issues: [] },
+        transitionContracts: [{
+          id: 'transition:club-to-park', episodeNumber: 1, fromSceneId: 'club', toSceneId: 'park',
+          fromLocation: 'Valescu Club', toLocation: 'Cismigiu Gardens', requiredBridgeEvidence: ['Cismigiu Gardens'],
+          blocking: true, sourceContractIds: ['scene:club', 'scene:park'],
+        }],
+      },
+      episodeEventPlans: {
+        1: {
+          version: 6, compilerVersion: 'narrative-contract-compiler-v18', episodeNumber: 1,
+          sourceGraphHash: 'old-hash', orderedEventIds: [], assignments: [], sceneOrder: ['club', 'park'],
+          sceneContexts: [], dueDependencyIds: [], activeDependencyIds: [], characterPresenceContracts: [],
+          transitionContracts: [], realizationTasks: [], validation: { passed: true, issues: [] },
+        },
+      },
+    } as any;
+
+    const migrated = normalizePersistedSeasonScenePlan(legacyPlan);
+    expect(migrated.narrativeContractGraph).toMatchObject({ version: 7 });
+    expect(migrated.narrativeContractGraph?.transitionContracts?.[0]).toMatchObject({
+      bridgePolicy: 'orientation_only',
+      locationRequirement: { canonicalValue: 'Cismigiu Gardens', required: true },
+    });
+    expect(migrated.narrativeContractGraph?.realizationTasks?.[0]).toMatchObject({
+      ownerStage: 'encounter_architect', repairHandler: 'encounter_route',
+      target: { scope: 'owner', surfaces: ['encounter_entry'] },
+    });
+    expect(normalizePersistedSeasonScenePlan(migrated)).toEqual(migrated);
+  });
 });

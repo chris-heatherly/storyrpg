@@ -10,9 +10,71 @@ import type {
   NarrativeRealizationTask,
 } from '../../types/narrativeContract';
 
+type SceneOwnedTaskKind = 'event' | 'premise' | 'presence' | 'transition' | 'story_circle' | 'relationship';
+
+interface TaskExecutionTarget {
+  ownerStage: Exclude<NarrativeRealizationOwnerStage, 'choice_author'>;
+  repairHandler: NarrativeRealizationTask['repairHandler'];
+  artifactPath?: string;
+  surfaces: NarrativeRealizationSurface[];
+  temporalSlot: NonNullable<NarrativeEvidenceAtom['temporalSlot']>;
+}
+
+function isEncounterScene(scene: PlannedScene | undefined): boolean {
+  return Boolean(scene?.kind === 'encounter' || scene?.encounter);
+}
+
 function sceneStage(scene: PlannedScene | undefined): NarrativeRealizationOwnerStage {
-  if (scene?.kind === 'encounter' || scene?.encounter) return 'encounter_architect';
+  if (isEncounterScene(scene)) return 'encounter_architect';
   return 'scene_writer';
+}
+
+/** One authoritative mapping from a planned scene to the producer, repair
+ * route, artifact, and evidence surfaces that can actually realize a task. */
+export function resolveTaskExecutionTarget(input: {
+  scene: PlannedScene | undefined;
+  episodeNumber: number;
+  kind: SceneOwnedTaskKind;
+  preferredSurfaces?: NarrativeRealizationSurface[];
+}): TaskExecutionTarget {
+  const { scene, episodeNumber, kind } = input;
+  const encounter = isEncounterScene(scene);
+  const scenePath = scene ? `episodes[${episodeNumber}].scenes[${scene.id}]` : undefined;
+  if (encounter) {
+    const surfaces: NarrativeRealizationSurface[] = kind === 'transition'
+      ? ['encounter_entry']
+      : kind === 'premise'
+        ? ['encounter_entry', 'encounter_setup']
+        : kind === 'presence'
+          ? ['encounter_entry', 'encounter_setup', 'encounter_phase']
+          : ['encounter_entry', 'encounter_setup', 'encounter_phase', 'encounter_outcome', 'terminal_storylet'];
+    if (kind === 'relationship') surfaces.push('choice_text', 'choice_outcome');
+    return {
+      ownerStage: 'encounter_architect',
+      repairHandler: 'encounter_route',
+      artifactPath: scenePath ? `${scenePath}.encounter` : undefined,
+      surfaces,
+      temporalSlot: kind === 'transition' ? 'encounter_entry' : 'encounter_route',
+    };
+  }
+  const reachablePreferredSurfaces = input.preferredSurfaces?.filter((surface) =>
+    surface === 'beat_text' || surface === 'dialogue' || surface === 'text_variant');
+  const surfaces: NarrativeRealizationSurface[] = reachablePreferredSurfaces?.length
+    ? reachablePreferredSurfaces
+    : kind === 'transition' || kind === 'presence'
+      ? ['beat_text', 'dialogue']
+      : ['beat_text', 'dialogue', 'text_variant'];
+  return {
+    ownerStage: 'scene_writer',
+    repairHandler: kind === 'premise'
+      ? 'premise_realization'
+      : kind === 'relationship'
+        ? 'relationship_pacing'
+        : 'scene_prose',
+    artifactPath: scenePath,
+    surfaces,
+    temporalSlot: kind === 'transition' ? 'pre_choice' : 'owner_event',
+  };
 }
 
 function premiseAtoms(contract: NonNullable<NarrativeContractGraph['premiseContracts']>[number]): NarrativeEvidenceAtom[] {
@@ -70,8 +132,8 @@ function routePolicyForEventRequirement(
 }
 
 function ownerSurfacesForEvent(scene: PlannedScene | undefined): NarrativeRealizationSurface[] {
-  return scene?.kind === 'encounter' || scene?.encounter
-    ? ['encounter_setup', 'encounter_phase', 'encounter_outcome', 'terminal_storylet']
+  return isEncounterScene(scene)
+    ? ['encounter_entry', 'encounter_setup', 'encounter_phase', 'encounter_outcome', 'terminal_storylet']
     : ['beat_text', 'dialogue', 'text_variant'];
 }
 
@@ -157,12 +219,12 @@ function partitionEventAtoms(
   scene: PlannedScene | undefined,
 ): { owner: NarrativeEvidenceAtom[]; choiceResolution: NarrativeEvidenceAtom[] } {
   const atoms = genericEventAtoms(event);
-  if (scene?.kind === 'encounter' || scene?.encounter || !eventUsesAllRouteChoiceResolution(event, scene)) {
+  if (isEncounterScene(scene) || !eventUsesAllRouteChoiceResolution(event, scene)) {
     return {
       owner: atoms.map((atom) => ({
         ...atom,
         producerStage: sceneStage(scene),
-        temporalSlot: scene?.kind === 'encounter' || scene?.encounter ? 'encounter_route' : 'owner_event',
+        temporalSlot: isEncounterScene(scene) ? 'encounter_route' : 'owner_event',
       })),
       choiceResolution: [],
     };
@@ -202,6 +264,11 @@ function ensureOwnerTasks(
   const partition = partitionEventAtoms(event, scene);
   const created: NarrativeRealizationTask[] = [];
   if (partition.owner.length > 0) {
+    const execution = resolveTaskExecutionTarget({
+      scene,
+      episodeNumber: event.episodeNumber,
+      kind: 'event',
+    });
     created.push({
       id: `task:${event.id}:owner-event`,
       contractId: event.id,
@@ -209,14 +276,14 @@ function ensureOwnerTasks(
       projectionOf: [],
       sourceKinds: ['event'],
       episodeNumber: event.episodeNumber,
-      ownerStage: sceneStage(scene),
-      repairHandler: scene?.kind === 'encounter' || scene?.encounter ? 'encounter_route' : 'scene_prose',
+      ownerStage: execution.ownerStage,
+      repairHandler: execution.repairHandler,
       sceneId: event.ownerSceneId,
       eventId: event.id,
-      artifactPath: `episodes[${event.episodeNumber}].scenes[${event.ownerSceneId}]`,
+      artifactPath: execution.artifactPath,
       evidenceAtoms: partition.owner,
       evidenceGroups: [eventEvidenceGroup(event, partition.owner, 'owner')],
-      target: { scope: 'owner', surfaces: ownerSurfacesForEvent(scene) },
+      target: { scope: 'owner', surfaces: execution.surfaces },
       sourceContractIds: [...event.sourceContractIds],
       blocking: true,
     });
@@ -275,7 +342,20 @@ function mergeProjectionIntoOwnerTask(
   task.evidenceGroups = [group];
 }
 
-function assertTaskFeasibility(tasks: NarrativeRealizationTask[]): void {
+export class NarrativeTaskCompilerError extends Error {
+  readonly code: 'owner_stage_unreachable';
+
+  constructor(message: string) {
+    super(`[NarrativeTaskCompiler][owner_stage_unreachable] ${message}`);
+    this.name = 'NarrativeTaskCompilerError';
+    this.code = 'owner_stage_unreachable';
+  }
+}
+
+function assertTaskFeasibility(
+  tasks: NarrativeRealizationTask[],
+  sceneById: Map<string, PlannedScene>,
+): void {
   const duplicateTaskIds = tasks
     .map((task) => task.id)
     .filter((taskId, index, ids) => ids.indexOf(taskId) !== index);
@@ -296,7 +376,45 @@ function assertTaskFeasibility(tasks: NarrativeRealizationTask[]): void {
     choice_author: 1,
     encounter_architect: 1,
   };
+  const allowedSurfaces: Record<NarrativeRealizationOwnerStage, Set<NarrativeRealizationSurface>> = {
+    scene_writer: new Set(['beat_text', 'dialogue', 'text_variant']),
+    choice_author: new Set(['choice_text', 'choice_outcome']),
+    encounter_architect: new Set([
+      'encounter_entry', 'encounter_setup', 'encounter_phase', 'encounter_outcome', 'terminal_storylet',
+      'choice_text', 'choice_outcome', 'text_variant',
+    ]),
+  };
   for (const task of tasks) {
+    if (!task.sceneId) {
+      if (task.blocking) throw new NarrativeTaskCompilerError(`Blocking task ${task.id} has no target scene.`);
+    } else {
+      const scene = sceneById.get(task.sceneId);
+      if (!scene) throw new NarrativeTaskCompilerError(`Task ${task.id} targets missing scene ${task.sceneId}.`);
+      if (scene.episodeNumber !== task.episodeNumber) {
+        throw new NarrativeTaskCompilerError(`Task ${task.id} episode ${task.episodeNumber} targets episode ${scene.episodeNumber} scene ${scene.id}.`);
+      }
+      if (task.ownerStage === 'encounter_architect' && !isEncounterScene(scene)) {
+        throw new NarrativeTaskCompilerError(`Task ${task.id} assigns EncounterArchitect to standard scene ${scene.id}.`);
+      }
+      if (task.ownerStage === 'scene_writer' && isEncounterScene(scene)) {
+        throw new NarrativeTaskCompilerError(`Task ${task.id} assigns SceneWriter to encounter scene ${scene.id}.`);
+      }
+      if (task.ownerStage === 'choice_author' && isEncounterScene(scene)) {
+        throw new NarrativeTaskCompilerError(`Task ${task.id} assigns ChoiceAuthor to EncounterArchitect-owned choices in ${scene.id}.`);
+      }
+    }
+    const unreachableSurfaces = task.target.surfaces.filter((surface) => !allowedSurfaces[task.ownerStage].has(surface));
+    if (unreachableSurfaces.length > 0) {
+      throw new NarrativeTaskCompilerError(`Task ${task.id} assigns ${task.ownerStage} unreachable surface(s): ${unreachableSurfaces.join(', ')}.`);
+    }
+    const expectedHandler = task.ownerStage === 'encounter_architect'
+      ? 'encounter_route'
+      : task.ownerStage === 'choice_author'
+        ? 'choice_reauthor'
+        : undefined;
+    if (expectedHandler && task.repairHandler !== expectedHandler) {
+      throw new NarrativeTaskCompilerError(`Task ${task.id} assigns ${task.ownerStage} repair handler ${task.repairHandler}; expected ${expectedHandler}.`);
+    }
     if (task.ownerStage === 'choice_author') {
       if (task.target.scope !== 'all_choice_outcomes' && task.target.scope !== 'all_options') {
         throw new Error(`[NarrativeTaskCompiler] ChoiceAuthor task ${task.id} has unreachable target ${task.target.scope}.`);
@@ -409,8 +527,11 @@ function coalesceEquivalentTasks(tasks: NarrativeRealizationTask[]): NarrativeRe
 function targetForEventRequirement(
   requirement: NarrativeEvidenceRequirement,
   outcomeTier: string | undefined,
+  scene: PlannedScene | undefined,
 ): NarrativeRealizationTask['target'] {
-  const surfaces = surfaceForEventRequirement(requirement);
+  const surfaces = requirement.requiredSurface === 'owner_scene'
+    ? ownerSurfacesForEvent(scene)
+    : surfaceForEventRequirement(requirement);
   if (requirement.requiredSurface === 'any_route') {
     return {
       scope: 'any_route',
@@ -437,17 +558,23 @@ export function compileNarrativeRealizationTasks(
 
   for (const premise of graph.premiseContracts ?? []) {
     const sceneId = premise.targetSceneIds[0];
+    const execution = resolveTaskExecutionTarget({
+      scene: sceneId ? sceneById.get(sceneId) : undefined,
+      episodeNumber: premise.episodeNumber,
+      kind: 'premise',
+      preferredSurfaces: premise.requiredSurface as NarrativeRealizationSurface[],
+    });
     tasks.push({
       id: `task:${premise.id}`,
       contractId: premise.id,
       episodeNumber: premise.episodeNumber,
-      ownerStage: 'scene_writer',
-      repairHandler: 'premise_realization',
+      ownerStage: execution.ownerStage,
+      repairHandler: execution.repairHandler,
       sceneId,
-      artifactPath: sceneId ? `episodes[${premise.episodeNumber}].scenes[${sceneId}]` : undefined,
+      artifactPath: execution.artifactPath,
       evidenceAtoms: premiseAtoms(premise),
       minimumEvidenceHits: premise.minimumEvidenceHits,
-      target: { scope: 'owner', surfaces: premise.requiredSurface as NarrativeRealizationSurface[] },
+      target: { scope: 'owner', surfaces: execution.surfaces },
       sourceContractIds: premise.sourceContractIds,
       blocking: premise.blocking,
     });
@@ -460,6 +587,11 @@ export function compileNarrativeRealizationTasks(
     }
     for (const requirement of event.evidenceRequirements ?? []) {
       const scene = event.ownerSceneId ? sceneById.get(event.ownerSceneId) : undefined;
+      const execution = resolveTaskExecutionTarget({
+        scene,
+        episodeNumber: event.episodeNumber,
+        kind: 'event',
+      });
       const tiers = requirement.requiredSurface === 'all_routes'
         ? (event.requiredOutcomeTiers ?? ['all-routes'])
         : [undefined];
@@ -470,11 +602,11 @@ export function compileNarrativeRealizationTasks(
           canonicalEventId: event.id,
           sourceKinds: ['event'],
           episodeNumber: event.episodeNumber,
-          ownerStage: sceneStage(scene),
-          repairHandler: scene?.kind === 'encounter' || scene?.encounter ? 'encounter_route' : 'scene_prose',
+          ownerStage: execution.ownerStage,
+          repairHandler: execution.repairHandler,
           sceneId: event.ownerSceneId,
           eventId: event.id,
-          artifactPath: event.ownerSceneId ? `episodes[${event.episodeNumber}].scenes[${event.ownerSceneId}].encounter` : undefined,
+          artifactPath: execution.artifactPath,
           // acceptedPatterns are alternatives for one authored evidence
           // requirement. Keep them in one atom so the owner gate requires one
           // valid realization, matching NarrativeContractValidator semantics,
@@ -487,7 +619,7 @@ export function compileNarrativeRealizationTasks(
             kind: requirement.requiredExactText ? 'lexical' : 'route',
             required: true,
           }],
-          target: targetForEventRequirement(requirement, outcomeTier),
+          target: targetForEventRequirement(requirement, outcomeTier, scene),
           sourceContractIds: event.sourceContractIds,
           blocking: requirement.blocking,
         });
@@ -497,15 +629,20 @@ export function compileNarrativeRealizationTasks(
 
   for (const presence of graph.characterPresenceContracts ?? []) {
     if (presence.mode !== 'named_on_page') continue;
+    const execution = resolveTaskExecutionTarget({
+      scene: sceneById.get(presence.sceneId),
+      episodeNumber: presence.episodeNumber,
+      kind: 'presence',
+    });
     tasks.push({
       id: `task:${presence.id}:named-introduction`,
       contractId: presence.id,
       episodeNumber: presence.episodeNumber,
-      ownerStage: 'scene_writer',
-      repairHandler: 'scene_prose',
+      ownerStage: execution.ownerStage,
+      repairHandler: execution.repairHandler,
       sceneId: presence.sceneId,
       evidenceScope: { npcId: presence.characterId },
-      artifactPath: `episodes[${presence.episodeNumber}].scenes[${presence.sceneId}]`,
+      artifactPath: execution.artifactPath,
       evidenceAtoms: [{
         id: `${presence.id}:name`,
         description: `Name ${presence.characterName} on-page in the canonical introduction scene`,
@@ -514,34 +651,110 @@ export function compileNarrativeRealizationTasks(
         kind: 'lexical',
         required: true,
       }],
-      target: { scope: 'owner', surfaces: ['beat_text', 'dialogue'] },
+      target: { scope: 'owner', surfaces: execution.surfaces },
       sourceContractIds: [...presence.sourceContractIds],
       blocking: true,
     });
   }
 
   for (const transition of graph.transitionContracts ?? []) {
-    const evidence = [
-      ...(transition.requiredBridgeEvidence ?? []),
-      ...(transition.stateContracts ?? []).flatMap((state) => state.requiredEvidence ?? []),
-    ].filter(Boolean);
-    if (!transition.blocking || evidence.length === 0) continue;
+    const scene = sceneById.get(transition.toSceneId);
+    const execution = resolveTaskExecutionTarget({
+      scene,
+      episodeNumber: transition.episodeNumber,
+      kind: 'transition',
+    });
+    const evidenceAtoms: NarrativeEvidenceAtom[] = [];
+    if (transition.locationRequirement?.required) {
+      evidenceAtoms.push({
+        id: `${transition.id}:bridge:location`,
+        description: `Orient the receiving scene at ${transition.locationRequirement.canonicalValue}`,
+        acceptedPatterns: [
+          transition.locationRequirement.canonicalValue,
+          ...transition.locationRequirement.acceptedAliases,
+        ],
+        kind: 'semantic',
+        matchStrategy: 'location_identity',
+        semanticRole: 'location_entry',
+        producerStage: execution.ownerStage,
+        temporalSlot: execution.temporalSlot,
+        stagedLocation: transition.locationRequirement.canonicalValue,
+        required: true,
+      });
+    }
+    if (transition.timeRequirement?.required) {
+      evidenceAtoms.push({
+        id: `${transition.id}:bridge:time`,
+        description: `Orient the receiving scene at ${transition.timeRequirement.canonicalValue}`,
+        acceptedPatterns: [
+          transition.timeRequirement.canonicalValue,
+          ...transition.timeRequirement.acceptedAliases,
+        ],
+        kind: 'semantic',
+        matchStrategy: 'temporal_orientation',
+        semanticRole: 'temporal_transition',
+        producerStage: execution.ownerStage,
+        temporalSlot: execution.temporalSlot,
+        required: true,
+      });
+    }
+    if (transition.bridgePolicy === 'continuous_action') {
+      evidenceAtoms.push({
+        id: `${transition.id}:bridge:movement`,
+        description: `Show continuous movement from ${transition.fromLocation ?? transition.fromSceneId} to ${transition.toLocation ?? transition.toSceneId}`,
+        acceptedPatterns: [`${transition.fromLocation ?? ''} to ${transition.toLocation ?? ''}`.trim()],
+        kind: 'semantic',
+        matchStrategy: 'transition_action',
+        semanticRole: 'transition_bridge',
+        producerStage: execution.ownerStage,
+        temporalSlot: execution.temporalSlot,
+        referencedLocations: [transition.fromLocation, transition.toLocation].filter((value): value is string => Boolean(value)),
+        required: true,
+      });
+    }
+    for (const state of transition.stateContracts ?? []) {
+      if (!state.blocking || state.requiredEvidence.length === 0) continue;
+      evidenceAtoms.push({
+        id: `${transition.id}:bridge:state:${state.id}`,
+        description: `Carry ${state.subject} into the receiving scene as ${state.toDisposition ?? 'the required state'}`,
+        acceptedPatterns: [...new Set([...state.requiredEvidence, state.toDisposition].filter((value): value is string => Boolean(value)))],
+        sourceText: state.toDisposition,
+        kind: 'semantic',
+        matchStrategy: 'state_transition',
+        semanticRole: 'state_change',
+        subjectIds: [state.subject],
+        producerStage: execution.ownerStage,
+        temporalSlot: execution.temporalSlot,
+        required: true,
+      });
+    }
+    // Version-6 compatibility only. Current graphs compile typed location/time
+    // requirements above; legacy artifacts retain their evidence without being
+    // mistaken for several independent mandatory facts.
+    if (evidenceAtoms.length === 0 && transition.requiredBridgeEvidence.length > 0) {
+      evidenceAtoms.push({
+        id: `${transition.id}:bridge:legacy`,
+        description: `Carry the ${transition.fromSceneId} to ${transition.toSceneId} transition on-page`,
+        acceptedPatterns: [...new Set(transition.requiredBridgeEvidence)],
+        kind: 'semantic',
+        semanticRole: 'transition_bridge',
+        producerStage: execution.ownerStage,
+        temporalSlot: execution.temporalSlot,
+        required: true,
+      });
+    }
+    if (!transition.blocking || evidenceAtoms.length === 0) continue;
     tasks.push({
       id: `task:${transition.id}:bridge`,
       contractId: transition.id,
       episodeNumber: transition.episodeNumber,
-      ownerStage: 'scene_writer',
-      repairHandler: 'scene_prose',
+      sourceKinds: ['transition'],
+      ownerStage: execution.ownerStage,
+      repairHandler: execution.repairHandler,
       sceneId: transition.toSceneId,
-      artifactPath: `episodes[${transition.episodeNumber}].scenes[${transition.toSceneId}]`,
-      evidenceAtoms: [...new Set(evidence)].map((pattern, index) => ({
-        id: `${transition.id}:bridge:${index + 1}`,
-        description: `Carry the ${transition.fromSceneId} to ${transition.toSceneId} transition on-page: ${pattern}`,
-        acceptedPatterns: [pattern],
-        kind: 'semantic' as const,
-        required: true,
-      })),
-      target: { scope: 'owner', surfaces: ['beat_text', 'dialogue'] },
+      artifactPath: execution.artifactPath,
+      evidenceAtoms,
+      target: { scope: 'owner', surfaces: execution.surfaces },
       sourceContractIds: [...transition.sourceContractIds],
       blocking: true,
     });
@@ -570,15 +783,20 @@ export function compileNarrativeRealizationTasks(
           continue;
         }
       }
+      const execution = resolveTaskExecutionTarget({
+        scene,
+        episodeNumber: scene.episodeNumber,
+        kind: 'story_circle',
+      });
       tasks.push({
         id: `task:${contract.id}:story-circle`,
         contractId: contract.id,
         sourceKinds: ['story_circle'],
         episodeNumber: scene.episodeNumber,
-        ownerStage: 'scene_writer',
-        repairHandler: 'scene_prose',
+        ownerStage: execution.ownerStage,
+        repairHandler: execution.repairHandler,
         sceneId: scene.id,
-        artifactPath: `episodes[${scene.episodeNumber}].scenes[${scene.id}]`,
+        artifactPath: execution.artifactPath,
         evidenceAtoms: (contract.eventAtoms.length > 0 ? contract.eventAtoms : [contract.sourceText]).map((atom, index) => ({
           id: `${contract.id}:event:${index + 1}`,
           description: `Realize Story Circle ${contract.beat} event: ${atom}`,
@@ -587,7 +805,7 @@ export function compileNarrativeRealizationTasks(
           kind: 'semantic' as const,
           required: true,
         })),
-        target: { scope: 'owner', surfaces: ['beat_text', 'dialogue', 'text_variant'] },
+        target: { scope: 'owner', surfaces: execution.surfaces },
         sourceContractIds: [contract.id],
         blocking: true,
       });
@@ -651,20 +869,38 @@ export function compileNarrativeRealizationTasks(
         required: true,
         polarity: 'forbidden' as const,
       }));
-      tasks.push({
+      const execution = resolveTaskExecutionTarget({
+        scene,
+        episodeNumber: scene.episodeNumber,
+        kind: 'relationship',
+      });
+      const relationshipTask: NarrativeRealizationTask = {
         id: `task:${pacing.id}:${scene.id}:relationship-labels`,
         contractId: pacing.id,
+        sourceKinds: ['relationship'],
         episodeNumber: scene.episodeNumber,
-        ownerStage: 'scene_writer',
-        repairHandler: 'relationship_pacing',
+        ownerStage: execution.ownerStage,
+        repairHandler: execution.repairHandler,
         sceneId: scene.id,
         evidenceScope: pacing.npcId ? { npcId: pacing.npcId } : { groupId: pacing.groupId },
-        artifactPath: `episodes[${scene.episodeNumber}].scenes[${scene.id}]`,
+        artifactPath: execution.artifactPath,
         evidenceAtoms: atoms,
-        target: { scope: 'owner', surfaces: ['beat_text', 'dialogue', 'choice_text'] },
+        target: { scope: 'owner', surfaces: execution.surfaces },
         sourceContractIds: [pacing.id],
         blocking: true,
-      });
+      };
+      tasks.push(relationshipTask);
+      if (!isEncounterScene(scene) && scene.hasChoice) {
+        tasks.push({
+          ...relationshipTask,
+          id: `${relationshipTask.id}:choices`,
+          ownerStage: 'choice_author',
+          repairHandler: 'choice_reauthor',
+          artifactPath: `episodes[${scene.episodeNumber}].scenes[${scene.id}].choices`,
+          evidenceAtoms: atoms.map((atom) => ({ ...atom, id: `${atom.id}:choice`, producerStage: 'choice_author' })),
+          target: { scope: 'all_options', surfaces: ['choice_text'] },
+        });
+      }
     }
   }
 
@@ -678,6 +914,6 @@ export function compileNarrativeRealizationTasks(
     }
     canonicalOwnerTasks.add(key);
   }
-  assertTaskFeasibility(coalescedTasks);
+  assertTaskFeasibility(coalescedTasks, sceneById);
   return coalescedTasks.sort((a, b) => a.episodeNumber - b.episodeNumber || a.id.localeCompare(b.id));
 }

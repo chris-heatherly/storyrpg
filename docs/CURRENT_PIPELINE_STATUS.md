@@ -96,7 +96,7 @@ behavior-preserving migrations.
 
 ## Canonical Narrative Realization Contract
 
-`NarrativeContractGraph` and `EpisodeEventPlan` version 6 compile premise,
+`NarrativeContractGraph` and `EpisodeEventPlan` version 7 compile premise,
 event, relationship-pacing, and route obligations into executable
 `NarrativeRealizationTask` records. A task has one owner (`SceneWriter`,
 `ChoiceAuthor`, or `EncounterArchitect`), one discriminated evidence `target`,
@@ -105,7 +105,7 @@ active representation of surface and route placement; the former
 `requiredSurface` + `routePolicy` + top-level `outcomeTier` combination is
 accepted only by the checkpoint migration boundary.
 
-Compiler v18 derives non-ESC event identity from stable source text rather than
+Compiler v19 derives non-ESC event identity from stable source text rather than
 scene IDs and decomposes compound depiction events into ordered, independently
 verifiable action atoms. Required beats that describe independent authored
 events retain separate event IDs instead of being folded into a scene's primary
@@ -142,9 +142,23 @@ excluded from participant identity extraction. Equivalent repeated projections
 coalesce idempotently; scene-projected task and atom IDs include their owner
 scene, while conflicting ID reuse remains blocking. Task compilation also
 rejects dangling evidence-group atoms, backward producer dependencies, and
-unreachable outcome surfaces. Specialized evidence
+unreachable outcome surfaces. All scene-owned task families now resolve their
+producer, repair handler, artifact path, temporal slot, and evidence surfaces
+through one scene-aware execution-target function. Compilation fails with
+`owner_stage_unreachable` when a blocking task targets a missing scene, assigns
+SceneWriter to an encounter, assigns EncounterArchitect to a standard scene, or
+names a surface its producer cannot author. Specialized evidence
 requirements are additive to the canonical atomized owner task and can no
 longer suppress it through compile order.
+
+Transition contracts are typed as opening orientation, continuous action, or
+state handoff. Location, time, movement, and state evidence remain separate
+requirements rather than a flattened list of literal strings. Encounters expose
+an `encounter_entry` surface containing only their description and opening beat,
+so a late callback cannot satisfy entry chronology. Location identity matching
+is diacritic-insensitive and ignores generic place-type variation while still
+requiring the distinctive location identity; lowering the global semantic
+threshold is not used as a reliability fix.
 
 Season graph validity remains global and blocking for event identity, chronology,
 canon, and cross-episode dependencies. Detailed scene executability is enforced
@@ -168,11 +182,16 @@ and its within-episode plant projection. Route evidence
 is evaluated per playable outcome and cannot be borrowed across routes or from
 an undeclared surface. `NarrativeContractValidator` repeats the same canonical
 gate after late story mutations as a regression net, and the owner-stage
-fingerprint is preserved through final-contract repair accounting.
+fingerprint is preserved through final-contract repair accounting. Each owner
+evaluation emits a receipt containing the task IDs, owner stage, candidate hash,
+and finding fingerprints. The per-scene pass is a regression net and must match
+the union of those receipts exactly; missing owner artifacts fail as
+`owner_stage_not_executed`, while divergent fingerprints fail as
+`owner_stage_coverage_mismatch` without a blind LLM retry.
 
 Three older event heuristics (viral payoff, exact codename, and all-route threat
 checks) remain only for persisted graphs that have no compiled realization task.
-They do not execute alongside a version-6 task and are tracked for deletion in
+They do not execute alongside a version-7 task and are tracked for deletion in
 `docs/LEGACY_REMOVAL_REGISTRY.md`.
 
 Validation ownership now has two explicit levels:

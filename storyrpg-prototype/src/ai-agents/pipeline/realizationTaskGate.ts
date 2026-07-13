@@ -28,6 +28,7 @@ export interface EvidenceMatchDiagnostic {
   atomId: string;
   matched: boolean;
   bestPattern?: string;
+  matchStrategy?: NarrativeRealizationTask['evidenceAtoms'][number]['matchStrategy'];
   score: number;
   matchedTerms: string[];
   missingTerms: string[];
@@ -79,6 +80,7 @@ function normalize(value: string): string {
   return value
     .toLowerCase()
     .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -139,6 +141,54 @@ function evidenceMatchScore(pattern: string, text: string): Omit<EvidenceMatchDi
   };
 }
 
+const GENERIC_LOCATION_TERMS = new Set([
+  'apartment', 'bar', 'bookshop', 'bridge', 'building', 'cafe', 'club', 'garden', 'gardens',
+  'home', 'hotel', 'house', 'park', 'restaurant', 'road', 'room', 'square', 'station', 'street',
+]);
+
+function locationIdentityMatches(pattern: string, text: string): boolean {
+  const patternTerms = normalize(pattern).split(' ').filter(Boolean);
+  const textTerms = new Set(normalize(text).split(' ').filter(Boolean));
+  const identityTerms = patternTerms.filter((term) => term.length >= 4 && !GENERIC_LOCATION_TERMS.has(term));
+  if (identityTerms.length === 0) return evidenceMatches(pattern, text);
+  return identityTerms.every((term) => [...textTerms].some((candidate) =>
+    candidate === term || candidate.startsWith(term) || term.startsWith(candidate)));
+}
+
+function temporalFamily(value: string): 'dawn' | 'morning' | 'day' | 'evening' | 'night' | undefined {
+  const normalized = normalize(value);
+  if (/\b(?:dawn|sunrise|daybreak)\b/.test(normalized)) return 'dawn';
+  if (/\b(?:morning|breakfast)\b/.test(normalized)) return 'morning';
+  if (/\b(?:midday|noon|afternoon|daytime)\b/.test(normalized)) return 'day';
+  if (/\b(?:dusk|sunset|evening|twilight)\b/.test(normalized)) return 'evening';
+  if (/\b(?:night|midnight|late night|after dark)\b/.test(normalized)) return 'night';
+  const clock = normalized.match(/\b(\d{1,2})\s*(am|pm)\b/);
+  if (!clock) return undefined;
+  const hour = Number(clock[1]) % 12;
+  if (clock[2] === 'am') return hour >= 5 ? 'morning' : 'night';
+  return hour >= 5 && hour < 9 ? 'evening' : hour >= 9 || hour < 5 ? 'night' : 'day';
+}
+
+function temporalOrientationMatches(pattern: string, text: string): boolean {
+  if (evidenceMatches(pattern, text)) return true;
+  const requiredFamily = temporalFamily(pattern);
+  return Boolean(requiredFamily && temporalFamily(text) === requiredFamily);
+}
+
+function transitionActionMatches(atom: NarrativeRealizationTask['evidenceAtoms'][number], text: string): boolean {
+  const normalizedText = normalize(text);
+  const hasMovement = /\b(?:arriv(?:e|es|ed|ing)|cross(?:es|ed|ing)?|depart(?:s|ed|ing)?|drive|drives|drove|driven|enter(?:s|ed|ing)?|head(?:s|ed|ing)?|leave|leaves|left|reach(?:es|ed|ing)?|step(?:s|ped|ping)?|travel(?:s|ed|ing)?|walk(?:s|ed|ing)?)\b/.test(normalizedText);
+  if (!hasMovement) return false;
+  const destination = atom.referencedLocations?.at(-1);
+  return !destination || locationIdentityMatches(destination, text);
+}
+
+function stateTransitionMatches(atom: NarrativeRealizationTask['evidenceAtoms'][number], pattern: string, text: string): boolean {
+  if (!evidenceMatches(pattern, text)) return false;
+  if (atom.sourceText && evidenceMatches(atom.sourceText, text)) return true;
+  return /\b(?:arriv(?:e|es|ed|ing)|becom(?:e|es|ing)|became|bring|brings|brought|carry|carries|carried|enter(?:s|ed|ing)?|leave|leaves|left|move|moves|moved|place|places|placed|put|puts|set|sets|take|takes|took)\b/.test(normalize(text));
+}
+
 function scopeTerms(task: NarrativeRealizationTask): string[] {
   const value = task.evidenceScope?.npcId || task.evidenceScope?.groupId;
   if (!value) return [];
@@ -164,6 +214,10 @@ function semanticTransitionPresent(pattern: string, text: string): boolean {
 }
 
 function relationshipEvidenceMatches(task: NarrativeRealizationTask, atom: NarrativeRealizationTask['evidenceAtoms'][number], pattern: string, text: string): boolean {
+  if (atom.matchStrategy === 'location_identity') return locationIdentityMatches(pattern, text);
+  if (atom.matchStrategy === 'temporal_orientation') return temporalOrientationMatches(pattern, text);
+  if (atom.matchStrategy === 'transition_action') return transitionActionMatches(atom, text);
+  if (atom.matchStrategy === 'state_transition') return stateTransitionMatches(atom, pattern, text);
   const kind = atom.kind;
   if (kind === 'lexical') return normalize(text).includes(normalize(pattern));
   if (kind !== 'relationship_label') {
@@ -266,13 +320,27 @@ function evaluateTaskGroup(task: NarrativeRealizationTask, texts: string[]): { m
   const positiveAtoms = task.evidenceAtoms.filter((atom) => atom.polarity !== 'forbidden');
   const matchedPositiveAtoms = new Set<string>();
   for (const atom of task.evidenceAtoms) {
-    let best: EvidenceMatchDiagnostic = { atomId: atom.id, matched: false, score: 0, matchedTerms: [], missingTerms: [] };
+    let best: EvidenceMatchDiagnostic = {
+      atomId: atom.id,
+      matched: false,
+      matchStrategy: atom.matchStrategy ?? 'default',
+      score: 0,
+      matchedTerms: [],
+      missingTerms: [],
+    };
     for (const pattern of atom.acceptedPatterns) {
       for (const text of texts) {
         const matched = relationshipEvidenceMatches(task, atom, pattern, text);
         const score = evidenceMatchScore(pattern, text);
         if (matched || score.score > best.score) {
-          best = { atomId: atom.id, matched, bestPattern: pattern, ...score, score: matched ? Math.max(score.score, 1) : score.score };
+          best = {
+            atomId: atom.id,
+            matched,
+            bestPattern: pattern,
+            matchStrategy: atom.matchStrategy ?? 'default',
+            ...score,
+            score: matched ? Math.max(score.score, 1) : score.score,
+          };
         }
       }
     }

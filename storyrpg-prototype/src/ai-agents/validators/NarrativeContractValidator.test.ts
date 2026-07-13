@@ -401,6 +401,7 @@ describe('NarrativeContractValidator', () => {
       toLocation: 'rooftop bar',
       fromTimeOfDay: 'afternoon',
       toTimeOfDay: 'night',
+      bridgePolicy: 'orientation_only',
       requiredBridgeEvidence: ['later that night'],
       blocking: true,
       sourceContractIds: ['scene:s1', 'scene:s2'],

@@ -37,7 +37,7 @@ import { plannedGroupFormation } from '../utils/relationshipPacingStagePolicy';
 import { compileEventRealizationAtoms, stagedLocationsForAtoms } from './eventAtomCompiler';
 import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v18';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v19';
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',
@@ -1097,7 +1097,6 @@ function compileTransitionContracts(scenes: PlannedScene[]): NarrativeTransition
             fromDisposition: previous?.disposition,
             toDisposition: state.disposition,
             requiredEvidence: uniqueStrings([
-              ...(previous?.requiredEvidence ?? []),
               ...(state.requiredEvidence ?? []),
               state.disposition,
             ]),
@@ -1111,6 +1110,14 @@ function compileTransitionContracts(scenes: PlannedScene[]): NarrativeTransition
           } satisfies NarrativeTransitionStateContract];
         });
       if (!locationChanged && !timeChanged && !clean(to.timeJump) && stateContracts.length === 0) continue;
+      const normalizedTimeJump = clean(to.timeJump).toLowerCase();
+      const hasBlockingStateHandoff = stateContracts.some((state) => state.blocking);
+      const bridgePolicy: NarrativeTransitionContract['bridgePolicy'] = hasBlockingStateHandoff
+        ? 'state_handoff'
+        : locationChanged && /\b(?:continuous|immediate|immediately|moments? later|straight away|without pause)\b/.test(normalizedTimeJump)
+          ? 'continuous_action'
+          : 'orientation_only';
+      const timeValue = clean(to.timeOfDay) || clean(to.timeJump);
       output.push({
         id: `transition:ep${episodeNumber}:${slug(from.id)}:to:${slug(to.id)}`,
         episodeNumber,
@@ -1120,6 +1127,13 @@ function compileTransitionContracts(scenes: PlannedScene[]): NarrativeTransition
         toLocation: to.locations?.[0],
         fromTimeOfDay: from.timeOfDay,
         toTimeOfDay: to.timeOfDay,
+        bridgePolicy,
+        locationRequirement: locationChanged && clean(to.locations?.[0])
+          ? { canonicalValue: clean(to.locations?.[0]), acceptedAliases: [], required: true }
+          : undefined,
+        timeRequirement: (timeChanged || Boolean(clean(to.timeJump))) && timeValue
+          ? { canonicalValue: timeValue, acceptedAliases: [], required: true }
+          : undefined,
         requiredBridgeEvidence: uniqueStrings([to.timeJump, to.locations?.[0], to.timeOfDay]),
         stateContracts,
         blocking: locationChanged || timeChanged || stateContracts.some((state) => state.blocking),

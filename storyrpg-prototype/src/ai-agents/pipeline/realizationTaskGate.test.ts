@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { describe, expect, it } from 'vitest';
 import {
   prioritizeOwnerRepairFindings,
@@ -534,5 +536,48 @@ describe('validateOwnerRealizationTasks', () => {
     expect(validateOwnerRealizationTasks({
       sceneId: 's1-3', tasks: [task], sceneContent: { claimedEventIds: ['event:bookshop'], beats: [{ text: 'She enters the bookshop. Stela looks up.' }] },
     })).toEqual([]);
+  });
+
+  it('matches a canonical location identity across diacritics and place-type wording', () => {
+    const fixture = JSON.parse(fs.readFileSync(path.join(
+      __dirname,
+      '__fixtures__',
+      'bite-me-ep1-encounter-transition-failure.json',
+    ), 'utf8'));
+
+    expect(validateOwnerRealizationTasks({
+      sceneId: fixture.sceneId,
+      tasks: [fixture.task],
+      encounter: fixture.encounter,
+    })).toEqual([]);
+  });
+
+  it('rejects a different generic place and does not borrow entry evidence from later encounter beats', () => {
+    const task = {
+      id: 'task:transition:park', contractId: 'transition:park', episodeNumber: 1,
+      ownerStage: 'encounter_architect' as const, repairHandler: 'encounter_route' as const, sceneId: 'park-attack',
+      evidenceAtoms: [{
+        id: 'park-location', description: 'Enter the gardens', acceptedPatterns: ['Cismigiu Gardens'],
+        kind: 'semantic' as const, matchStrategy: 'location_identity' as const,
+        semanticRole: 'location_entry' as const, required: true,
+      }],
+      target: { scope: 'owner' as const, surfaces: ['encounter_entry' as const] },
+      sourceContractIds: ['transition:park'], blocking: true,
+    };
+    const encounter = {
+      description: 'You step into Herastrau Park.',
+      startingBeatId: 'opening',
+      beats: [
+        { id: 'opening', text: 'Fog closes over an unfamiliar path.' },
+        { id: 'later', text: 'Much later, someone mentions Cismigiu Gardens.' },
+      ],
+    };
+
+    const findings = validateOwnerRealizationTasks({ sceneId: 'park-attack', tasks: [task], encounter });
+    expect(findings[0]?.missingEvidenceAtoms).toEqual(['park-location']);
+    expect(findings[0]?.evidenceDiagnostics?.[0]).toMatchObject({
+      matchStrategy: 'location_identity',
+      matched: false,
+    });
   });
 });

@@ -556,7 +556,11 @@ describe('NarrativeContractCompiler', () => {
     expect(rolePremise?.minimumEvidenceHits).toBeGreaterThanOrEqual(1);
     expect(canonical.stateContracts?.map((contract) => contract.canonicalStateId)).toContain('trusted_contact');
     expect(canonical.seedContracts?.map((contract) => contract.id)).toContain('seed:residue-trust');
-    expect(canonical.transitionContracts?.some((contract) => contract.toSceneId === 'ep1-night')).toBe(true);
+    expect(canonical.transitionContracts?.find((contract) => contract.toSceneId === 'ep1-night')).toMatchObject({
+      bridgePolicy: 'orientation_only',
+      locationRequirement: { canonicalValue: 'rooftop bar', required: true },
+      timeRequirement: { canonicalValue: 'night', required: true },
+    });
     expect(canonical.sourceHash).toBe(compileNarrativeContractGraph(planned, scenePlan(scenes)).sourceHash);
   });
 

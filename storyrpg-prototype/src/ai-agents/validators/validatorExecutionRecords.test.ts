@@ -50,5 +50,25 @@ describe('validator execution ownership records', () => {
       passed: true,
     });
   });
-});
 
+  it('persists immutable owner-stage realization receipts', () => {
+    const realizationReceipt = {
+      sceneId: 'enc-1',
+      ownerStage: 'encounter_architect' as const,
+      candidateHash: 'candidate-hash',
+      taskIds: ['task:transition:enc-1'],
+      findingFingerprints: [],
+    };
+    const record = createValidatorExecutionRecord({
+      validatorId: 'NarrativeRealizationTaskGate',
+      lifecycle: 'episode-contract',
+      role: 'primary',
+      placement: 'scene',
+      passed: true,
+      realizationReceipt,
+      issues: [],
+    });
+
+    expect(record.realizationReceipt).toEqual(realizationReceipt);
+  });
+});

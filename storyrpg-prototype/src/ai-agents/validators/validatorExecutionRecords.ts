@@ -61,6 +61,7 @@ export interface CreateValidatorExecutionRecordInput {
   artifactRefs?: string[];
   durationMs?: number;
   effectiveSeverityReason?: string;
+  realizationReceipt?: ValidatorExecutionRecord['realizationReceipt'];
 }
 
 const gateById = new Map(GATE_REGISTRY.map((gate) => [gate.id, gate]));
@@ -141,6 +142,7 @@ export function createValidatorExecutionRecord(
     artifactRefs: input.artifactRefs,
     durationMs: input.durationMs,
     effectiveSeverityReason: input.effectiveSeverityReason,
+    realizationReceipt: input.realizationReceipt,
     issues,
     repair: input.repair ?? (registryEntry?.remediation
       ? { attempted: false, route: toRepairRoute(registryEntry.remediation) }

@@ -15,6 +15,7 @@ import {
 } from './index';
 import type {
   ValidationExecutionMode,
+  ValidationOwnerStage,
   ValidationOwnershipMetadata,
 } from './validationOwnership';
 
@@ -374,6 +375,15 @@ export interface ValidatorExecutionRecord {
   artifactRefs?: string[];
   durationMs?: number;
   effectiveSeverityReason?: string;
+  /** Immutable proof that the task was evaluated against the artifact produced
+   * by its declared owner before the scene-level regression net ran. */
+  realizationReceipt?: {
+    sceneId: string;
+    ownerStage: Extract<ValidationOwnerStage, 'scene_writer' | 'choice_author' | 'encounter_architect'>;
+    candidateHash: string;
+    taskIds: string[];
+    findingFingerprints: string[];
+  };
   issues: ValidatorExecutionIssue[];
   repair?: {
     attempted: boolean;

@@ -72,7 +72,7 @@ export type NarrativeEvidenceSurfaceIndex = Record<NarrativeRealizationSurface, 
 
 function emptyEvidenceSurfaceIndex(): NarrativeEvidenceSurfaceIndex {
   return {
-    beat_text: [], dialogue: [], choice_text: [], choice_outcome: [], encounter_setup: [], encounter_phase: [],
+    beat_text: [], dialogue: [], choice_text: [], choice_outcome: [], encounter_entry: [], encounter_setup: [], encounter_phase: [],
     encounter_outcome: [], terminal_storylet: [], text_variant: [],
   };
 }
@@ -128,6 +128,22 @@ function collectIndexedBeats(
   }
 }
 
+function collectEncounterEntry(encounter: Record<string, unknown>, index: NarrativeEvidenceSurfaceIndex): void {
+  pushUnknownText(index.encounter_entry, encounter.description);
+  pushUnknownText(index.encounter_entry, encounter.setupText);
+  const beats = valuesOf(encounter.beats);
+  const startingBeatId = typeof encounter.startingBeatId === 'string' ? encounter.startingBeatId : undefined;
+  const openingBeat = beats.find((rawBeat) => recordOf(rawBeat)?.id === startingBeatId) ?? beats[0];
+  const beat = recordOf(openingBeat);
+  if (!beat) return;
+  pushUnknownText(index.encounter_entry, beat.text);
+  pushUnknownText(index.encounter_entry, beat.setupText);
+  pushUnknownText(index.encounter_entry, beat.escalationText);
+  for (const key of ['textVariants', 'setupTextVariants', 'escalationTextVariants']) {
+    for (const rawVariant of valuesOf(beat[key])) pushUnknownText(index.encounter_entry, recordOf(rawVariant)?.text);
+  }
+}
+
 function collectIndexedOutcome(value: unknown, output: string[]): void {
   const outcome = recordOf(value);
   if (!outcome) return;
@@ -150,6 +166,7 @@ export function collectNarrativeEvidenceSurfaceIndex(input: {
   collectIndexedChoiceTexts(input.choiceSet, index.choice_text);
   collectIndexedChoiceOutcomes(input.choiceSet, index.choice_outcome);
   const encounter = recordOf(input.encounter);
+  if (encounter) collectEncounterEntry(encounter, index);
   pushUnknownText(index.encounter_setup, encounter?.description);
   pushUnknownText(index.encounter_setup, encounter?.setupText);
   collectIndexedBeats(encounter?.beats, index, 'encounter_setup');

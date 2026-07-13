@@ -1,7 +1,7 @@
 /** Generator-only canonical contracts for narrative planning and realization. */
 
-export const NARRATIVE_CONTRACT_GRAPH_VERSION = 6;
-export const EPISODE_EVENT_PLAN_VERSION = 6;
+export const NARRATIVE_CONTRACT_GRAPH_VERSION = 7;
+export const EPISODE_EVENT_PLAN_VERSION = 7;
 export const NARRATIVE_REALIZATION_LEDGER_VERSION = 1;
 
 export type NarrativeEventCue =
@@ -37,6 +37,7 @@ export type NarrativeRealizationSurface =
   | 'dialogue'
   | 'choice_text'
   | 'choice_outcome'
+  | 'encounter_entry'
   | 'encounter_setup'
   | 'encounter_phase'
   | 'encounter_outcome'
@@ -68,6 +69,14 @@ export interface NarrativeEvidenceAtom {
   acceptedPatterns: string[];
   sourceText?: string;
   kind: 'lexical' | 'semantic' | 'relationship_label' | 'route';
+  /** Typed matcher selected by the contract compiler. Generic semantic token
+   * overlap is intentionally not authoritative for structured continuity facts. */
+  matchStrategy?:
+    | 'default'
+    | 'location_identity'
+    | 'temporal_orientation'
+    | 'transition_action'
+    | 'state_transition';
   /** Typed semantic role used by executable-plan and owner-stage validators. */
   semanticRole?:
     | 'action'
@@ -77,6 +86,8 @@ export interface NarrativeEvidenceAtom {
     | 'relationship_change'
     | 'location_entry'
     | 'location_reference'
+    | 'transition_bridge'
+    | 'temporal_transition'
     | 'decision'
     | 'aftermath';
   subjectIds?: string[];
@@ -84,7 +95,7 @@ export interface NarrativeEvidenceAtom {
   prerequisiteAtomIds?: string[];
   /** Producer and temporal placement assigned by the episode task compiler. */
   producerStage?: NarrativeRealizationOwnerStage;
-  temporalSlot?: 'pre_choice' | 'choice_resolution' | 'owner_event' | 'encounter_route' | 'terminal';
+  temporalSlot?: 'pre_choice' | 'choice_resolution' | 'owner_event' | 'encounter_entry' | 'encounter_route' | 'terminal';
   stagedLocation?: string;
   referencedLocations?: string[];
   required: boolean;
@@ -285,11 +296,23 @@ export interface NarrativeTransitionContract {
   toLocation?: string;
   fromTimeOfDay?: string;
   toTimeOfDay?: string;
+  /** What the receiving producer must put on-page. Ordinary cuts need opening
+   * orientation; continuous movement needs an explicit bridge; state changes
+   * need the changed disposition carried into the receiving scene. */
+  bridgePolicy: 'orientation_only' | 'continuous_action' | 'state_handoff';
+  locationRequirement?: NarrativeTransitionEvidenceRequirement;
+  timeRequirement?: NarrativeTransitionEvidenceRequirement;
   requiredBridgeEvidence: string[];
   /** Explicit non-location continuity changes that the bridge must carry. */
   stateContracts?: NarrativeTransitionStateContract[];
   blocking: boolean;
   sourceContractIds: string[];
+}
+
+export interface NarrativeTransitionEvidenceRequirement {
+  canonicalValue: string;
+  acceptedAliases: string[];
+  required: boolean;
 }
 
 export interface NarrativeTransitionStateContract {

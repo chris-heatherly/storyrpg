@@ -4530,6 +4530,78 @@ export class ContentGenerationPhase {
       const completedScene = sceneContents.find((sc) => sc.sceneId === sceneBlueprint.id);
       const completedChoice = completedScene ? findChoiceSetForScene(choiceSets, completedScene) : undefined;
       const completedEncounter = encounters.get(sceneBlueprint.id);
+      const ownerStageFindings: RealizationTaskGateFinding[] = [];
+      for (const ownerStage of ['scene_writer', 'choice_author', 'encounter_architect'] as const) {
+        const ownerTasks = (sceneBlueprint.realizationTasks ?? []).filter((task) => task.ownerStage === ownerStage);
+        if (ownerTasks.length === 0) continue;
+        const candidate = ownerStage === 'scene_writer'
+          ? completedScene
+          : ownerStage === 'choice_author'
+            ? completedChoice
+            : completedEncounter;
+        if (!candidate) {
+          if (ownerTasks.every((task) => !task.blocking)) continue;
+          throw new PipelineError(
+            `[OwnerStageNotExecuted] ${sceneBlueprint.id} has ${ownerTasks.length} blocking-capable ${ownerStage} task(s) but no owner artifact.`,
+            ownerStage === 'choice_author' ? 'choices' : ownerStage === 'encounter_architect' ? 'encounters' : 'scenes',
+            {
+              agent: ownerStage === 'choice_author' ? 'ChoiceAuthor' : ownerStage === 'encounter_architect' ? 'EncounterArchitect' : 'SceneWriter',
+              context: { sceneId: sceneBlueprint.id, taskIds: ownerTasks.map((task) => task.id) },
+              failure: {
+                code: 'owner_stage_not_executed',
+                ownerStage,
+                retryClass: ownerStage === 'choice_author'
+                  ? 'repair_choice'
+                  : ownerStage === 'encounter_architect'
+                    ? 'repair_encounter_route'
+                    : 'repair_scene_prose',
+                issueCodes: ['OWNER_STAGE_NOT_EXECUTED'],
+                artifactRefs: [],
+                repairTarget: sceneBlueprint.id,
+              },
+            },
+          );
+        }
+        const stageFindings = validateOwnerRealizationTasks({
+          sceneId: sceneBlueprint.id,
+          tasks: ownerTasks,
+          sceneContent: completedScene,
+          choiceSet: completedChoice,
+          encounter: completedEncounter,
+          mode: 'owner',
+          currentStage: ownerStage,
+        });
+        ownerStageFindings.push(...stageFindings);
+        validationExecutionRecords.push(createValidatorExecutionRecord({
+          policyId: `NarrativeRealizationTask@${ownerStage}`,
+          validatorId: 'NarrativeRealizationTaskGate',
+          lifecycle: 'episode-contract',
+          role: 'primary',
+          placement: 'scene',
+          mode: 'enforce',
+          passed: stageFindings.every((finding) => !finding.blocking),
+          realizationReceipt: {
+            sceneId: sceneBlueprint.id,
+            ownerStage,
+            candidateHash: stableHash(candidate),
+            taskIds: ownerTasks.map((task) => task.id).sort(),
+            findingFingerprints: stageFindings.map((finding) => finding.fingerprint).sort(),
+          },
+          issues: stageFindings.map((finding) => ({
+            severity: finding.blocking ? 'error' : 'warning',
+            code: finding.code,
+            message: finding.message,
+            metadata: {
+              issueCode: finding.code,
+              taskId: finding.taskId,
+              contractId: finding.contractId,
+              ownerStage: finding.ownerStage,
+              sceneId: finding.sceneId,
+              findingFingerprint: finding.fingerprint,
+            },
+          })),
+        }));
+      }
       const realizationFindings: RealizationTaskGateFinding[] = validateOwnerRealizationTasks({
         sceneId: sceneBlueprint.id,
         tasks: sceneBlueprint.realizationTasks,
@@ -4538,16 +4610,36 @@ export class ContentGenerationPhase {
         encounter: completedEncounter,
         mode: 'owner',
       });
+      const ownerFingerprints = ownerStageFindings.map((finding) => finding.fingerprint).sort();
+      const regressionFingerprints = realizationFindings.map((finding) => finding.fingerprint).sort();
+      if (stableHash(ownerFingerprints) !== stableHash(regressionFingerprints)) {
+        throw new PipelineError(
+          `[OwnerStageCoverageMismatch] ${sceneBlueprint.id} produced different owner-stage and scene-regression realization findings.`,
+          'content',
+          {
+            agent: 'NarrativeRealizationTaskGate',
+            context: { sceneId: sceneBlueprint.id, ownerFingerprints, regressionFingerprints },
+            failure: {
+              code: 'owner_stage_coverage_mismatch',
+              ownerStage: 'scene_content',
+              retryClass: 'none',
+              issueCodes: ['OWNER_STAGE_COVERAGE_MISMATCH'],
+              artifactRefs: [],
+              repairTarget: sceneBlueprint.id,
+            },
+          },
+        );
+      }
       const realizationBlockers = realizationFindings.filter((finding) => finding.blocking);
       const realizationAdvisories = realizationFindings.filter((finding) => !finding.blocking);
       if ((sceneBlueprint.realizationTasks?.length ?? 0) > 0) {
         validationExecutionRecords.push(createValidatorExecutionRecord({
-          policyId: 'NarrativeRealizationTask@scene',
+          policyId: 'NarrativeRealizationTask@scene-regression',
           validatorId: 'NarrativeRealizationTaskGate',
           lifecycle: 'episode-contract',
-          role: 'primary',
+          role: 'regression-net',
           placement: 'scene',
-          mode: 'enforce',
+          mode: 'audit',
           passed: realizationBlockers.length === 0,
           issues: realizationFindings.map((finding) => ({
             severity: finding.blocking ? 'error' : 'warning',

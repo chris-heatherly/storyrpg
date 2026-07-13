@@ -8,6 +8,57 @@ import type {
 } from '../../types/narrativeContract';
 import type { SeasonScenePlan } from '../../types/scenePlan';
 import { ENCOUNTER_OUTCOME_TIERS } from '../validators/encounterTextSurfaces';
+import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
+
+function normalized(value: string | undefined): string {
+  return (value ?? '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function migrateSeasonGraphToV7(plan: SeasonScenePlan): SeasonScenePlan {
+  const graph = plan.narrativeContractGraph;
+  if (!graph || graph.version == null || graph.version >= 7) return plan;
+  const transitionContracts = (graph.transitionContracts ?? []).map((transition) => {
+    const locationChanged = Boolean(transition.toLocation)
+      && normalized(transition.fromLocation) !== normalized(transition.toLocation);
+    const timeChanged = Boolean(transition.toTimeOfDay)
+      && normalized(transition.fromTimeOfDay) !== normalized(transition.toTimeOfDay);
+    const hasBlockingState = transition.stateContracts?.some((state) => state.blocking) ?? false;
+    return {
+      ...transition,
+      bridgePolicy: hasBlockingState ? 'state_handoff' as const : 'orientation_only' as const,
+      locationRequirement: locationChanged
+        ? { canonicalValue: transition.toLocation!, acceptedAliases: [], required: true }
+        : undefined,
+      timeRequirement: timeChanged
+        ? { canonicalValue: transition.toTimeOfDay!, acceptedAliases: [], required: true }
+        : undefined,
+    };
+  });
+  const compilerVersion = `${graph.compilerVersion}:migration-v7`;
+  const migratedGraph: NarrativeContractGraph = {
+    ...graph,
+    version: 7,
+    compilerVersion,
+    sourceHash: `${graph.sourceHash}:migration-v7`,
+    transitionContracts,
+    realizationTasks: undefined,
+  };
+  migratedGraph.realizationTasks = compileNarrativeRealizationTasks(migratedGraph, plan.scenes);
+  const episodeEventPlans = plan.episodeEventPlans
+    ? Object.fromEntries(Object.entries(plan.episodeEventPlans).map(([episodeKey, episodePlan]) => {
+        const episodeNumber = Number(episodeKey);
+        return [episodeKey, {
+          ...episodePlan,
+          version: 7,
+          compilerVersion,
+          sourceGraphHash: migratedGraph.sourceHash,
+          transitionContracts: transitionContracts.filter((transition) => transition.episodeNumber === episodeNumber),
+          realizationTasks: migratedGraph.realizationTasks?.filter((task) => task.episodeNumber === episodeNumber),
+        }];
+      }))
+    : plan.episodeEventPlans;
+  return { ...plan, narrativeContractGraph: migratedGraph, episodeEventPlans };
+}
 
 function isCanonicalTask(task: PersistedNarrativeRealizationTask): task is NarrativeRealizationTask {
   return Boolean((task as NarrativeRealizationTask).target);
@@ -60,17 +111,18 @@ export function normalizePersistedEpisodeEventPlan(plan: EpisodeEventPlan): Epis
 
 /** Normalize the nested episode projections carried by a persisted season scene plan. */
 export function normalizePersistedSeasonScenePlan(plan: SeasonScenePlan): SeasonScenePlan {
-  const graph = plan.narrativeContractGraph
-    ? normalizePersistedNarrativeContractGraph(plan.narrativeContractGraph)
-    : plan.narrativeContractGraph;
-  const episodeEventPlans = plan.episodeEventPlans
-    ? Object.fromEntries(Object.entries(plan.episodeEventPlans).map(([episode, episodePlan]) => [
+  const migrated = migrateSeasonGraphToV7(plan);
+  const graph = migrated.narrativeContractGraph
+    ? normalizePersistedNarrativeContractGraph(migrated.narrativeContractGraph)
+    : migrated.narrativeContractGraph;
+  const episodeEventPlans = migrated.episodeEventPlans
+    ? Object.fromEntries(Object.entries(migrated.episodeEventPlans).map(([episode, episodePlan]) => [
       episode,
       normalizePersistedEpisodeEventPlan(episodePlan),
     ]))
-    : plan.episodeEventPlans;
-  if (graph === plan.narrativeContractGraph && episodeEventPlans === plan.episodeEventPlans) return plan;
-  return { ...plan, narrativeContractGraph: graph, episodeEventPlans };
+    : migrated.episodeEventPlans;
+  if (migrated === plan && graph === plan.narrativeContractGraph && episodeEventPlans === plan.episodeEventPlans) return plan;
+  return { ...migrated, narrativeContractGraph: graph, episodeEventPlans };
 }
 
 export function describeNarrativeEvidenceTarget(target: NarrativeEvidenceTarget): string {

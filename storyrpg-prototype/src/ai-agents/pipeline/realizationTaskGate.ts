@@ -58,7 +58,18 @@ export function prioritizeOwnerRepairFindings(
   });
 }
 
-/** A repair may clear its target, but may never introduce a new blocker. */
+function findingScopeKey(finding: RealizationTaskGateFinding): string {
+  return [finding.code, finding.taskId, finding.sceneId, finding.outcomeTier ?? ''].join('::');
+}
+
+function findingEvidenceIds(finding: RealizationTaskGateFinding): Set<string> {
+  return new Set([
+    ...(finding.missingEvidenceAtoms ?? []),
+    ...(finding.matchedForbiddenAtoms ?? []),
+  ]);
+}
+
+/** A repair may clear or strictly reduce its target, but may never introduce a new blocker. */
 export function shouldAdoptOwnerRepairCandidate(input: {
   previous: RealizationTaskGateFinding[];
   candidate: RealizationTaskGateFinding[];
@@ -67,7 +78,21 @@ export function shouldAdoptOwnerRepairCandidate(input: {
   const previousFingerprints = new Set(input.previous.map((finding) => finding.fingerprint));
   const candidateFingerprints = new Set(input.candidate.map((finding) => finding.fingerprint));
   if (candidateFingerprints.has(input.targetFingerprint)) return false;
-  return [...candidateFingerprints].every((fingerprint) => previousFingerprints.has(fingerprint));
+  const previousByScope = new Map<string, RealizationTaskGateFinding[]>();
+  for (const finding of input.previous) {
+    const scope = findingScopeKey(finding);
+    previousByScope.set(scope, [...(previousByScope.get(scope) ?? []), finding]);
+  }
+  return input.candidate.every((finding) => {
+    if (previousFingerprints.has(finding.fingerprint)) return true;
+    const candidateEvidence = findingEvidenceIds(finding);
+    if (candidateEvidence.size === 0) return false;
+    return (previousByScope.get(findingScopeKey(finding)) ?? []).some((previous) => {
+      const previousEvidence = findingEvidenceIds(previous);
+      return candidateEvidence.size < previousEvidence.size
+        && [...candidateEvidence].every((atomId) => previousEvidence.has(atomId));
+    });
+  });
 }
 
 function outcomeTierForTask(task: NarrativeRealizationTask): string | undefined {

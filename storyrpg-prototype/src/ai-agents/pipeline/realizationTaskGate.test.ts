@@ -28,6 +28,26 @@ describe('validateOwnerRealizationTasks', () => {
     })).toBe(false);
   });
 
+  it('adopts strict evidence-atom subsets as monotonic partial progress', () => {
+    const finding = (fingerprint: string, atomIds: string[]) => ({
+      fingerprint,
+      taskId: 'task:event:1',
+      sceneId: 's1',
+      code: 'SEMANTIC_REALIZATION_MISSING' as const,
+      missingEvidenceAtoms: atomIds,
+    } as any);
+    expect(shouldAdoptOwnerRepairCandidate({
+      previous: [finding('missing:a,b,c', ['a', 'b', 'c'])],
+      candidate: [finding('missing:b', ['b'])],
+      targetFingerprint: 'missing:a,b,c',
+    })).toBe(true);
+    expect(shouldAdoptOwnerRepairCandidate({
+      previous: [finding('missing:a,b,c', ['a', 'b', 'c'])],
+      candidate: [finding('missing:d', ['d'])],
+      targetFingerprint: 'missing:a,b,c',
+    })).toBe(false);
+  });
+
   it('repairs canonical event evidence before supporting presence evidence', () => {
     const eventFinding = { fingerprint: 'event', taskId: 'event-task' } as any;
     const presenceFinding = { fingerprint: 'presence', taskId: 'presence-task' } as any;

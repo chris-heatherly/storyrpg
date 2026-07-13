@@ -32,6 +32,7 @@ import type {
 } from './sourceAnalysis';
 import type { ChoiceType } from './choice';
 import type { TreatmentEventAtom } from './treatmentEvent';
+import type { SpineRealizationIntent } from './episodeSpine';
 import type {
   EpisodeEventPlan,
   NarrativeContractGraph,
@@ -1002,6 +1003,8 @@ export interface PlannedScene {
 
   /** Maps to {@link EpisodeSpineUnit.id} when this scene projects a spine unit. */
   spineUnitId?: string;
+  /** Non-owning authored behavioral pressure attached to this event-bearing scene. */
+  behavioralIntents?: SpineRealizationIntent[];
   /**
    * Encounter spine profile when this scene is (or will be promoted to) an
    * encounter. Mirrors {@link PlannedSceneEncounter.encounterProfile}.

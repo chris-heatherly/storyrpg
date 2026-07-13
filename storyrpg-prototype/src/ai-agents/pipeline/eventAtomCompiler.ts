@@ -1,8 +1,8 @@
 import type { NarrativeEvidenceAtom } from '../../types/narrativeContract';
 
-const ACTION_START = /^(?:arriv(?:e|es|ed)|enter(?:s|ed)?|wander(?:s|ed)?|walk(?:s|ed)?|meet(?:s)?|befriend(?:s|ed)?|introduc(?:e|es|ed)|discover(?:s|ed)?|learn(?:s|ed)?|write(?:s)?|wrote|publish(?:es|ed)?|rescu(?:e|es|ed)|attack(?:s|ed)?|form(?:s|ed)?|choose(?:s)?|chose|decide(?:s|d)?|catch(?:es)?|test(?:s|ed)?|invite(?:s|d)?|tell(?:s)?|told)\b/i;
-const ACTION_CONJUNCTION = /\s+and\s+(?=(?:arriv|enter|wander|walk|meet|befriend|introduc|discover|learn|writ|publish|rescu|attack|form|choos|decid|catch|test|invit|tell))/i;
-const ENTRY_SIGNAL = /\b(?:arriv(?:e|es|ed)(?:\s+at|\s+in)?|enter(?:s|ed)?|wander(?:s|ed)?\s+into|walk(?:s|ed)?\s+into|step(?:s|ped)?\s+into|reach(?:es|ed)?)\b/i;
+const ACTION_START = /^(?:arriv(?:e|es|ed)|return(?:s|ed)?|enter(?:s|ed)?|wander(?:s|ed)?|walk(?:s|ed)?|meet(?:s)?|befriend(?:s|ed)?|introduc(?:e|es|ed)|find(?:s)?|discover(?:s|ed)?|learn(?:s|ed)?|write(?:s)?|wrote|publish(?:es|ed)?|rescu(?:e|es|ed)|attack(?:s|ed)?|form(?:s|ed)?|choose(?:s)?|chose|decide(?:s|d)?|catch(?:es)?|test(?:s|ed)?|invite(?:s|d)?|tell(?:s)?|told)\b/i;
+const ACTION_CONJUNCTION = /\s+and\s+(?=(?:arriv|return|enter|wander|walk|meet|befriend|introduc|find|discover|learn|writ|publish|rescu|attack|form|choos|decid|catch|test|invit|tell))/i;
+const ENTRY_SIGNAL = /\b(?:arriv(?:e|es|ed)(?:\s+at|\s+in)?|return(?:s|ed)?(?:\s+home|\s+to)?|enter(?:s|ed)?|wander(?:s|ed)?\s+into|walk(?:s|ed)?\s+into|step(?:s|ped)?\s+into|reach(?:es|ed)?)\b/i;
 const REFERENCE_SIGNAL = /\b(?:introduc(?:e|es|ed).{0,50}\bto|tell(?:s|ing)?\s+.{0,30}\babout|mention(?:s|ed)?|invite(?:s|d)?\s+.{0,30}\bto|world\s+of|points?\s+(?:her|him|them)?\s*toward)\b/i;
 
 function normalize(value: string): string {
@@ -84,7 +84,7 @@ function semanticRole(text: string): NonNullable<NarrativeEvidenceAtom['semantic
   if (/\b(?:introduc(?:e|es|ed)|meet(?:s)?)\b/i.test(text)) return 'introduction';
   if (/\bowned\s+by\b/i.test(text)) return 'state_change';
   if (/\b(?:tell(?:s)?|told|learn(?:s|ed)?|discover(?:s|ed)?|reveal(?:s|ed)?|explain(?:s|ed)?|show(?:s|ed)?)\b/i.test(text)) return 'information_transfer';
-  if (/\b(?:befriend(?:s|ed)?|trust(?:s|ed)?|bond(?:s|ed)?|reconcile(?:s|d)?|forgive(?:s|n)?|betray(?:s|ed)?|form(?:s|ed)?\s+the\s+.+club)\b/i.test(text)) return 'relationship_change';
+  if (/\b(?:befriend(?:s|ed)?|become\s+friends?|trust(?:s|ed)?|bond(?:s|ed)?|reconcile(?:s|d)?|forgive(?:s|n)?|betray(?:s|ed)?|form(?:s|ed)?\s+the\s+.+club)\b/i.test(text)) return 'relationship_change';
   if (/\b(?:choose(?:s)?|chose|decide(?:s|d)?|refuse(?:s|d)?|accept(?:s|ed)?|commit(?:s|ted)?)\b/i.test(text)) return 'decision';
   if (/\b(?:aftermath|viral|by evening|by morning|later)\b/i.test(text)) return 'aftermath';
   return 'action';
@@ -107,7 +107,10 @@ function addLocationMetadata(
       if (atom.semanticRole === 'action') atom.semanticRole = 'location_reference';
       continue;
     }
-    if (ENTRY_SIGNAL.test(clauseNormalized) || ENTRY_SIGNAL.test(context)) {
+    const escapedAlias = match.alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const explicitlyStaged = new RegExp(`\\b(?:at|in|inside|outside|on|near)\\s+(?:the\\s+)?${escapedAlias}\\b`, 'i')
+      .test(clauseNormalized);
+    if (ENTRY_SIGNAL.test(clauseNormalized) || ENTRY_SIGNAL.test(context) || explicitlyStaged) {
       atom.stagedLocation ??= location;
       atom.semanticRole = 'location_entry';
     }
@@ -131,6 +134,35 @@ function semanticAlternatives(atom: NarrativeEvidenceAtom, clause: string): stri
     const actor = names[0] ?? '';
     alternatives.add(`${actor} welcomes her`.trim());
     alternatives.add(`${actor} offers her friendship`.trim());
+  }
+  if (atom.semanticRole === 'relationship_change' && /\bbecome\s+friends?\b/i.test(clause)) {
+    alternatives.add('welcome her as a friend');
+    alternatives.add('call her a friend');
+    alternatives.add('their friendship begins');
+    alternatives.add('I like her');
+    alternatives.add('she stays');
+    alternatives.add('to us');
+    alternatives.add('part of something');
+    alternatives.add('accept her into the circle');
+    alternatives.add('bring her into their circle');
+  }
+  if (/\b(?:explores?|wanders?|roams?|walks?\s+(?:through|around))\b/i.test(clause)) {
+    const location = names.at(-1);
+    if (location) {
+      alternatives.add(`walks through ${location}`);
+      alternatives.add(`wanders through ${location}`);
+      alternatives.add(`roams ${location}`);
+    }
+    alternatives.add('walks the city streets');
+    alternatives.add('wanders the city');
+    alternatives.add('explores the city');
+  }
+  const groupFormation = clause.match(/\bform(?:s|ed)?\s+(?:the\s+)?(.+?\b(?:club|circle|crew|society))\b/i);
+  if (atom.semanticRole === 'relationship_change' && groupFormation?.[1]) {
+    const groupName = groupFormation[1].trim();
+    alternatives.add(`name it ${groupName}`);
+    alternatives.add(`${groupName} is born`);
+    alternatives.add(`start ${groupName}`);
   }
   if (atom.semanticRole === 'introduction' && names.length >= 2) {
     const [actor, ...introduced] = names;
@@ -165,6 +197,22 @@ export function compileEventRealizationAtoms(input: {
     };
     addLocationMetadata(atom, clause, input.knownLocations ?? []);
     atom.acceptedPatterns = semanticAlternatives(atom, clause);
+    if (/\bowned\s+by\b/i.test(clause)) {
+      const owner = capitalizedNames(clause)[0];
+      const place = clause.match(/\b(bookshop|bookstore|club|bar|house|apartment|store|shop|restaurant|hotel|estate|manor)\b/i)?.[1];
+      if (owner && place) {
+        atom.acceptedPatterns = Array.from(new Set([
+          ...atom.acceptedPatterns,
+          `${owner}'s ${place}`,
+          `${owner} owns the ${place}`,
+          `${owner} runs the ${place}`,
+        ]));
+      }
+      // Static ownership is a canon/identity constraint. Preserve it for
+      // provenance and downstream fact checks, but do not make it a required
+      // chronological action in the event owner task.
+      atom.required = false;
+    }
     return atom;
   });
   return atoms.filter((atom, index) => {

@@ -96,7 +96,7 @@ behavior-preserving migrations.
 
 ## Canonical Narrative Realization Contract
 
-`NarrativeContractGraph` and `EpisodeEventPlan` version 3 compile premise,
+`NarrativeContractGraph` and `EpisodeEventPlan` version 5 compile premise,
 event, relationship-pacing, and route obligations into executable
 `NarrativeRealizationTask` records. A task has one owner (`SceneWriter`,
 `ChoiceAuthor`, or `EncounterArchitect`), one discriminated evidence `target`,
@@ -105,12 +105,36 @@ active representation of surface and route placement; the former
 `requiredSurface` + `routePolicy` + top-level `outcomeTier` combination is
 accepted only by the checkpoint migration boundary.
 
-Compiler v10 decomposes compound depiction events into ordered, independently
-verifiable action atoms. Location evidence distinguishes the place where action
-is staged from a destination that is only mentioned or introduced. The episode
-executability gate rejects unresolved event/location and transition conflicts;
-the narrow case where a referenced destination was mistakenly selected as the
-owner location is repaired deterministically before the immutable plan commits.
+Compiler v17 derives non-ESC event identity from stable source text rather than
+scene IDs and decomposes compound depiction events into ordered, independently
+verifiable action atoms. Required beats that describe independent authored
+events retain separate event IDs instead of being folded into a scene's primary
+turn. Location evidence distinguishes staged action from referenced destinations;
+the compiler can rebind an independent event to a compatible same-episode scene
+or repair a dedicated ESC shell from its bound event without changing chronology.
+Abstract subordinate pressure such as `After testing X, Y happens` compiles as a
+typed behavioral prerequisite on event Y rather than a standalone depiction
+event. Social-test evidence includes named-target and second-person question,
+challenge, and probing realizations so fiction-first prose is not forced to use
+the treatment's synopsis register.
+owner. Persisted abstract `Testing X` units migrate into their dependent event;
+concrete tests with an actor and mechanism remain independent events. Static
+identity facts remain provenance/evidence but do not become chronological action
+atoms or force planning-register language into reader prose. Interpretive Story
+Circle summaries now fold into the canonical events they describe instead of
+creating duplicate depiction ownership on their incidental projection scene.
+Relationship-change atoms accept observable acceptance and belonging behavior
+when paired with the separately required group-formation event, so valid prose
+does not have to repeat a planning label such as "become friends."
+Ordinary exploration atoms likewise compile location-aware walking, wandering,
+and city-motion alternatives so scenic prose can satisfy the event without
+copying the treatment sentence.
+
+Season graph validity remains global and blocking for event identity, chronology,
+canon, and cross-episode dependencies. Detailed scene executability is enforced
+when an episode enters the requested generation frontier. A later episode may
+therefore retain an invalid diagnostic projection without blocking an earlier
+episode, but it cannot itself generate until its projection passes.
 
 The content phase validates each task at its owning stage and supplies bounded,
 fingerprint-targeted feedback retries before accepting or checkpointing the
@@ -126,7 +150,7 @@ fingerprint is preserved through final-contract repair accounting.
 
 Three older event heuristics (viral payoff, exact codename, and all-route threat
 checks) remain only for persisted graphs that have no compiled realization task.
-They do not execute alongside a version-3 task and are tracked for deletion in
+They do not execute alongside a version-5 task and are tracked for deletion in
 `docs/LEGACY_REMOVAL_REGISTRY.md`.
 
 Validation ownership now has two explicit levels:
@@ -204,6 +228,10 @@ limits live in `providerThrottle.ts` and the image service adapters.
 
 Workers persist job state, checkpoints, dead-letter state, checkpoint output
 files, and sanitized timelines through `proxy/workerLifecycle.js`.
+
+Analysis workers checkpoint `source_analysis` immediately after the analyzer
+succeeds, before starting `season_plan`. A deterministic season-plan failure can
+resume from the saved source analysis without repeating the provider call.
 
 Provider/model selection remains part of the immutable job configuration, while
 provider credentials are server-owned during worker hydration. When a matching

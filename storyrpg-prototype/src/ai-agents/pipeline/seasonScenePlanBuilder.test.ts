@@ -10,10 +10,20 @@ import {
   rebuildTreatmentSeasonScenePlan,
   syncGenericSceneTitlesFromAuthoredBeats,
   projectSpineOntoScenes,
+  inferAuthoredLocationFromText,
 } from './seasonScenePlanBuilder';
 import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type { PlannedScene } from '../../types/scenePlan';
 import type { StoryCircleBeat } from '../../types/sourceAnalysis';
+
+describe('inferAuthoredLocationFromText', () => {
+  it('keeps an authored city exploration on the streets instead of inheriting the next interior', () => {
+    expect(inferAuthoredLocationFromText(
+      'She explores the streets of Bucharest.',
+      ["Kylie's Lipscani Apartment", 'Lumina Books', 'Valescu Club'],
+    )).toBe('Bucharest streets');
+  });
+});
 
 function episode(
   episodeNumber: number,
@@ -1277,7 +1287,11 @@ describe('projectSpineOntoScenes', () => {
     const rescue = scenes.find((scene) => scene.encounterProfile === 'staged_rescue' || scene.encounter?.encounterProfile === 'staged_rescue');
     expect(rescue).toBeDefined();
     expect(sp.sourceHash).toBeTruthy();
-    expect(sp.episodeSpines?.[1]?.units.some((unit) => unit.kind === 'test')).toBe(true);
+    const bond = sp.episodeSpines?.[1]?.units.find((unit) => unit.kind === 'bond');
+    expect(bond?.supportingIntents).toEqual([expect.objectContaining({
+      kind: 'behavioral_intent', intentKind: 'social_test',
+    })]);
+    expect(sp.episodeSpines?.[1]?.units.some((unit) => unit.kind === 'test')).toBe(false);
   });
 
   it('projects ESC unit order onto scene.order (test before bond before rescue)', () => {
@@ -1326,6 +1340,15 @@ describe('projectSpineOntoScenes', () => {
     });
     expect(milestone?.introductionSceneIds.length).toBeGreaterThan(0);
     expect(milestone?.testSceneIds.length).toBeGreaterThan(0);
+    const memberContracts = milestoneOwner?.relationshipPacing?.filter((contract) => contract.npcId) ?? [];
+    expect(memberContracts.length).toBeGreaterThan(0);
+    expect(memberContracts.every((contract) => contract.targetStage === 'friend')).toBe(true);
+    expect(memberContracts.every((contract) => !contract.blockedLabels.some((label) => /^friends?$/i.test(label)))).toBe(true);
+    for (const contract of milestoneOwner?.relationshipPacing ?? []) {
+      const pressure = milestoneOwner?.mechanicPressure?.find((candidate) => candidate.id === `${contract.id}-pressure`);
+      expect(pressure?.allowedPayoffs).toEqual(contract.allowedLabels);
+      expect(pressure?.blockedPayoffs).toEqual(contract.blockedLabels);
+    }
     for (const scene of projected.filter((candidate) => candidate.id !== milestoneOwner?.id)) {
       expect(scene.dramaticPurpose).not.toMatch(/become friends and form the Dusk Club/i);
       expect(scene.stakes ?? '').not.toMatch(/become friends and form the Dusk Club/i);
@@ -1363,7 +1386,7 @@ describe('projectSpineOntoScenes', () => {
     );
   });
 
-  it('keeps a projected scene for every ESC bond/test unit after surplus trim (Bite Me ep1)', () => {
+  it('keeps the ESC bond scene and its folded social-test intent after surplus trim (Bite Me ep1)', () => {
     const ep = episode(1, ['you'], {
       estimatedSceneCount: 6,
       locations: ['Bucharest', 'Lumina Books', 'Vâlcescu Club', 'Cișmigiu Gardens', "Kylie's Apartment"],
@@ -1383,12 +1406,15 @@ describe('projectSpineOntoScenes', () => {
     const spine = sp.episodeSpines?.[1];
     expect(spine).toBeDefined();
     const bond = spine!.units.find((unit) => unit.kind === 'bond');
-    const test = spine!.units.find((unit) => unit.kind === 'test');
     expect(bond).toBeDefined();
-    expect(test).toBeDefined();
+    expect(bond?.supportingIntents).toEqual([expect.objectContaining({
+      kind: 'behavioral_intent', intentKind: 'social_test',
+    })]);
+    expect(spine!.units.some((unit) => unit.kind === 'test')).toBe(false);
     const scenes = scenesForEpisode(sp, 1);
     expect(scenes.some((scene) => scene.spineUnitId === bond!.id)).toBe(true);
-    expect(scenes.some((scene) => scene.spineUnitId === test!.id)).toBe(true);
+    expect(scenes.find((scene) => scene.spineUnitId === bond!.id)?.behavioralIntents)
+      .toEqual([expect.objectContaining({ kind: 'behavioral_intent', intentKind: 'social_test' })]);
   });
 
   it('replays ESC turn alignment while migrating a stale cached narrative compiler plan', () => {
@@ -1415,10 +1441,8 @@ describe('projectSpineOntoScenes', () => {
       episodes: [{ ...ep, plannedScenes: scenesForEpisode(scenePlan, 1) }],
     })) as SeasonPlan;
     const spine = cached.scenePlan!.episodeSpines![1];
-    const testUnit = spine.units.find((unit) => unit.kind === 'test')!;
     const bondUnit = spine.units.find((unit) => unit.kind === 'bond')!;
     const nextUnit = spine.units.find((unit) => unit.order === bondUnit.order + 1)!;
-    const testScene = cached.scenePlan!.scenes.find((scene) => scene.spineUnitId === testUnit.id)!;
     const bondScene = cached.scenePlan!.scenes.find((scene) => scene.spineUnitId === bondUnit.id)!;
     const shiftTurn = (scene: PlannedScene, text: string): void => {
       scene.requiredBeats = [{ id: `${scene.id}-rb1`, sourceTurn: text, mustDepict: text, tier: 'authored' }];
@@ -1427,21 +1451,16 @@ describe('projectSpineOntoScenes', () => {
         beforeState: 'before', turnEvent: text, afterState: 'after', handoff: `After ${text}`,
       };
     };
-    shiftTurn(testScene, bondUnit.text);
     shiftTurn(bondScene, nextUnit.text);
-    cached.scenePlan!.narrativeContractGraph!.compilerVersion = 'narrative-contract-compiler-v6';
+    cached.scenePlan!.narrativeContractGraph!.compilerVersion = 'narrative-contract-compiler-v12';
 
     const migrated = rebuildTreatmentSeasonScenePlan(cached);
-    const migratedTest = migrated.scenePlan!.scenes.find((scene) => scene.spineUnitId === testUnit.id)!;
     const migratedBond = migrated.scenePlan!.scenes.find((scene) => scene.spineUnitId === bondUnit.id)!;
-    for (const unit of spine.units.filter((candidate) => candidate.sceneKind !== 'encounter')) {
-      const owner = migrated.scenePlan!.scenes.find((scene) => scene.spineUnitId === unit.id)!;
-      expect(owner.turnContract?.centralTurn, unit.id).toBe(unit.text);
-    }
-    expect(migratedTest.turnContract?.centralTurn).toBe(testUnit.text);
-    expect(migratedTest.requiredBeats?.some((beat) => beat.mustDepict === bondUnit.text) ?? false).toBe(false);
     expect(migratedBond.turnContract?.centralTurn).toBe(bondUnit.text);
     expect(migratedBond.requiredBeats?.some((beat) => beat.mustDepict === bondUnit.text)).toBe(true);
+    expect(migratedBond.behavioralIntents).toEqual([expect.objectContaining({
+      kind: 'behavioral_intent', intentKind: 'social_test',
+    })]);
   });
 
   it('floors authored-lite scenes to ESC standard units so meet/threshold are not orphaned (Bite Me ep3)', () => {

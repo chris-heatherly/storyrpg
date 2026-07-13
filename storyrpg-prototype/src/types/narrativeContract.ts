@@ -1,7 +1,7 @@
 /** Generator-only canonical contracts for narrative planning and realization. */
 
-export const NARRATIVE_CONTRACT_GRAPH_VERSION = 3;
-export const EPISODE_EVENT_PLAN_VERSION = 3;
+export const NARRATIVE_CONTRACT_GRAPH_VERSION = 5;
+export const EPISODE_EVENT_PLAN_VERSION = 5;
 export const NARRATIVE_REALIZATION_LEDGER_VERSION = 1;
 
 export type NarrativeEventCue =

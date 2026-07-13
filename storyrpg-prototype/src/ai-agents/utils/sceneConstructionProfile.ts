@@ -886,7 +886,7 @@ function activeCastFor(scene: SceneConstructionSceneLike, activeTexts: string[])
   for (const item of cast) {
     const key = castKey(item);
     if (!key) continue;
-    groups.set(key, [...(groups.get(key) ?? []), item]);
+    groups.set(key, Array.from(new Set([...(groups.get(key) ?? []), item])));
   }
 
   const activeText = normalize(activeTexts.join(' '));

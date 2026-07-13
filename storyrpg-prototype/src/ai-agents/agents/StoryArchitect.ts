@@ -603,6 +603,8 @@ export interface SceneBlueprint {
   narrativeRole?: SceneNarrativeRole;
   // Generator-only provenance for scenes inserted by the treatment binder.
   planningOrigin?: PlannedScene['planningOrigin'];
+  /** Typed non-owning behavior that must be concretized inside the primary event. */
+  behavioralIntents?: PlannedScene['behavioralIntents'];
   // Elaborate-mode planned-scene choice budget hint. Used only for validation
   // and repair policy; player-facing scenes never render this directly.
   plannedHasChoice?: boolean;

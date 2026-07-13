@@ -25,6 +25,21 @@ export type SpineUnitKind =
 
 export type EncounterSpineProfile = 'tactical' | 'staged_rescue' | 'social_test';
 
+export type SpineBehavioralIntentKind = 'social_test' | 'threat' | 'seduction' | 'evaluation';
+export type SpineBehavioralIntentSlot = 'actor' | 'target' | 'mechanism' | 'observable_response' | 'state_change';
+
+export type SpineRealizationIntent =
+  | { kind: 'concrete_event'; eventText: string }
+  | {
+      kind: 'behavioral_intent';
+      intentKind: SpineBehavioralIntentKind;
+      intentText: string;
+      requiredSlots: SpineBehavioralIntentSlot[];
+      relation?: 'prerequisite' | 'supporting';
+    }
+  | { kind: 'identity_constraint'; factText: string }
+  | { kind: 'context_only'; contextText: string };
+
 /** Compiled obligation kinds absorbed into ESC so later LLM planners need not reinvent them. */
 export type SpineObligationKind =
   | 'information_reveal'
@@ -50,6 +65,10 @@ export interface EpisodeSpineUnit {
   /** Reader-facing turn text this unit must realize. */
   text: string;
   kind: SpineUnitKind;
+  /** Typed realization semantics; raw source text is never assumed to be depiction evidence. */
+  realizationIntent?: SpineRealizationIntent;
+  /** Non-owning authored pressure that must be concretized inside this unit's scene. */
+  supportingIntents?: SpineRealizationIntent[];
   /** Exactly one canonical location label from the episode location list. */
   locationId?: string;
   /** Story Circle beat(s) this unit advances within the episode. */

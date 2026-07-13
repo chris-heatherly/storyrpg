@@ -2,6 +2,32 @@ import { describe, expect, it } from 'vitest';
 import { reconcileRelationshipPacingWithChoiceTypes } from './relationshipPacingChoiceTypeReconciliation';
 
 describe('reconcileRelationshipPacingWithChoiceTypes', () => {
+  it('reclassifies a rosterless relationship choice instead of inviting invented NPCs', () => {
+    const scenes = [{
+      id: 'exploration',
+      npcsPresent: [],
+      choicePoint: { type: 'relationship' as const, branches: false },
+      relationshipPacing: [],
+    }];
+    expect(reconcileRelationshipPacingWithChoiceTypes(scenes)).toBe(1);
+    expect(scenes[0].choicePoint.type).toBe('expression');
+  });
+
+  it('preserves a rosterless relationship choice backed by a canonical group contract', () => {
+    const scenes = [{
+      id: 'group-choice',
+      npcsPresent: [],
+      choicePoint: { type: 'relationship' as const },
+      relationshipPacing: [{
+        id: 'group', source: 'choice' as const, groupId: 'dusk-club', startStage: 'spark' as const,
+        targetStage: 'friend' as const, allowedLabels: ['friends'], blockedLabels: [], requiredEvidence: [],
+        minScenesSinceIntroduction: 1, maxDeltaThisScene: 4, mechanicDimensions: ['trust' as const],
+      }],
+    }];
+    reconcileRelationshipPacingWithChoiceTypes(scenes);
+    expect(scenes[0].choicePoint.type).toBe('relationship');
+  });
+
   it('caps stale choice-sourced relationship pacing after final taxonomy assigns a non-relationship choice', () => {
     const scenes = [{
       id: 'scene-a',

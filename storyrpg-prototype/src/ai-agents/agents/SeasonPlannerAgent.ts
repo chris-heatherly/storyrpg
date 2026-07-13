@@ -2203,6 +2203,16 @@ CRITICAL RULES:
       plan.notes.push(
         `Scene-first planning: ${scenePlan.scenes.length} scenes across ${plan.episodes.length} episodes, ${scenePlan.setupPayoffEdges.length} setup/payoff edges.`,
       );
+      const deferredEpisodePlans = Object.values(scenePlan.episodeEventPlans ?? {})
+        .filter((eventPlan) => !eventPlan.validation.passed);
+      if (deferredEpisodePlans.length > 0) {
+        plan.warnings.push(
+          `[EpisodeEventPlanDeferred] Detailed scene executability remains unresolved for episode(s) ${deferredEpisodePlans.map((eventPlan) => eventPlan.episodeNumber).join(', ')}. Those episodes will block if selected; season event identity and cross-episode dependencies remain valid.`,
+        );
+        plan.notes.push(
+          `Deferred episode-plan diagnostics: ${deferredEpisodePlans.flatMap((eventPlan) => eventPlan.validation.issues.map((issue) => `ep${eventPlan.episodeNumber}:${issue.code}`)).join(', ')}.`,
+        );
+      }
     }
 
     return plan;

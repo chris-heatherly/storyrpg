@@ -4,7 +4,7 @@ import type { SeasonEpisode, SeasonPlan } from '../../types/seasonPlan';
 
 /**
  * Golden fixture: Bite Me Ep1 treatment turns must compile into an ESC that
- * decomposes testing→bond, assigns staged_rescue, and projects onto scenes.
+ * attaches testing intent to bond, assigns staged_rescue, and projects onto scenes.
  */
 describe('Bite Me Ep1 ESC golden fixture', () => {
   const ep = {
@@ -69,28 +69,40 @@ describe('Bite Me Ep1 ESC golden fixture', () => {
     informationLedger: [],
   } as unknown as SeasonPlan;
 
-  it('compiles ESC with test-before-bond and staged_rescue, then projects onto scenes', () => {
+  it('compiles ESC with a non-owning social test on bond and staged_rescue', () => {
     const sp = buildSeasonScenePlan(plan);
     const spine = sp.episodeSpines?.[1];
     expect(spine).toBeDefined();
     expect(sp.sourceHash).toBeTruthy();
 
-    const test = spine!.units.find((unit) => unit.kind === 'test');
     const bond = spine!.units.find((unit) => unit.kind === 'bond');
-    expect(test).toBeDefined();
+    expect(spine!.units.some((unit) => unit.text === 'Testing Kylie')).toBe(false);
     expect(bond).toBeDefined();
-    expect(bond!.order).toBeGreaterThan(test!.order);
-    expect(bond!.prerequisites).toContain(test!.id);
+    expect(bond!.supportingIntents).toEqual([expect.objectContaining({
+      kind: 'behavioral_intent',
+      intentKind: 'social_test',
+    })]);
 
     const rescue = spine!.units.find((unit) => unit.encounterProfile === 'staged_rescue');
     expect(rescue).toBeDefined();
     expect(rescue!.sceneKind).toBe('encounter');
 
     const scenes = scenesForEpisode(sp, 1);
+    expect(scenes.some((scene) => scene.turnContract?.centralTurn === 'Testing Kylie')).toBe(false);
+    expect(scenes.some((scene) => scene.behavioralIntents?.some((intent) =>
+      intent.kind === 'behavioral_intent' && intent.intentKind === 'social_test'
+    ))).toBe(true);
     expect(scenes.some((scene) => scene.spineUnitId)).toBe(true);
     expect(scenes.some((scene) =>
       scene.encounterProfile === 'staged_rescue'
       || scene.encounter?.encounterProfile === 'staged_rescue'
     )).toBe(true);
+    expect(sp.narrativeContractGraph?.events.some((event) => event.sourceText === 'Testing Kylie')).toBe(false);
+    const bondTask = sp.narrativeContractGraph?.realizationTasks?.find((task) =>
+      task.evidenceAtoms.some((atom) => atom.description.includes('authored social test')),
+    );
+    expect(bondTask?.sceneId).toBe(scenes.find((scene) => scene.turnContract?.centralTurn?.includes('Dusk Club'))?.id);
+    expect(bondTask?.evidenceAtoms[0]?.acceptedPatterns).toContain('Stela tests Kylie');
+    expect(bondTask?.evidenceAtoms[0]?.acceptedPatterns).toContain('Stela asks you');
   });
 });

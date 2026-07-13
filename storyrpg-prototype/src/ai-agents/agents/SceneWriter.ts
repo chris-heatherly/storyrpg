@@ -1909,6 +1909,13 @@ ${buildGenreAwareJeopardyGuidance(input.storyContext.genre)}
 - **Sequence Intent**: ${this.formatSequenceIntent(input.sceneBlueprint.sequenceIntent)}
 ${buildSceneConstructionProfileSection(input.sceneBlueprint)}
 ${buildSceneEventOwnershipPromptSection(input.sceneBlueprint)}
+${input.sceneBlueprint.behavioralIntents?.length ? `
+### Behavioral Intent (binding, non-owning)
+These authored intents support the assigned central event; they are not separate scenes or event IDs. Concretize each through a visible actor, target, mechanism, response, and changed state. Never paste the intent label into prose.
+${input.sceneBlueprint.behavioralIntents.map((intent) => intent.kind === 'behavioral_intent'
+    ? `- ${intent.intentKind}: ${intent.intentText}; required slots: ${intent.requiredSlots.join(', ')}`
+    : `- ${intent.kind}: ${'factText' in intent ? intent.factText : 'contextText' in intent ? intent.contextText : intent.eventText}`).join('\n')}
+` : ''}
 ${input.sceneBlueprint.canonicalEvidenceRequirements?.length ? `
 ### Canonical Reader-Facing Evidence (binding)
 These requirements belong to this scene's assigned event contracts. Realize them in the stated surface; evidence in another scene, metadata, or a sibling encounter route does not count. Keep the wording natural and fiction-first.

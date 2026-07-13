@@ -604,7 +604,7 @@ describe('ChoiceAuthor relationship consequence repair', () => {
     const milestone = {
       id: 'dusk-club-formation', kind: 'group_formation', sourceText: 'They form the Dusk Club.',
       subjectType: 'group', subjectId: 'dusk-club', targetStage: 'friend', introductionSceneIds: ['s1-2'],
-      testSceneIds: ['s1-4'], choiceSceneId: 's1-5', memberNpcIds: ['Stela Pavel', 'Mika Dragan'],
+      testSceneIds: ['s1-4'], choiceSceneId: 's1-5', memberNpcIds: ['stela', 'mika'],
       routeRealizationPolicy: 'all_routes', requiredEvidenceTags: ['respected_agency'],
     };
     const choiceSet = makeChoiceSet({ beatId: 'b1', choiceType: 'relationship', choices: [

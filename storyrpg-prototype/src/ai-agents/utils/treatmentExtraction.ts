@@ -423,9 +423,10 @@ function parseEpisodeGuidance(section: string): Record<number, TreatmentEpisodeG
     const liteDerivedEpisodeTurns = highLevelDescription
       ? flattenAuthoredEpisodeTurns([highLevelDescription])
       : [];
-    const resolvedEncounterAnchors = encounterAnchors.length > 0
-      ? encounterAnchors
-      : (majorPressure ? [majorPressure] : []);
+    // Pressure is episode-level context, not a staged encounter. When a lite
+    // treatment omits an explicit encounter anchor, leave the list empty and
+    // let the encounter planner mine concrete action from the synopsis.
+    const resolvedEncounterAnchors = encounterAnchors;
 
     return {
       episodeNumber,

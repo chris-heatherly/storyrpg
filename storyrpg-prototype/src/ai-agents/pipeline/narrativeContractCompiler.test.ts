@@ -4,6 +4,7 @@ import type { PlannedScene, SeasonScenePlan } from '../../types/scenePlan';
 import type { EpisodeSpineContract } from '../../types/episodeSpine';
 import {
   applyEpisodeEventPlans,
+  assertSelectedEpisodeEventPlansExecutable,
   compileAndApplyNarrativeContracts,
   compileEpisodeEventPlan,
   compileNarrativeContractGraph,
@@ -85,7 +86,7 @@ describe('NarrativeContractCompiler', () => {
 
     const compiled = compileAndApplyNarrativeContracts(plan([1]), scenePlan(scenes, { 1: spine }));
 
-    expect(compiled.scenes.find((candidate) => candidate.id === 's1-4')?.relationshipPacing).toEqual([]);
+    expect(compiled.scenes.some((candidate) => candidate.id === 's1-4')).toBe(false);
     expect(compiled.scenes.find((candidate) => candidate.id === 's1-5')?.relationshipPacing?.[0]?.id).toBe('dusk-club-pacing');
     expect(compiled.scenes.find((candidate) => candidate.id === 's1-5')?.choiceType).toBe('relationship');
     expect(compiled.narrativeContractGraph?.realizationTasks?.some((task) =>
@@ -105,18 +106,89 @@ describe('NarrativeContractCompiler', () => {
       ],
     };
     const scenes = [
-      scene({ id: 's1-late-night-writing', episodeNumber: 1, order: 6, dramaticPurpose: 'At 4am she writes the post.', planningOrigin: { kind: 'binder_split', splitKind: 'late_night_writing', parentSceneId: 's1-7', reason: 'split' } }),
-      scene({ id: 'treatment-enc-1-1', episodeNumber: 1, order: 7, kind: 'encounter', spineUnitId: 'ep1-u7', dramaticPurpose: 'Kylie is attacked and Victor rescues her.' }),
-      scene({ id: 's1-7', episodeNumber: 1, order: 8, spineUnitId: 'ep1-u8', dramaticPurpose: 'At 4am she writes the post, and by evening it has gone viral.' }),
+      scene({ id: 'treatment-enc-1-1', episodeNumber: 1, order: 6, kind: 'encounter', spineUnitId: 'ep1-u7', dramaticPurpose: 'Kylie is attacked and Victor rescues her.' }),
+      scene({
+        id: 's1-7',
+        episodeNumber: 1,
+        order: 7,
+        spineUnitId: 'ep1-u8',
+        dramaticPurpose: 'At 4am she writes the post, and by evening it has gone viral.',
+        turnContract: {
+          turnId: 's1-7-turn',
+          source: 'treatment',
+          centralTurn: 'At 4am she writes the post, and by evening it has gone viral.',
+          beforeState: 'The night is private.',
+          turnEvent: 'At 4am she writes the post, and by evening it has gone viral.',
+          afterState: 'The post is public.',
+          handoff: 'Carry the moment forward.',
+        },
+      }),
     ];
     const graph = compileNarrativeContractGraph(plan([1]), scenePlan(scenes, { 1: spine }));
     const plans = applyEpisodeEventPlans(graph, scenes);
 
-    expect(plans[1].sceneOrder).toEqual(['treatment-enc-1-1', 's1-late-night-writing', 's1-7']);
-    expect(scenes.map((item) => item.id)).toEqual(['treatment-enc-1-1', 's1-late-night-writing', 's1-7']);
-    expect(scenes[2].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toEqual(['lateNightWriting', 'blogAftermath']);
-    expect(scenes[2].sceneEventOwnership?.ownedEvents[1]?.text).toMatch(/^By evening/i);
+    expect(plans[1].sceneOrder).toEqual(['treatment-enc-1-1', 's1-7', 's1-blog-aftermath']);
+    expect(scenes.map((item) => item.id)).toEqual(['treatment-enc-1-1', 's1-7', 's1-blog-aftermath']);
+    expect(scenes[1].turnContract?.centralTurn).toBe('At 4am she writes the post');
+    expect(scenes[1].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toEqual(['lateNightWriting']);
+    expect(scenes[2].sceneEventOwnership?.ownedEvents.map((event) => event.cue)).toEqual(['blogAftermath']);
+    expect(scenes[2].sceneEventOwnership?.ownedEvents[0]?.text).toMatch(/^By evening/i);
+    expect(graph.validation.issues.some((issue) => issue.code === 'compound_writing_aftermath_scene_split')).toBe(true);
     expect(new Set(plans[1].orderedEventIds).size).toBe(plans[1].orderedEventIds.length);
+  });
+
+  it('folds an interpretive Story Circle summary into canonical rescue and aftermath events', () => {
+    const spine: EpisodeSpineContract = {
+      episodeNumber: 1,
+      sourceHash: 'ep1',
+      episodeStoryCircleBeats: ['you'],
+      polarityFacets: [],
+      units: [
+        { id: 'ep1-u6', order: 0, text: 'Kylie is attacked and rescued by Mr. Midnight.', kind: 'set_piece', storyCircleFacets: [], prerequisites: [], encounterProfile: 'staged_rescue', sceneKind: 'encounter' },
+        { id: 'ep1-u7', order: 1, text: 'At 4am she writes the first post, and by evening it has gone viral.', kind: 'late_night_writing', storyCircleFacets: [], prerequisites: ['ep1-u6'], sceneKind: 'standard' },
+      ],
+    };
+    const summary = 'Kylie after a terrifying rescue by Mr Midnight, as the first viral proof that she can author a new life';
+    const storyCircleContract: NonNullable<PlannedScene['storyCircleBeatContracts']>[number] = {
+      id: 'story-circle-you-rescue-to-viral-proof',
+      beat: 'you' as const,
+      sourceText: summary,
+      targetEpisodeNumber: 1,
+      requiredRealization: ['season_plan', 'scene_turn', 'final_prose'],
+      eventAtoms: [summary],
+      preservedMarkers: ['viral'],
+      stateChange: summary,
+      targetSceneIds: ['rescue'],
+      blockingLevel: 'treatment' as const,
+    };
+    const scenes = [
+      scene({
+        id: 'rescue', episodeNumber: 1, order: 0, kind: 'encounter', spineUnitId: 'ep1-u6',
+        dramaticPurpose: 'Kylie is attacked and rescued by Mr. Midnight.',
+        requiredBeats: [
+          { id: 'rescue-beat', sourceTurn: 'Kylie is attacked and rescued by Mr. Midnight.', mustDepict: 'Kylie is attacked and rescued by Mr. Midnight.', tier: 'authored' },
+          { id: 'rescue-story-circle-summary', sourceTurn: summary, mustDepict: summary, tier: 'authored' },
+        ],
+        storyCircleBeatContracts: [storyCircleContract],
+      }),
+      scene({
+        id: 'writing', episodeNumber: 1, order: 1, spineUnitId: 'ep1-u7',
+        dramaticPurpose: 'At 4am she writes the first post, and by evening it has gone viral.',
+      }),
+    ];
+
+    const graph = compileNarrativeContractGraph(plan([1]), scenePlan(scenes, { 1: spine }));
+    const plans = applyEpisodeEventPlans(graph, scenes);
+    const episodeEvents = graph.events.filter((event) => event.episodeNumber === 1 && event.realizationMode === 'depiction');
+
+    expect(episodeEvents.filter((event) => event.cue === 'blogAftermath')).toHaveLength(1);
+    expect(episodeEvents.some((event) => event.sourceText === summary)).toBe(false);
+    expect(scenes.find((candidate) => candidate.id === 'rescue')?.requiredBeats?.some((beat) => beat.mustDepict === summary)).toBe(false);
+    expect(scenes.find((candidate) => candidate.id === 'rescue')?.storyCircleBeatContracts).toBeUndefined();
+    expect(episodeEvents.filter((event) => event.sourceContractIds.includes(storyCircleContract.id))).toHaveLength(1);
+    expect(plans[1].orderedEventIds.map((eventId) => graph.events.find((event) => event.id === eventId)?.cue))
+      .toEqual(['threatEncounter', 'lateNightWriting', 'blogAftermath']);
+    expect(graph.validation.issues.some((issue) => issue.code === 'interpretive_story_circle_contract_folded')).toBe(true);
   });
 
   it('keeps local ownership episode-scoped while projecting an explicit cross-episode payoff', () => {
@@ -134,6 +206,46 @@ describe('NarrativeContractCompiler', () => {
     expect(scenes[1].sceneEventOwnership?.episodeNumber).toBe(2);
     expect(graph.dependencies[0].sourceEpisodeNumber).toBe(1);
     expect(graph.dependencies[0].targetEpisodeNumbers).toEqual([2]);
+  });
+
+  it('migrates a legacy abstract test owner into the dependent bond event', () => {
+    const spine: EpisodeSpineContract = {
+      episodeNumber: 1,
+      sourceHash: 'legacy-ep1',
+      episodeStoryCircleBeats: ['you'],
+      polarityFacets: [],
+      units: [
+        { id: 'ep1-u1', order: 0, text: 'Testing Kylie', kind: 'test', storyCircleFacets: [], prerequisites: [], sceneKind: 'standard' },
+        { id: 'ep1-u2', order: 1, text: 'The three become friends and form the Dusk Club.', kind: 'bond', storyCircleFacets: [], prerequisites: ['ep1-u1'], sceneKind: 'standard' },
+      ],
+    };
+    const input = scenePlan([
+      scene({ id: 's1-test', episodeNumber: 1, order: 0, spineUnitId: 'ep1-u1', dramaticPurpose: 'Testing Kylie' }),
+      scene({
+        id: 's1-bond', episodeNumber: 1, order: 1, spineUnitId: 'ep1-u2',
+        dramaticPurpose: 'The three form the Dusk Club.', npcsInvolved: ['Stela', 'Mika'],
+      }),
+    ], { 1: spine });
+
+    const compiled = compileAndApplyNarrativeContracts(plan([1]), input);
+    expect(compiled.scenes.map((item) => item.id)).toEqual(['s1-bond']);
+    expect(compiled.episodeSpines?.[1].units.map((unit) => unit.id)).toEqual(['ep1-u2']);
+    expect(compiled.scenes[0].behavioralIntents).toEqual([expect.objectContaining({
+      kind: 'behavioral_intent', intentKind: 'social_test',
+    })]);
+    const socialTestAtom = compiled.narrativeContractGraph?.realizationTasks
+      ?.flatMap((task) => task.evidenceAtoms)
+      .find((atom) => atom.description.includes('authored social test'));
+    expect(socialTestAtom?.acceptedPatterns).toEqual(expect.arrayContaining([
+      'Stela tests you',
+      'Stela questions you',
+      'Mika probes you',
+      'Mika asks you',
+    ]));
+    expect(compiled.narrativeContractGraph?.events.some((event) => event.sourceText === 'Testing Kylie')).toBe(false);
+    expect(compiled.narrativeContractGraph?.validation.issues.some((issue) =>
+      issue.code === 'legacy_abstract_test_folded_into_dependent_event'
+    )).toBe(true);
   });
 
   it('binds spine events to the scene that carries the authored turn, not the positional spine slot', () => {
@@ -211,6 +323,50 @@ describe('NarrativeContractCompiler', () => {
     expect(eventPlan.validation.issues).toContainEqual(expect.objectContaining({
       code: 'scene_location_event_mismatch',
       sceneId: 's1',
+    }));
+  });
+
+  it('defers future episode executability without weakening the selected episode gate', () => {
+    const scenes = [
+      scene({ id: 's1', episodeNumber: 1, order: 0, locations: ['Bucharest'], dramaticPurpose: 'Kylie arrives in Bucharest.' }),
+      scene({ id: 's6', episodeNumber: 6, order: 0, locations: ['Casa Lupului'], dramaticPurpose: 'Kylie returns to the Lipscani Apartment.' }),
+      scene({ id: 's7', episodeNumber: 7, order: 0, locations: ['Lipscani Apartment'], dramaticPurpose: 'Later aftermath.' }),
+    ];
+    const compiled = compileAndApplyNarrativeContracts(plan([1, 6, 7]), scenePlan(scenes));
+
+    expect(compiled.episodeEventPlans?.[6].validation.passed).toBe(false);
+    expect(() => assertSelectedEpisodeEventPlansExecutable(compiled, [1])).not.toThrow();
+    expect(() => assertSelectedEpisodeEventPlansExecutable(compiled, [6])).toThrow(/EpisodeEventPlanGate/);
+  });
+
+  it('keeps independent authored beats as separate events and rebinds by staged location', () => {
+    const scenes = [
+      scene({
+        id: 'enc-6-wolf-at-the-door', episodeNumber: 6, order: 1, kind: 'encounter', locations: ['Casa Lupului'],
+        dramaticPurpose: 'At Casa Lupului, Radu confesses he is a pricolici.',
+        requiredBeats: [{
+          id: 'ep6-black-rose', sourceTurn: 'Kylie returns home and finds a black rose inside the Lipscani Apartment.',
+          mustDepict: 'Kylie returns home and finds a black rose inside the Lipscani Apartment.', tier: 'authored', contractKind: 'depiction',
+        }],
+      }),
+      scene({
+        id: 's6-apartment', episodeNumber: 6, order: 5, locations: ['Lipscani Apartment'],
+        dramaticPurpose: 'Kylie returns to the Lipscani Apartment.',
+      }),
+    ];
+
+    const graph = compileNarrativeContractGraph(plan([6]), scenePlan(scenes));
+    const eventPlan = compileEpisodeEventPlan(graph, scenes, 6);
+    const confession = graph.events.find((event) => /Radu confesses/i.test(event.sourceText));
+    const rose = graph.events.find((event) => /black rose/i.test(event.sourceText));
+
+    expect(confession?.ownerSceneId).toBe('enc-6-wolf-at-the-door');
+    expect(rose?.id).not.toBe(confession?.id);
+    expect(rose?.ownerSceneId).toBe('s6-apartment');
+    expect(eventPlan.validation.passed).toBe(true);
+    expect(graph.validation.issues).toContainEqual(expect.objectContaining({
+      code: 'event_owner_rebound_to_staged_location',
+      sceneId: 's6-apartment',
     }));
   });
 

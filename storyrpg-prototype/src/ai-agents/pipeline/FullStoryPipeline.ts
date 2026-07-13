@@ -141,6 +141,8 @@ import {
   refreshBriefSeasonPlanFromAnalysis,
 } from './treatmentRefresh';
 import { rebuildTreatmentSeasonScenePlan } from './seasonScenePlanBuilder';
+import { episodePlanResumeCompatibility } from './episodePlanResumeCompatibility';
+import { assertSelectedEpisodeEventPlansExecutable, validateCanonicalEpisodeBlueprintProjection } from './narrativeContractCompiler';
 import { isSceneFirstPlanningEnabled } from '../config/sceneFirstPlanning';
 import { SeasonCanon } from './seasonCanon';
 import { renderSourceCanonPrompt } from '../utils/sourceCanonPrompt';
@@ -169,8 +171,6 @@ import { applySceneConstructionProfilesToScenes } from '../utils/sceneConstructi
 import { attachSceneEventOwnershipProfiles, overlayBlueprintSceneEventOwnership } from '../utils/sceneEventOwnership';
 import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
-import { validateCanonicalEpisodeBlueprintProjection } from './narrativeContractCompiler';
-
 import { runEpisodeChargeMaterializationForSeason } from './episodeChargeMaterialization';
 
 import { ThreadPlanner } from '../agents/ThreadPlanner';
@@ -2836,6 +2836,21 @@ export class FullStoryPipeline {
       let acceptedResumedEpisodeBlueprint = false;
       let episodeBlueprint: EpisodeBlueprint | undefined = resumedEpisodeBlueprint;
       if (episodeBlueprint) {
+        const resumeCompatibility = episodePlanResumeCompatibility(
+          episodeBlueprint.episodeEventPlan,
+          brief.seasonPlan?.scenePlan?.episodeEventPlans?.[brief.episode.number],
+        );
+        if (!resumeCompatibility.compatible) {
+          this.invalidatedResumeEpisodes.add(brief.episode.number);
+          this.emit({
+            type: 'warning',
+            phase: 'architecture',
+            message: `Invalidated resumed episode blueprint for Episode ${brief.episode.number}: ${resumeCompatibility.reason}.`,
+          });
+          episodeBlueprint = undefined;
+        }
+      }
+      if (episodeBlueprint) {
         const finalization = this.finalizeEpisodeBlueprintSceneOwnershipForPipeline({
           blueprint: episodeBlueprint,
           episodeNumber: brief.episode.number,
@@ -5012,7 +5027,7 @@ export class FullStoryPipeline {
     // Determine which episodes to generate
     const episodesToGenerate = episodeRange.specific || 
       Array.from({ length: episodeRange.end - episodeRange.start + 1 }, (_, i) => episodeRange.start + i);
-
+    if (baseBrief.seasonPlan?.scenePlan) assertSelectedEpisodeEventPlansExecutable(baseBrief.seasonPlan.scenePlan, episodesToGenerate);
     // Register this generation job for tracking
     this.jobId = this.externallyAssignedJobId || generateJobId();
     this.externallyAssignedJobId = null;
@@ -6599,6 +6614,22 @@ export class FullStoryPipeline {
         )
         : undefined;
       let blueprint = resumedBlueprint;
+      if (blueprint) {
+        const resumeCompatibility = episodePlanResumeCompatibility(
+          blueprint.episodeEventPlan,
+          episodeBrief.seasonPlan?.scenePlan?.episodeEventPlans?.[i],
+        );
+        if (!resumeCompatibility.compatible) {
+          canHydrateEpisodeResume = false;
+          this.invalidatedResumeEpisodes.add(i);
+          this.emit({
+            type: 'warning',
+            phase: 'resume',
+            message: `Invalidated resumed episode ${i} blueprint: ${resumeCompatibility.reason}.`,
+          });
+          blueprint = undefined;
+        }
+      }
       if (blueprint) {
         const finalization = this.finalizeEpisodeBlueprintSceneOwnershipForPipeline({
           blueprint,

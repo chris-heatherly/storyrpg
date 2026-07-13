@@ -19,6 +19,18 @@ function slug(value: string | undefined): string {
     .replace(/^-+|-+$/g, '');
 }
 
+function entityAliases(value: string | undefined): Set<string> {
+  const normalized = slug(value).replace(/^(?:char|character|npc)-/, '');
+  const first = normalized.split('-').filter(Boolean)[0];
+  return new Set([normalized, first].filter((item): item is string => Boolean(item)));
+}
+
+function sameEntityRef(left: string | undefined, right: string | undefined): boolean {
+  const leftAliases = entityAliases(left);
+  const rightAliases = entityAliases(right);
+  return [...leftAliases].some((alias) => rightAliases.has(alias));
+}
+
 export function groupMilestoneForScene(
   scene: GroupChoiceSceneLike,
   contract?: RelationshipPacingContract,
@@ -44,12 +56,11 @@ export function choiceEarnsGroupMilestone(
   if (slug(choice.relationshipGroupId) !== slug(contract.groupId)) return false;
 
   return milestone.memberNpcIds.every((npcId) => {
-    const key = slug(npcId);
     const hasMovement = (choice.consequences ?? []).some((consequence) =>
-      consequence.type === 'relationship' && slug(consequence.npcId) === key
+      consequence.type === 'relationship' && sameEntityRef(consequence.npcId, npcId)
     );
     const hasEvidence = (choice.relationshipValueEvidence ?? []).some((evidence) =>
-      slug(evidence.npcId) === key
+      sameEntityRef(evidence.npcId, npcId)
       && evidence.evidenceTags.some((tag) => milestone.requiredEvidenceTags.includes(tag as never))
     );
     return hasMovement && hasEvidence;

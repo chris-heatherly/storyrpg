@@ -57,6 +57,26 @@ describe('validateOwnerRealizationTasks', () => {
     expect(validateOwnerRealizationTasks({ sceneId: 's1-5', tasks: [task], choiceSet: { choices: [choice('a', true), choice('b', false)] }, currentStage: 'choice_author' })[0]?.code).toBe('OWNER_REALIZATION_MISSING');
   });
 
+  it('resolves source member ids against canonical runtime character ids', () => {
+    const task = {
+      id: 'task:member-alias', contractId: 'milestone', episodeNumber: 1,
+      ownerStage: 'choice_author' as const, repairHandler: 'choice_reauthor' as const, sceneId: 's1-4',
+      evidenceAtoms: [
+        { id: 'move', description: 'movement', acceptedPatterns: ['consequence:stela'], kind: 'lexical' as const, required: true },
+        { id: 'evidence', description: 'evidence', acceptedPatterns: ['evidence:stela'], kind: 'lexical' as const, required: true },
+      ],
+      target: { scope: 'all_options' as const, surfaces: ['choice_text' as const] }, sourceContractIds: ['milestone'], blocking: true,
+    };
+    const choice = {
+      text: 'Invite Stela into the pact.',
+      consequences: [{ type: 'relationship', npcId: 'char-stela-pavel', dimension: 'trust', change: 1 }],
+      relationshipValueEvidence: [{ npcId: 'char-stela-pavel', evidenceTags: ['respected_agency'] }],
+    };
+    expect(validateOwnerRealizationTasks({
+      sceneId: 's1-4', tasks: [task], choiceSet: { choices: [choice] }, currentStage: 'choice_author',
+    })).toEqual([]);
+  });
+
   it('blocks a missing owner event before checkpoint', () => {
     const findings = validateOwnerRealizationTasks({
       sceneId: 's1-7',
@@ -133,6 +153,54 @@ describe('validateOwnerRealizationTasks', () => {
       }] },
     });
     expect(findings).toEqual([]);
+  });
+
+  it('accepts observable group acceptance plus formation without requiring a planning label', () => {
+    const atoms = compileEventRealizationAtoms({
+      eventId: 'event:bond',
+      sourceText: 'The three become friends and form the Dusk Club.',
+    });
+    const task = {
+      id: 'task:event:bond:owner-event', contractId: 'event:bond', canonicalEventId: 'event:bond',
+      episodeNumber: 1, ownerStage: 'scene_writer' as const, repairHandler: 'scene_prose' as const,
+      sceneId: 's1-4', evidenceAtoms: atoms,
+      evidenceGroups: [{
+        id: 'bond-all', description: 'All bond actions realize on the owner scene', requirement: 'all' as const,
+        atomIds: atoms.map((atom) => atom.id), sourceContractIds: ['event:bond'], blocking: true,
+      }],
+      target: { scope: 'owner' as const, surfaces: ['beat_text' as const] },
+      sourceContractIds: ['event:bond'], blocking: true,
+    };
+
+    expect(validateOwnerRealizationTasks({
+      sceneId: 's1-4', tasks: [task], currentStage: 'scene_writer',
+      sceneContent: { beats: [
+        { text: 'Mika tests Kylie with a pointed question.' },
+        { text: 'Mika laughs. "Fine. I like her. She stays."' },
+        { text: 'They lift their glasses. "To the Dusk Club," Stela says.' },
+      ] },
+    })).toEqual([]);
+  });
+
+  it('accepts scenic city walking as realization of an authored exploration event', () => {
+    const atoms = compileEventRealizationAtoms({
+      eventId: 'event:explore',
+      sourceText: 'She explores the streets of Bucharest.',
+    });
+    const task = {
+      id: 'task:event:explore:owner-event', contractId: 'event:explore', canonicalEventId: 'event:explore',
+      episodeNumber: 1, ownerStage: 'scene_writer' as const, repairHandler: 'scene_prose' as const,
+      sceneId: 's1-2', evidenceAtoms: atoms,
+      target: { scope: 'owner' as const, surfaces: ['beat_text' as const] },
+      sourceContractIds: ['event:explore'], blocking: true,
+    };
+
+    expect(validateOwnerRealizationTasks({
+      sceneId: 's1-2', tasks: [task], currentStage: 'scene_writer',
+      sceneContent: { beats: [{
+        text: 'You walk with no destination, letting the city pull you along its crooked streets, a stranger learning a new language of stone and sound.',
+      }] },
+    })).toEqual([]);
   });
 
   it('treats blocked relationship labels as forbidden rather than required', () => {

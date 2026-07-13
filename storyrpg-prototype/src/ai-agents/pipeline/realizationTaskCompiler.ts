@@ -171,7 +171,7 @@ function ensureOwnerTask(
       id: `${event.id}:owner`,
       description: `All blocking projections for ${event.id} resolve on one owner surface.`,
       requirement: 'all',
-      atomIds: evidenceAtoms.map((atom) => atom.id),
+      atomIds: evidenceAtoms.filter((atom) => atom.required !== false).map((atom) => atom.id),
       blocking: true,
       sourceContractIds: [...event.sourceContractIds],
     }],
@@ -201,7 +201,9 @@ function mergeProjectionIntoOwnerTask(
     id: `${task.canonicalEventId ?? task.contractId}:owner`,
     description: `All blocking projections for ${task.canonicalEventId ?? task.contractId} resolve on one owner surface.`,
     requirement: 'all',
-    atomIds: task.evidenceAtoms.filter((atom) => atom.polarity !== 'forbidden').map((atom) => atom.id),
+    atomIds: task.evidenceAtoms
+      .filter((atom) => atom.polarity !== 'forbidden' && atom.required !== false)
+      .map((atom) => atom.id),
     blocking: task.blocking,
     sourceContractIds: [...task.sourceContractIds],
   };

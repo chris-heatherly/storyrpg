@@ -1464,10 +1464,19 @@ export class ContentGenerationPhase {
 
       // Filter protagonist from npcsPresent — the protagonist is always implicit,
       // and including them as an NPC causes duplication in scenes and images
+      const protagonistProfile = resolveCharacterProfile(characterBible.characters, brief.protagonist.id)
+        ?? resolveCharacterProfile(characterBible.characters, brief.protagonist.name);
       if (sceneBlueprint.npcsPresent) {
-        sceneBlueprint.npcsPresent = sceneBlueprint.npcsPresent.filter(
-          npcId => npcId !== brief.protagonist.id
-        );
+        const canonicalNpcIds = new Map<string, string>();
+        for (const npcRef of sceneBlueprint.npcsPresent) {
+          const profile = resolveCharacterProfile(characterBible.characters, npcRef);
+          const canonicalId = profile?.id ?? npcRef;
+          const normalizedRef = String(npcRef).toLowerCase().replace(/^(?:char|character|npc)[-_:]/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+          const normalizedProtagonist = brief.protagonist.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+          if (profile?.id === protagonistProfile?.id || normalizedRef === normalizedProtagonist) continue;
+          canonicalNpcIds.set(canonicalId, canonicalId);
+        }
+        sceneBlueprint.npcsPresent = [...canonicalNpcIds.values()];
       }
       this.alignMandatoryOpeningBeatContext(sceneBlueprint);
 
@@ -1487,8 +1496,6 @@ export class ContentGenerationPhase {
         encounterDescription: primaryNextScene.encounterDescription,
         encounterBeatPlan: primaryNextScene.encounterBeatPlan,
       } : undefined;
-
-      const protagonistProfile = characterBible.characters.find(c => c.id === brief.protagonist.id);
 
       // Skip SceneWriter for encounter scenes - EncounterArchitect provides all content
       if (sceneBlueprint.isEncounter && sceneBlueprint.encounterType) {
@@ -2301,7 +2308,11 @@ export class ContentGenerationPhase {
             const repairTarget = ownerTaskFindings[0];
             const feedback = [repairTarget].map((finding) => {
               const task = canonicalSceneWriterTasks.find((candidate) => candidate.id === finding.taskId);
-              const evidence = task?.evidenceAtoms.map((atom) => `${atom.polarity === 'forbidden' ? 'AVOID' : 'SHOW'} ${atom.acceptedPatterns.join(' / ')}`).join('; ');
+              const missingAtomIds = new Set(finding.missingEvidenceAtoms ?? []);
+              const targetedAtoms = task?.evidenceAtoms.filter((atom) =>
+                missingAtomIds.size === 0 || missingAtomIds.has(atom.id),
+              );
+              const evidence = targetedAtoms?.map((atom) => `${atom.polarity === 'forbidden' ? 'AVOID' : 'SHOW'} ${atom.acceptedPatterns.join(' / ')}`).join('; ');
               return `- ${finding.taskId}: ${finding.message}${task?.evidenceAtoms[0]?.sourceText ? ` Source contract: ${task.evidenceAtoms[0].sourceText}` : ''}${evidence ? ` Required evidence: ${evidence}` : ''}`;
             }).join('\n');
             context.emit({
@@ -2315,7 +2326,7 @@ export class ContentGenerationPhase {
                 ...sceneWriterInput,
                 storyContext: {
                   ...sceneWriterInput.storyContext,
-                  userPrompt: `${sceneWriterInput.storyContext.userPrompt || ''}\n\nOWNER-STAGE REALIZATION REPAIR:\n${feedback}\nShow the evidence as concrete action, dialogue, sensory detail, or visible consequence. Do not paste planning text or contract labels into the prose.`,
+                  userPrompt: `${sceneWriterInput.storyContext.userPrompt || ''}\n\nOWNER-STAGE REALIZATION REPAIR:\n${feedback}\nRepair only the missing evidence above. Put an accepted realization directly in reader-facing beat.text, spoken dialogue, or textVariants[].text; primaryAction, visualMoment, relationshipDynamic, emotionalRead, and other metadata do not count. Show it naturally as concrete action, dialogue, sensory detail, or visible consequence. Do not paste planning text or contract labels into the prose.`,
                 },
               }),
               PIPELINE_TIMEOUTS.llmAgent,
@@ -2590,10 +2601,16 @@ export class ContentGenerationPhase {
             let choiceOwnerBlockers = choiceResult.success && choiceResult.data
               ? choiceRealizationFindings(choiceResult.data).filter((finding) => finding.blocking)
               : [];
-            while ((!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0) && choiceAuthorAttempt < maxChoiceAuthorAttempts) {
+            let choiceProducerBlockers = choiceResult.success && choiceResult.data
+              ? validateChoiceProducerOutput(sceneBlueprint.id, choiceResult.data)
+              : [];
+            while ((!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0) && choiceAuthorAttempt < maxChoiceAuthorAttempts) {
               choiceAuthorAttempt++;
-              const realizationFeedback = choiceOwnerBlockers.length > 0
-                ? choiceOwnerBlockers.map((finding) => `${finding.taskId}: ${finding.message}`).join('; ')
+              const realizationFeedback = choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0
+                ? [
+                    ...choiceOwnerBlockers.map((finding) => `${finding.taskId}: ${finding.message}`),
+                    ...choiceProducerBlockers.map((finding) => `${finding.fieldPath}: ${finding.message}`),
+                  ].join('; ')
                 : undefined;
               context.emit({ type: 'warning', phase: 'choices', message: `Choice Author failed on ${sceneBlueprint.id} (attempt ${choiceAuthorAttempt - 1}/${maxChoiceAuthorAttempts}): ${realizationFeedback ?? choiceResult.error ?? 'no data'} — retrying.` });
               // R6: feed the failure back instead of re-running the identical
@@ -2610,6 +2627,9 @@ export class ContentGenerationPhase {
               choiceOwnerBlockers = choiceResult.success && choiceResult.data
                 ? choiceRealizationFindings(choiceResult.data).filter((finding) => finding.blocking)
                 : [];
+              choiceProducerBlockers = choiceResult.success && choiceResult.data
+                ? validateChoiceProducerOutput(sceneBlueprint.id, choiceResult.data)
+                : [];
             }
 
             // Per-target branch regeneration (preferred over a templated fallback): if the
@@ -2620,7 +2640,7 @@ export class ContentGenerationPhase {
             // fan-out repair) runs uniformly.
             const branchRegenHints = branchTargetHintsByScene.get(sceneBlueprint.id);
             if (
-              (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0)
+              (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0)
               && new Set(sceneBlueprint.leadsTo ?? []).size > 1
               && branchRegenHints && branchRegenHints.length > 0
             ) {
@@ -2635,9 +2655,13 @@ export class ContentGenerationPhase {
               const branchRegenBlockers = branchRegen.success && branchRegen.data
                 ? choiceRealizationFindings(branchRegen.data).filter((finding) => finding.blocking)
                 : [];
-              if (branchRegen.success && branchRegen.data && (branchRegen.data.choices?.length ?? 0) > 0 && branchRegenBlockers.length === 0) {
+              const branchRegenProducerBlockers = branchRegen.success && branchRegen.data
+                ? validateChoiceProducerOutput(sceneBlueprint.id, branchRegen.data)
+                : [];
+              if (branchRegen.success && branchRegen.data && (branchRegen.data.choices?.length ?? 0) > 0 && branchRegenBlockers.length === 0 && branchRegenProducerBlockers.length === 0) {
                 choiceResult = branchRegen;
                 choiceOwnerBlockers = [];
+                choiceProducerBlockers = [];
                 context.emit({ type: 'warning', phase: 'choices', message: `Authored ${sceneBlueprint.id} branch choices via per-target regeneration (one coherent choice per branch) — no templated fallback needed.` });
               }
             }
@@ -2674,7 +2698,7 @@ export class ContentGenerationPhase {
               }
             };
 
-            if (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0) {
+            if (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0) {
               // ChoiceAuthor failed after retries AND per-target regeneration — only now
               // fall back to deterministic templated choices. The scene ships without
               // LLM-authored choices at this point.

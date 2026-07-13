@@ -25,9 +25,9 @@ import {
   NARRATIVE_CONTRACT_GRAPH_VERSION,
 } from '../../types/narrativeContract';
 import type { PlannedScene, SceneOwnedEvent, SeasonScenePlan, SetupPayoffEdge } from '../../types/scenePlan';
-import type { EpisodeSpineContract, EpisodeSpineUnit } from '../../types/episodeSpine';
+import type { EpisodeSpineContract, EpisodeSpineUnit, SpineRealizationIntent } from '../../types/episodeSpine';
 import { stableHash } from './artifacts/store';
-import { detectPrimaryStoryEventCues, isQuestionShapedAnchor } from '../remediation/storyEventCues';
+import { detectPrimaryStoryEventCues, isQuestionShapedAnchor, type StoryEventCue } from '../remediation/storyEventCues';
 import { isGenericScenePlannerText, isQuestionShapedTurnText } from '../utils/sceneContractBuilders';
 import { PipelineError } from './errors';
 import { resolveCharacterIntroMode, resolveRosterCharacter } from '../utils/npcIntroductionLedger';
@@ -35,8 +35,9 @@ import { buildCharacterTreatmentContractsForPlan } from '../utils/characterTreat
 import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 import { plannedGroupFormation } from '../utils/relationshipPacingStagePolicy';
 import { compileEventRealizationAtoms, stagedLocationsForAtoms } from './eventAtomCompiler';
+import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v10';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v17';
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',
@@ -85,22 +86,13 @@ function sceneSourceText(scene: PlannedScene, spineUnit?: EpisodeSpineUnit): str
 function eventRealizationAtoms(
   eventId: string,
   sourceText: string,
-  scene: PlannedScene,
   knownLocations: string[],
 ) {
-  const authoredTexts = uniqueStrings([
+  const atoms = compileEventRealizationAtoms({
+    eventId,
     sourceText,
-    scene.turnContract?.turnEvent,
-    scene.signatureMoment,
-    ...(scene.requiredBeats ?? [])
-      .filter((beat) => beat.contractKind !== 'identity_constraint')
-      .map((beat) => beat.mustDepict || beat.sourceTurn),
-  ]);
-  const atoms = authoredTexts.flatMap((text, sourceIndex) => compileEventRealizationAtoms({
-    eventId: `${eventId}:source:${sourceIndex + 1}`,
-    sourceText: text,
     knownLocations,
-  }));
+  });
   const seen = new Set<string>();
   return atoms
     .filter((atom) => {
@@ -114,6 +106,70 @@ function eventRealizationAtoms(
       id: `${eventId}:atom:${index + 1}`,
       prerequisiteAtomIds: index > 0 ? [`${eventId}:atom:${index}`] : [],
     }));
+}
+
+function behavioralIntentAtoms(
+  eventId: string,
+  intents: SpineRealizationIntent[] | undefined,
+  scene: PlannedScene,
+) {
+  return (intents ?? []).flatMap((intent, intentIndex) => {
+    if (intent.kind !== 'behavioral_intent') return [];
+    const names = Array.from(new Set(intent.intentText.match(/\b[A-Z][A-Za-z'’-]+\b/g) ?? []))
+      .filter((name) => !['After', 'Testing', 'Test'].includes(name));
+    const target = names.at(-1) || 'the protagonist';
+    const actorCandidates = (scene.npcsInvolved ?? [])
+      .map((name) => clean(name).split(/\s+/)[0])
+      .filter((name) => name && name.toLowerCase() !== target.toLowerCase());
+    const patterns = intent.intentKind === 'social_test'
+      ? Array.from(new Set([
+          ...actorCandidates.flatMap((actor) => [
+            `${actor} tests ${target}`,
+            `${actor} tests you`,
+            `${actor} challenges ${target}`,
+            `${actor} challenges you`,
+            `${actor} questions ${target}`,
+            `${actor} questions you`,
+            `${actor} probes ${target}`,
+            `${actor} probes you`,
+            `${actor} asks ${target} to choose`,
+            `${actor} asks you`,
+          ]),
+          `${target} faces a test`,
+          `${target} is challenged`,
+          `puts ${target} to the test`,
+        ]))
+      : [intent.intentText];
+    return [{
+      id: `${eventId}:behavior:${intentIndex + 1}`,
+      description: `Show the authored ${intent.intentKind.replace(/_/g, ' ')} as observable behavior before the primary event`,
+      acceptedPatterns: patterns,
+      sourceText: intent.intentText,
+      kind: 'semantic' as const,
+      semanticRole: 'action' as const,
+      participantIds: [...actorCandidates, target],
+      prerequisiteAtomIds: [],
+      required: true,
+    }];
+  });
+}
+
+function eventAndSupportingRealizationAtoms(
+  eventId: string,
+  sourceText: string,
+  knownLocations: string[],
+  intents: SpineRealizationIntent[] | undefined,
+  scene: PlannedScene,
+) {
+  const atoms = [
+    ...behavioralIntentAtoms(eventId, intents, scene),
+    ...eventRealizationAtoms(eventId, sourceText, knownLocations),
+  ];
+  return atoms.map((atom, index) => ({
+    ...atom,
+    id: `${eventId}:atom:${index + 1}`,
+    prerequisiteAtomIds: index > 0 ? [`${eventId}:atom:${index}`] : [],
+  }));
 }
 
 function sceneCharacterPresenceText(scene: PlannedScene, spineUnit?: EpisodeSpineUnit): string {
@@ -353,11 +409,7 @@ function sourceContractIds(scene: PlannedScene, spineUnit?: EpisodeSpineUnit): s
   return Array.from(new Set([
     ...(spineUnit ? [spineUnit.id] : []),
     ...(scene.turnContract?.turnId ? [scene.turnContract.turnId] : []),
-    ...(scene.requiredBeats ?? [])
-      .filter((beat) => beat.contractKind !== 'identity_constraint')
-      .map((beat) => beat.id),
     ...(scene.treatmentAtomIds ?? []),
-    ...(scene.authoredTreatmentFields ?? []).map((contract) => contract.id),
   ].filter(Boolean)));
 }
 
@@ -398,6 +450,269 @@ function writingOnlyText(text: string): string {
   const split = value.search(/\s+and\s+by\s+(?:evening|morning|dawn|night)\b/i);
   if (split < 0) return value;
   return value.slice(0, split).replace(/[,;:]\s*$/, '').trim();
+}
+
+function isIndependentSupplementalDepiction(
+  episodeNumber: number,
+  sourceText: string,
+  sourceContractId: string,
+): boolean {
+  return atomizeTreatmentText({
+    episodeNumber,
+    text: sourceText,
+    idPrefix: sourceContractId,
+  }).some((atom) => atom.isPlayableEvent && atom.ownershipIntent === 'must_stage');
+}
+
+function interpretiveContractOverlapsEvent(sourceText: string, event: NarrativeEventContract): boolean {
+  const stopwords = new Set(['after', 'before', 'first', 'that', 'this', 'with', 'from', 'into', 'proof', 'life']);
+  const tokens = (value: string) => new Set(
+    slug(value).split('-').filter((token) => token.length >= 4 && !stopwords.has(token)),
+  );
+  const sourceTokens = tokens(sourceText);
+  const eventTokens = tokens(event.sourceText);
+  let overlap = 0;
+  sourceTokens.forEach((token) => {
+    if (eventTokens.has(token)) overlap += 1;
+  });
+  return overlap >= 2;
+}
+
+/**
+ * Story Circle prose can summarize several already-canonical events and add an
+ * interpretation such as "as proof that ...". That summary is provenance and
+ * pressure, not a second depiction event owned by whichever scene happened to
+ * receive the derived contract. Fold it into the canonical events it describes
+ * so every concrete action remains mandatory at its own owner surface.
+ */
+function foldInterpretiveStoryCircleContracts(
+  scenePlan: Pick<SeasonScenePlan, 'scenes'>,
+  events: NarrativeEventContract[],
+): NarrativeContractIssue[] {
+  const issues: NarrativeContractIssue[] = [];
+  for (const scene of scenePlan.scenes) {
+    const retained: NonNullable<PlannedScene['storyCircleBeatContracts']> = [];
+    for (const contract of scene.storyCircleBeatContracts ?? []) {
+      const sourceText = clean(contract.sourceText || contract.stateChange);
+      if (!sourceText || isIndependentSupplementalDepiction(scene.episodeNumber, sourceText, contract.id)) {
+        retained.push(contract);
+        continue;
+      }
+      const cues = detectPrimaryStoryEventCues(sourceText);
+      const candidates = events.filter((event) =>
+        event.episodeNumber === scene.episodeNumber
+        && event.realizationMode === 'depiction'
+        && (Boolean(event.cue && cues.has(event.cue as StoryEventCue)) || interpretiveContractOverlapsEvent(sourceText, event)),
+      );
+      if (candidates.length === 0) {
+        retained.push(contract);
+        continue;
+      }
+      const representative = candidates
+        .map((event) => ({ event, cueMatch: Boolean(event.cue && cues.has(event.cue as StoryEventCue)) }))
+        .sort((left, right) => Number(right.cueMatch) - Number(left.cueMatch)
+          || right.event.sourceOrder - left.event.sourceOrder
+          || left.event.id.localeCompare(right.event.id))[0].event;
+      representative.sourceContractIds = Array.from(new Set([...representative.sourceContractIds, contract.id]));
+      scene.requiredBeats = (scene.requiredBeats ?? []).filter((beat) =>
+        clean(beat.mustDepict || beat.sourceTurn).toLowerCase() !== sourceText.toLowerCase(),
+      );
+      issues.push({
+        code: 'interpretive_story_circle_contract_folded',
+        severity: 'warning',
+        message: `Interpretive Story Circle contract "${contract.id}" was folded into representative canonical event "${representative.id}" instead of creating duplicate scene ownership.`,
+        episodeNumber: scene.episodeNumber,
+        sceneId: scene.id,
+      });
+    }
+    scene.storyCircleBeatContracts = retained.length > 0 ? retained : undefined;
+  }
+  return issues;
+}
+
+function splitCompoundWritingAftermathScenes(
+  scenePlan: Pick<SeasonScenePlan, 'scenes' | 'episodeSpines'>,
+): NarrativeContractIssue[] {
+  const issues: NarrativeContractIssue[] = [];
+  for (const scene of [...scenePlan.scenes]) {
+    const spine = scenePlan.episodeSpines?.[scene.episodeNumber];
+    const unit = scene.spineUnitId ? spine?.units.find((candidate) => candidate.id === scene.spineUnitId) : undefined;
+    if (unit?.kind !== 'late_night_writing') continue;
+    if (!/\s+and\s+by\s+(?:evening|morning|dawn|night)\b/i.test(unit.text)) continue;
+
+    const existingAftermath = scenePlan.scenes.find((candidate) =>
+      candidate.episodeNumber === scene.episodeNumber
+      && candidate.planningOrigin?.kind === 'binder_split'
+      && (candidate.planningOrigin.splitKind === 'viral_aftermath'
+        || candidate.planningOrigin.splitKind === 'public_blog_aftermath'),
+    );
+    if (existingAftermath) continue;
+
+    const writingText = writingOnlyText(unit.text);
+    const aftermathText = aftermathOnlyText(unit.text);
+    const oldOrder = scene.order;
+    const aftermathRequiredBeats = (scene.requiredBeats ?? []).filter((beat) => {
+      const text = clean(beat.mustDepict || beat.sourceTurn);
+      return diagnosticCue(text) === 'blogAftermath' && diagnosticCue(text) !== 'lateNightWriting';
+    });
+    const aftermathRequiredBeatIds = new Set(aftermathRequiredBeats.map((beat) => beat.id));
+    const aftermathStoryCircleContracts = (scene.storyCircleBeatContracts ?? []).filter((contract) =>
+      diagnosticCue(contract.sourceText || contract.stateChange || '') === 'blogAftermath',
+    );
+    const aftermathStoryCircleIds = new Set(aftermathStoryCircleContracts.map((contract) => contract.id));
+    const apartmentLocation = scenePlan.scenes
+      .filter((candidate) => candidate.episodeNumber === scene.episodeNumber)
+      .flatMap((candidate) => candidate.locations ?? [])
+      .find((location) => /\b(?:apartment|home|flat)\b/i.test(location));
+
+    scene.dramaticPurpose = writingText;
+    scene.locations = [apartmentLocation || 'Apartment'];
+    scene.ownedChronologyKeys = Array.from(new Set([
+      ...(scene.ownedChronologyKeys ?? []).filter((key) => key !== 'blogAftermath'),
+      'lateNightWriting',
+    ]));
+    scene.requiredBeats = (scene.requiredBeats ?? []).filter((beat) => !aftermathRequiredBeatIds.has(beat.id)).map((beat) => {
+      const text = clean(beat.mustDepict || beat.sourceTurn);
+      if (!/\s+and\s+by\s+(?:evening|morning|dawn|night)\b/i.test(text)) return beat;
+      return { ...beat, sourceTurn: writingText, mustDepict: writingText };
+    });
+    scene.storyCircleBeatContracts = (scene.storyCircleBeatContracts ?? [])
+      .filter((contract) => !aftermathStoryCircleIds.has(contract.id));
+    scene.turnContract = {
+      ...(scene.turnContract ?? {
+        turnId: `${scene.id}-turn`,
+        source: 'treatment' as const,
+        beforeState: 'The night is still private.',
+        afterState: 'Private experience has become public testimony.',
+      }),
+      centralTurn: writingText,
+      turnEvent: writingText,
+      handoff: 'Hand the published post forward to its later public consequence without restaging the writing moment.',
+    };
+
+    const helperIdBase = `s${scene.episodeNumber}-blog-aftermath`;
+    let helperId = helperIdBase;
+    let suffix = 2;
+    while (scenePlan.scenes.some((candidate) => candidate.id === helperId)) {
+      helperId = `${helperIdBase}-${suffix}`;
+      suffix += 1;
+    }
+    scenePlan.scenes.push({
+      id: helperId,
+      episodeNumber: scene.episodeNumber,
+      order: oldOrder + 0.1,
+      kind: 'standard',
+      title: 'The post becomes public pressure',
+      dramaticPurpose: aftermathText,
+      narrativeRole: 'payoff',
+      locations: [apartmentLocation || 'Online'],
+      npcsInvolved: [],
+      setsUp: [],
+      paysOff: [],
+      hasChoice: false,
+      planningOrigin: {
+        kind: 'binder_split',
+        splitKind: 'viral_aftermath',
+        parentSceneId: scene.id,
+        reason: 'Canonical compiler split private writing from its later public consequence.',
+      },
+      ownedChronologyKeys: ['blogAftermath'],
+      requiredBeats: aftermathRequiredBeats,
+      storyCircleBeatContracts: aftermathStoryCircleContracts.map((contract) => ({
+        ...contract,
+        targetSceneIds: [helperId],
+      })),
+      turnContract: {
+        turnId: `${unit.id}:aftermath`,
+        source: 'treatment',
+        centralTurn: aftermathText,
+        beforeState: 'The post is published but its reach is not yet known.',
+        turnEvent: aftermathText,
+        afterState: 'Public attention gives the story leverage and danger.',
+        handoff: 'Carry the public pressure forward without restaging the writing moment.',
+      },
+    });
+
+    const episodeScenes = scenePlan.scenes
+      .filter((candidate) => candidate.episodeNumber === scene.episodeNumber)
+      .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+    episodeScenes.forEach((candidate, order) => { candidate.order = order; });
+    issues.push({
+      code: 'compound_writing_aftermath_scene_split',
+      severity: 'warning',
+      message: `Scene "${scene.id}" was split into private writing and public aftermath owners before graph commitment.`,
+      episodeNumber: scene.episodeNumber,
+      sceneId: scene.id,
+    });
+  }
+  return issues;
+}
+
+function foldLegacyAbstractTestUnits(
+  scenePlan: Pick<SeasonScenePlan, 'scenes' | 'setupPayoffEdges' | 'episodeSpines'>,
+): NarrativeContractIssue[] {
+  const issues: NarrativeContractIssue[] = [];
+  for (const spine of Object.values(scenePlan.episodeSpines ?? {})) {
+    for (let index = 0; index < spine.units.length; index += 1) {
+      const unit = spine.units[index];
+      const abstractTest = unit.kind === 'test'
+        && unit.realizationIntent == null
+        && /^(?:testing|test)\s+[A-Z][A-Za-z'’-]*(?:\s+[A-Z][A-Za-z'’-]*)?[.!?]?$/i.test(clean(unit.text));
+      if (!abstractTest) continue;
+      const dependent = spine.units.slice(index + 1).find((candidate) => candidate.kind === 'bond');
+      if (!dependent) continue;
+
+      dependent.supportingIntents = [
+        ...(dependent.supportingIntents ?? []),
+        {
+          kind: 'behavioral_intent',
+          intentKind: 'social_test',
+          intentText: clean(unit.text),
+          relation: 'prerequisite',
+          requiredSlots: ['actor', 'target', 'mechanism', 'observable_response', 'state_change'],
+        },
+      ];
+      dependent.prerequisites = Array.from(new Set([
+        ...dependent.prerequisites.filter((id) => id !== unit.id),
+        ...unit.prerequisites,
+      ]));
+
+      const sourceScene = scenePlan.scenes.find((scene) => scene.spineUnitId === unit.id);
+      const targetScene = scenePlan.scenes.find((scene) => scene.spineUnitId === dependent.id);
+      if (targetScene) {
+        targetScene.behavioralIntents = [...(dependent.supportingIntents ?? [])];
+        targetScene.hasChoice = true;
+        targetScene.encounterProfile = targetScene.encounterProfile || 'social_test';
+        if (sourceScene && sourceScene.id !== targetScene.id) {
+          targetScene.mechanicPressure = [
+            ...(targetScene.mechanicPressure ?? []),
+            ...(sourceScene.mechanicPressure ?? []),
+          ];
+          for (const edge of scenePlan.setupPayoffEdges) {
+            if (edge.from === sourceScene.id) edge.from = targetScene.id;
+            if (edge.to === sourceScene.id) edge.to = targetScene.id;
+          }
+          scenePlan.scenes.splice(scenePlan.scenes.indexOf(sourceScene), 1);
+        }
+      }
+
+      spine.units.splice(index, 1);
+      spine.units.forEach((candidate, order) => { candidate.order = order; });
+      const episodeScenes = scenePlan.scenes
+        .filter((scene) => scene.episodeNumber === spine.episodeNumber)
+        .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+      episodeScenes.forEach((scene, order) => { scene.order = order; });
+      issues.push({
+        code: 'legacy_abstract_test_folded_into_dependent_event',
+        severity: 'warning',
+        message: `Legacy abstract unit "${unit.text}" was folded into dependent event "${dependent.text}" as behavioral intent.`,
+        episodeNumber: spine.episodeNumber,
+        sceneId: targetScene?.id,
+      });
+      index -= 1;
+    }
+  }
+  return issues;
 }
 
 function eventEvidenceRequirements(eventId: string, cue: NarrativeEventCue | undefined, sourceText: string): NarrativeEvidenceRequirement[] {
@@ -519,10 +834,21 @@ function spineUnitOwnerScene(
     .sort((a, b) => b.score - a.score || a.scene.order - b.scene.order || a.scene.id.localeCompare(b.scene.id))[0]?.scene ?? sourceScene;
 }
 
-function eventIdFor(scene: PlannedScene, spineUnit: EpisodeSpineUnit | undefined, cue: NarrativeEventCue | undefined): string {
-  if (scene.planningOrigin) return `event:ep${scene.episodeNumber}:${slug(scene.id)}${cue ? `:${cue}` : ''}`;
+function eventIdFor(
+  scene: PlannedScene,
+  spineUnit: EpisodeSpineUnit | undefined,
+  cue: NarrativeEventCue | undefined,
+  sourceText: string,
+  sourceIds: string[] = [],
+): string {
   if (spineUnit) return `event:${spineUnit.id}${cue === 'blogAftermath' && spineUnit.kind === 'late_night_writing' ? ':aftermath' : ''}`;
-  return `event:ep${scene.episodeNumber}:scene:${slug(scene.id)}`;
+  const sourceIdentity = stableHash({
+    episodeNumber: scene.episodeNumber,
+    sourceIds: [...sourceIds].sort(),
+    sourceText: clean(sourceText).toLowerCase(),
+    cue: cue ?? null,
+  }).slice(0, 16);
+  return `event:ep${scene.episodeNumber}:source:${sourceIdentity}`;
 }
 
 function isDepictionScene(scene: PlannedScene, spineUnit: EpisodeSpineUnit | undefined, episodeHasSpine: boolean): boolean {
@@ -1216,10 +1542,20 @@ export function compileNarrativeContractGraph(
   scenePlan: Pick<SeasonScenePlan, 'scenes' | 'setupPayoffEdges' | 'episodeSpines' | 'sourceHash'>,
 ): NarrativeContractGraph {
   const events: NarrativeEventContract[] = [];
-  const compilationIssues: NarrativeContractIssue[] = [];
+  const compilationIssues: NarrativeContractIssue[] = [
+    ...foldLegacyAbstractTestUnits(scenePlan),
+    ...splitCompoundWritingAftermathScenes(scenePlan),
+  ];
   const spineEventIds = new Map<string, string>();
   const scenes = [...scenePlan.scenes].sort((a, b) => a.episodeNumber - b.episodeNumber || a.order - b.order || a.id.localeCompare(b.id));
   const knownLocations = uniqueStrings(scenes.flatMap((scene) => scene.locations ?? []));
+  const spineUnitTexts = new Set(
+    Object.values(scenePlan.episodeSpines ?? {})
+      .flatMap((spine) => spine.units)
+      .map((unit) => clean(unit.text).toLowerCase())
+      .filter(Boolean),
+  );
+  const emittedSupplementalTexts = new Set<string>();
 
   const spineEntries: Array<{ scene: PlannedScene; spineUnit?: EpisodeSpineUnit }> = [];
   const consumedSpineUnitIds = new Set<string>();
@@ -1254,21 +1590,28 @@ export function compileNarrativeContractGraph(
     const hasWritingHelper = scenes.some((candidate) =>
       candidate.episodeNumber === scene.episodeNumber && candidate.planningOrigin?.splitKind === 'late_night_writing',
     );
+    const hasAftermathHelper = scenes.some((candidate) =>
+      candidate.episodeNumber === scene.episodeNumber
+      && candidate.planningOrigin?.kind === 'binder_split'
+      && (candidate.planningOrigin.splitKind === 'viral_aftermath'
+        || candidate.planningOrigin.splitKind === 'public_blog_aftermath'),
+    );
     const cue = explicitCue(scene, spineUnit, hasWritingHelper);
     const originalText = sceneSourceText(scene, spineUnit);
     const splitLateNightPayoff = spineUnit?.kind === 'late_night_writing'
       && /\s+and\s+by\s+(?:evening|morning|dawn|night)\b/i.test(originalText);
     const text = cue === 'blogAftermath' && hasWritingHelper ? aftermathOnlyText(originalText) : originalText;
     const depiction = isDepictionScene(scene, spineUnit, Boolean(spine?.units.length));
-    const id = eventIdFor(scene, spineUnit, splitLateNightPayoff ? 'lateNightWriting' : cue);
     const eventSourceContractIds = spineUnit && scene.spineUnitId !== spineUnit.id
       ? [spineUnit.id]
       : sourceContractIds(scene, spineUnit);
+    const eventText = splitLateNightPayoff ? writingOnlyText(originalText) : text;
+    const id = eventIdFor(scene, spineUnit, splitLateNightPayoff ? 'lateNightWriting' : cue, eventText, eventSourceContractIds);
     const event: NarrativeEventContract = {
       id,
       episodeNumber: scene.episodeNumber,
       sourceOrder: spineUnit?.order ?? scene.order,
-      sourceText: splitLateNightPayoff ? writingOnlyText(originalText) : text,
+      sourceText: eventText,
       sourceContractIds: eventSourceContractIds,
       realizationMode: depiction ? 'depiction' : 'context_only',
       ownershipPolicy: depiction ? 'exactly_one_scene' : 'no_scene_owner',
@@ -1279,7 +1622,7 @@ export function compileNarrativeContractGraph(
       cue: splitLateNightPayoff ? 'lateNightWriting' : cue ?? (!spineUnit ? diagnosticCue(text) : undefined),
       evidenceRequirements: eventEvidenceRequirements(id, splitLateNightPayoff ? 'lateNightWriting' : cue, originalText),
       realizationAtoms: depiction
-        ? eventRealizationAtoms(id, splitLateNightPayoff ? writingOnlyText(originalText) : text, ownerScene, knownLocations)
+        ? eventAndSupportingRealizationAtoms(id, eventText, knownLocations, spineUnit?.supportingIntents, ownerScene)
         : undefined,
       routeRealizationPolicy: routeRealizationPolicy(splitLateNightPayoff ? 'lateNightWriting' : cue, originalText),
       requiredOutcomeTiers: routeRealizationPolicy(splitLateNightPayoff ? 'lateNightWriting' : cue, originalText) === 'all_routes'
@@ -1292,8 +1635,44 @@ export function compileNarrativeContractGraph(
     };
     events.push(event);
     if (spineUnit) spineEventIds.set(spineUnit.id, id);
-    if (depiction && splitLateNightPayoff) {
-      const aftermathId = eventIdFor(scene, spineUnit, 'blogAftermath');
+
+    // Required beats can project independent authored events onto a scene. Do
+    // not merge them into the scene's primary event: retain their own identity
+    // so ownership can move without changing the primary turn or its location.
+    for (const [beatIndex, beat] of (scene.requiredBeats ?? []).entries()) {
+      if (beat.contractKind === 'identity_constraint' || !['authored', 'signature', 'coldopen'].includes(beat.tier)) continue;
+      const beatText = clean(beat.mustDepict || beat.sourceTurn);
+      const normalizedBeat = beatText.toLowerCase();
+      if (!beatText || normalizedBeat === clean(eventText).toLowerCase()) continue;
+      if (spineUnitTexts.has(normalizedBeat) || emittedSupplementalTexts.has(`${scene.episodeNumber}:${normalizedBeat}`)) continue;
+      if (!isIndependentSupplementalDepiction(scene.episodeNumber, beatText, beat.id)) continue;
+      emittedSupplementalTexts.add(`${scene.episodeNumber}:${normalizedBeat}`);
+      const supplementalCue = diagnosticCue(beatText);
+      const supplementalId = eventIdFor(scene, undefined, supplementalCue, beatText, [beat.id]);
+      events.push({
+        id: supplementalId,
+        episodeNumber: scene.episodeNumber,
+        sourceOrder: scene.order + ((beatIndex + 1) / 1000),
+        sourceText: beatText,
+        sourceContractIds: [beat.id],
+        realizationMode: 'depiction',
+        ownershipPolicy: 'exactly_one_scene',
+        prerequisiteEventIds: [],
+        targetSceneIds: [scene.id],
+        targetSpineUnitIds: [],
+        ownerSceneId: scene.id,
+        cue: supplementalCue,
+        evidenceRequirements: eventEvidenceRequirements(supplementalId, supplementalCue, beatText),
+        realizationAtoms: eventRealizationAtoms(supplementalId, beatText, knownLocations),
+        routeRealizationPolicy: routeRealizationPolicy(supplementalCue, beatText),
+        requiredOutcomeTiers: routeRealizationPolicy(supplementalCue, beatText) === 'all_routes'
+          ? ['victory', 'partialVictory', 'success', 'complicated', 'defeat', 'escape', 'failure']
+          : undefined,
+        provenance: { source: 'treatment_contract', confidence: 'authoritative' },
+      });
+    }
+    if (depiction && splitLateNightPayoff && !hasAftermathHelper) {
+      const aftermathId = eventIdFor(scene, spineUnit, 'blogAftermath', aftermathOnlyText(originalText));
       const aftermathText = aftermathOnlyText(originalText);
       events.push({
         ...event,
@@ -1307,10 +1686,12 @@ export function compileNarrativeContractGraph(
         prerequisiteEventIds: [id],
         cue: 'blogAftermath',
         evidenceRequirements: eventEvidenceRequirements(aftermathId, 'blogAftermath', aftermathText),
-        realizationAtoms: eventRealizationAtoms(aftermathId, aftermathText, ownerScene, knownLocations),
+        realizationAtoms: eventRealizationAtoms(aftermathId, aftermathText, knownLocations),
       });
     }
   }
+
+  compilationIssues.push(...foldInterpretiveStoryCircleContracts(scenePlan, events));
 
   // A destination mentioned by an event is not necessarily its staged scene.
   // Repair the narrow, deterministic case where the owner was assigned to a
@@ -1334,6 +1715,72 @@ export function compileNarrativeContractGraph(
         sceneId: owner.id,
       });
     }
+  }
+
+  // An explicitly bound ESC event is the authoritative staged action for its
+  // dedicated scene. If the generic scene shell retained the episode's first
+  // location, repair that shell from the event rather than treating the
+  // mismatch as ambiguous prose inference.
+  for (const event of events) {
+    if (!event.ownerSceneId || event.targetSpineUnitIds.length !== 1) continue;
+    const owner = scenes.find((scene) => scene.id === event.ownerSceneId);
+    const staged = stagedLocationsForAtoms(event.realizationAtoms);
+    if (!owner || owner.spineUnitId !== event.targetSpineUnitIds[0] || staged.length !== 1
+      || sameLocation(owner.locations?.[0], staged[0])) continue;
+    const boundPrimaryCount = events.filter((candidate) =>
+      candidate.ownerSceneId === owner.id && candidate.targetSpineUnitIds.length > 0,
+    ).length;
+    if (boundPrimaryCount !== 1) continue;
+    const from = owner.locations?.[0];
+    owner.locations = [staged[0]];
+    compilationIssues.push({
+      code: 'scene_location_repaired_from_bound_event',
+      severity: 'warning',
+      message: `Scene "${owner.id}" location was repaired from "${from || 'unspecified'}" to its bound event location "${staged[0]}".`,
+      eventId: event.id,
+      episodeNumber: event.episodeNumber,
+      sceneId: owner.id,
+    });
+  }
+
+  // Rebind an independently identified event to a compatible scene when its
+  // current owner is at the wrong staged location. This is monotonic: event
+  // identity, source text, chronology, and scene topology remain unchanged.
+  // Ambiguous or missing candidates are left for the executability gate.
+  for (const event of events) {
+    if (!event.ownerSceneId || event.realizationMode !== 'depiction') continue;
+    const owner = scenes.find((scene) => scene.id === event.ownerSceneId);
+    const staged = stagedLocationsForAtoms(event.realizationAtoms);
+    if (!owner || staged.length !== 1 || sameLocation(owner.locations?.[0], staged[0])) continue;
+    const candidates = scenes.filter((scene) =>
+      scene.episodeNumber === event.episodeNumber
+      && sameLocation(scene.locations?.[0], staged[0]),
+    );
+    const preferredKind = event.cue === 'threatEncounter' ? 'encounter' : 'standard';
+    const preferred = candidates.some((scene) => scene.kind === preferredKind)
+      ? candidates.filter((scene) => scene.kind === preferredKind)
+      : candidates;
+    const ranked = preferred.sort((left, right) =>
+      Math.abs(left.order - event.sourceOrder) - Math.abs(right.order - event.sourceOrder)
+      || left.order - right.order
+      || left.id.localeCompare(right.id),
+    );
+    if (ranked.length !== 1 && ranked[0] && ranked[1]
+      && Math.abs(ranked[0].order - event.sourceOrder) === Math.abs(ranked[1].order - event.sourceOrder)) {
+      continue;
+    }
+    const target = ranked[0];
+    if (!target || target.id === owner.id) continue;
+    event.ownerSceneId = target.id;
+    event.targetSceneIds = [target.id];
+    compilationIssues.push({
+      code: 'event_owner_rebound_to_staged_location',
+      severity: 'warning',
+      message: `Event "${event.id}" was rebound from scene "${owner.id}" to compatible scene "${target.id}" at "${staged[0]}".`,
+      eventId: event.id,
+      episodeNumber: event.episodeNumber,
+      sceneId: target.id,
+    });
   }
 
   for (const event of events) {
@@ -1983,21 +2430,6 @@ export function compileAndApplyNarrativeContracts(
     });
   }
   const episodeEventPlans = applyEpisodeEventPlans(graph, scenePlan.scenes);
-  const invalidPlans = Object.values(episodeEventPlans).filter((eventPlan) => !eventPlan.validation.passed);
-  if (invalidPlans.length > 0) {
-    const blockers = invalidPlans.flatMap((eventPlan) => eventPlan.validation.issues.map((issue) => `${issue.code}: ${issue.message}`));
-    throw new PipelineError(`[EpisodeEventPlanGate] ${blockers.join(' | ')}`, 'season_planning', {
-      agent: 'NarrativeContractCompiler',
-      failure: {
-        code: 'episode_plan_invalid',
-        ownerStage: 'episode_plan',
-        retryClass: 'recompile_episode_plan',
-        issueCodes: invalidPlans.flatMap((eventPlan) => eventPlan.validation.issues.map((issue) => issue.code)),
-        repairTarget: `episode-plan:${invalidPlans.map((eventPlan) => eventPlan.episodeNumber).join(',')}`,
-      },
-      context: { invalidEpisodes: invalidPlans.map((eventPlan) => eventPlan.episodeNumber) },
-    });
-  }
   const setupPayoffEdges = projectSetupPayoffEdgesFromGraph(graph, scenePlan.scenes);
   const edgesByFrom = new Map<string, string[]>();
   const edgesByTo = new Map<string, string[]>();
@@ -2011,12 +2443,52 @@ export function compileAndApplyNarrativeContracts(
   }
   return {
     ...scenePlan,
+    byEpisode: Object.fromEntries(Array.from(new Set(scenePlan.scenes.map((scene) => scene.episodeNumber))).map((episodeNumber) => [
+      episodeNumber,
+      scenePlan.scenes
+        .filter((scene) => scene.episodeNumber === episodeNumber)
+        .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))
+        .map((scene) => scene.id),
+    ])),
     narrativeContractGraph: graph,
     episodeEventPlans,
     // Legacy setup/payoff consumers receive a deterministic projection of the
     // graph. They no longer remain an independent source of event identity.
     setupPayoffEdges,
   };
+}
+
+/** Enforce scene-level executability only for episodes entering generation. */
+export function assertSelectedEpisodeEventPlansExecutable(
+  scenePlan: SeasonScenePlan,
+  episodeNumbers: number[],
+): void {
+  const selected = new Set(episodeNumbers);
+  const invalidPlans = Object.values(scenePlan.episodeEventPlans ?? {})
+    .filter((eventPlan) => selected.has(eventPlan.episodeNumber) && !eventPlan.validation.passed);
+  if (invalidPlans.length === 0) return;
+  const blockers = invalidPlans.flatMap((eventPlan) =>
+    eventPlan.validation.issues.map((issue) => `${issue.code}: ${issue.message}`),
+  );
+  throw new PipelineError(`[EpisodeEventPlanGate] ${blockers.join(' | ')}`, 'season_planning', {
+    agent: 'NarrativeContractCompiler',
+    failure: {
+      code: 'episode_plan_invalid',
+      ownerStage: 'episode_plan',
+      retryClass: 'recompile_episode_plan',
+      issueCodes: invalidPlans.flatMap((eventPlan) => eventPlan.validation.issues.map((issue) => issue.code)),
+      repairTarget: `episode-plan:${invalidPlans.map((eventPlan) => eventPlan.episodeNumber).join(',')}`,
+    },
+    context: {
+      invalidEpisodes: invalidPlans.map((eventPlan) => eventPlan.episodeNumber),
+      episodePlanDiagnostics: invalidPlans.map((eventPlan) => ({
+        episodeNumber: eventPlan.episodeNumber,
+        sourceGraphHash: eventPlan.sourceGraphHash,
+        assignments: eventPlan.assignments,
+        issues: eventPlan.validation.issues,
+      })),
+    },
+  });
 }
 
 /**

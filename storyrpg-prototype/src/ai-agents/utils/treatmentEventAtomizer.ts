@@ -58,7 +58,11 @@ const TIME_CUE_PATTERN = /\b(?:dawn|morning|midday|afternoon|dusk|evening|night|
 const CONCRETE_TIME_MARKER_PATTERN = /\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)\b/i;
 const LOCATION_PATTERN = /\b(?:at|in|inside|outside|on|near|through|to|from)\s+((?:the\s+)?[A-Z][A-Za-z0-9'’-]*(?:\s+[A-Z][A-Za-z0-9'’-]*){0,3})/g;
 const ENTITY_PATTERN = /\b[A-Z][A-Za-z0-9'’-]*(?:\s+[A-Z][A-Za-z0-9'’-]*){0,2}\b/g;
-const CONNECTOR_SPLIT = /\s+(?:and then|but then|then|afterward|afterwards|before|while|as)\s+/i;
+// Only split connectors that unambiguously advance to a new event. Subordinate
+// connectors such as "as", "before", and "while" often carry identity,
+// prerequisite, or simultaneity information; splitting on them both fragments
+// the event and drops the connector itself.
+const CONNECTOR_SPLIT = /\s+(?:and then|but then|then|afterward|afterwards)\s+/i;
 
 export function atomizeTreatmentText(input: TreatmentAtomizerInput): TreatmentEventAtom[] {
   // LLM-sourced contracts can arrive without sourceText/eventAtoms — an
@@ -114,7 +118,9 @@ export function splitTreatmentSentences(text: string): string[] {
 
 export function splitCompoundSentence(sentence: string): string[] {
   const normalized = normalizeWhitespace(sentence);
-  const commaThenSplit = normalized.replace(/\s*,\s*(?=(?:then|afterward|afterwards|before|while|as)\b)/gi, ' ');
+  const simultaneous = normalized.split(/\s+(?=while\s+)/i).map((part) => part.trim()).filter(Boolean);
+  if (simultaneous.length > 1) return simultaneous.flatMap((part) => splitCompoundSentence(part));
+  const commaThenSplit = normalized.replace(/\s*,\s*(?=(?:then|afterward|afterwards)\b)/gi, ' ');
   if (!CONNECTOR_SPLIT.test(commaThenSplit)) return [normalized];
   const fragments = commaThenSplit.split(CONNECTOR_SPLIT).map((part) => part.trim()).filter(Boolean);
   if (fragments.length <= 1) return [normalized];

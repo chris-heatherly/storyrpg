@@ -11,18 +11,14 @@ import type {
   EpisodeSpineContract,
   EpisodeSpineUnit,
   SeasonSpineContract,
+  SpineRealizationIntent,
   SpineObligationKind,
   SpineUnitKind,
   SpineUnitObligation,
 } from '../../types/episodeSpine';
 import type { StoryCircleBeat } from '../../types/sourceAnalysis';
 import { storyCircleRoleBeats } from './storyCircleDistribution';
-import {
-  coalesceFragmentedEpisodeTurns,
-  orderAuthoredEpisodeTurns,
-  splitCompoundSpatialEpisodeTurns,
-  chronologyRankForText,
-} from './treatmentTurnOrdering';
+import { coalesceFragmentedEpisodeTurns, splitCompoundSpatialEpisodeTurns, chronologyRankForText } from './treatmentTurnOrdering';
 import { filterAuthoredLiteEpisodeTurns } from './authoredLiteTurnFilter';
 import { filterEpisodeScopedTurns } from './episodeTurnFirewall';
 import { isAuthoredLiteEpisode } from './authoredLiteScenePlan';
@@ -109,6 +105,69 @@ export function splitPostConditionalTurn(text: string): string[] {
 
 export function decomposeTreatmentTurns(turns: string[]): string[] {
   return turns.flatMap((turn) => splitPostConditionalTurn(turn));
+}
+
+export interface DecomposedTreatmentTurn {
+  text: string;
+  realizationIntent: SpineRealizationIntent;
+  supportingIntents?: SpineRealizationIntent[];
+}
+
+function concreteTestClause(text: string): boolean {
+  const hasActor = /^(?:[A-Z][A-Za-z'’-]+|she|he|they)\s+/i.test(text.trim());
+  const hasFiniteAction = /\b(?:tests?|challenges?|asks?|offers?|dares?|requires?)\b/i.test(text);
+  const hasMechanism = /\b(?:with|using|by|through|to\s+(?:choose|answer|prove|perform)|bread|salt|question|dare|task|choice)\b/i.test(text);
+  return hasActor && hasFiniteAction && hasMechanism;
+}
+
+function concreteIntent(text: string): SpineRealizationIntent {
+  return { kind: 'concrete_event', eventText: text };
+}
+
+function socialTestIntent(text: string): SpineRealizationIntent {
+  return {
+    kind: 'behavioral_intent',
+    intentKind: 'social_test',
+    intentText: capitalizeFirst(text),
+    relation: 'prerequisite',
+    requiredSlots: ['actor', 'target', 'mechanism', 'observable_response', 'state_change'],
+  };
+}
+
+/** Runtime decomposition preserves abstract preconditions as non-owning typed intent. */
+export function decomposeTreatmentTurnContracts(turns: string[]): DecomposedTreatmentTurn[] {
+  return turns.flatMap((raw): DecomposedTreatmentTurn[] => {
+    const text = cleanText(raw);
+    if (!text) return [];
+    const match = POST_CONDITIONAL_RE.exec(text);
+    if (!match) return [{ text, realizationIntent: concreteIntent(text) }];
+    const precondition = cleanText(match[1]);
+    const outcome = capitalizeFirst(cleanText(match[2]));
+    if (!precondition || !outcome) return [{ text, realizationIntent: concreteIntent(text) }];
+
+    if (TESTING_PRECONDITION_RE.test(precondition) || TESTING_PRECONDITION_RE.test(text)) {
+      if (concreteTestClause(precondition)) {
+        return [
+          { text: capitalizeFirst(precondition), realizationIntent: concreteIntent(capitalizeFirst(precondition)) },
+          { text: outcome, realizationIntent: concreteIntent(outcome) },
+        ];
+      }
+      return [{
+        text: outcome,
+        realizationIntent: concreteIntent(outcome),
+        supportingIntents: [socialTestIntent(precondition)],
+      }];
+    }
+
+    if (precondition.length >= 12 && outcome.length >= 12) {
+      const prior = capitalizeFirst(precondition);
+      return [
+        { text: prior, realizationIntent: concreteIntent(prior) },
+        { text: outcome, realizationIntent: concreteIntent(outcome) },
+      ];
+    }
+    return [{ text, realizationIntent: concreteIntent(text) }];
+  });
 }
 
 function inferUnitKind(text: string): SpineUnitKind {
@@ -203,7 +262,7 @@ function episodeCircleSlice(
   return Object.keys(slice).length > 0 ? slice : undefined;
 }
 
-function hashSource(ep: SeasonEpisode, turns: string[]): string {
+function hashSource(ep: SeasonEpisode, turns: DecomposedTreatmentTurn[]): string {
   const payload = JSON.stringify({
     episodeNumber: ep.episodeNumber,
     turns,
@@ -324,7 +383,7 @@ function normalizeTurnPipeline(
   ep: SeasonEpisode,
   turns: string[],
   seasonSynopses?: Record<number, string>,
-): string[] {
+): DecomposedTreatmentTurn[] {
   let pipeline = turns;
   if (isAuthoredLiteEpisode(ep)) {
     pipeline = filterAuthoredLiteEpisodeTurns(pipeline, ep.episodeNumber);
@@ -336,15 +395,18 @@ function normalizeTurnPipeline(
   pipeline = splitCompoundSpatialEpisodeTurns(pipeline);
   // Decompose compound conditionals BEFORE chronology sort so test/bond lines
   // get distinct ranks (test < bond) instead of stable-sorting as one unit.
-  pipeline = decomposeTreatmentTurns(pipeline);
+  let contracts = decomposeTreatmentTurnContracts(pipeline);
   if (isAuthoredLiteEpisode(ep)) {
-    pipeline = orderAuthoredEpisodeTurns(pipeline);
+    contracts = contracts
+      .map((contract, index) => ({ contract, index, rank: chronologyRankForText(contract.text) }))
+      .sort((left, right) => left.rank - right.rank || left.index - right.index)
+      .map((entry) => entry.contract);
     // Kind-aware tie-break: when ranks collide, prefer test before bond.
-    pipeline = [...pipeline].sort((a, b) => {
-      const rankDelta = chronologyRankForText(a) - chronologyRankForText(b);
+    contracts = [...contracts].sort((a, b) => {
+      const rankDelta = chronologyRankForText(a.text) - chronologyRankForText(b.text);
       if (rankDelta !== 0) return rankDelta;
-      const kindA = inferUnitKind(a);
-      const kindB = inferUnitKind(b);
+      const kindA = inferUnitKind(a.text);
+      const kindB = inferUnitKind(b.text);
       if (kindA === 'test' && kindB === 'bond') return -1;
       if (kindA === 'bond' && kindB === 'test') return 1;
       if (kindA === 'late_night_writing' && kindB === 'aftermath') return -1;
@@ -352,7 +414,7 @@ function normalizeTurnPipeline(
       return 0;
     });
   }
-  return pipeline;
+  return contracts;
 }
 
 export function compileEpisodeSpine(
@@ -369,7 +431,8 @@ export function compileEpisodeSpine(
   const polarityFacets = collectPolarityFacets(ep, context);
 
   const draftUnits: Array<{ id: string; kind: SpineUnitKind }> = [];
-  const units: EpisodeSpineUnit[] = turns.map((text, order) => {
+  const units: EpisodeSpineUnit[] = turns.map((turn, order) => {
+    const text = turn.text;
     const kind = inferUnitKind(text);
     const id = `ep${ep.episodeNumber}-u${order + 1}`;
     draftUnits.push({ id, kind });
@@ -380,6 +443,8 @@ export function compileEpisodeSpine(
       order,
       text,
       kind,
+      realizationIntent: turn.realizationIntent,
+      supportingIntents: turn.supportingIntents,
       locationId: inferLocationId(text, locations),
       storyCircleFacets: episodeStoryCircleBeats.length > 0
         ? [episodeStoryCircleBeats[Math.min(order, episodeStoryCircleBeats.length - 1)]]

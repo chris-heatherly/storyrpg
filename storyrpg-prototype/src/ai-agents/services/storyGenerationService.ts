@@ -37,6 +37,7 @@ export interface StoryAnalysisRequest extends PipelineHookOptions {
   preferences?: StoryAnalysisPreferences;
   resumeCheckpoint?: ResumeCheckpoint;
   externalJobId?: string;
+  onSourceAnalysisComplete?: (result: SourceAnalysisResult) => void;
 }
 
 export interface StoryAnalysisResponse {
@@ -122,6 +123,7 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
         preferences,
         request.prompt,
       );
+  if (!sourceAlreadyDone) request.onSourceAnalysisComplete?.(analysisResult);
 
   const seasonAlreadyDone = request.resumeCheckpoint?.steps?.season_plan?.status === 'completed';
   const resumedPlanResult = request.resumeCheckpoint?.outputs?.season_plan as

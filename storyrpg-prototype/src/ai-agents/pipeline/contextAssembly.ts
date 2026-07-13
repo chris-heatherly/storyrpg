@@ -35,17 +35,20 @@ export function buildChoiceAuthorNpcs(
   npcIds: string[],
   characterBible: CharacterBible
 ): ChoiceAuthorNpc[] {
-  return npcIds.map(npcId => {
+  const canonical = new Map<string, ChoiceAuthorNpc>();
+  for (const npcId of npcIds) {
     const profile = resolveCharacterProfile(characterBible.characters, npcId);
-    return {
-      id: npcId,
+    const resolvedId = profile?.id || npcId;
+    canonical.set(resolvedId, {
+      id: resolvedId,
       name: profile?.name || npcId,
       pronouns: (profile?.pronouns || 'he/him') as 'he/him' | 'she/her' | 'they/them',
       description: profile?.overview || '',
       voiceNotes: profile?.voiceProfile?.writingGuidance,
       physicalDescription: profile?.physicalDescription,
-    };
-  });
+    });
+  }
+  return [...canonical.values()];
 }
 
 /**

@@ -879,6 +879,9 @@ export function compileAuthoredRelationshipMilestones(
         && RELATIONSHIP_TEST_RE.test(relationshipTextForScene(scene))
       ).map((scene) => scene.id),
       ...(RELATIONSHIP_TEST_RE.test(sourceText) ? [owner.id] : []),
+      ...((owner.behavioralIntents ?? []).some((intent) =>
+        intent.kind === 'behavioral_intent' && intent.intentKind === 'social_test'
+      ) ? [owner.id] : []),
     ];
 
     if (memberNpcIds.length === 0 || introductionSceneIds.length === 0 || testSceneIds.length === 0) {
@@ -924,6 +927,31 @@ export function compileAuthoredRelationshipMilestones(
       groupContract.blockedLabels = (groupContract.blockedLabels ?? []).filter((label) =>
         !/^(?:friend|friends|friends now|settled membership|one of us)$/i.test(label.trim()),
       );
+      for (const memberContract of contracts.filter((contract) => {
+        const contractNpcId = contract.npcId;
+        return Boolean(contractNpcId && memberNpcIds.some((memberNpcId) => {
+          const memberKey = slugId(memberNpcId);
+          const contractKey = slugId(contractNpcId);
+          return memberKey === contractKey || memberKey.includes(contractKey) || contractKey.includes(memberKey);
+        }));
+      })) {
+        if (RELATIONSHIP_STAGE_RANK[memberContract.targetStage] < RELATIONSHIP_STAGE_RANK.friend) {
+          memberContract.targetStage = 'friend';
+        }
+        memberContract.allowedLabels = Array.from(new Set([
+          ...(memberContract.allowedLabels ?? []),
+          'friend',
+          'friends',
+          'earned friendship',
+        ]));
+        memberContract.blockedLabels = (memberContract.blockedLabels ?? []).filter((label) =>
+          !/^(?:friend|friends|friends now)$/i.test(label.trim()),
+        );
+        memberContract.requiredEvidence = Array.from(new Set([
+          ...(memberContract.requiredEvidence ?? []),
+          'earn the authored group friendship through the group-defining choice and visible reciprocal behavior',
+        ]));
+      }
     }
     groupContract.requiredEvidence = Array.from(new Set([
       ...(groupContract.requiredEvidence ?? []),
@@ -1578,6 +1606,13 @@ export function inferAuthoredLocationFromText(text: string | undefined, location
   }
   if (/\b(?:rooftop|roof\s*top|sunset bar)\b/.test(normalized)) {
     return declaredMatch(/\b(?:rooftop|roof|bar|terrace)/) || 'Rooftop Bar';
+  }
+  const cityStreet = normalized.match(/\b(?:streets?\s+of|through|around)\s+([a-z][a-z'-]+)/);
+  if (/\b(?:city streets?|streets?\s+of|explores?\s+the\s+streets?|wanders?\s+the\s+streets?)\b/.test(normalized)) {
+    const declaredStreet = declaredMatch(/\b(?:street|old town|city|district|quarter|neighborhood)\b/);
+    if (declaredStreet) return declaredStreet;
+    const city = cityStreet?.[1];
+    return city ? `${city[0].toUpperCase()}${city.slice(1)} streets` : 'City streets';
   }
   // Bookshop before club: bite-me ep1 bookshop turns also mention the nightlife
   // club as a handoff, and the old club-first ordering pinned the scene to
@@ -2473,6 +2508,7 @@ export function projectSpineOntoScenes(
     const scene = standardSlots[index];
     if (!scene) return;
     scene.spineUnitId = unit.id;
+    scene.behavioralIntents = [...(unit.supportingIntents ?? [])];
     scene.order = unit.order;
     // Prefer beat-pinned locations from turn binding. Only apply ESC locationId
     // when the scene has no location yet, or the authored beats corroborate it.
@@ -2488,6 +2524,10 @@ export function projectSpineOntoScenes(
       }
     }
     if (unit.kind === 'test') {
+      scene.hasChoice = true;
+      scene.encounterProfile = scene.encounterProfile || 'social_test';
+    }
+    if ((unit.supportingIntents ?? []).some((intent) => intent.kind === 'behavioral_intent' && intent.intentKind === 'social_test')) {
       scene.hasChoice = true;
       scene.encounterProfile = scene.encounterProfile || 'social_test';
     }
@@ -2732,6 +2772,10 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
   }
   compileAuthoredRelationshipMilestones(scenes, plan.protagonist, plan.characterIntroductions);
   normalizeRelationshipPacingStages(scenes);
+  // Authored milestones can advance group and member contracts after the first
+  // pressure projection. Rebuild by stable contract id so pressure cannot keep
+  // stale pre-milestone caps or blocked labels.
+  applyMechanicPressureContracts(scenes);
   attachSceneConstructionProfiles(scenes);
 
   const spineValidator = new EpisodeSpineContractValidator();

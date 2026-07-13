@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   compileEpisodeSpine,
+  decomposeTreatmentTurnContracts,
   decomposeTreatmentTurns,
   splitPostConditionalTurn,
 } from './compileEpisodeSpine';
@@ -58,17 +59,44 @@ describe('decomposeTreatmentTurns', () => {
   });
 });
 
+describe('decomposeTreatmentTurnContracts', () => {
+  it('attaches an underspecified social test to the dependent event instead of creating an owner', () => {
+    const turns = decomposeTreatmentTurnContracts([
+      'After testing Kylie, the three become friends and form the Dusk Club.',
+    ]);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].text).toMatch(/Dusk Club/);
+    expect(turns[0].supportingIntents).toEqual([expect.objectContaining({
+      kind: 'behavioral_intent',
+      intentKind: 'social_test',
+      relation: 'prerequisite',
+    })]);
+  });
+
+  it('preserves a concrete authored test as its own event', () => {
+    const turns = decomposeTreatmentTurnContracts([
+      'After Stela tests Kylie with bread and salt, the three form the Dusk Club.',
+    ]);
+    expect(turns).toHaveLength(2);
+    expect(turns[0].realizationIntent.kind).toBe('concrete_event');
+    expect(turns[0].text).toMatch(/bread and salt/);
+  });
+});
+
 describe('compileEpisodeSpine', () => {
-  it('produces one unit per decomposed turn with prerequisites on bond', () => {
+  it('attaches an abstract test to the bond unit without creating a generic owner', () => {
     const spine = compileEpisodeSpine(liteEpisode());
     expect(spine).toBeDefined();
     expect(spine!.units.length).toBeGreaterThanOrEqual(8);
 
     const bond = spine!.units.find((unit) => unit.kind === 'bond');
     const test = spine!.units.find((unit) => unit.kind === 'test');
-    expect(test).toBeDefined();
+    expect(test).toBeUndefined();
     expect(bond).toBeDefined();
-    expect(bond!.prerequisites).toContain(test!.id);
+    expect(bond!.supportingIntents).toEqual([expect.objectContaining({
+      kind: 'behavioral_intent',
+      intentKind: 'social_test',
+    })]);
   });
 
   it('assigns staged_rescue profile to threat encounter unit', () => {
@@ -86,10 +114,9 @@ describe('compileEpisodeSpine', () => {
     expect(writingIdx).toBeGreaterThanOrEqual(0);
     expect(aftermathIdx).toBeGreaterThan(writingIdx);
 
-    const testIdx = kinds.indexOf('test');
     const bondIdx = kinds.indexOf('bond');
-    expect(testIdx).toBeGreaterThanOrEqual(0);
-    expect(bondIdx).toBeGreaterThan(testIdx);
+    expect(kinds).not.toContain('test');
+    expect(bondIdx).toBeGreaterThanOrEqual(0);
 
     const rescue = spine!.units.find((unit) => unit.encounterProfile === 'staged_rescue');
     expect(rescue).toBeDefined();

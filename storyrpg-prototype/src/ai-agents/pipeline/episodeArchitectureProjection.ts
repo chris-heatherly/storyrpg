@@ -37,6 +37,7 @@ function buildMissingSceneShell(scene: PlannedScene): SceneBlueprint {
     narrativeFunction: localPurpose,
     narrativeRole: scene.narrativeRole,
     planningOrigin: scene.planningOrigin,
+    behavioralIntents: scene.behavioralIntents ? [...scene.behavioralIntents] : undefined,
     plannedHasChoice: scene.hasChoice,
     dramaticPurpose: localPurpose,
     setsUp: [...(scene.setsUp ?? [])],

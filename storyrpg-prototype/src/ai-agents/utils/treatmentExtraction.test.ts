@@ -72,6 +72,24 @@ describe('extractTreatmentFromMarkdown MVP treatment format', () => {
   });
 });
 
+describe('extractTreatmentFromMarkdown Bite Me lite regression', () => {
+  it('preserves Episode 6 subordinate clauses and keeps pressure out of encounter anchors', () => {
+    const markdown = readFileSync(
+      resolve(process.cwd(), '../treatments/Bite_Me_StoryRPG_Lite_Treatment.md'),
+      'utf8',
+    );
+    const treatment = extractTreatmentFromMarkdown(markdown);
+    const episode = treatment.episodes[6];
+    const joined = (episode?.episodeTurns ?? []).join(' ');
+
+    expect(joined).toContain('reveals herself as Carmen Iliescu');
+    expect(joined).toContain('beaten before the meeting');
+    expect(joined).toContain('black rose inside the warded apartment');
+    expect(episode?.encounterAnchors).toEqual([]);
+    expect(episode?.dramaticQuestion).toMatch(/Is anyone in Kylie/);
+  });
+});
+
 const LITE_TREATMENT = `# StoryRPG Lite Treatment
 
 ## 1. Story Premise
@@ -214,9 +232,7 @@ describe('extractTreatmentFromMarkdown lite treatment format', () => {
     expect(treatment.episodes[1]?.synopsis).toContain('Mara finds Jonas');
     expect(treatment.episodes[1]?.episodePromise).toContain('controlled silence');
     expect(treatment.episodes[1]?.encounterCentralConflict).toContain('controlled silence');
-    expect(treatment.episodes[1]?.encounterAnchors).toEqual([
-      'Mara must choose between controlled silence and public risk.',
-    ]);
+    expect(treatment.episodes[1]?.encounterAnchors).toEqual([]);
     expect(treatment.episodes[1]?.endingPressure).toContain('archive is no longer safe');
     expect(treatment.episodes[1]?.consequenceSeeds).toEqual(
       expect.arrayContaining([expect.stringContaining('archive is no longer safe')]),

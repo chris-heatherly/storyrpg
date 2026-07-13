@@ -84,6 +84,16 @@ function normalize(value: string): string {
     .trim();
 }
 
+function structuredEntityEvidence(prefix: 'consequence' | 'evidence', value: string): string[] {
+  const normalized = normalize(value).replace(/^(?:char|character|npc)\s+/, '');
+  const terms = normalized.split(' ').filter(Boolean);
+  return Array.from(new Set([
+    `${prefix}:${value}`,
+    normalized ? `${prefix}:${normalized.replace(/\s+/g, '-')}` : undefined,
+    terms[0] ? `${prefix}:${terms[0]}` : undefined,
+  ].filter((item): item is string => Boolean(item))));
+}
+
 function evidenceMatches(pattern: string, text: string): boolean {
   const needle = normalize(pattern);
   const haystack = normalize(text);
@@ -193,9 +203,13 @@ function taskTextGroups(input: { sceneContent?: unknown; choiceSet?: unknown; en
         typeof record.relationshipGroupId === 'string' ? `group:${record.relationshipGroupId}` : undefined,
         ...((record.consequences as Array<Record<string, unknown>> | undefined) ?? [])
           .filter((consequence) => consequence?.type === 'relationship')
-          .map((consequence) => typeof consequence.npcId === 'string' ? `consequence:${consequence.npcId}` : undefined),
+          .flatMap((consequence) => typeof consequence.npcId === 'string'
+            ? structuredEntityEvidence('consequence', consequence.npcId)
+            : []),
         ...((record.relationshipValueEvidence as Array<Record<string, unknown>> | undefined) ?? [])
-          .map((evidence) => typeof evidence?.npcId === 'string' ? `evidence:${evidence.npcId}` : undefined),
+          .flatMap((evidence) => typeof evidence?.npcId === 'string'
+            ? structuredEntityEvidence('evidence', evidence.npcId)
+            : []),
       ].filter((value): value is string => typeof value === 'string');
       const text = textsForSurfaces(collectNarrativeEvidenceSurfaceIndex({ choiceSet: { choices: [choice] } }), target.surfaces);
       return [...text, normalize(structured.join(' '))];

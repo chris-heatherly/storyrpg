@@ -2727,10 +2727,11 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
 
   private canonicalNpcIdForInput(value: string | undefined, input: ChoiceAuthorInput): string | undefined {
     if (!value) return undefined;
-    const key = this.relationshipPacingKey(value);
-    return input.npcsInScene.find((npc) =>
-      this.relationshipPacingKey(npc.id) === key || this.relationshipPacingKey(npc.name) === key
-    )?.id;
+    const matches = input.npcsInScene.filter((npc) =>
+      this.relationshipPacingKeysMatch(npc.id, value)
+      || this.relationshipPacingKeysMatch(npc.name, value)
+    );
+    return matches.length === 1 ? matches[0].id : undefined;
   }
 
   /** Normalize known aliases in structured choice metadata and reject foreign

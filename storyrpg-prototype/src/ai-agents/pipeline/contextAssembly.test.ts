@@ -97,6 +97,17 @@ describe('buildChoiceAuthorNpcs', () => {
       { id: 'ghost', name: 'ghost', pronouns: 'he/him', description: '', voiceNotes: undefined, physicalDescription: undefined },
     ]);
   });
+
+  it('canonicalizes and deduplicates display-name and id aliases', () => {
+    const bible = {
+      characters: [{
+        id: 'char-mika-dragan', name: 'Mika Dragan', pronouns: 'she/her', overview: 'A sharp social operator.',
+      }],
+    } as unknown as CharacterBible;
+    expect(buildChoiceAuthorNpcs(['Mika Dragan', 'char-mika-dragan', 'char-mika-dragan'], bible)).toEqual([
+      expect.objectContaining({ id: 'char-mika-dragan', name: 'Mika Dragan' }),
+    ]);
+  });
 });
 
 describe('buildCompactWorldContext', () => {

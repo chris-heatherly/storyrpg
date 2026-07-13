@@ -238,8 +238,9 @@ process.on('unhandledRejection', (reason: unknown) => {
 async function runAnalysis(payload: WorkerPayload) {
   if (!payload.analysisInput) throw new Error('analysisInput is required for analysis mode');
   const { sourceText, title, prompt, preferences } = payload.analysisInput;
-  emit('step_start', { step: 'source_analysis' });
-  emit('step_start', { step: 'season_plan' });
+  const sourceAlreadyDone = payload.resumeCheckpoint?.steps?.source_analysis?.status === 'completed';
+  let seasonPlanStarted = sourceAlreadyDone;
+  emit('step_start', { step: sourceAlreadyDone ? 'season_plan' : 'source_analysis' });
   const result = await runStoryAnalysis({
     config: payload.config,
     externalJobId: payload.externalJobId,
@@ -249,8 +250,13 @@ async function runAnalysis(payload: WorkerPayload) {
     preferences,
     resumeCheckpoint: payload.resumeCheckpoint,
     onEvent: emitPipelineEvent,
+    onSourceAnalysisComplete: (analysisResult) => {
+      emit('step_complete', { step: 'source_analysis', output: analysisResult });
+      emit('step_start', { step: 'season_plan' });
+      seasonPlanStarted = true;
+    },
   });
-  emit('step_complete', { step: 'source_analysis', output: result.analysisResult });
+  if (!seasonPlanStarted) emit('step_start', { step: 'season_plan' });
   emit('step_complete', {
     step: 'season_plan',
     success: !!result.seasonPlan,

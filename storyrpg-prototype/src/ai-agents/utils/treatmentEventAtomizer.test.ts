@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { atomizeTreatmentText, extractPreservedMarkers } from './treatmentEventAtomizer';
+import { atomizeTreatmentText, extractPreservedMarkers, splitCompoundSentence } from './treatmentEventAtomizer';
 
 describe('treatmentEventAtomizer', () => {
   it('returns no atoms for missing or blank text instead of crashing', () => {
@@ -23,6 +23,16 @@ describe('treatmentEventAtomizer', () => {
     expect(atoms.map((atom) => atom.order)).toEqual([1, 2, 3]);
     expect(atoms.map((atom) => atom.eventType)).toEqual(['arrival', 'meeting', 'aftermath']);
     expect(new Set(atoms.map((atom) => atom.chronologyKey)).size).toBe(3);
+  });
+
+  it('preserves subordinate identity and prerequisite clauses as one event', () => {
+    const fragments = splitCompoundSentence(
+      'The anonymous warner reveals herself as Carmen, but Carmen is beaten before the meeting.',
+    );
+
+    expect(fragments).toEqual([
+      'The anonymous warner reveals herself as Carmen, but Carmen is beaten before the meeting.',
+    ]);
   });
 
   it('marks theme, Story Circle, pressure, and future payoff language as non-playable context', () => {

@@ -135,6 +135,30 @@ describe('storyGenerationService', () => {
     expect(result.seasonPlan).toEqual(resumedPlan.data);
   });
 
+  it('publishes fresh source analysis before season planning begins', async () => {
+    const order: string[] = [];
+    const analysisResult = { totalEpisodes: 1, analysis: { sourceTitle: 'Fresh Story' } };
+    analyzeSourceMaterial.mockImplementation(async () => {
+      order.push('analyze');
+      return analysisResult;
+    });
+    seasonPlannerExecute.mockImplementation(async () => {
+      order.push('plan');
+      return { success: true, data: { id: 'season-1' } };
+    });
+
+    await runStoryAnalysis({
+      sourceText: 'Fresh source',
+      title: 'Fresh Story',
+      onSourceAnalysisComplete: (result) => {
+        expect(result).toBe(analysisResult);
+        order.push('checkpoint');
+      },
+    });
+
+    expect(order).toEqual(['analyze', 'checkpoint', 'plan']);
+  });
+
   it('runs multi-episode generation and forwards pipeline job events', async () => {
     const onEvent = vi.fn();
     const onImageJobEvent = vi.fn();

@@ -14,8 +14,11 @@ const STAGE_ORDER: RelationshipPacingStage[] = [
 ];
 
 interface SceneWithRelationshipPacing {
+  id?: string;
   choicePoint?: { type?: ChoiceType };
   choiceType?: ChoiceType;
+  npcsPresent?: string[];
+  npcsInvolved?: string[];
   relationshipPacing?: RelationshipPacingContract[];
   beats?: Array<{ choices?: Array<{ choiceType?: ChoiceType }> }>;
   choices?: Array<{ choiceType?: ChoiceType }>;
@@ -103,6 +106,17 @@ function hasPlannedGroupDefiningChoice(
 export function reconcileRelationshipPacingWithChoiceTypes(scenes: SceneWithRelationshipPacing[]): number {
   let changed = 0;
   for (const scene of scenes || []) {
+    const hasRelationshipSubject = (scene.npcsPresent?.length ?? 0) > 0
+      || (scene.npcsInvolved?.length ?? 0) > 0
+      || (scene.relationshipPacing ?? []).some((contract) => Boolean(contract.npcId || contract.groupId));
+    if ((scene.choicePoint?.type ?? scene.choiceType) === 'relationship' && !hasRelationshipSubject) {
+      const replacement: ChoiceType = (scene.choicePoint as { branches?: boolean } | undefined)?.branches
+        ? 'strategic'
+        : 'expression';
+      if (scene.choicePoint) scene.choicePoint.type = replacement;
+      if (scene.choiceType === 'relationship') scene.choiceType = replacement;
+      changed += 1;
+    }
     const finalChoiceType = scene.choicePoint?.type ?? scene.choiceType ?? inferChoiceType(scene);
     for (const contract of scene.relationshipPacing || []) {
       const before = JSON.stringify(contract);

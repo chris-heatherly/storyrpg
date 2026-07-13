@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { commitEpisodeGenerationAfterLock, emitEpisodeGenerationStart, handleEpisodeGenerationFailure } from './episodeGenerationEvents';
+import {
+  commitEpisodeGenerationAfterLock,
+  emitEpisodeGenerationStart,
+  handleEpisodeGenerationFailure,
+  type EpisodeGenerationResult,
+} from './episodeGenerationEvents';
+import { PipelineError } from './errors';
 
 describe('episode generation events', () => {
   it('emits stable phase identity for a pending episode', () => {
@@ -22,6 +28,38 @@ describe('episode generation events', () => {
     expect(() => handleEpisodeGenerationFailure({
       error: new Error('hard failure'), episodeNumber: 2, title: 'Threshold', strict: true, results, emit,
     })).toThrow('hard failure');
+  });
+
+  it('preserves typed repair ownership when an episode fails', () => {
+    const emit = vi.fn();
+    const results: EpisodeGenerationResult[] = [];
+    const error = new PipelineError('Semantic evidence is still inconclusive.', 'scene_content', {
+      context: { taskId: 'task:premise:role' },
+      failure: {
+        code: 'semantic_validation_inconclusive',
+        ownerStage: 'scene_writer',
+        retryClass: 'repair_final_contract',
+        issueCodes: ['premise_not_realized'],
+        artifactRefs: ['episode-1-scene-s1-semantic-validation.json'],
+        repairTarget: 'premise_realization',
+      },
+    });
+
+    handleEpisodeGenerationFailure({ error, episodeNumber: 1, title: 'Arrival', strict: false, results, emit });
+
+    expect(results[0]).toMatchObject({
+      success: false,
+      failure: {
+        phase: 'scene_content',
+        code: 'semantic_validation_inconclusive',
+        ownerStage: 'scene_writer',
+        retryClass: 'repair_final_contract',
+        issueCodes: ['premise_not_realized'],
+        artifactRefs: ['episode-1-scene-s1-semantic-validation.json'],
+        repairTarget: 'premise_realization',
+        context: { taskId: 'task:premise:role' },
+      },
+    });
   });
 
   it('publishes a successful episode only after its incremental lock succeeds', async () => {

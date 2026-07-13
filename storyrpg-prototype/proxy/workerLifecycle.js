@@ -76,6 +76,27 @@ function stripLargeValues(obj, maxStringLen = 512) {
   return result;
 }
 
+function buildFailureContextFromEvent(evt, job) {
+  return stripLargeValues({
+    message: evt.message || job?.error || 'Worker job failed',
+    stack: evt.stack,
+    failurePhase: evt.failurePhase || job?.currentPhase || 'generation',
+    failureStepId: evt.failureStepId || evt.failurePhase || job?.currentPhase || 'generation',
+    failureKind: evt.failureKind || 'worker',
+    failureCode: evt.failureCode || evt.context?.failureCode,
+    failureOwnerStage: evt.failureOwnerStage || evt.context?.failureOwnerStage,
+    retryClass: evt.retryClass || evt.context?.retryClass,
+    issueCodes: evt.issueCodes || evt.context?.issueCodes,
+    artifactRefs: evt.artifactRefs || evt.context?.artifactRefs,
+    repairTarget: evt.repairTarget || evt.context?.repairTarget,
+    failureArtifactKey: evt.failureArtifactKey,
+    resumeFromStepId: evt.resumeFromStepId || evt.failureStepId || evt.failurePhase || job?.currentPhase || 'generation',
+    resumePatchableInputs: Array.isArray(evt.resumePatchableInputs) ? evt.resumePatchableInputs : ['settings'],
+    context: evt.context,
+    timestamp: evt.timestamp || new Date().toISOString(),
+  }, 400);
+}
+
 function isMissingApiKey(value) {
   if (typeof value !== 'string') return true;
   const v = value.trim().toLowerCase();
@@ -777,21 +798,6 @@ function createWorkerLifecycle({
             ? `Resume should only rewrite the final story package if a final-story checkpoint is available.`
             : `Resume will reuse durable checkpoints where available; older jobs may restart broad phases.`,
     };
-  }
-
-  function buildFailureContextFromEvent(evt, job) {
-    return stripLargeValues({
-      message: evt.message || job?.error || 'Worker job failed',
-      stack: evt.stack,
-      failurePhase: evt.failurePhase || job?.currentPhase || 'generation',
-      failureStepId: evt.failureStepId || evt.failurePhase || job?.currentPhase || 'generation',
-      failureKind: evt.failureKind || 'worker',
-      failureArtifactKey: evt.failureArtifactKey,
-      resumeFromStepId: evt.resumeFromStepId || evt.failureStepId || evt.failurePhase || job?.currentPhase || 'generation',
-      resumePatchableInputs: Array.isArray(evt.resumePatchableInputs) ? evt.resumePatchableInputs : ['settings'],
-      context: evt.context,
-      timestamp: evt.timestamp || new Date().toISOString(),
-    }, 400);
   }
 
   function buildOrphanFailureContext(job) {
@@ -2229,5 +2235,6 @@ module.exports = {
     normalizeResumeStepsForOutputs,
     computeWorkerJobConfigHash,
     applyAuthoritativeNarrativeProviderKeys,
+    buildFailureContextFromEvent,
   },
 };

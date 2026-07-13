@@ -39,11 +39,16 @@ import { compileEventRealizationAtoms, stagedLocationsForAtoms } from './eventAt
 import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
 import {
   semanticAtomsForEvent,
+  semanticContractEventSeeds,
+  semanticContractForPremise,
+  semanticContractPremiseSeeds,
   validateAuthoredEventSemanticIR,
   type SemanticContractEventSeed,
 } from './semanticContractIr';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v22';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v23';
+
+const MAX_BLOCKING_PREMISE_PROPOSITIONS_PER_SCENE = 12;
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',
@@ -961,32 +966,68 @@ function premiseEvidenceAtoms(
   });
 }
 
-function compilePremiseContracts(plan: SeasonPlan, scenes: PlannedScene[]): NarrativePremiseContract[] {
+function compilePremiseContracts(
+  plan: SeasonPlan,
+  scenes: PlannedScene[],
+  semanticIr?: AuthoredEventSemanticIR,
+): NarrativePremiseContract[] {
   const sourceContracts = buildCharacterTreatmentContractsForPlan(plan);
   const premiseKinds = new Set(['canonical_identity', 'role_fact', 'origin_pressure', 'wound_pressure', 'starting_identity']);
   const openingScenes = scenes
     .filter((scene) => scene.episodeNumber === 1)
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
     .slice(0, 2);
-  return sourceContracts
-    .filter((contract) => premiseKinds.has(contract.contractKind) && contract.targetEpisodeNumbers.includes(1))
-    .map((contract) => {
+  const openingOrder = new Map(openingScenes.map((scene, index) => [scene.id, index]));
+  const sceneLoad = new Map(openingScenes.map((scene) => [scene.id, 0]));
+  const contracts: NarrativePremiseContract[] = [];
+  for (const contract of sourceContracts
+    .filter((candidate) => premiseKinds.has(candidate.contractKind) && candidate.targetEpisodeNumbers.includes(1))) {
+      const premiseId = `premise:${contract.id}`;
+      const compiled = semanticIr ? semanticContractForPremise(semanticIr, premiseId) : undefined;
       const evidencePatterns = premiseEvidencePatterns(contract.sourceText);
-      const evidenceAtoms = premiseEvidenceAtoms(
-        `premise:${contract.id}`,
-        contract.contractKind as NarrativePremiseContract['fieldKind'],
-        contract.sourceText,
-      );
-      return {
-        id: `premise:${contract.id}`,
+      const evidenceAtoms = compiled
+        ? compiled.propositions.map((proposition, index): NarrativePremiseEvidenceAtom => ({
+            id: proposition.id || `${premiseId}:semantic:${index + 1}`,
+            kind: contract.contractKind === 'role_fact'
+              ? 'role'
+              : contract.contractKind === 'origin_pressure'
+                ? 'origin'
+                : contract.contractKind === 'wound_pressure'
+                  ? 'wound'
+                  : contract.contractKind === 'starting_identity'
+                    ? 'behavior'
+                    : 'fact',
+            canonicalFact: proposition.proposition,
+            acceptedPatterns: [proposition.sourceSpan],
+            required: proposition.required,
+            sourceText: contract.sourceText,
+            sourceSpan: proposition.sourceSpan,
+            semanticCriteria: proposition.semanticCriteria,
+            verificationAuthority: proposition.verificationAuthority,
+          }))
+        : premiseEvidenceAtoms(
+            premiseId,
+            contract.contractKind as NarrativePremiseContract['fieldKind'],
+            contract.sourceText,
+          );
+      const preferred = contract.targetSceneIds.filter((sceneId) => openingOrder.has(sceneId));
+      const candidates = uniqueStrings([...preferred, ...openingScenes.map((scene) => scene.id)]);
+      const targetSceneId = candidates.sort((left, right) =>
+        (sceneLoad.get(left) ?? Number.MAX_SAFE_INTEGER) - (sceneLoad.get(right) ?? Number.MAX_SAFE_INTEGER)
+        || Number(preferred.includes(right)) - Number(preferred.includes(left))
+        || (openingOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (openingOrder.get(right) ?? Number.MAX_SAFE_INTEGER)
+        || left.localeCompare(right))[0];
+      if (targetSceneId) sceneLoad.set(targetSceneId, (sceneLoad.get(targetSceneId) ?? 0) + 1);
+      contracts.push({
+        id: premiseId,
         episodeNumber: 1,
         fieldName: contract.fieldName,
         fieldKind: contract.contractKind as NarrativePremiseContract['fieldKind'],
         sourceText: contract.sourceText,
         evidencePatterns,
         evidenceAtoms,
-        minimumEvidenceHits: Math.min(2, Math.max(1, evidenceAtoms.length)),
-        targetSceneIds: contract.targetSceneIds.length > 0 ? [...contract.targetSceneIds] : openingScenes.map((scene) => scene.id),
+        minimumEvidenceHits: compiled?.minimumEvidenceHits ?? Math.min(2, Math.max(1, evidenceAtoms.length)),
+        targetSceneIds: targetSceneId ? [targetSceneId] : [],
         requiredSurface: ['beat_text', 'dialogue', 'choice_text'],
         sourceContractIds: [contract.id],
         blocking: contract.blockingLevel !== 'warning',
@@ -994,8 +1035,9 @@ function compilePremiseContracts(plan: SeasonPlan, scenes: PlannedScene[]): Narr
           source: contract.source === 'treatment' ? 'treatment' : 'season_plan',
           confidence: contract.blockingLevel === 'treatment' ? 'authoritative' : 'deterministic',
         },
-      } satisfies NarrativePremiseContract;
-    });
+      });
+  }
+  return contracts;
 }
 
 function compileStateContracts(plan: SeasonPlan): NarrativeStateContract[] {
@@ -1514,6 +1556,24 @@ function validateGraph(graph: NarrativeContractGraph): NarrativeContractIssue[] 
       issues.push({ code: 'invalid_premise_evidence_threshold', severity: 'error', message: `Premise contract "${premise.id}" has an invalid evidence threshold.` });
     }
   }
+  if (graph.semanticEventIr?.premises?.length) {
+    const premiseIds = new Set((graph.premiseContracts ?? []).filter((premise) => premise.blocking).map((premise) => premise.id));
+    const semanticLoadByScene = new Map<string, number>();
+    for (const task of graph.realizationTasks ?? []) {
+      if (!task.sceneId || !task.blocking || !premiseIds.has(task.contractId)) continue;
+      const semanticClaims = task.evidenceAtoms.filter((atom) => atom.verificationAuthority === 'semantic_judge').length;
+      semanticLoadByScene.set(task.sceneId, (semanticLoadByScene.get(task.sceneId) ?? 0) + semanticClaims);
+    }
+    for (const [sceneId, semanticClaims] of semanticLoadByScene) {
+      if (semanticClaims <= MAX_BLOCKING_PREMISE_PROPOSITIONS_PER_SCENE) continue;
+      issues.push({
+        code: 'semantic_premise_capacity_exceeded',
+        severity: 'error',
+        message: `Scene "${sceneId}" owns ${semanticClaims} blocking premise propositions; the per-scene capacity is ${MAX_BLOCKING_PREMISE_PROPOSITIONS_PER_SCENE}. Recompile premise propositions or distribute the contracts before scene generation.`,
+        sceneId,
+      });
+    }
+  }
   for (const seed of graph.seedContracts ?? []) {
     for (const stateId of seed.stateContractIds) {
       if (!stateIds.has(stateId.replace(/^state:/, '').replace(/-+/g, '_')) && !stateIds.has(stateId)) {
@@ -1934,7 +1994,7 @@ export function compileNarrativeContractGraph(
   const dedupedDependencies = [...new Map(dependencies.map((dependency) => [dependency.id, dependency])).values()];
   const characterPresenceContracts = compileCharacterPresenceContracts(plan, scenePlan);
   const identityScheduleContracts = compileIdentityScheduleContracts(plan, characterPresenceContracts);
-  const premiseContracts = compilePremiseContracts(plan, scenes);
+  const premiseContracts = compilePremiseContracts(plan, scenes, scenePlan.semanticEventIr);
   const stateContracts = compileStateContracts(plan);
   const seedContracts = compileSeedContracts(plan, stateContracts);
   const transitionContracts = compileTransitionContracts(scenes);
@@ -1971,6 +2031,21 @@ export function compileNarrativeContractGraph(
     compilationIssues.push(...episodeOrder.issues);
   }
   graph.events = orderedGraphEvents;
+  if (scenePlan.semanticEventIr) {
+    const semanticValidation = validateAuthoredEventSemanticIR(
+      scenePlan.semanticEventIr,
+      semanticContractEventSeeds(graph),
+      knownLocations,
+      semanticContractPremiseSeeds(graph),
+    );
+    if (!semanticValidation.passed) {
+      compilationIssues.push(...semanticValidation.issues.map((message) => ({
+        code: 'semantic_contract_ir_invalid',
+        severity: 'error' as const,
+        message,
+      })));
+    }
+  }
   graph.realizationTasks = compileNarrativeRealizationTasks(graph, scenes);
   graph.sourceHash = stableHash({
     compilerVersion: graph.compilerVersion,

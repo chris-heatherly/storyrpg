@@ -418,6 +418,51 @@ describe('ContentGenerationPhase treatment density gate', () => {
 });
 
 describe('ContentGenerationPhase canonical owner transaction', () => {
+  it('returns owner-stage semantic uncertainty to the repair loop but blocks it at final regression', async () => {
+    const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
+    const phase = new ContentGenerationPhase({
+      semanticRealizationJudge: {
+        identity: () => ({ policyVersion: 'test-v2', provider: 'test', model: 'test' }),
+        execute: async (claims: Array<{ id: string; criteria: string[] }>) => ({
+          success: true,
+          data: { verdicts: claims.map((claim) => ({
+            id: claim.id,
+            verdict: 'uncertain',
+            evidenceRefs: [],
+            evidenceQuotes: [],
+            missingCriteria: claim.criteria,
+            rationale: 'The evidence is ambiguous.',
+          })) },
+        }),
+      },
+    } as never);
+    const realizationTask = {
+      id: 'task:premise:role', contractId: 'premise:role', sourceKinds: ['premise'], episodeNumber: 1,
+      ownerStage: 'scene_writer', repairHandler: 'premise_realization', sceneId: 's1',
+      evidenceAtoms: [{
+        id: 'premise:role:semantic:1', description: 'Kylie works as a food writer.',
+        acceptedPatterns: ['food writer'], kind: 'semantic', verificationAuthority: 'semantic_judge',
+        semanticCriteria: ['Kylie has professional writing work'], required: true,
+      }],
+      minimumEvidenceHits: 1,
+      target: { scope: 'owner', surfaces: ['beat_text'] },
+      sourceContractIds: ['treatment:kylie-role'], blocking: true,
+    };
+    const validationInput = {
+      sceneId: 's1', tasks: [realizationTask], sceneContent: { beats: [{ text: 'Kylie studies the blank page.' }] },
+      currentStage: 'scene_writer', candidateHash: 'candidate-1',
+    };
+
+    await expect((phase as any).validateNarrativeRealization({ ...validationInput, mode: 'owner' }))
+      .resolves.toMatchObject({ findings: [{ code: 'SEMANTIC_VALIDATION_INCONCLUSIVE' }] });
+    await expect((phase as any).validateNarrativeRealization({ ...validationInput, mode: 'final_regression' }))
+      .rejects.toMatchObject({
+        code: 'semantic_validation_inconclusive',
+        retryClass: 'repair_final_contract',
+        repairTarget: 'task:premise:role',
+      });
+  });
+
   it('does not run ChoiceAuthor or mark the scene complete after unresolved prose ownership', async () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
     const calls: string[] = [];

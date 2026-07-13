@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { SeasonPlan } from '../../types/seasonPlan';
 import type { PlannedScene, SeasonScenePlan } from '../../types/scenePlan';
 import type { EpisodeSpineContract } from '../../types/episodeSpine';
+import type { AuthoredEventSemanticIR } from '../../types/narrativeContract';
 import {
   applyEpisodeEventPlans,
   assertSelectedEpisodeEventPlansExecutable,
@@ -11,6 +12,13 @@ import {
   projectSetupPayoffEdgesFromGraph,
   validateCanonicalEpisodeBlueprintProjection,
 } from './narrativeContractCompiler';
+import {
+  SEMANTIC_CONTRACT_IR_POLICY_VERSION,
+  semanticContractEventSeeds,
+  semanticContractPremiseSeeds,
+  semanticContractPremiseSourceHash,
+  semanticContractSourceHash,
+} from './semanticContractIr';
 
 function scene(overrides: Partial<PlannedScene> & Pick<PlannedScene, 'id' | 'episodeNumber' | 'order'>): PlannedScene {
   return {
@@ -631,6 +639,112 @@ describe('NarrativeContractCompiler', () => {
       timeRequirement: { canonicalValue: 'night', required: true },
     });
     expect(canonical.sourceHash).toBe(compileNarrativeContractGraph(planned, scenePlan(scenes)).sourceHash);
+  });
+
+  it('distributes blocking opening premises across the first two scenes', () => {
+    const planned = plan([1]);
+    planned.protagonist = { id: 'protagonist', name: 'Avery', description: '' };
+    planned.characterTreatmentContracts = [
+      ['identity', 'Name and pronouns', 'Avery Chen uses she/her pronouns.', 'canonical_identity'],
+      ['role', 'Role in the world', 'Avery is a food writer starting over.', 'role_fact'],
+      ['wound', 'Defining wound', 'Avery still carries the humiliation of a public cancellation.', 'wound_pressure'],
+      ['starting-identity', 'Starting identity', 'Avery keeps herself small when attention turns toward her.', 'starting_identity'],
+    ].map(([id, fieldName, sourceText, contractKind]) => ({
+      id: `character-${id}`,
+      source: 'treatment' as const,
+      subject: 'protagonist' as const,
+      characterId: 'protagonist',
+      characterName: 'Avery',
+      fieldName,
+      sourceText,
+      contractKind: contractKind as 'canonical_identity' | 'role_fact' | 'wound_pressure' | 'starting_identity',
+      requiredRealization: ['scene_turn', 'final_prose'] as Array<'scene_turn' | 'final_prose'>,
+      targetEpisodeNumbers: [1],
+      targetSceneIds: ['ep1-opening'],
+      targetEndingIds: [],
+      blockingLevel: 'treatment' as const,
+    }));
+    const scenes = [
+      scene({ id: 'ep1-opening', episodeNumber: 1, order: 0 }),
+      scene({ id: 'ep1-followup', episodeNumber: 1, order: 1 }),
+    ];
+
+    const graph = compileNarrativeContractGraph(planned, scenePlan(scenes));
+    const targets = (graph.premiseContracts ?? []).map((contract) => contract.targetSceneIds[0]);
+    const load = targets.reduce<Record<string, number>>((counts, sceneId) => {
+      counts[sceneId] = (counts[sceneId] ?? 0) + 1;
+      return counts;
+    }, {});
+
+    expect(new Set(targets)).toEqual(new Set(['ep1-opening', 'ep1-followup']));
+    expect(load).toEqual({ 'ep1-opening': 2, 'ep1-followup': 2 });
+    expect(graph.realizationTasks?.filter((task) => task.sourceKinds?.includes('premise'))).toHaveLength(4);
+  });
+
+  it('rejects a semantically compiled scene that exceeds the blocking premise claim budget', () => {
+    const planned = plan([1]);
+    planned.protagonist = { id: 'protagonist', name: 'Avery', description: '' };
+    planned.characterTreatmentContracts = [
+      ['identity', 'Name and pronouns', 'Avery Chen uses she and her pronouns.', 'canonical_identity'],
+      ['role', 'Role in the world', 'Avery is a food writer starting over.', 'role_fact'],
+      ['wound', 'Defining wound', 'Avery carries the humiliation of a public cancellation.', 'wound_pressure'],
+      ['starting-identity', 'Starting identity', 'Avery keeps herself small when attention turns toward her.', 'starting_identity'],
+    ].map(([id, fieldName, sourceText, contractKind]) => ({
+      id: `character-${id}`, source: 'treatment' as const, subject: 'protagonist' as const,
+      characterId: 'protagonist', characterName: 'Avery', fieldName, sourceText,
+      contractKind: contractKind as 'canonical_identity' | 'role_fact' | 'wound_pressure' | 'starting_identity',
+      requiredRealization: ['scene_turn', 'final_prose'] as Array<'scene_turn' | 'final_prose'>,
+      targetEpisodeNumbers: [1], targetSceneIds: ['ep1-opening'], targetEndingIds: [], blockingLevel: 'treatment' as const,
+    }));
+    const scenes = [scene({ id: 'ep1-opening', episodeNumber: 1, order: 0 })];
+    const bootstrapPlan = scenePlan(scenes);
+    const bootstrapGraph = compileNarrativeContractGraph(planned, bootstrapPlan);
+    const eventSeeds = semanticContractEventSeeds(bootstrapGraph);
+    const premiseSeeds = semanticContractPremiseSeeds(bootstrapGraph);
+    const semanticEventIr: AuthoredEventSemanticIR = {
+      version: 1,
+      policyVersion: SEMANTIC_CONTRACT_IR_POLICY_VERSION,
+      provider: 'gemini',
+      model: 'gemini-test',
+      sourceHash: semanticContractSourceHash(eventSeeds),
+      events: eventSeeds.map((event) => ({
+        ...event,
+        propositions: event.sources.map((source, index) => ({
+          id: `${event.eventId}:semantic:${index + 1}`,
+          sourceId: source.id,
+          sourceSpan: source.text,
+          proposition: source.text,
+          semanticRole: 'action' as const,
+          participantIds: [],
+          semanticCriteria: ['The authored scene event occurs'],
+          prerequisitePropositionIds: [],
+          referencedLocations: [],
+          required: true,
+        })),
+      })),
+      premiseSourceHash: semanticContractPremiseSourceHash(premiseSeeds),
+      premises: premiseSeeds.map((premise) => ({
+        premiseId: premise.premiseId,
+        sourceText: premise.sourceText,
+        minimumEvidenceHits: 1,
+        propositions: Array.from({ length: 4 }, (_, index) => ({
+          id: `${premise.premiseId}:semantic:${index + 1}`,
+          sourceSpan: premise.sourceText,
+          proposition: `${premise.sourceText} This is proposition ${index + 1}.`,
+          semanticCriteria: ['The complete authored premise is established'],
+          verificationAuthority: 'semantic_judge' as const,
+          required: true,
+        })),
+      })),
+    };
+
+    const graph = compileNarrativeContractGraph(planned, { ...bootstrapPlan, semanticEventIr });
+
+    expect(graph.validation.passed).toBe(false);
+    expect(graph.validation.issues).toContainEqual(expect.objectContaining({
+      code: 'semantic_premise_capacity_exceeded',
+      sceneId: 'ep1-opening',
+    }));
   });
 
   it('compiles explicit continuity-state changes into the receiving transition', () => {

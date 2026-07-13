@@ -38,6 +38,7 @@ import { QARunner, QAReport, ContinuityChecker } from '../agents/QAAgents';
 import { SemanticRealizationJudge } from '../agents/SemanticRealizationJudge';
 import {
   semanticContractEventSeeds,
+  semanticContractPremiseSeeds,
   validateAuthoredEventSemanticIR,
 } from './semanticContractIr';
 import { stableHash } from './artifacts/store';
@@ -110,7 +111,7 @@ import {
   PixarStakes, CinematicImageDescription, EncounterVisualContract
 } from '../../types';
 import { PipelineEvent, PipelineEventHandler } from './events';
-import { commitEpisodeGenerationAfterLock, emitEpisodeGenerationStart, handleEpisodeGenerationFailure } from './episodeGenerationEvents';
+import { commitEpisodeGenerationAfterLock, emitEpisodeGenerationStart, episodeFailureMetadataFromError, handleEpisodeGenerationFailure, type EpisodeGenerationResult } from './episodeGenerationEvents';
 import {
   type GenerationPlan,
   applyEventToPlan,
@@ -590,6 +591,7 @@ export interface FullPipelineResult {
   // Pipeline metadata
   events: PipelineEvent[];
   error?: string;
+  failure?: import('./episodeGenerationEvents').EpisodeFailureMetadata;
   duration?: number;
 
   // Output files
@@ -665,13 +667,6 @@ type AuthoredEpisodeArtifacts = {
   choiceSets: ChoiceSet[];
   encounters: Map<string, EncounterStructure>;
   validationExecutionRecords?: import('../../types/validation').ValidatorExecutionRecord[];
-};
-
-type EpisodeGenerationResult = {
-  episodeNumber: number;
-  title: string;
-  success: boolean;
-  error?: string;
 };
 
 type GeneratedEpisodeFromOutlineResult = Partial<AuthoredEpisodeArtifacts> & {
@@ -4925,6 +4920,7 @@ export class FullStoryPipeline {
         semanticScenePlan.semanticEventIr,
         semanticContractEventSeeds(semanticGraph),
         knownLocations,
+        semanticContractPremiseSeeds(semanticGraph),
       );
       const graphIrMatches = stableHash(semanticGraph.semanticEventIr) === stableHash(semanticScenePlan.semanticEventIr);
       if (!semanticValidation.passed || !graphIrMatches) {
@@ -5275,7 +5271,7 @@ export class FullStoryPipeline {
       // optional media agents run only after story authoring + QA complete.
       const episodes: Episode[] = [];
       const authoredEpisodeArtifacts: AuthoredEpisodeArtifacts[] = [];
-      const episodeResults: Array<{ episodeNumber: number; title: string; success: boolean; error?: string }> = [];
+      const episodeResults: EpisodeGenerationResult[] = [];
       const episodeQAReports: QAReport[] = [];
       const episodeBPReports: ComprehensiveValidationReport[] = [];
       const episodeSpecs = episodesToGenerate
@@ -5716,6 +5712,7 @@ export class FullStoryPipeline {
               phase: `episode_${r.episodeNumber}`,
               message: r.error || 'Unknown error',
               episodeNumber: r.episodeNumber,
+              details: r.failure ? { ...r.failure } : undefined,
             }))
           );
           // F4: early-return path — record the failed run in the quality ledger.
@@ -5751,6 +5748,7 @@ export class FullStoryPipeline {
           checkpoints: this.checkpoints,
           events: this.events,
           error: failMsg,
+          failure: episodeResults.find((result) => result.failure)?.failure,
           duration: Date.now() - startTime,
           outputDirectory,
         };
@@ -5777,6 +5775,7 @@ export class FullStoryPipeline {
               phase: `episode_${result.episodeNumber}`,
               message: result.error || 'Unknown error',
               episodeNumber: result.episodeNumber,
+              details: result.failure ? { ...result.failure } : undefined,
             }))
           );
           // F4: this episode-failure path returns early (never reaches the
@@ -5796,6 +5795,7 @@ export class FullStoryPipeline {
           checkpoints: this.checkpoints,
           events: this.events,
           error: failMsg,
+          failure: failedEpisodeResults.find((result) => result.failure)?.failure,
           duration: Date.now() - startTime,
           outputDirectory,
         };
@@ -6122,12 +6122,10 @@ export class FullStoryPipeline {
           // message. PipelineError carries .context (e.g. the final story
           // contract's blocking issues); ValidationError carries .issues (e.g.
           // the specific treatment-fidelity anchors that drifted).
-          let details: Record<string, unknown> | undefined;
-          if (error instanceof PipelineError && error.context) {
-            details = error.context;
-          } else if (error instanceof ValidationError && error.issues?.length) {
-            details = { issues: error.issues };
-          }
+          const failure = episodeFailureMetadataFromError(error);
+          const details: Record<string, unknown> | undefined = failure
+            ? { ...failure }
+            : error instanceof ValidationError && error.issues?.length ? { issues: error.issues } : undefined;
           await savePipelineErrorLog(this._currentOutputDirectory, [{
             timestamp: new Date().toISOString(),
             phase: 'pipeline_abort',
@@ -6158,6 +6156,7 @@ export class FullStoryPipeline {
         checkpoints: this.checkpoints,
         events: this.events,
         error: errorMessage,
+        failure: episodeFailureMetadataFromError(error),
         duration: Date.now() - startTime,
       };
     }

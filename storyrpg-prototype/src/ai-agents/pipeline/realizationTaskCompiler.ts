@@ -86,6 +86,8 @@ function premiseAtoms(contract: NonNullable<NarrativeContractGraph['premiseContr
       acceptedPatterns: [...atom.acceptedPatterns],
       sourceText: atom.sourceText,
       kind: 'semantic',
+      verificationAuthority: atom.verificationAuthority,
+      semanticCriteria: atom.semanticCriteria,
       required: atom.required,
     }));
   }
@@ -615,6 +617,7 @@ export function compileNarrativeRealizationTasks(
     tasks.push({
       id: `task:${premise.id}`,
       contractId: premise.id,
+      sourceKinds: ['premise'],
       episodeNumber: premise.episodeNumber,
       ownerStage: execution.ownerStage,
       repairHandler: execution.repairHandler,

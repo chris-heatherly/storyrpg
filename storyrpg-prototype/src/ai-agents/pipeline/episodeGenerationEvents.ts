@@ -1,10 +1,32 @@
 import type { PipelineEvent } from './events';
+import { PipelineError, type PipelineFailureMetadata } from './errors';
+
+export interface EpisodeFailureMetadata extends PipelineFailureMetadata {
+  phase: string;
+  context?: Record<string, unknown>;
+}
 
 export interface EpisodeGenerationResult {
   episodeNumber: number;
   title: string;
   success: boolean;
   error?: string;
+  failure?: EpisodeFailureMetadata;
+}
+
+export function episodeFailureMetadataFromError(error: unknown): EpisodeFailureMetadata | undefined {
+  return error instanceof PipelineError
+    ? {
+        phase: error.phase,
+        code: error.code,
+        ownerStage: error.ownerStage,
+        retryClass: error.retryClass,
+        issueCodes: error.issueCodes,
+        artifactRefs: error.artifactRefs,
+        repairTarget: error.repairTarget,
+        context: error.context,
+      }
+    : undefined;
 }
 
 type EmitPipelineEvent = (event: Omit<PipelineEvent, 'timestamp'>) => void;
@@ -30,12 +52,13 @@ export function handleEpisodeGenerationFailure(input: {
   emit: EmitPipelineEvent;
 }): null {
   const message = input.error instanceof Error ? input.error.message : String(input.error);
-  input.results.push({ episodeNumber: input.episodeNumber, title: input.title, success: false, error: message });
+  const failure = episodeFailureMetadataFromError(input.error);
+  input.results.push({ episodeNumber: input.episodeNumber, title: input.title, success: false, error: message, failure });
   input.emit({
     type: 'error',
     phase: `episode_${input.episodeNumber}`,
     message: `Episode ${input.episodeNumber} failed: ${message}`,
-    data: { episodeNumber: input.episodeNumber, error: message },
+    data: { episodeNumber: input.episodeNumber, error: message, failure },
   });
   if (input.strict) throw input.error;
   return null;

@@ -105,15 +105,77 @@ describe('semanticValidationCoordinator', () => {
     expect(result.receipt.semanticVerdicts?.[0]?.sampleCount).toBe(2);
   });
 
-  it('treats an invented evidence quote as validation infrastructure uncertainty', async () => {
+  it('derives evidence quotes from valid addressable citations', async () => {
     const judge = new FakeJudge((claim) => verdict(claim, 'fulfilled', 'a quote that is not present'));
     const result = await validateSemanticRealizationTasks({
       sceneId: 's1', tasks: [task()], sceneContent: { beats: [{ text: 'They sit in silence.' }] }, judge,
     });
 
-    expect(result.findings[0]?.code).toBe('SEMANTIC_VALIDATION_INCONCLUSIVE');
+    expect(result.findings).toEqual([]);
     expect(result.receipt.semanticVerdicts?.[0]).toMatchObject({
-      disposition: 'inconclusive', verdict: 'uncertain', sampleCount: 2,
+      disposition: 'confirmed', verdict: 'fulfilled', sampleCount: 1,
+      evidenceQuotes: ['They sit in silence.'],
+    });
+  });
+
+  it('does not let unused uncertain alternatives block a satisfied threshold contract', async () => {
+    const thresholdTask = task({
+      id: 'task:premise:role',
+      minimumEvidenceHits: 2,
+      evidenceAtoms: [
+        { id: 'atom:writer', description: 'Kylie is a writer.', acceptedPatterns: ['writer'], kind: 'semantic', verificationAuthority: 'semantic_judge', required: true },
+        { id: 'atom:arrival', description: 'Kylie has newly arrived.', acceptedPatterns: ['arrived'], kind: 'semantic', verificationAuthority: 'semantic_judge', required: true },
+        { id: 'atom:background', description: 'Kylie has Romanian ancestry.', acceptedPatterns: ['Romanian ancestry'], kind: 'semantic', verificationAuthority: 'semantic_judge', required: true },
+      ],
+    });
+    const judge = new FakeJudge((claim) => claim.atomId === 'atom:background'
+      ? verdict(claim, 'uncertain')
+      : verdict(claim, 'fulfilled', claim.atomId === 'atom:writer' ? 'writer' : 'arrived'));
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1',
+      tasks: [thresholdTask],
+      sceneContent: { beats: [{ text: 'The newly arrived writer studies the room.' }] },
+      judge,
+    });
+
+    expect(result.findings).toEqual([]);
+    expect(result.receipt.semanticVerdicts?.find((item) => item.atomId === 'atom:background')).toMatchObject({
+      disposition: 'inconclusive',
+      sampleCount: 3,
+    });
+  });
+
+  it('lets focused adjudication resolve two inconclusive samples', async () => {
+    let executeCalls = 0;
+    let adjudicationCalls = 0;
+    const judge: SemanticRealizationJudgeLike = {
+      identity: () => ({ policyVersion: 'test-v2', provider: 'test', model: 'test-judge' }),
+      execute: async (claims) => {
+        executeCalls += 1;
+        return { success: true, data: { verdicts: claims.map((claim) => verdict(claim, 'uncertain')) } };
+      },
+      adjudicate: async (claim) => {
+        adjudicationCalls += 1;
+        return { success: true, data: { verdicts: [verdict(claim, 'fulfilled', 'Dusk Club is born')] } };
+      },
+    };
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1',
+      tasks: [task()],
+      sceneContent: { beats: [{ text: 'With a toast, the Dusk Club is born.' }] },
+      judge,
+    });
+
+    expect(executeCalls).toBe(2);
+    expect(adjudicationCalls).toBe(1);
+    expect(result.findings).toEqual([]);
+    expect(result.receipt.semanticVerdicts?.[0]).toMatchObject({
+      disposition: 'confirmed',
+      verdict: 'fulfilled',
+      sampleCount: 3,
+      executionStatus: 'decided',
     });
   });
 

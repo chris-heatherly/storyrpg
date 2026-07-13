@@ -113,6 +113,74 @@ describe('SemanticContractCompilerAgent', () => {
     expect(options?.jsonSchema?.name).toBe('authored_event_semantic_contracts');
   });
 
+  it('compiles authored premises into complete propositions instead of vocabulary atoms', async () => {
+    const plan = scenePlan();
+    plan.narrativeContractGraph!.premiseContracts = [{
+      id: 'premise:kylie-starting-identity',
+      episodeNumber: 1,
+      fieldName: 'Starting identity',
+      fieldKind: 'starting_identity',
+      sourceText: 'Kylie watches the room and second-guesses herself before acting.',
+      evidencePatterns: ['watches', 'second-guesses'],
+      minimumEvidenceHits: 1,
+      targetSceneIds: ['scene-1'],
+      requiredSurface: ['beat_text'],
+      sourceContractIds: ['treatment:kylie'],
+      blocking: true,
+      provenance: { source: 'treatment', confidence: 'authoritative' },
+    }];
+    const agent = new SemanticContractCompilerAgent({
+      provider: 'gemini', model: 'gemini-test', apiKey: 'test', maxTokens: 4096, temperature: 0,
+    });
+    const call = vi.fn(async (_messages: unknown, _attempts: unknown, options: { jsonSchema?: { name?: string } }) => {
+      if (options.jsonSchema?.name === 'authored_premise_semantic_contracts') {
+        return JSON.stringify({ premises: [{
+          premiseId: 'premise:kylie-starting-identity',
+          minimumEvidenceHits: 1,
+          propositions: [{
+            propositionId: 'p1',
+            sourceSpan: 'Kylie watches the room and second-guesses herself before acting.',
+            proposition: 'Kylie habitually observes and doubts herself before she acts.',
+            semanticCriteria: ['Kylie observes before participating', 'Her self-doubt delays action'],
+            verificationAuthority: 'semantic_judge',
+            required: true,
+          }],
+        }] });
+      }
+      return JSON.stringify({ events: [{
+        eventId: 'event:ep1:rescue',
+        propositions: [{
+          propositionId: 'p1', sourceId: 'event:ep1:rescue:source:1',
+          sourceSpan: 'Kylie rescues Iulia in the park',
+          proposition: 'Kylie completes Iulia\'s rescue in the park.', semanticRole: 'action',
+          participantIds: ['Kylie', 'Iulia'], semanticCriteria: ['Kylie completes the rescue'],
+          prerequisitePropositionIds: [], referencedLocations: [], required: true,
+        }, {
+          propositionId: 'p2', sourceId: 'event:ep1:rescue:source:1',
+          sourceSpan: 'then writes about the attack at home',
+          proposition: 'Kylie later writes about the attack at home.', semanticRole: 'aftermath',
+          participantIds: ['Kylie'], semanticCriteria: ['Kylie writes about the attack after the rescue'],
+          prerequisitePropositionIds: ['p1'], referencedLocations: [], required: true,
+        }],
+      }] });
+    });
+    (agent as any).callLLM = call;
+
+    const result = await agent.execute(plan);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.premises?.[0]).toMatchObject({
+      premiseId: 'premise:kylie-starting-identity',
+      minimumEvidenceHits: 1,
+      propositions: [{
+        id: 'premise:kylie-starting-identity:semantic:1',
+        proposition: 'Kylie habitually observes and doubts herself before she acts.',
+      }],
+    });
+    expect(result.data?.premises?.[0].propositions.some((proposition) => proposition.proposition === 'herself')).toBe(false);
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
   it('retries the same bounded batch when source provenance is invalid', async () => {
     const agent = new SemanticContractCompilerAgent({
       provider: 'gemini', model: 'gemini-test', apiKey: 'test', maxTokens: 4096, temperature: 0,

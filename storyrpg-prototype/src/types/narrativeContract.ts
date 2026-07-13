@@ -150,6 +150,22 @@ export interface AuthoredEventSemanticContract {
   propositions: AuthoredEventSemanticProposition[];
 }
 
+export interface AuthoredPremiseSemanticProposition {
+  id: string;
+  sourceSpan: string;
+  proposition: string;
+  semanticCriteria: string[];
+  verificationAuthority: Extract<NarrativeVerificationAuthority, 'literal' | 'semantic_judge'>;
+  required: boolean;
+}
+
+export interface AuthoredPremiseSemanticContract {
+  premiseId: string;
+  sourceText: string;
+  minimumEvidenceHits: number;
+  propositions: AuthoredPremiseSemanticProposition[];
+}
+
 /**
  * Persisted interpretive IR. An LLM decomposes authored events into semantic
  * propositions; deterministic code only validates provenance and projects the
@@ -162,6 +178,8 @@ export interface AuthoredEventSemanticIR {
   model: string;
   sourceHash: string;
   events: AuthoredEventSemanticContract[];
+  premiseSourceHash?: string;
+  premises?: AuthoredPremiseSemanticContract[];
 }
 
 export interface NarrativeEvidenceGroup {
@@ -306,6 +324,9 @@ export interface NarrativePremiseEvidenceAtom {
   acceptedPatterns: string[];
   required: boolean;
   sourceText: string;
+  sourceSpan?: string;
+  semanticCriteria?: string[];
+  verificationAuthority?: Extract<NarrativeVerificationAuthority, 'literal' | 'semantic_judge'>;
 }
 
 export interface NarrativePremiseContract {

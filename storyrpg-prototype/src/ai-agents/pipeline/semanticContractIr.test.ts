@@ -4,6 +4,8 @@ import {
   SEMANTIC_CONTRACT_IR_POLICY_VERSION,
   semanticAtomsForEvent,
   semanticContractEventSeeds,
+  semanticContractPremiseSeeds,
+  semanticContractPremiseSourceHash,
   semanticContractSourceHash,
   validateAuthoredEventSemanticIR,
 } from './semanticContractIr';
@@ -102,6 +104,49 @@ describe('semantic contract IR', () => {
       description: 'Stela personally introduces Kylie to the Valescu Club.',
     });
     expect(atoms.flatMap((atom) => atom.acceptedPatterns)).not.toContain('malformed heuristic alternative');
+  });
+
+  it('rejects contextless premise fragments and accepts source-grounded claims', () => {
+    const canonicalGraph = graph();
+    canonicalGraph.premiseContracts = [{
+      id: 'premise:kylie-role', episodeNumber: 1, fieldName: 'Role in the world', fieldKind: 'role_fact',
+      sourceText: 'Kylie is an American food writer rebuilding her life in Bucharest.',
+      evidencePatterns: [], minimumEvidenceHits: 1, targetSceneIds: ['scene-1'], requiredSurface: ['beat_text'],
+      sourceContractIds: ['treatment:kylie'], blocking: true,
+      provenance: { source: 'treatment', confidence: 'authoritative' },
+    }];
+    const premiseSeeds = semanticContractPremiseSeeds(canonicalGraph);
+    const contract = ir();
+    contract.premiseSourceHash = semanticContractPremiseSourceHash(premiseSeeds);
+    contract.premises = [{
+      premiseId: 'premise:kylie-role',
+      sourceText: premiseSeeds[0].sourceText,
+      minimumEvidenceHits: 1,
+      propositions: [{
+        id: 'premise:kylie-role:semantic:1',
+        sourceSpan: 'American food writer',
+        proposition: 'Kylie works as an American food writer.',
+        semanticCriteria: ['Kylie is presented as a professional writer'],
+        verificationAuthority: 'semantic_judge',
+        required: true,
+      }],
+    }];
+    expect(validateAuthoredEventSemanticIR(
+      contract,
+      semanticContractEventSeeds(canonicalGraph),
+      [],
+      premiseSeeds,
+    )).toEqual({ passed: true, issues: [] });
+
+    contract.premises[0].propositions[0].proposition = 'writer';
+    const invalid = validateAuthoredEventSemanticIR(
+      contract,
+      semanticContractEventSeeds(canonicalGraph),
+      [],
+      premiseSeeds,
+    );
+    expect(invalid.passed).toBe(false);
+    expect(invalid.issues.join(' | ')).toContain('independently judgeable subject-predicate claim');
   });
 
   it('rejects stale provenance, invented locations, and non-monotonic prerequisites', () => {

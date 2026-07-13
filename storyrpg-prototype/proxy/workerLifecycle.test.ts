@@ -72,6 +72,35 @@ describe('workerLifecycle resume checkpoint normalization', () => {
     )).toBe(false);
   });
 
+  it('preserves typed semantic failure ownership and receipt references', () => {
+    expect(__test__.buildFailureContextFromEvent({
+      message: 'Semantic validation remained inconclusive.',
+      failurePhase: 'scene_content',
+      failureStepId: 'scene_writer:premise_realization',
+      failureKind: 'pipeline',
+      failureArtifactKey: 'episode-1-scene-s1-semantic-validation.json',
+      resumeFromStepId: 'scene_writer:premise_realization',
+      context: {
+        failureCode: 'semantic_validation_inconclusive',
+        failureOwnerStage: 'scene_writer',
+        retryClass: 'repair_final_contract',
+        issueCodes: ['premise_not_realized'],
+        artifactRefs: ['episode-1-scene-s1-semantic-validation.json'],
+        repairTarget: 'premise_realization',
+      },
+      timestamp: '2026-07-13T23:00:00.000Z',
+    })).toMatchObject({
+      failureCode: 'semantic_validation_inconclusive',
+      failureOwnerStage: 'scene_writer',
+      retryClass: 'repair_final_contract',
+      issueCodes: ['premise_not_realized'],
+      artifactRefs: ['episode-1-scene-s1-semantic-validation.json'],
+      repairTarget: 'premise_realization',
+      failureArtifactKey: 'episode-1-scene-s1-semantic-validation.json',
+      resumeFromStepId: 'scene_writer:premise_realization',
+    });
+  });
+
   it('marks durable checkpoint outputs completed so resume reuses foundation artifacts', () => {
     const normalized = __test__.normalizeResumeStepsForOutputs(
       {

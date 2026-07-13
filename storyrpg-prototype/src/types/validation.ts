@@ -399,6 +399,14 @@ export interface ValidatorExecutionRecord {
       sampleCount: number;
       executionStatus?: 'decided' | 'inconclusive' | 'provider_unavailable' | 'malformed_output' | 'policy_error';
       evidenceHashes?: string[];
+      samples?: Array<{
+        verdict: 'fulfilled' | 'partial' | 'not_fulfilled' | 'contradicted' | 'uncertain';
+        evidenceRefs: string[];
+        evidenceQuotes: string[];
+        missingCriteria: string[];
+        responseHash: string;
+        executionStatus: 'decided' | 'provider_unavailable' | 'malformed_output' | 'policy_error';
+      }>;
     }>;
   };
   issues: ValidatorExecutionIssue[];

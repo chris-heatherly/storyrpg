@@ -523,6 +523,8 @@ export interface ContentGenerationPhaseDeps {
 
 export class ContentGenerationPhase {
   readonly name = 'content_generation';
+  private outputDirectory?: string;
+  private episodeNumber?: number;
 
   constructor(private readonly deps: ContentGenerationPhaseDeps) {}
 
@@ -541,6 +543,24 @@ export class ContentGenerationPhase {
       ...input,
       judge: this.deps.semanticRealizationJudge,
     });
+    const combinedFindings = [...deterministicFindings, ...semantic.findings];
+    let receiptRef: string | undefined;
+    if (this.outputDirectory) {
+      const ownerStage = input.currentStage ?? 'scene_regression';
+      const candidateHash = semantic.receipt.candidateHash;
+      receiptRef = `episode-${this.episodeNumber ?? 1}-scene-${input.sceneId.replace(/[^a-z0-9_-]+/gi, '-')}-semantic-validation-${ownerStage}-${candidateHash.slice(0, 12)}.json`;
+      await saveEarlyDiagnostic(this.outputDirectory, receiptRef, {
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        episodeNumber: this.episodeNumber,
+        sceneId: input.sceneId,
+        ownerStage,
+        mode: input.mode ?? 'owner',
+        candidateHash,
+        findings: combinedFindings,
+        receipt: semantic.receipt,
+      });
+    }
     const unavailable = semantic.findings.filter((finding) => finding.code === 'SEMANTIC_VALIDATION_UNAVAILABLE');
     if (unavailable.length > 0) {
       throw new PipelineError(
@@ -554,14 +574,14 @@ export class ContentGenerationPhase {
             ownerStage: input.currentStage ?? 'scene_content',
             retryClass: 'retry_provider',
             issueCodes: ['SEMANTIC_VALIDATION_UNAVAILABLE'],
-            artifactRefs: [],
+            artifactRefs: receiptRef ? [receiptRef] : [],
             repairTarget: unavailable[0]?.taskId ?? input.sceneId,
           },
         },
       );
     }
     const inconclusive = semantic.findings.filter((finding) => finding.code === 'SEMANTIC_VALIDATION_INCONCLUSIVE');
-    if (inconclusive.length > 0) {
+    if (inconclusive.length > 0 && input.mode === 'final_regression') {
       throw new PipelineError(
         `[SemanticValidationInconclusive] ${input.sceneId} could not obtain a stable semantic verdict; content was not regenerated.`,
         'validation',
@@ -571,15 +591,15 @@ export class ContentGenerationPhase {
           failure: {
             code: 'semantic_validation_inconclusive',
             ownerStage: input.currentStage ?? 'scene_content',
-            retryClass: 'none',
+            retryClass: 'repair_final_contract',
             issueCodes: ['SEMANTIC_VALIDATION_INCONCLUSIVE'],
-            artifactRefs: [],
+            artifactRefs: receiptRef ? [receiptRef] : [],
             repairTarget: inconclusive[0]?.taskId ?? input.sceneId,
           },
         },
       );
     }
-    return { findings: [...deterministicFindings, ...semantic.findings], semanticReceipt: semantic.receipt };
+    return { findings: combinedFindings, semanticReceipt: semantic.receipt };
   }
 
   private async memoryContextFor(
@@ -745,6 +765,8 @@ export class ContentGenerationPhase {
     episodeNumber: number | undefined,
     context: PipelineContext
   ): Promise<ContentGenerationResult> {
+    this.outputDirectory = outputDirectory;
+    this.episodeNumber = episodeNumber ?? brief.episode.number;
     const sceneContents: SceneContent[] = [];
     const choiceSets: ChoiceSet[] = [];
     // Phase 1 (Season Canon): flags planted by EARLIER scenes this episode, fed

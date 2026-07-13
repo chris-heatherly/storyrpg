@@ -2,13 +2,14 @@ import type {
   AuthoredEventSemanticContract,
   AuthoredEventSemanticIR,
   AuthoredEventSemanticRole,
+  AuthoredPremiseSemanticContract,
   NarrativeContractGraph,
   NarrativeEvidenceAtom,
   NarrativeEventContract,
 } from '../../types/narrativeContract';
 import { stableHash } from './artifacts/store';
 
-export const SEMANTIC_CONTRACT_IR_POLICY_VERSION = 'semantic-contract-ir-v1';
+export const SEMANTIC_CONTRACT_IR_POLICY_VERSION = 'semantic-contract-ir-v2';
 
 const SEMANTIC_ROLES: ReadonlySet<AuthoredEventSemanticRole> = new Set([
   'action',
@@ -28,6 +29,13 @@ export interface SemanticContractEventSeed {
   eventId: string;
   sourceText: string;
   sources: Array<{ id: string; text: string }>;
+}
+
+export interface SemanticContractPremiseSeed {
+  premiseId: string;
+  fieldName: string;
+  fieldKind: string;
+  sourceText: string;
 }
 
 export interface SemanticContractIrValidation {
@@ -84,10 +92,26 @@ export function semanticContractSourceHash(events: SemanticContractEventSeed[]):
   })));
 }
 
+export function semanticContractPremiseSeeds(graph: NarrativeContractGraph): SemanticContractPremiseSeed[] {
+  return (graph.premiseContracts ?? [])
+    .map((premise) => ({
+      premiseId: premise.id,
+      fieldName: premise.fieldName,
+      fieldKind: premise.fieldKind,
+      sourceText: clean(premise.sourceText),
+    }))
+    .sort((left, right) => left.premiseId.localeCompare(right.premiseId));
+}
+
+export function semanticContractPremiseSourceHash(premises: SemanticContractPremiseSeed[]): string {
+  return stableHash(premises);
+}
+
 export function validateAuthoredEventSemanticIR(
   ir: AuthoredEventSemanticIR,
   expectedEvents: SemanticContractEventSeed[],
   knownLocations: string[],
+  expectedPremises?: SemanticContractPremiseSeed[],
 ): SemanticContractIrValidation {
   const issues: string[] = [];
   if (ir.version !== 1) issues.push(`Unsupported semantic IR version ${String(ir.version)}.`);
@@ -166,6 +190,58 @@ export function validateAuthoredEventSemanticIR(
   for (const expected of expectedEvents) {
     if (!actualIds.has(expected.eventId)) issues.push(`Semantic IR is missing depiction event ${expected.eventId}.`);
   }
+  if (expectedPremises) {
+    const expectedPremiseHash = semanticContractPremiseSourceHash(expectedPremises);
+    if (ir.premiseSourceHash !== expectedPremiseHash) {
+      issues.push('Semantic IR premise source hash does not match the authored premise sources.');
+    }
+    const expectedPremiseById = new Map(expectedPremises.map((premise) => [premise.premiseId, premise]));
+    const actualPremiseIds = new Set<string>();
+    for (const premise of ir.premises ?? []) {
+      if (actualPremiseIds.has(premise.premiseId)) {
+        issues.push(`Semantic IR duplicates premise ${premise.premiseId}.`);
+        continue;
+      }
+      actualPremiseIds.add(premise.premiseId);
+      const expected = expectedPremiseById.get(premise.premiseId);
+      if (!expected) {
+        issues.push(`Semantic IR contains unknown premise ${premise.premiseId}.`);
+        continue;
+      }
+      if (premise.sourceText !== expected.sourceText) issues.push(`Semantic IR changed source text for premise ${premise.premiseId}.`);
+      if (!Array.isArray(premise.propositions) || premise.propositions.length < 1 || premise.propositions.length > 4) {
+        issues.push(`Semantic IR premise ${premise.premiseId} must contain 1-4 propositions.`);
+        continue;
+      }
+      if (!Number.isInteger(premise.minimumEvidenceHits)
+        || premise.minimumEvidenceHits < 1
+        || premise.minimumEvidenceHits > premise.propositions.length) {
+        issues.push(`Semantic IR premise ${premise.premiseId} has an invalid evidence threshold.`);
+      }
+      for (const [index, proposition] of premise.propositions.entries()) {
+        const expectedId = `${premise.premiseId}:semantic:${index + 1}`;
+        if (proposition.id !== expectedId) issues.push(`Premise proposition ${proposition.id || '<missing>'} must have stable id ${expectedId}.`);
+        if (!proposition.sourceSpan || !expected.sourceText.includes(proposition.sourceSpan)) {
+          issues.push(`Premise proposition ${proposition.id} source span is not an exact substring of its authored source.`);
+        }
+        if (clean(proposition.proposition).split(/\s+/).length < 3) {
+          issues.push(`Premise proposition ${proposition.id} is not an independently judgeable subject-predicate claim.`);
+        }
+        if (!Array.isArray(proposition.semanticCriteria)
+          || proposition.semanticCriteria.length < 1
+          || proposition.semanticCriteria.length > 5
+          || proposition.semanticCriteria.some((criterion) => clean(criterion).split(/\s+/).length < 2)) {
+          issues.push(`Premise proposition ${proposition.id} must contain 1-5 meaning-level criteria, not isolated vocabulary.`);
+        }
+        if (proposition.verificationAuthority !== 'literal' && proposition.verificationAuthority !== 'semantic_judge') {
+          issues.push(`Premise proposition ${proposition.id} has invalid verification authority ${String(proposition.verificationAuthority)}.`);
+        }
+      }
+    }
+    for (const expected of expectedPremises) {
+      if (!actualPremiseIds.has(expected.premiseId)) issues.push(`Semantic IR is missing authored premise ${expected.premiseId}.`);
+    }
+  }
   return { passed: issues.length === 0, issues };
 }
 
@@ -200,4 +276,11 @@ export function semanticContractForEvent(
   eventId: string,
 ): AuthoredEventSemanticContract | undefined {
   return ir.events.find((event) => event.eventId === eventId);
+}
+
+export function semanticContractForPremise(
+  ir: AuthoredEventSemanticIR,
+  premiseId: string,
+): AuthoredPremiseSemanticContract | undefined {
+  return ir.premises?.find((premise) => premise.premiseId === premiseId);
 }

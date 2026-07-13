@@ -343,6 +343,29 @@ async function runGeneration(payload: WorkerPayload) {
   // attempt to build a `StoryPackage` for transfer; if encoding fails
   // we fall back to the minimal error shape.
   const resultObj = result as unknown as Record<string, unknown>;
+  const failure = resultObj.failure && typeof resultObj.failure === 'object'
+    ? resultObj.failure as Record<string, unknown>
+    : undefined;
+  const failureStepId = failure
+    ? [failure.ownerStage, failure.repairTarget].filter((value) => typeof value === 'string' && value).join(':')
+    : undefined;
+  const failureTransfer = failure ? {
+    failurePhase: typeof failure.phase === 'string' ? failure.phase : 'generation',
+    failureStepId: failureStepId || (typeof failure.phase === 'string' ? failure.phase : 'generation'),
+    failureKind: 'pipeline',
+    failureArtifactKey: Array.isArray(failure.artifactRefs) ? failure.artifactRefs[0] : undefined,
+    resumeFromStepId: failureStepId || (typeof failure.phase === 'string' ? failure.phase : 'generation'),
+    resumePatchableInputs: ['settings'],
+    context: {
+      ...(failure.context && typeof failure.context === 'object' ? failure.context as Record<string, unknown> : {}),
+      failureCode: failure.code,
+      failureOwnerStage: failure.ownerStage,
+      retryClass: failure.retryClass,
+      issueCodes: failure.issueCodes,
+      artifactRefs: failure.artifactRefs,
+      repairTarget: failure.repairTarget,
+    },
+  } : {};
   const story = resultObj.story as Story | undefined;
   let pkg: StoryPackage | null = null;
   if (story && typeof story === 'object') {
@@ -377,6 +400,7 @@ async function runGeneration(payload: WorkerPayload) {
           checkpointSummary,
           success: result.success === true,
           error: typeof resultObj.error === 'string' ? (resultObj.error as string) : undefined,
+          ...failureTransfer,
         }, { maxEvents: 60 }),
       }
     : {
@@ -388,6 +412,7 @@ async function runGeneration(payload: WorkerPayload) {
         checkpointSummary,
         success: result.success === true,
         error: typeof resultObj.error === 'string' ? (resultObj.error as string) : undefined,
+        ...failureTransfer,
       };
 
   try {

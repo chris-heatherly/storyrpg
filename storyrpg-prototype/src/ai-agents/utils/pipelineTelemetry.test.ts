@@ -172,6 +172,39 @@ describe('buildLlmCallObserver wiring', () => {
     expect(accumulated).toBe(162);
   });
 
+  it('persists reasoning-starvation budgets even when Gemini returns no visible usage', () => {
+    const telemetry = new PipelineTelemetry();
+    const observer = buildLlmCallObserver(telemetry);
+
+    observer({
+      agentName: 'Scene Writer',
+      provider: 'gemini',
+      model: 'gemini-2.5-pro',
+      success: false,
+      durationMs: 12000,
+      queueWaitMs: 0,
+      attempt: 0,
+      schemaName: 'scene_semantic_patch',
+      requestedMaxTokens: 2304,
+      requestedVisibleTokens: 1536,
+      requestedReasoningTokens: 512,
+      thoughtsTokens: 2200,
+      error: 'finishReason=MAX_TOKENS',
+    });
+
+    const ledger = telemetry.getLlmLedger()!;
+    expect(ledger.totals.totalThoughtsTokens).toBe(2200);
+    expect(ledger.byAgent[0].totalThoughtsTokens).toBe(2200);
+    expect(ledger.budgetDiagnostics).toEqual([expect.objectContaining({
+      schemaName: 'scene_semantic_patch',
+      requestedMaxTokens: 2304,
+      requestedVisibleTokens: 1536,
+      requestedReasoningTokens: 512,
+      thoughtsTokens: 2200,
+      success: false,
+    })]);
+  });
+
   it('separates transport success from structured-output acceptance', () => {
     const telemetry = new PipelineTelemetry();
     telemetry.observeProviderCall({

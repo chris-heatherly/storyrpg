@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { structuredMaxTokens } from '../agents/BaseAgent';
+import { resolveStructuredCallBudget, structuredMaxTokens } from '../agents/BaseAgent';
 import { buildSceneContentJsonSchema } from './sceneContentSchema';
 import { buildWorldBibleJsonSchema, buildWorldLocationsJsonSchema } from './worldBibleSchema';
 import { buildCharacterBibleJsonSchema } from './characterBibleSchema';
@@ -33,6 +33,44 @@ describe('structuredMaxTokens clamp', () => {
 
   it('floors at 256', () => {
     expect(structuredMaxTokens(0, { name: 's', schema: {} }, 0)).toBe(256);
+  });
+});
+
+describe('provider-aware structured call budgets', () => {
+  const semanticPatchSchema = {
+    name: 'scene_semantic_patch',
+    outputBudget: {
+      visibleTokens: 1536,
+      reasoningProfile: 'minimal' as const,
+      safetyTokens: 256,
+      totalCeiling: 4096,
+    },
+    schema: {},
+  };
+
+  it('reserves Gemini thinking separately from visible JSON', () => {
+    expect(resolveStructuredCallBudget({
+      configured: 16384,
+      schema: semanticPatchSchema,
+      defaultCap: DEFAULT_CAP,
+      provider: 'gemini',
+      model: 'gemini-2.5-pro',
+    })).toEqual({
+      maxOutputTokens: 2304,
+      visibleTokens: 1536,
+      reasoningTokens: 512,
+      safetyTokens: 256,
+    });
+  });
+
+  it('rejects an impossible budget before making a provider call', () => {
+    expect(() => resolveStructuredCallBudget({
+      configured: 2048,
+      schema: semanticPatchSchema,
+      defaultCap: DEFAULT_CAP,
+      provider: 'gemini',
+      model: 'gemini-2.5-pro',
+    })).toThrow(/requires 2304, but the available cap is 2048/);
   });
 });
 

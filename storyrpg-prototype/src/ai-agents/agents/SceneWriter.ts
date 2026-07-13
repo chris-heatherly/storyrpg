@@ -61,6 +61,7 @@ import { PROSE_AND_DIALOGUE_CRAFT } from '../prompts/proseCraftRegister';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { TEXT_LIMITS } from '../../constants/validation';
 import type { SceneSettingContext } from '../utils/styleAdaptation';
+import type { NarrativeEvidenceAtom } from '../../types/narrativeContract';
 import { applySequenceDirectorPlan } from './SequenceDirector';
 import { buildSceneContentJsonSchema } from '../schemas/sceneContentSchema';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
@@ -509,7 +510,61 @@ export interface SceneSemanticPatchInput {
   scene: SceneContent;
   targetTaskId: string;
   targetAtomIds: string[];
+  targetAtoms: NarrativeEvidenceAtom[];
+  preserveAtoms: NarrativeEvidenceAtom[];
+  forbiddenAtoms: NarrativeEvidenceAtom[];
+  concurrentFindings: string[];
   repairFeedback: string;
+  capacityTier?: 'standard' | 'expanded';
+}
+
+function semanticPatchWindow(scene: SceneContent, atoms: NarrativeEvidenceAtom[]): GeneratedBeat[] {
+  if (scene.beats.length <= 3) return scene.beats;
+  const terms = new Set<string>();
+  for (const atom of atoms) {
+    for (const value of [
+      atom.description,
+      ...(atom.semanticCriteria ?? []),
+      ...(atom.participantIds ?? []),
+      ...(atom.subjectIds ?? []),
+      atom.stagedLocation,
+      ...(atom.referencedLocations ?? []),
+    ]) {
+      for (const term of String(value ?? '').toLowerCase().split(/[^a-z0-9]+/).filter((part) => part.length >= 4)) {
+        terms.add(term);
+      }
+    }
+  }
+  let bestIndex = scene.beats.length - 1;
+  let bestScore = -1;
+  for (const [index, beat] of scene.beats.entries()) {
+    const text = String(beat.text ?? '').toLowerCase();
+    const score = [...terms].reduce((total, term) => total + (text.includes(term) ? 1 : 0), 0);
+    if (score >= bestScore) {
+      bestIndex = index;
+      bestScore = score;
+    }
+  }
+  const start = Math.max(0, Math.min(bestIndex - 1, scene.beats.length - 3));
+  return scene.beats.slice(start, start + 3);
+}
+
+function compactPatchAtom(atom: NarrativeEvidenceAtom): Record<string, unknown> {
+  return {
+    id: atom.id,
+    requirement: atom.description,
+    polarity: atom.polarity ?? 'required',
+    criteria: atom.semanticCriteria,
+    role: atom.semanticRole,
+    subjects: atom.subjectIds,
+    participants: atom.participantIds,
+    prerequisites: atom.prerequisiteAtomIds,
+    temporalSlot: atom.temporalSlot,
+    stagedLocation: atom.stagedLocation,
+    referencedLocations: atom.referencedLocations,
+    acceptedLanguage: atom.polarity !== 'forbidden' ? atom.acceptedPatterns : undefined,
+    forbiddenLanguage: atom.polarity === 'forbidden' ? atom.acceptedPatterns : undefined,
+  };
 }
 
 function stripAgentFacingPressureLabel(value: string): string {
@@ -976,10 +1031,15 @@ ${CHOICE_DENSITY_REQUIREMENTS}
   }
 
   async executeSemanticPatch(input: SceneSemanticPatchInput): Promise<AgentResponse<SceneSemanticPatch>> {
+    const capacityTier = input.capacityTier ?? 'standard';
+    const patchableBeats = semanticPatchWindow(input.scene, input.targetAtoms);
+    const patchableBeatIds = new Set(patchableBeats.map((beat) => beat.id));
     const schema = {
       name: 'scene_semantic_patch',
       description: 'A bounded reader-facing prose patch for one semantic realization target.',
-      maxOutputTokens: 1536,
+      outputBudget: capacityTier === 'expanded'
+        ? { visibleTokens: 2560, reasoningProfile: 'minimal' as const, safetyTokens: 384, totalCeiling: 6144 }
+        : { visibleTokens: 1536, reasoningProfile: 'minimal' as const, safetyTokens: 256, totalCeiling: 4096 },
       schema: {
         type: 'object',
         additionalProperties: false,
@@ -1017,17 +1077,21 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       'Write reader-facing prose. Return a patch only, never a replacement scene.',
       'Change at most two adjacent beats. Preserve every unchanged word, canonical name, location, action, relationship stage, and consequence.',
       'Use replace_beat_text when possible. Use insert_beat_after only when the meaning cannot fit naturally in an existing beat.',
-      'The patch must make the target meaning explicit through natural action or dialogue without copying contract language.',
+      'For required target atoms, make the missing meaning explicit through natural action or dialogue without copying contract language.',
+      'For forbidden target atoms, remove the prohibited label or meaning while preserving the earned behavior and every unrelated fact.',
       '',
       `BASE SCENE HASH: ${input.baseSceneHash}`,
       `TARGET TASK: ${input.targetTaskId}`,
       `TARGET ATOMS: ${input.targetAtomIds.join(', ')}`,
       `REPAIR REQUIREMENT: ${input.repairFeedback}`,
-      'ACCEPTED SCENE:',
+      `TARGET CONTRACTS: ${JSON.stringify(input.targetAtoms.map(compactPatchAtom))}`,
+      `MEANING ALREADY PRESENT AND TO PRESERVE: ${JSON.stringify(input.preserveAtoms.map(compactPatchAtom))}`,
+      `FORBIDDEN CONSTRAINTS: ${JSON.stringify(input.forbiddenAtoms.map(compactPatchAtom))}`,
+      `OTHER CURRENT BLOCKERS: ${JSON.stringify(input.concurrentFindings)}`,
+      'PATCHABLE SCENE WINDOW:',
       JSON.stringify({
         sceneId: input.scene.sceneId,
-        transitionIn: input.scene.transitionIn,
-        beats: input.scene.beats.map((beat) => ({ id: beat.id, text: beat.text, speaker: beat.speaker })),
+        beats: patchableBeats.map((beat) => ({ id: beat.id, text: beat.text, speaker: beat.speaker })),
       }),
     ].join('\n');
     try {
@@ -1036,9 +1100,45 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       if (patch.baseSceneHash !== input.baseSceneHash || patch.targetTaskId !== input.targetTaskId) {
         return { success: false, error: 'Scene semantic patch did not preserve its immutable base hash and task target.', rawResponse: response };
       }
+      const returnedAtomIds = new Set(patch.targetAtomIds);
+      if (returnedAtomIds.size !== input.targetAtomIds.length || input.targetAtomIds.some((atomId) => !returnedAtomIds.has(atomId))) {
+        return { success: false, error: 'Scene semantic patch did not preserve the exact target atom set.', rawResponse: response };
+      }
+      if (patch.operations.some((operation) => operation.beatId && !patchableBeatIds.has(operation.beatId))) {
+        return { success: false, error: 'Scene semantic patch targeted a beat outside its bounded patch window.', rawResponse: response };
+      }
+      const claimedAtomIds = new Set(patch.claimedEvidence.map((claim) => claim.atomId));
+      if (input.targetAtomIds.some((atomId) => !claimedAtomIds.has(atomId))) {
+        return { success: false, error: 'Scene semantic patch omitted claimed evidence for a target atom.', rawResponse: response };
+      }
       return { success: true, data: patch, rawResponse: response };
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
+      if (error instanceof TruncatedLLMResponseError) {
+        const visibleOutputStarved = typeof error.thoughtsTokens === 'number'
+          && typeof error.requestedMaxTokens === 'number'
+          && error.thoughtsTokens >= error.requestedMaxTokens * 0.75;
+        return {
+          success: false,
+          error: error.message,
+          failure: {
+            code: visibleOutputStarved ? 'visible_output_starved' : 'structured_output_truncated',
+            retryClass: 'adjust_call_budget',
+            provider: error.provider,
+            requestedMaxTokens: error.requestedMaxTokens,
+            outputTokens: error.outputTokens,
+            thoughtsTokens: error.thoughtsTokens,
+          },
+        };
+      }
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        failure: {
+          code: 'structured_output_invalid',
+          retryClass: 'correct_structured_output',
+          provider: this.config.provider,
+        },
+      };
     }
   }
 
@@ -2035,7 +2135,7 @@ These task IDs are assigned to this scene by the canonical narrative graph. Show
 Canonical event IDs allowed in claimedEventIds/eventEvidence: ${(input.sceneBlueprint.assignedEventIds ?? input.sceneBlueprint.narrativeEventIds ?? []).join(', ') || 'none'}.
 Task IDs and planning labels are never event IDs and must not appear in claimedEventIds/eventEvidence.eventId.
 Only use the exact task and atom IDs listed below in eventEvidence. Omit taskId or atomId when uncertain; never substitute a treatment atom, required-beat ID, or planning-contract ID.
-${input.sceneBlueprint.realizationTasks.filter((task) => task.ownerStage === 'scene_writer').map((task) => `- task=${task.id}: ${describeNarrativeEvidenceTarget(task.target)}; ${task.evidenceAtoms.map((atom) => `atom=${atom.id} [${atom.acceptedPatterns.join(' / ')}]`).join(' | ')}`).join('\n')}
+${input.sceneBlueprint.realizationTasks.filter((task) => task.ownerStage === 'scene_writer').map((task) => `- task=${task.id}: ${describeNarrativeEvidenceTarget(task.target)}; atoms=${JSON.stringify(task.evidenceAtoms.map(compactPatchAtom))}`).join('\n')}
 ` : ''}
 ${input.sceneBlueprint.realizationTasks?.some((task) => task.ownerStage === 'choice_author') ? `
 ### Downstream Choice-Resolution Boundary
@@ -3097,7 +3197,17 @@ You previously generated scene content that has some issues that need fixing.
 ${JSON.stringify(compactOriginalContent, null, 2)}
 
 ## Issues to Fix
-${issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n\n')}
+${issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n\n')}${input.sceneBlueprint.realizationTasks?.some((task) => task.ownerStage === 'scene_writer') ? `
+
+## Immutable Realization Envelope
+The revision must preserve every meaning already present and must not remove, reassign, summarize, or change the actor of any required atom. Forbidden atoms remain forbidden even when their wording would make another requirement easier.
+${JSON.stringify((input.sceneBlueprint.realizationTasks ?? [])
+  .filter((task) => task.ownerStage === 'scene_writer')
+  .map((task) => ({
+    taskId: task.id,
+    target: describeNarrativeEvidenceTarget(task.target),
+    atoms: task.evidenceAtoms.map(compactPatchAtom),
+  })))}` : ''}
 
 ## Instructions
 Please revise the content to fix these issues. Return the COMPLETE revised scene content as valid JSON.
@@ -3106,7 +3216,7 @@ Key requirements:
 - Each beat must stay under cap: 4 sentences, ${TEXT_LIMITS.maxBeatWordCount} words (climax: ${TEXT_LIMITS.maxClimaxBeatWordCount}, key: ${TEXT_LIMITS.maxKeyStoryBeatWordCount})
 - Hard response budget: the entire JSON response must be under ${SCENE_WRITER_MAX_REVISION_RESPONSE_CHARS} characters. Use concise prose, omit optional empty arrays/boilerplate, and do not duplicate base beat text in textVariants.
 - If an issue says OVERLONG, rewrite that beat from the scene blueprint and nearby context. Do not copy generation notes, placeholders, schema examples, or compacted excerpt markers into the revised JSON.
-- Preserve existing beat IDs, choice-point flags, visual contract fields, thread IDs, callback IDs, and nextBeatId navigation unless a listed issue explicitly requires splitting or relinking beats
+- Preserve existing beat IDs, choice-point flags, visual contract fields, thread IDs, callback IDs, and nextBeatId navigation unless a listed issue explicitly requires splitting or relinking beats${input.sceneBlueprint.realizationTasks?.some((task) => task.ownerStage === 'scene_writer') ? '; also preserve claimed event IDs and event-evidence claims' : ''}
 - For POV clarity issues, rewrite only prose/textVariants needed to anchor the first non-empty beat to the player character with you/your, the protagonist's actual name, or a concrete pronoun.
 - If a beat is too long, split it into multiple beats
 - Maintain the narrative flow when splitting

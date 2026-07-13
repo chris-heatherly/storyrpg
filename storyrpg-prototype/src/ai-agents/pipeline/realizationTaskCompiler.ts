@@ -368,6 +368,37 @@ export class NarrativeTaskCompilerError extends Error {
   }
 }
 
+export function assertNoContradictoryLiteralEvidence(tasks: NarrativeRealizationTask[]): void {
+  const literalConstraints = new Map<string, { required: Set<string>; forbidden: Set<string>; atomIds: string[] }>();
+  for (const task of tasks) {
+    for (const atom of task.evidenceAtoms) {
+      if (atom.verificationAuthority !== 'literal') continue;
+      const semanticScope = atom.subjectIds?.length
+        ? atom.subjectIds.slice().sort().join(',')
+        : task.evidenceScope?.npcId
+          ? `npc:${task.evidenceScope.npcId}`
+          : task.evidenceScope?.groupId
+            ? `group:${task.evidenceScope.groupId}`
+            : `task:${task.id}`;
+      const key = `${task.episodeNumber}|${task.sceneId ?? ''}|${task.ownerStage}|${semanticScope}`;
+      const entry = literalConstraints.get(key) ?? { required: new Set<string>(), forbidden: new Set<string>(), atomIds: [] };
+      for (const pattern of atom.acceptedPatterns.map((value) => value.trim().toLowerCase()).filter(Boolean)) {
+        (atom.polarity === 'forbidden' ? entry.forbidden : entry.required).add(pattern);
+      }
+      entry.atomIds.push(atom.id);
+      literalConstraints.set(key, entry);
+    }
+  }
+  for (const [scope, constraints] of literalConstraints) {
+    const contradictions = [...constraints.required].filter((pattern) => constraints.forbidden.has(pattern));
+    if (contradictions.length > 0) {
+      throw new Error(
+        `[NarrativeTaskCompiler] Contradictory literal evidence in ${scope}: ${contradictions.join(', ')} (${constraints.atomIds.join(', ')}).`,
+      );
+    }
+  }
+}
+
 function assertTaskFeasibility(
   tasks: NarrativeRealizationTask[],
   sceneById: Map<string, PlannedScene>,
@@ -387,6 +418,7 @@ function assertTaskFeasibility(
     throw new Error(`[NarrativeTaskCompiler] Duplicate evidence atom ids: ${[...new Set(duplicateAtomIds)].join(', ')}.`);
   }
   const taskByAtomId = new Map(atomEntries);
+  assertNoContradictoryLiteralEvidence(tasks);
   const stageOrder: Record<NarrativeRealizationOwnerStage, number> = {
     scene_writer: 0,
     choice_author: 1,

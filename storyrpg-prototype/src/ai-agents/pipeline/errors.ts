@@ -18,6 +18,8 @@ export type PipelineFailureCode =
   | 'job_config_mismatch'
   | 'generation_preflight_invalid'
   | 'structured_output_invalid'
+  | 'structured_output_truncated'
+  | 'visible_output_starved'
   | 'scene_construction_conflict'
   | 'episode_plan_invalid'
   | 'season_graph_invalid'

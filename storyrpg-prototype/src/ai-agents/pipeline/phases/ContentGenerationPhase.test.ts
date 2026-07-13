@@ -421,6 +421,7 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
   it('does not run ChoiceAuthor or mark the scene complete after unresolved prose ownership', async () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
     const calls: string[] = [];
+    const patchCapacityTiers: string[] = [];
     const invalidScene = {
       sceneId: 's1-3', sceneName: 'The Bookshop', startingBeatId: 'b1',
       beats: [{ id: 'b1', text: 'Kylie watches traffic slide past the club windows.' }],
@@ -433,13 +434,18 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
           calls.push('sceneWriter');
           return { success: true, data: structuredClone(invalidScene) };
         },
-        executeSemanticPatch: async (input: { baseSceneHash: string; targetTaskId: string; targetAtomIds: string[] }) => {
+        executeSemanticPatch: async (input: { baseSceneHash: string; targetTaskId: string; targetAtomIds: string[]; capacityTier?: string }) => {
           calls.push('semanticPatch');
-          return { success: true, data: {
-            baseSceneHash: input.baseSceneHash, targetTaskId: input.targetTaskId, targetAtomIds: input.targetAtomIds,
-            operations: [{ op: 'replace_beat_text', beatId: 'b1', text: 'Kylie keeps watching traffic slide past the club windows.' }],
-            claimedEvidence: [{ atomId: input.targetAtomIds[0], beatIds: ['b1'] }],
-          } };
+          patchCapacityTiers.push(input.capacityTier ?? 'standard');
+          return {
+            success: false,
+            error: 'Gemini reasoning consumed the visible output budget.',
+            failure: {
+              code: 'visible_output_starved', retryClass: 'adjust_call_budget', provider: 'gemini',
+              requestedMaxTokens: input.capacityTier === 'expanded' ? 3456 : 2304,
+              thoughtsTokens: input.capacityTier === 'expanded' ? 3300 : 2200,
+            },
+          };
         },
         setContractLoadTemperature: () => undefined,
       },
@@ -495,9 +501,14 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
 
     await expect(phase.run(brief, { locations: [] } as never, { characters: [] } as never, blueprint, undefined, undefined, 1, {
       config: { generation: {} }, emit: () => undefined,
-    } as never)).rejects.toThrow(/OwnerStageRealizationBlocker/);
+    } as never)).rejects.toMatchObject({
+      message: expect.stringMatching(/OwnerStageRealizationBlocker/),
+      code: 'visible_output_starved',
+      retryClass: 'none',
+    });
     expect(calls.filter((call) => call === 'choiceAuthor')).toHaveLength(0);
     expect(calls.filter((call) => call === 'sceneWriter')).toHaveLength(1);
     expect(calls.filter((call) => call === 'semanticPatch')).toHaveLength(2);
+    expect(patchCapacityTiers).toEqual(['standard', 'expanded']);
   });
 });

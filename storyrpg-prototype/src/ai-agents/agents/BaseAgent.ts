@@ -60,7 +60,36 @@ export interface StructuredJsonSchema {
   description?: string;
   /** Expected compact output cap for this schema; prevents structured calls inheriting oversized agent budgets. */
   maxOutputTokens?: number;
+  /**
+   * Provider-aware budget for calls where the schema cap must reserve both
+   * model reasoning and visible JSON. Unlike maxOutputTokens, visibleTokens
+   * never includes hidden thinking tokens.
+   */
+  outputBudget?: StructuredCallBudget;
   schema: Record<string, unknown>;
+}
+
+export interface StructuredCallBudget {
+  visibleTokens: number;
+  reasoningProfile: 'minimal' | 'standard' | 'deep';
+  safetyTokens?: number;
+  totalCeiling?: number;
+}
+
+export interface ResolvedStructuredCallBudget {
+  maxOutputTokens: number;
+  visibleTokens: number;
+  reasoningTokens: number;
+  safetyTokens: number;
+}
+
+export interface AgentFailureMetadata {
+  code: 'visible_output_starved' | 'structured_output_truncated' | 'structured_output_invalid' | 'agent_call_failed';
+  retryClass: 'adjust_call_budget' | 'correct_structured_output' | 'provider_transient' | 'none';
+  provider?: 'gemini' | 'anthropic' | 'openai' | 'openrouter' | 'unknown';
+  requestedMaxTokens?: number;
+  outputTokens?: number;
+  thoughtsTokens?: number;
 }
 
 export interface AgentResponse<T> {
@@ -68,6 +97,7 @@ export interface AgentResponse<T> {
   data?: T;
   rawResponse?: string;
   error?: string;
+  failure?: AgentFailureMetadata;
   /**
    * Non-fatal issues recorded when an agent succeeds despite advisory
    * validation failures (e.g. craft/fidelity checks that, after retries, are
@@ -78,6 +108,7 @@ export interface AgentResponse<T> {
   usage?: {
     inputTokens: number;
     outputTokens: number;
+    thoughtsTokens?: number;
   };
   metadata?: Record<string, unknown>;
 }
@@ -104,18 +135,24 @@ export class TruncatedLLMResponseError extends Error {
    * clamp had silently halved the real request cap.
    */
   public readonly requestedMaxTokens?: number;
+  public readonly outputTokens?: number;
+  public readonly thoughtsTokens?: number;
 
   constructor(
     message: string,
     provider: 'gemini' | 'anthropic' | 'openai' | 'openrouter' | 'unknown' = 'unknown',
     finishReason?: string,
     requestedMaxTokens?: number,
+    outputTokens?: number,
+    thoughtsTokens?: number,
   ) {
     super(message);
     this.name = 'TruncatedLLMResponseError';
     this.provider = provider;
     this.finishReason = finishReason;
     this.requestedMaxTokens = requestedMaxTokens;
+    this.outputTokens = outputTokens;
+    this.thoughtsTokens = thoughtsTokens;
   }
 }
 
@@ -169,7 +206,63 @@ export function structuredMaxTokens(configured: number, schema: StructuredJsonSc
   return Math.max(256, Math.min(configuredValue, schemaCap));
 }
 
-function resolveGeminiThinkingConfig(model: string | undefined, structured: boolean): Record<string, unknown> | undefined {
+function reasoningReservation(
+  provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter',
+  model: string | undefined,
+  profile: StructuredCallBudget['reasoningProfile'],
+): number {
+  const normalized = String(model || '').toLowerCase();
+  if (provider === 'gemini' && /gemini-2\.5/.test(normalized)) {
+    return profile === 'minimal' ? 512 : profile === 'deep' ? 4096 : 2048;
+  }
+  if (provider === 'gemini' && /gemini-(?:3|3\.)/.test(normalized)) {
+    return profile === 'minimal' ? 2048 : profile === 'deep' ? 8192 : 4096;
+  }
+  if (provider === 'openai' && /^(?:gpt-5|o[134])/.test(normalized)) {
+    return profile === 'minimal' ? 4096 : profile === 'deep' ? 32768 : 16384;
+  }
+  return 0;
+}
+
+/** Resolves hidden reasoning and visible JSON into one feasible provider cap. */
+export function resolveStructuredCallBudget(input: {
+  configured: number;
+  schema: StructuredJsonSchema | undefined;
+  defaultCap: number;
+  provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
+  model?: string;
+}): ResolvedStructuredCallBudget {
+  const { schema } = input;
+  if (!schema?.outputBudget) {
+    return {
+      maxOutputTokens: structuredMaxTokens(input.configured, schema, input.defaultCap),
+      visibleTokens: structuredMaxTokens(input.configured, schema, input.defaultCap),
+      reasoningTokens: 0,
+      safetyTokens: 0,
+    };
+  }
+  const visibleTokens = Math.max(256, Math.ceil(schema.outputBudget.visibleTokens));
+  const safetyTokens = Math.max(0, Math.ceil(schema.outputBudget.safetyTokens ?? 256));
+  const reasoningTokens = reasoningReservation(input.provider, input.model, schema.outputBudget.reasoningProfile);
+  const requiredTotal = visibleTokens + reasoningTokens + safetyTokens;
+  const configured = Number.isFinite(input.configured) && input.configured > 0 ? input.configured : input.defaultCap;
+  const totalCeiling = Number.isFinite(schema.outputBudget.totalCeiling)
+    ? Math.floor(schema.outputBudget.totalCeiling!)
+    : configured;
+  const available = Math.min(configured, totalCeiling);
+  if (available < requiredTotal) {
+    throw new Error(
+      `Structured output budget for ${schema.name} is infeasible: ${visibleTokens} visible + ${reasoningTokens} reasoning + ${safetyTokens} safety requires ${requiredTotal}, but the available cap is ${available}.`,
+    );
+  }
+  return { maxOutputTokens: requiredTotal, visibleTokens, reasoningTokens, safetyTokens };
+}
+
+function resolveGeminiThinkingConfig(
+  model: string | undefined,
+  structured: boolean,
+  schema?: StructuredJsonSchema,
+): Record<string, unknown> | undefined {
   if (!structured) return undefined;
   const normalized = String(model || '').toLowerCase();
   const envBudget = Number.parseInt(
@@ -183,11 +276,16 @@ function resolveGeminiThinkingConfig(model: string | undefined, structured: bool
       || process.env.EXPO_PUBLIC_GEMINI_STRUCTURED_THINKING_LEVEL
       || ''
   ).trim().toLowerCase();
+  const explicitProfile = schema?.outputBudget?.reasoningProfile;
 
   if (/gemini-(?:3|3\.)/.test(normalized)) {
-    return { thinkingLevel: envLevel || 'low' };
+    const level = explicitProfile === 'deep' ? 'high' : explicitProfile === 'standard' ? 'medium' : 'low';
+    return { thinkingLevel: envLevel || level };
   }
   if (/gemini-2\.5/.test(normalized)) {
+    if (explicitProfile) {
+      return { thinkingBudget: reasoningReservation('gemini', model, explicitProfile) };
+    }
     if (Number.isFinite(envBudget)) return { thinkingBudget: envBudget };
     // gemini-2.5-pro cannot disable thinking, and 128 is the API minimum — a
     // starvation-prone floor for planning large structured outputs. (The
@@ -272,6 +370,7 @@ export interface LlmCallObservation {
   usage?: {
     inputTokens: number;
     outputTokens: number;
+    thoughtsTokens?: number;
   };
   /**
    * The output-token cap the request was ACTUALLY sent with (post
@@ -281,6 +380,9 @@ export interface LlmCallObservation {
    * string of near-cap calls in earlier runs.
    */
   requestedMaxTokens?: number;
+  requestedVisibleTokens?: number;
+  requestedReasoningTokens?: number;
+  thoughtsTokens?: number;
 }
 
 export abstract class BaseAgent {
@@ -606,9 +708,16 @@ Do not use markdown code blocks around the JSON.
     // clamp) — forwarded to the observer so the ledger can flag near-cap calls.
     // (The OpenAI reasoning path applies an effort-based floor instead of 8192;
     // for telemetry purposes the standard clamp is close enough.)
-    const requestedMaxTokens = options?.jsonSchema
-      ? structuredMaxTokens(this.config.maxTokens, options.jsonSchema, 8192)
-      : this.config.maxTokens;
+    const resolvedStructuredBudget = options?.jsonSchema
+      ? resolveStructuredCallBudget({
+          configured: this.config.maxTokens,
+          schema: options.jsonSchema,
+          defaultCap: 8192,
+          provider: this.config.provider,
+          model: this.config.model,
+        })
+      : undefined;
+    const requestedMaxTokens = resolvedStructuredBudget?.maxOutputTokens ?? this.config.maxTokens;
 
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -618,7 +727,7 @@ Do not use markdown code blocks around the JSON.
       // `callLLM` forwards it to the observer so the pipeline can aggregate a
       // per-agent / per-phase LLM ledger without each caller having to plumb
       // usage by hand.
-      const usageCapture: { inputTokens?: number; outputTokens?: number } = {};
+      const usageCapture: { inputTokens?: number; outputTokens?: number; thoughtsTokens?: number } = {};
       try {
         let result: string;
         // Fall back to the agent-scoped signal (set by execute) when the caller
@@ -661,9 +770,16 @@ Do not use markdown code blocks around the JSON.
           attempt,
           usage:
             typeof usageCapture.inputTokens === 'number' && typeof usageCapture.outputTokens === 'number'
-              ? { inputTokens: usageCapture.inputTokens, outputTokens: usageCapture.outputTokens }
+              ? {
+                  inputTokens: usageCapture.inputTokens,
+                  outputTokens: usageCapture.outputTokens,
+                  thoughtsTokens: usageCapture.thoughtsTokens,
+                }
               : undefined,
           requestedMaxTokens,
+          requestedVisibleTokens: resolvedStructuredBudget?.visibleTokens,
+          requestedReasoningTokens: resolvedStructuredBudget?.reasoningTokens,
+          thoughtsTokens: usageCapture.thoughtsTokens,
           promptChars,
           schemaName: options?.jsonSchema?.name,
         });
@@ -702,6 +818,9 @@ Do not use markdown code blocks around the JSON.
             isQuotaError,
           }),
           requestedMaxTokens,
+          requestedVisibleTokens: resolvedStructuredBudget?.visibleTokens,
+          requestedReasoningTokens: resolvedStructuredBudget?.reasoningTokens,
+          thoughtsTokens: usageCapture.thoughtsTokens,
           promptChars,
           schemaName: options?.jsonSchema?.name,
         });
@@ -783,7 +902,7 @@ Do not use markdown code blocks around the JSON.
   private async callAnthropic(
     messages: AgentMessage[],
     signal?: AbortSignal,
-    usageOut?: { inputTokens?: number; outputTokens?: number },
+    usageOut?: { inputTokens?: number; outputTokens?: number; thoughtsTokens?: number },
     jsonSchema?: StructuredJsonSchema,
   ): Promise<string> {
     const systemMessage = messages.find((m) => m.role === 'system');
@@ -801,7 +920,13 @@ Do not use markdown code blocks around the JSON.
 
     const body: any = {
       model: this.config.model,
-      max_tokens: jsonSchema ? structuredMaxTokens(this.config.maxTokens, jsonSchema, 8192) : this.config.maxTokens,
+      max_tokens: jsonSchema ? resolveStructuredCallBudget({
+        configured: this.config.maxTokens,
+        schema: jsonSchema,
+        defaultCap: 8192,
+        provider: 'anthropic',
+        model: this.config.model,
+      }).maxOutputTokens : this.config.maxTokens,
       // Cache the stable system prompt prefix across calls (C1).
       system: this.buildCachedSystemField(systemText),
       messages: otherMessages.map((m) => {
@@ -973,7 +1098,7 @@ Do not use markdown code blocks around the JSON.
   private async callAnthropicStreaming(
     body: any,
     signal?: AbortSignal,
-    usageOut?: { inputTokens?: number; outputTokens?: number },
+    usageOut?: { inputTokens?: number; outputTokens?: number; thoughtsTokens?: number },
   ): Promise<string> {
     // Fast idle-timeout abort controller, chained to the per-call signal.
     const controller = new AbortController();
@@ -1061,7 +1186,7 @@ Do not use markdown code blocks around the JSON.
   private async callOpenAI(
     messages: AgentMessage[],
     signal?: AbortSignal,
-    usageOut?: { inputTokens?: number; outputTokens?: number },
+    usageOut?: { inputTokens?: number; outputTokens?: number; thoughtsTokens?: number },
     jsonSchema?: StructuredJsonSchema,
   ): Promise<string> {
     const model = this.config.model || 'gpt-5';
@@ -1116,12 +1241,24 @@ Do not use markdown code blocks around the JSON.
       };
       const floor = reasoningFloorByEffort[reasoningEffort] ?? 16384;
       const budget = jsonSchema
-        ? structuredMaxTokens(this.config.maxTokens, jsonSchema, floor)
+        ? resolveStructuredCallBudget({
+            configured: this.config.maxTokens,
+            schema: jsonSchema,
+            defaultCap: floor,
+            provider: 'openai',
+            model,
+          }).maxOutputTokens
         : Math.max(this.config.maxTokens ?? 0, floor);
       body.max_completion_tokens = budget;
       body.reasoning_effort = reasoningEffort;
     } else {
-      body.max_tokens = jsonSchema ? structuredMaxTokens(this.config.maxTokens, jsonSchema, 8192) : this.config.maxTokens;
+      body.max_tokens = jsonSchema ? resolveStructuredCallBudget({
+        configured: this.config.maxTokens,
+        schema: jsonSchema,
+        defaultCap: 8192,
+        provider: 'openai',
+        model,
+      }).maxOutputTokens : this.config.maxTokens;
       body.temperature = this.config.temperature;
     }
 
@@ -1212,7 +1349,7 @@ Do not use markdown code blocks around the JSON.
     model: string,
     isReasoningModel: boolean,
     signal?: AbortSignal,
-    usageOut?: { inputTokens?: number; outputTokens?: number },
+    usageOut?: { inputTokens?: number; outputTokens?: number; thoughtsTokens?: number },
   ): Promise<string> {
     const controller = new AbortController();
     const onOuterAbort = () => controller.abort((signal as { reason?: unknown })?.reason);
@@ -1301,7 +1438,7 @@ Do not use markdown code blocks around the JSON.
   private async callOpenRouter(
     messages: AgentMessage[],
     signal?: AbortSignal,
-    usageOut?: { inputTokens?: number; outputTokens?: number },
+    usageOut?: { inputTokens?: number; outputTokens?: number; thoughtsTokens?: number },
     jsonSchema?: StructuredJsonSchema,
   ): Promise<string> {
     const model = this.config.model || 'x-ai/grok-4.3';
@@ -1327,7 +1464,13 @@ Do not use markdown code blocks around the JSON.
           }).filter(Boolean),
         };
       }),
-      max_tokens: jsonSchema ? structuredMaxTokens(this.config.maxTokens, jsonSchema, 8192) : this.config.maxTokens,
+      max_tokens: jsonSchema ? resolveStructuredCallBudget({
+        configured: this.config.maxTokens,
+        schema: jsonSchema,
+        defaultCap: 8192,
+        provider: 'openrouter',
+        model: this.config.model,
+      }).maxOutputTokens : this.config.maxTokens,
       temperature: this.config.temperature,
     };
     if (openRouter?.models && openRouter.models.length > 0) {
@@ -1427,7 +1570,7 @@ Do not use markdown code blocks around the JSON.
     body: Record<string, unknown>,
     model: string,
     signal?: AbortSignal,
-    usageOut?: { inputTokens?: number; outputTokens?: number },
+    usageOut?: { inputTokens?: number; outputTokens?: number; thoughtsTokens?: number },
   ): Promise<string> {
     const controller = new AbortController();
     const onOuterAbort = () => controller.abort((signal as { reason?: unknown })?.reason);
@@ -1496,7 +1639,7 @@ Do not use markdown code blocks around the JSON.
   private async callGemini(
     messages: AgentMessage[],
     signal?: AbortSignal,
-    usageOut?: { inputTokens?: number; outputTokens?: number },
+    usageOut?: { inputTokens?: number; outputTokens?: number; thoughtsTokens?: number },
     jsonSchema?: StructuredJsonSchema,
   ): Promise<string> {
     if (!this.config.apiKey) {
@@ -1511,7 +1654,13 @@ Do not use markdown code blocks around the JSON.
       model = 'gemini-2.5-pro';
     }
     const maxOutputTokens = jsonSchema
-      ? structuredMaxTokens(this.config.maxTokens, jsonSchema, 8192)
+      ? resolveStructuredCallBudget({
+          configured: this.config.maxTokens,
+          schema: jsonSchema,
+          defaultCap: 8192,
+          provider: 'gemini',
+          model,
+        }).maxOutputTokens
       : this.config.maxTokens;
 
     const toParts = (content: AgentMessage['content']): Array<{ text: string }> => {
@@ -1533,7 +1682,7 @@ Do not use markdown code blocks around the JSON.
         temperature: this.config.temperature,
         maxOutputTokens,
         ...(() => {
-          const thinkingConfig = resolveGeminiThinkingConfig(model, !!jsonSchema);
+          const thinkingConfig = resolveGeminiThinkingConfig(model, !!jsonSchema, jsonSchema);
           return thinkingConfig ? { thinkingConfig } : {};
         })(),
         // Gemini's native JSON mode: constrains the model to emit a single valid
@@ -1642,8 +1791,10 @@ Do not use markdown code blocks around the JSON.
       if (usageOut) {
         const promptTokens = data?.usageMetadata?.promptTokenCount;
         const candidatesTokens = data?.usageMetadata?.candidatesTokenCount;
+        const thoughtsTokens = data?.usageMetadata?.thoughtsTokenCount;
         if (typeof promptTokens === 'number') usageOut.inputTokens = promptTokens;
         if (typeof candidatesTokens === 'number') usageOut.outputTokens = candidatesTokens;
+        if (typeof thoughtsTokens === 'number') usageOut.thoughtsTokens = thoughtsTokens;
       }
       const finishReason = data?.candidates?.[0]?.finishReason;
       if (isTruncationFinishReason(finishReason)) {
@@ -1654,6 +1805,8 @@ Do not use markdown code blocks around the JSON.
           'gemini',
           finishReason,
           maxOutputTokens,
+          typeof candidatesTokens === 'number' ? candidatesTokens : undefined,
+          typeof thoughtsTokens === 'number' ? thoughtsTokens : undefined,
         );
       }
       if (!output) {
@@ -1682,7 +1835,7 @@ Do not use markdown code blocks around the JSON.
     model: string,
     body: any,
     signal?: AbortSignal,
-    usageOut?: { inputTokens?: number; outputTokens?: number },
+    usageOut?: { inputTokens?: number; outputTokens?: number; thoughtsTokens?: number },
   ): Promise<string> {
     const timeoutMs = this.config.maxTokens >= 32000 ? 900_000 : 300_000;
     const controller = new AbortController();

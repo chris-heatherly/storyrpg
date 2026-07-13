@@ -2374,11 +2374,17 @@ export class ContentGenerationPhase {
         if (canonicalSceneWriterTasks.length > 0) {
           const ownerRepairHistory: Array<{
             attempt: number;
-            candidateHash: string;
+            authoredAttempt?: number;
+            requestHash: string;
+            capacityTier: 'standard' | 'expanded';
+            outcome: 'call_failed' | 'invalid_patch' | 'candidate_rejected' | 'candidate_adopted';
+            candidateHash?: string;
             targetFingerprint: string;
-            resolvedFingerprints: string[];
-            introducedFingerprints: string[];
-            adopted: boolean;
+            resolvedFingerprints?: string[];
+            introducedFingerprints?: string[];
+            adopted?: boolean;
+            error?: string;
+            failure?: AgentResponse<unknown>['failure'];
           }> = [];
           let ownerTaskFindings = prioritizeOwnerRepairFindings((await this.validateNarrativeRealization({
             sceneId: sceneBlueprint.id,
@@ -2390,21 +2396,59 @@ export class ContentGenerationPhase {
           })).findings.filter((finding) => finding.blocking), canonicalSceneWriterTasks);
           let authoredRepairAttempts = 0;
           let patchCallAttempts = 0;
+          let capacityTier: 'standard' | 'expanded' = 'standard';
+          let priorPatchFeedback: string[] = [];
+          const executedPatchRequestHashes = new Set<string>();
+          let lastPatchFailure: AgentResponse<unknown>['failure'] | undefined;
           while (authoredRepairAttempts < 2 && patchCallAttempts < 4 && ownerTaskFindings.length > 0) {
             const repairTarget = ownerTaskFindings[0];
-            const feedback = [repairTarget]
+            const targetTask = canonicalSceneWriterTasks.find((task) => task.id === repairTarget.taskId);
+            const feedback = ownerTaskFindings
               .map((finding) => `- ${ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks)}`)
+              .concat(priorPatchFeedback.map((line) => `- PRIOR PATCH FEEDBACK: ${line}`))
               .join('\n');
             const targetAtomIds = [...new Set([
               ...(repairTarget.missingEvidenceAtoms ?? []),
               ...(repairTarget.matchedForbiddenAtoms ?? []),
             ])];
+            const targetAtomIdSet = new Set(targetAtomIds);
+            const targetAtoms = targetTask?.evidenceAtoms.filter((atom) => targetAtomIdSet.has(atom.id)) ?? [];
+            const preserveAtoms = targetTask?.evidenceAtoms.filter((atom) =>
+              atom.required !== false && atom.polarity !== 'forbidden' && !targetAtomIdSet.has(atom.id)) ?? [];
+            const forbiddenAtoms = canonicalSceneWriterTasks.flatMap((task) =>
+              task.evidenceAtoms.filter((atom) => atom.polarity === 'forbidden'));
+            const concurrentFindings = ownerTaskFindings.map((finding) =>
+              ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks));
+            const requestHash = stableHash({
+              baseSceneHash: stableHash(sceneContent),
+              targetTaskId: repairTarget.taskId,
+              targetAtomIds,
+              feedback,
+              capacityTier,
+            });
+            if (executedPatchRequestHashes.has(requestHash)) {
+              lastPatchFailure = {
+                code: 'agent_call_failed',
+                retryClass: 'none',
+              };
+              ownerRepairHistory.push({
+                attempt: patchCallAttempts + 1,
+                requestHash,
+                capacityTier,
+                outcome: 'call_failed',
+                targetFingerprint: repairTarget.fingerprint,
+                error: 'Duplicate semantic patch request suppressed.',
+                failure: lastPatchFailure,
+              });
+              break;
+            }
+            executedPatchRequestHashes.add(requestHash);
             patchCallAttempts += 1;
             context.emit({
               type: 'regeneration_triggered',
               phase: 'scenes',
-              message: `Scene ${sceneBlueprint.id} is repairing canonical realization fingerprint ${repairTarget.fingerprint} (${authoredRepairAttempts + 1}/2)`,
-              data: { repairTarget, findings: ownerTaskFindings },
+              message: `Scene ${sceneBlueprint.id} is repairing canonical realization fingerprint ${repairTarget.fingerprint} (call ${patchCallAttempts}, authored ${authoredRepairAttempts + 1}/2, ${capacityTier})`,
+              data: { repairTarget, findings: ownerTaskFindings, requestHash, capacityTier },
             });
             const ownerTaskRetry = await withTimeout(
               this.deps.sceneWriter.executeSemanticPatch({
@@ -2412,25 +2456,60 @@ export class ContentGenerationPhase {
                 scene: JSON.parse(JSON.stringify(sceneContent)),
                 targetTaskId: repairTarget.taskId,
                 targetAtomIds,
+                targetAtoms,
+                preserveAtoms,
+                forbiddenAtoms,
+                concurrentFindings,
                 repairFeedback: feedback,
+                capacityTier,
               }),
               PIPELINE_TIMEOUTS.llmAgent,
               `SceneWriter.executeSemanticPatch(${sceneBlueprint.id} owner-realization-retry-${authoredRepairAttempts + 1})`,
             );
-            if (!ownerTaskRetry.success || !ownerTaskRetry.data) continue;
+            if (!ownerTaskRetry.success || !ownerTaskRetry.data) {
+              lastPatchFailure = ownerTaskRetry.failure;
+              ownerRepairHistory.push({
+                attempt: patchCallAttempts,
+                requestHash,
+                capacityTier,
+                outcome: 'call_failed',
+                targetFingerprint: repairTarget.fingerprint,
+                error: ownerTaskRetry.error,
+                failure: ownerTaskRetry.failure,
+              });
+              if (ownerTaskRetry.failure?.retryClass === 'adjust_call_budget' && capacityTier === 'standard') {
+                capacityTier = 'expanded';
+                continue;
+              }
+              break;
+            }
+            lastPatchFailure = undefined;
             if (ownerTaskRetry.data.targetAtomIds.some((atomId) => !targetAtomIds.includes(atomId))) continue;
+            const authoredAttempt = authoredRepairAttempts + 1;
+            authoredRepairAttempts += 1;
             let appliedPatch: ReturnType<typeof applySceneSemanticPatch>;
             try {
               appliedPatch = applySceneSemanticPatch(sceneContent, ownerTaskRetry.data);
             } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              ownerRepairHistory.push({
+                attempt: patchCallAttempts,
+                authoredAttempt,
+                requestHash,
+                capacityTier,
+                outcome: 'invalid_patch',
+                targetFingerprint: repairTarget.fingerprint,
+                error: message,
+              });
+              priorPatchFeedback = [message];
+              capacityTier = 'standard';
               context.emit({
                 type: 'warning', phase: 'scenes',
-                message: `Scene ${sceneBlueprint.id} rejected an invalid semantic patch: ${error instanceof Error ? error.message : String(error)}`,
+                message: `Scene ${sceneBlueprint.id} rejected an invalid semantic patch: ${message}`,
               });
               continue;
             }
-            const attempt = authoredRepairAttempts + 1;
-            authoredRepairAttempts += 1;
+            const attempt = authoredAttempt;
             const candidateSnapshot = appliedPatch.scene;
             const candidateHash = stableHash(candidateSnapshot);
             if (outputDirectory) {
@@ -2493,13 +2572,18 @@ export class ContentGenerationPhase {
             const resolvedFingerprints = [...previousFingerprints].filter((fingerprint) => !candidateFingerprints.has(fingerprint));
             const introducedFingerprints = [...candidateFingerprints].filter((fingerprint) => !previousFingerprints.has(fingerprint));
             ownerRepairHistory.push({
-              attempt,
+              attempt: patchCallAttempts,
+              authoredAttempt: attempt,
+              requestHash,
+              capacityTier,
+              outcome: adoptCandidate ? 'candidate_adopted' : 'candidate_rejected',
               candidateHash,
               targetFingerprint: repairTarget.fingerprint,
               resolvedFingerprints,
               introducedFingerprints,
               adopted: adoptCandidate,
             });
+            capacityTier = 'standard';
             if (outputDirectory) {
               await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-owner-repair-attempt-${attempt}.json`, {
                 schemaVersion: 2,
@@ -2532,13 +2616,17 @@ export class ContentGenerationPhase {
               sceneContent.requiredBeats = sceneRealizationBlueprint.requiredBeats;
               sceneContent.signatureMoment = sceneRealizationBlueprint.signatureMoment;
               ownerTaskFindings = prioritizeOwnerRepairFindings(retryFindings, canonicalSceneWriterTasks);
+              priorPatchFeedback = [];
+            } else {
+              priorPatchFeedback = retryFindings.map((finding) =>
+                ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks));
             }
           }
           if (ownerTaskFindings.length > 0) {
             if (outputDirectory) {
               const committedSnapshot = JSON.parse(JSON.stringify(sceneContent));
               await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-realization-blockers.json`, {
-                schemaVersion: 2,
+                schemaVersion: 3,
                 episodeNumber: densityEpisodeNumber,
                 sceneId: sceneBlueprint.id,
                 candidateHash: stableHash(committedSnapshot),
@@ -2555,11 +2643,22 @@ export class ContentGenerationPhase {
               'scenes',
               {
                 agent: 'SceneWriter',
-                context: { sceneId: sceneBlueprint.id, findings: ownerTaskFindings, retryBudget: 2 },
+                context: {
+                  sceneId: sceneBlueprint.id,
+                  findings: ownerTaskFindings,
+                  retryBudget: 2,
+                  patchCallAttempts,
+                  repairHistory: ownerRepairHistory,
+                  lastPatchFailure,
+                },
                 failure: {
-                  code: 'prose_realization_failed',
+                  code: lastPatchFailure?.code === 'visible_output_starved'
+                    || lastPatchFailure?.code === 'structured_output_truncated'
+                    || lastPatchFailure?.code === 'structured_output_invalid'
+                    ? lastPatchFailure.code
+                    : 'prose_realization_failed',
                   ownerStage: 'scene_writer',
-                  retryClass: 'repair_scene_prose',
+                  retryClass: lastPatchFailure ? 'none' : 'repair_scene_prose',
                   issueCodes: ownerTaskFindings.map((finding) => finding.code),
                   artifactRefs: outputDirectory
                     ? [`episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-realization-blockers.json`]

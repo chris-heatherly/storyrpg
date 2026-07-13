@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NarrativeContractGraph } from '../../types/narrativeContract';
-import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
+import { assertNoContradictoryLiteralEvidence, compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 
 describe('compileNarrativeRealizationTasks', () => {
   it('compiles premise, route, and relationship obligations with owning stages', () => {
@@ -287,5 +287,17 @@ describe('compileNarrativeRealizationTasks', () => {
     } as unknown as NarrativeContractGraph;
 
     expect(() => compileNarrativeRealizationTasks(graph, [])).toThrow(/owner_stage_unreachable.*missing scene missing/i);
+  });
+
+  it('rejects an exact literal requirement that is also forbidden on the same owner surface', () => {
+    expect(() => assertNoContradictoryLiteralEvidence([{
+      id: 'task:presence', contractId: 'presence', episodeNumber: 1, sceneId: 'club',
+      ownerStage: 'scene_writer', repairHandler: 'scene_prose', sourceContractIds: ['treatment'], blocking: true,
+      target: { scope: 'owner', surfaces: ['beat_text'] },
+      evidenceAtoms: [
+        { id: 'required-name', description: 'Name Mika', acceptedPatterns: ['Mika'], kind: 'lexical', verificationAuthority: 'literal', required: true },
+        { id: 'forbidden-name', description: 'Do not name Mika', acceptedPatterns: ['Mika'], kind: 'lexical', verificationAuthority: 'literal', required: true, polarity: 'forbidden' },
+      ],
+    }])).toThrow(/Contradictory literal evidence.*mika/i);
   });
 });

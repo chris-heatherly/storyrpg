@@ -29,12 +29,16 @@ export interface ProviderCallMetric {
   usage?: {
     inputTokens: number;
     outputTokens: number;
+    thoughtsTokens?: number;
   };
   /**
    * Output-token cap the request was actually sent with (post
    * structuredMaxTokens clamp). Enables near-cap leading indicators (P3).
    */
   requestedMaxTokens?: number;
+  requestedVisibleTokens?: number;
+  requestedReasoningTokens?: number;
+  thoughtsTokens?: number;
 }
 
 export interface PhaseMetric {
@@ -73,6 +77,7 @@ export interface LlmLedgerAgentRow {
   totalInputTokens: number;
   /** Sum of output tokens across calls where usage was reported. */
   totalOutputTokens: number;
+  totalThoughtsTokens: number;
   /** Number of calls that actually reported usage; calls - usageReported = gaps. */
   usageReported: number;
   /**
@@ -113,6 +118,7 @@ export interface LlmLedger {
     totalQueueWaitMs: number;
     totalInputTokens: number;
     totalOutputTokens: number;
+    totalThoughtsTokens: number;
     /** Calls where the provider reported usage; the rest are gaps. */
     usageReported: number;
     /** Total lossy truncation recoveries across all agents (landmine L4). */
@@ -123,6 +129,18 @@ export interface LlmLedger {
     failureCategories: Partial<Record<LlmFailureCategory, number>>;
   };
   byAgent: LlmLedgerAgentRow[];
+  budgetDiagnostics: Array<{
+    agentName: string;
+    provider: ProviderCallMetric['provider'];
+    model?: string;
+    schemaName?: string;
+    success: boolean;
+    requestedMaxTokens?: number;
+    requestedVisibleTokens?: number;
+    requestedReasoningTokens?: number;
+    thoughtsTokens?: number;
+    error?: string;
+  }>;
   phases: PhaseMetric[];
 }
 
@@ -268,6 +286,7 @@ export class PipelineTelemetry {
           avgQueueWaitMs: 0,
           totalInputTokens: 0,
           totalOutputTokens: 0,
+          totalThoughtsTokens: 0,
           usageReported: 0,
           truncatedResponses: 0,
           nearCapCalls: 0,
@@ -285,7 +304,10 @@ export class PipelineTelemetry {
       if (m.usage) {
         row.totalInputTokens += m.usage.inputTokens;
         row.totalOutputTokens += m.usage.outputTokens;
+        row.totalThoughtsTokens += m.usage.thoughtsTokens ?? m.thoughtsTokens ?? 0;
         row.usageReported += 1;
+      } else {
+        row.totalThoughtsTokens += m.thoughtsTokens ?? 0;
       }
       if (isNearCap(m)) row.nearCapCalls += 1;
       row.totalPromptChars += m.promptChars ?? 0;
@@ -331,6 +353,10 @@ export class PipelineTelemetry {
         (s, m) => s + (m.usage?.outputTokens ?? 0),
         0,
       ),
+      totalThoughtsTokens: this.providerCallMetrics.reduce(
+        (s, m) => s + (m.usage?.thoughtsTokens ?? m.thoughtsTokens ?? 0),
+        0,
+      ),
       usageReported: this.providerCallMetrics.filter((m) => m.usage).length,
       truncatedResponses: [...this.truncationCounts.values()].reduce((s, n) => s + n, 0),
       nearCapCalls: this.providerCallMetrics.filter(isNearCap).length,
@@ -354,6 +380,20 @@ export class PipelineTelemetry {
     return {
       totals,
       byAgent: rows,
+      budgetDiagnostics: this.providerCallMetrics
+        .filter((metric) => Boolean(metric.schemaName))
+        .map((metric) => ({
+          agentName: metric.agentName,
+          provider: metric.provider,
+          model: metric.model,
+          schemaName: metric.schemaName,
+          success: metric.success,
+          requestedMaxTokens: metric.requestedMaxTokens,
+          requestedVisibleTokens: metric.requestedVisibleTokens,
+          requestedReasoningTokens: metric.requestedReasoningTokens,
+          thoughtsTokens: metric.usage?.thoughtsTokens ?? metric.thoughtsTokens,
+          error: metric.error,
+        })),
       phases: this.buildPhaseMetrics(),
     };
   }
@@ -426,9 +466,16 @@ export function buildLlmCallObserver(
       usage: observation.usage,
       // Forward the actual request cap so the ledger can flag near-cap calls.
       requestedMaxTokens: observation.requestedMaxTokens,
+      requestedVisibleTokens: observation.requestedVisibleTokens,
+      requestedReasoningTokens: observation.requestedReasoningTokens,
+      thoughtsTokens: observation.thoughtsTokens,
     });
     if (observation.usage && onUsage) {
-      onUsage((observation.usage.inputTokens || 0) + (observation.usage.outputTokens || 0));
+      onUsage(
+        (observation.usage.inputTokens || 0)
+        + (observation.usage.outputTokens || 0)
+        + (observation.usage.thoughtsTokens || 0),
+      );
     }
   };
 }

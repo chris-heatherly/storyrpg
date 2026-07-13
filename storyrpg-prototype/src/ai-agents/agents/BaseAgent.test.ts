@@ -519,6 +519,37 @@ describe('BaseAgent structured JSON output (opt-in jsonSchema)', () => {
     expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 2048 });
   });
 
+  it('Gemini: reserves visible semantic-patch output beyond minimal thinking', async () => {
+    let body: any = null;
+    vi.stubGlobal('fetch', vi.fn(async (_u: string, init: any) => {
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          candidates: [{ content: { parts: [{ text: '{"ok":true}' }] }, finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, thoughtsTokenCount: 12 },
+        }),
+      } as any;
+    }));
+
+    await new TestAgent({ provider: 'gemini', model: 'gemini-2.5-pro', maxTokens: 16384 }).callStructured(
+      [{ role: 'user', content: 'go' }],
+      {
+        ...schema,
+        outputBudget: {
+          visibleTokens: 1536,
+          reasoningProfile: 'minimal',
+          safetyTokens: 256,
+          totalCeiling: 4096,
+        },
+      },
+    );
+
+    expect(body.generationConfig.maxOutputTokens).toBe(2304);
+    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 512 });
+  });
+
   it('Gemini: uses low thinking level for Gemini 3 structured JSON calls', async () => {
     setLLMStreamingEnabled(true);
     let body: any = null;

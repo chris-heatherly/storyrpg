@@ -2436,7 +2436,14 @@ function alignStandardSceneTurnsToSpineUnits(
 ): void {
   const unitById = new Map(units.map((unit) => [unit.id, unit]));
   const hasTestBondDecomposition = units.some((unit) =>
-    unit.kind === 'bond' && unit.prerequisites.some((id) => unitById.get(id)?.kind === 'test'),
+    unit.kind === 'bond' && (
+      unit.prerequisites.some((id) => unitById.get(id)?.kind === 'test')
+      || (unit.supportingIntents ?? []).some((intent) =>
+        intent.kind === 'behavioral_intent'
+        && intent.intentKind === 'social_test'
+        && intent.relation === 'prerequisite'
+      )
+    ),
   );
   if (!hasTestBondDecomposition) return;
   type Candidate = { beat: RequiredBeat; scene: PlannedScene };

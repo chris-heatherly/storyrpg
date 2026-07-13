@@ -1267,6 +1267,54 @@ describe('projectSpineOntoScenes', () => {
     expect(scenes[0].requiredBeats?.some((beat) => beat.mustDepict.includes('Dusk Club'))).toBe(false);
   });
 
+  it('realigns shifted turns when a social test is folded into the bond as a prerequisite intent', () => {
+    const makeScene = (id: string, order: number, authoredText: string): PlannedScene => ({
+      id, episodeNumber: 1, order, kind: 'standard', title: id,
+      dramaticPurpose: id, narrativeRole: 'development', locations: [], npcsInvolved: [], setsUp: [], paysOff: [],
+      requiredBeats: [{ id: `${id}-rb1`, sourceTurn: authoredText, mustDepict: authoredText, tier: 'authored' }],
+      turnContract: {
+        turnId: `${id}-turn`, source: 'treatment', centralTurn: authoredText,
+        beforeState: 'before', turnEvent: authoredText, afterState: 'after', handoff: `After ${authoredText}`,
+      },
+    });
+    const meet = 'A newcomer enters the workshop and meets its two owners.';
+    const bond = 'After a test, the three become friends and name their new circle.';
+    const rooftop = 'At the rooftop bar, two strangers notice the newcomer.';
+    const scenes = [
+      makeScene('s1-3', 2, bond),
+      makeScene('s1-4', 3, rooftop),
+      makeScene('s1-5', 4, rooftop),
+    ];
+    const spine: EpisodeSpineContract = {
+      episodeNumber: 1,
+      sourceHash: 'source',
+      episodeStoryCircleBeats: ['you'],
+      polarityFacets: [],
+      units: [
+        { id: 'ep1-u3', order: 2, text: meet, kind: 'meet', storyCircleFacets: [], prerequisites: [], sceneKind: 'standard' },
+        {
+          id: 'ep1-u4', order: 3, text: bond, kind: 'bond', storyCircleFacets: [], prerequisites: [], sceneKind: 'standard',
+          supportingIntents: [{
+            kind: 'behavioral_intent',
+            intentKind: 'social_test',
+            intentText: 'Testing the newcomer',
+            relation: 'prerequisite',
+            requiredSlots: ['actor', 'target', 'mechanism', 'observable_response', 'state_change'],
+          }],
+        },
+        { id: 'ep1-u5', order: 4, text: rooftop, kind: 'meet', storyCircleFacets: [], prerequisites: [], sceneKind: 'standard' },
+      ],
+    };
+
+    expect(projectSpineOntoScenes(scenes, spine)).toBe(3);
+    expect(scenes.map((scene) => scene.turnContract?.centralTurn)).toEqual([meet, bond, rooftop]);
+    expect(scenes.map((scene) => scene.requiredBeats?.[0]?.mustDepict)).toEqual([meet, bond, rooftop]);
+    expect(scenes[0].requiredBeats?.some((beat) => beat.mustDepict === bond)).toBe(false);
+    expect(scenes[1].behavioralIntents).toEqual([
+      expect.objectContaining({ intentKind: 'social_test', relation: 'prerequisite' }),
+    ]);
+  });
+
   it('syncs a treatment scene title from final event ownership, not a stale pre-binding beat', () => {
     const scene = {
       id: 's1-street',

@@ -51,6 +51,19 @@ function unique<T>(values: T[]): T[] {
   return [...new Set(values)];
 }
 
+export function collectKnownSemanticLocations(
+  ...locationGroups: Array<ReadonlyArray<string | undefined>>
+): string[] {
+  const byNormalizedName = new Map<string, string>();
+  for (const location of locationGroups.flat()) {
+    const name = clean(location);
+    if (!name) continue;
+    const normalized = name.toLowerCase();
+    if (!byNormalizedName.has(normalized)) byNormalizedName.set(normalized, name);
+  }
+  return [...byNormalizedName.values()].sort((left, right) => left.localeCompare(right));
+}
+
 /**
  * Extracts only authored source segments from the bootstrap graph. Existing
  * heuristic atoms may carry supporting-intent provenance, but none of their

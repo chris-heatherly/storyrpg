@@ -8,6 +8,7 @@ import type { SeasonScenePlan } from '../../types/scenePlan';
 import { AgentResponse, BaseAgent } from './BaseAgent';
 import {
   SEMANTIC_CONTRACT_IR_POLICY_VERSION,
+  collectKnownSemanticLocations,
   semanticContractEventSeeds,
   semanticContractPremiseSeeds,
   semanticContractPremiseSourceHash,
@@ -192,7 +193,10 @@ export class SemanticContractCompilerAgent extends BaseAgent {
     if (seeds.length === 0 && premiseSeeds.length === 0) {
       return { success: false, error: 'Narrative contract graph has no depiction events or authored premises.' };
     }
-    const knownLocations = [...new Set(scenePlan.scenes.flatMap((scene) => scene.locations ?? []).filter(Boolean))].sort();
+    const knownLocations = collectKnownSemanticLocations(
+      graph.knownLocationNames ?? [],
+      scenePlan.scenes.flatMap((scene) => scene.locations ?? []),
+    );
     const compiledEvents: AuthoredEventSemanticIR['events'] = [];
     const compiledPremises: NonNullable<AuthoredEventSemanticIR['premises']> = [];
 

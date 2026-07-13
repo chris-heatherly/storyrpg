@@ -538,6 +538,8 @@ export interface NarrativeContractGraph {
   compilerVersion: string;
   storyId: string;
   sourceHash: string;
+  /** Locked world-canon location names accepted by semantic event contracts. */
+  knownLocationNames?: string[];
   /** Persisted interpretive source for depiction-event evidence atoms. */
   semanticEventIr?: AuthoredEventSemanticIR;
   events: NarrativeEventContract[];

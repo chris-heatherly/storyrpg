@@ -37,6 +37,7 @@ import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { QARunner, QAReport, ContinuityChecker } from '../agents/QAAgents';
 import { SemanticRealizationJudge } from '../agents/SemanticRealizationJudge';
 import {
+  collectKnownSemanticLocations,
   semanticContractEventSeeds,
   semanticContractPremiseSeeds,
   validateAuthoredEventSemanticIR,
@@ -4915,7 +4916,11 @@ export class FullStoryPipeline {
       );
     }
     if (hasDepictionEvents && semanticScenePlan?.semanticEventIr && semanticGraph) {
-      const knownLocations = [...new Set(semanticScenePlan.scenes.flatMap((scene) => scene.locations ?? []).filter(Boolean))];
+      const knownLocations = collectKnownSemanticLocations(
+        semanticGraph.knownLocationNames ?? [],
+        baseBrief.world?.keyLocations?.map((location) => location.name) ?? [],
+        semanticScenePlan.scenes.flatMap((scene) => scene.locations ?? []),
+      );
       const semanticValidation = validateAuthoredEventSemanticIR(
         semanticScenePlan.semanticEventIr,
         semanticContractEventSeeds(semanticGraph),

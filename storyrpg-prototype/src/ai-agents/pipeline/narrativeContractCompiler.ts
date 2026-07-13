@@ -46,7 +46,7 @@ import {
   type SemanticContractEventSeed,
 } from './semanticContractIr';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v23';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v24';
 
 const MAX_BLOCKING_PREMISE_PROPOSITIONS_PER_SCENE = 12;
 
@@ -1636,7 +1636,10 @@ export function compileNarrativeContractGraph(
   ];
   const spineEventIds = new Map<string, string>();
   const scenes = [...scenePlan.scenes].sort((a, b) => a.episodeNumber - b.episodeNumber || a.order - b.order || a.id.localeCompare(b.id));
-  const knownLocations = uniqueStrings(scenes.flatMap((scene) => scene.locations ?? []));
+  const knownLocations = uniqueStrings([
+    ...(plan.locationIntroductions ?? []).map((location) => location.locationName),
+    ...scenes.flatMap((scene) => scene.locations ?? []),
+  ]);
   const spineUnitTexts = new Set(
     Object.values(scenePlan.episodeSpines ?? {})
       .flatMap((spine) => spine.units)
@@ -2005,6 +2008,7 @@ export function compileNarrativeContractGraph(
     compilerVersion: NARRATIVE_CONTRACT_COMPILER_VERSION,
     storyId: plan.id || slug(plan.sourceTitle || 'story'),
     sourceHash: '',
+    knownLocationNames: knownLocations,
     semanticEventIr: scenePlan.semanticEventIr,
     events,
     characterPresenceContracts,
@@ -2052,6 +2056,7 @@ export function compileNarrativeContractGraph(
     scenePlanSourceHash: scenePlan.sourceHash,
     semanticEventIrSourceHash: scenePlan.semanticEventIr?.sourceHash,
     semanticEventIrHash: scenePlan.semanticEventIr ? stableHash(scenePlan.semanticEventIr) : undefined,
+    knownLocationNames: graph.knownLocationNames,
     events: graph.events,
     characterPresenceContracts: graph.characterPresenceContracts,
     identityScheduleContracts: graph.identityScheduleContracts,

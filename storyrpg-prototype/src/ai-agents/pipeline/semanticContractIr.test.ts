@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AuthoredEventSemanticIR, NarrativeContractGraph } from '../../types/narrativeContract';
 import {
   SEMANTIC_CONTRACT_IR_POLICY_VERSION,
+  collectKnownSemanticLocations,
   semanticAtomsForEvent,
   semanticContractEventSeeds,
   semanticContractPremiseSeeds,
@@ -160,6 +161,22 @@ describe('semantic contract IR', () => {
     expect(result.issues.join(' | ')).toMatch(/source hash/);
     expect(result.issues.join(' | ')).toMatch(/unknown location/);
     expect(result.issues.join(' | ')).toMatch(/earlier proposition/);
+  });
+
+  it('accepts locked canon locations even when no planned scene currently projects them', () => {
+    const contract = ir();
+    contract.events[0].propositions[0].stagedLocation = "Kylie's Lipscani Apartment";
+    contract.events[0].propositions[0].referencedLocations = ["Kylie's Lipscani Apartment"];
+    const knownLocations = collectKnownSemanticLocations(
+      ['Valescu Club'],
+      ["Kylie's Lipscani Apartment"],
+    );
+
+    expect(validateAuthoredEventSemanticIR(
+      contract,
+      semanticContractEventSeeds(graph()),
+      knownLocations,
+    )).toEqual({ passed: true, issues: [] });
   });
 
   it('rejects source spans that are not exact authored substrings', () => {

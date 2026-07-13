@@ -79,11 +79,12 @@ describe('BaseAgent JSON repair', () => {
     expect(parsed).toEqual({ a: 1, nested: { b: 'brace } inside a string is fine' } });
   });
 
-  it('still falls through to structural repair for a truncated (unbalanced) object', () => {
+  it('rejects structural repair that synthesizes missing closing delimiters', () => {
     const agent = new TestAgent();
-    // No balanced value exists; the extractor returns null and repair handles it.
-    const parsed = agent.parse<{ title: string }>('{"title":"The Locked Wing"');
-    expect(parsed.title).toBe('The Locked Wing');
+    // The visible scalar is complete, but closing the object would assert that
+    // no additional authored fields were intended after the cut.
+    expect(() => agent.parse<{ title: string }>('{"title":"The Locked Wing"'))
+      .toThrow(TruncatedLLMResponseError);
   });
 
   it('rejects huge dangling JSON values without greedy regex repair', () => {

@@ -29,6 +29,23 @@ describe('assertValidWorkerPayload', () => {
     expect(() => assertValidWorkerPayload(payload)).not.toThrow();
   });
 
+  it('accepts an immutable generation manifest and rejects malformed episode scope', () => {
+    const payload = {
+      mode: 'generation',
+      config: {},
+      resultPath: '/tmp/result.json',
+      generationInput: {
+        brief: { story: { title: 'Bite Me' } },
+        manifest: { version: 1, sourceKind: 'authored_lite', requestedEpisodes: [1], seasonPlanId: 'bite-me-plan' },
+      },
+    };
+    expect(() => assertValidWorkerPayload(payload)).not.toThrow();
+    expect(() => assertValidWorkerPayload({
+      ...payload,
+      generationInput: { ...payload.generationInput, manifest: { ...payload.generationInput.manifest, requestedEpisodes: [] } },
+    })).toThrow(/manifest is malformed/i);
+  });
+
   it('accepts optional worker display labels', () => {
     const payload = {
       mode: 'generation',

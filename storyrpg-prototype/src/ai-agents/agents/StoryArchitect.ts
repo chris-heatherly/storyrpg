@@ -20,7 +20,7 @@ import {
   TreatmentEpisodeGuidance,
   ThemeArgumentContract,
 } from '../../types/sourceAnalysis';
-import { BaseAgent, AgentResponse, AgentMessage } from './BaseAgent';
+import { BaseAgent, AgentResponse, AgentMessage, TruncatedLLMResponseError } from './BaseAgent';
 import {
   BRANCH_AND_BOTTLENECK,
   CRAFT_PRESSURE_GUIDANCE,
@@ -214,6 +214,8 @@ function collapseUnplannedCanonicalSceneShells(
 
 // Input types
 export interface StoryArchitectInput {
+  /** Explicit generation mode; authored modes may never fall back to invent-mode. */
+  sourceKind?: 'invent' | 'authored' | 'authored_lite' | 'derived_from_lite';
   // Story context
   storyTitle: string;
   genre: string;
@@ -407,6 +409,11 @@ export interface StoryArchitectInput {
 
   // Pipeline memory context (optimization hints from prior runs, Claude only)
   memoryContext?: string;
+}
+
+interface StoryArchitectRetryState {
+  contractAttempts: number;
+  formatAttempts: number;
 }
 
 type PlannedEncounterDirective = NonNullable<NonNullable<StoryArchitectInput['seasonPlanDirectives']>['plannedEncounters']>[number];
@@ -5240,8 +5247,17 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
     return text.match(pattern)?.[1]?.replace(/[.,;:!?]+$/, '').trim();
   }
 
-  async execute(input: StoryArchitectInput, retryCount: number = 0): Promise<AgentResponse<EpisodeBlueprint>> {
+  async execute(
+    input: StoryArchitectInput,
+    retry: number | StoryArchitectRetryState = 0,
+  ): Promise<AgentResponse<EpisodeBlueprint>> {
     const maxRetries = 2;
+    const maxFormatRetries = 1;
+    const retryState: StoryArchitectRetryState = typeof retry === 'number'
+      ? { contractAttempts: retry, formatAttempts: 0 }
+      : retry;
+    const retryCount = retryState.contractAttempts;
+    const totalAttempts = retryState.contractAttempts + retryState.formatAttempts;
 
     // Scene-first (elaborate) mode: when the season plan provides this episode's
     // scenes, build the blueprint from them deterministically and route through
@@ -5385,18 +5401,35 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
 
     // Treatment-sourced episodes must elaborate from planned scenes / ESC —
     // inventing a parallel scene graph is the primary structural drift vector.
-    if (input.seasonPlanDirectives?.treatmentGuidance || input.seasonPlanDirectives?.episodeSpine) {
+    if (
+      input.sourceKind === 'authored'
+      || input.sourceKind === 'authored_lite'
+      || input.sourceKind === 'derived_from_lite'
+      || input.seasonPlanDirectives?.treatmentGuidance
+      || input.seasonPlanDirectives?.episodeSpine
+    ) {
       return {
         success: false,
         error:
-          `Episode ${input.episodeNumber} is treatment-sourced but has no plannedScenes to elaborate. ` +
+          `Episode ${input.episodeNumber} is ${input.sourceKind || 'treatment'}-sourced but has no plannedScenes to elaborate. ` +
           'Refuse invent-mode StoryArchitect for treatment runs; rebuild the season scene plan / ESC first.',
+        metadata: this.failureMetadata({
+          code: 'episode_plan_invalid',
+          ownerStage: 'episode_plan',
+          retryClass: 'recompile_episode_plan',
+          issueCodes: ['authored_invent_mode_forbidden'],
+          repairTarget: 'scene-plan',
+        }),
       };
     }
 
     const prompt = this.buildPrompt(input);
 
-    console.log(`[StoryArchitect] Building episode blueprint...${retryCount > 0 ? ` (retry ${retryCount}/${maxRetries})` : ''}`);
+    console.log(
+      `[StoryArchitect] Building episode blueprint...${totalAttempts > 0
+        ? ` (contract retries ${retryState.contractAttempts}/${maxRetries}, format retries ${retryState.formatAttempts}/${maxFormatRetries})`
+        : ''}`,
+    );
 
     // Hoisted so the catch block can return a parsed-but-advisory-failing
     // blueprint instead of aborting the whole run (validator tiering, B1).
@@ -5407,7 +5440,7 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
         { role: 'user', content: prompt }
       ];
 
-      if (retryCount > 0) {
+      if (totalAttempts > 0) {
         const structuralFeedback = this.lastStructuralFeedback.length > 0
           ? `\nSTRUCTURAL ISSUES FROM PREVIOUS ATTEMPT:\n${this.lastStructuralFeedback.map(f => `- ${f}`).join('\n')}\n`
           : '';
@@ -5435,11 +5468,12 @@ REQUIREMENTS:
         parsedBlueprint = blueprint;
       } catch (parseError) {
         console.error(`[StoryArchitect] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
-        if (retryCount < maxRetries) {
+        if (parseError instanceof TruncatedLLMResponseError) throw parseError;
+        if (retryState.formatAttempts < maxFormatRetries) {
           this.lastStructuralFeedback = [
             'Previous response was not parseable strict JSON. Return one plain JSON object only: no markdown, no comments, no trailing commas, no DynamoDB typed wrappers like {"S":"value"} or {"L":[...]}.',
           ];
-          return this.execute(input, retryCount + 1);
+          return this.execute(input, { ...retryState, formatAttempts: retryState.formatAttempts + 1 });
         }
         throw parseError;
       }
@@ -5770,7 +5804,7 @@ REQUIREMENTS:
         if (retryCount < maxRetries) {
           console.log(`[StoryArchitect] Scene construction found ${sceneConstructionIssues.length} issue(s), retrying with feedback...`);
           this.lastStructuralFeedback = sceneConstructionIssues;
-          return this.execute(input, retryCount + 1);
+          return this.execute(input, { ...retryState, contractAttempts: retryState.contractAttempts + 1 });
         }
         return {
           success: false,
@@ -5803,7 +5837,7 @@ REQUIREMENTS:
       if (structuralIssues.length > 0 && retryCount < maxRetries) {
         console.log(`[StoryArchitect] Structural validation found ${structuralIssues.length} issue(s), retrying with feedback...`);
         this.lastStructuralFeedback = structuralIssues;
-        return this.execute(input, retryCount + 1);
+        return this.execute(input, { ...retryState, contractAttempts: retryState.contractAttempts + 1 });
       }
 
       const hygieneIssues = this.collectBlueprintHygieneIssues(blueprint);
@@ -5855,14 +5889,19 @@ REQUIREMENTS:
 
       const cls = StoryArchitect.classifyBlueprintFailure(errorMsg);
 
-      if (cls.retryable && retryCount < maxRetries) {
+      const retryBudgetAvailable = cls.isParseError
+        ? retryState.formatAttempts < maxFormatRetries
+        : retryState.contractAttempts < maxRetries;
+      if (cls.retryable && retryBudgetAvailable) {
         console.log(`[StoryArchitect] Retrying due to blueprint issue: ${errorMsg.slice(0, 120)}`);
         this.lastStructuralFeedback = cls.isParseError
           ? [
               'Previous response was not parseable strict JSON. Return one plain JSON object only: no markdown, no comments, no trailing commas, no DynamoDB typed wrappers like {"S":"value"} or {"L":[...]}.',
             ]
           : [errorMsg];
-        return this.execute(input, retryCount + 1);
+        return this.execute(input, cls.isParseError
+          ? { ...retryState, formatAttempts: retryState.formatAttempts + 1 }
+          : { ...retryState, contractAttempts: retryState.contractAttempts + 1 });
       }
 
       // Validator tiering (B1): craft/fidelity advisories that persist after

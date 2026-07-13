@@ -1816,7 +1816,18 @@ Do not use markdown code blocks around the JSON.
         log.debug(`[${this.name}] JSON repair successful`);
         return result;
       } catch (repairError) {
-        if (repairError instanceof TruncatedLLMResponseError) throw repairError;
+        if (repairError instanceof TruncatedLLMResponseError) {
+          try {
+            BaseAgent._semanticFailureObserver?.({
+              agentName: this.name,
+              provider: this.config.provider,
+              category: 'parse',
+            });
+          } catch {
+            // Observation must never break parsing.
+          }
+          throw repairError;
+        }
         try {
           BaseAgent._semanticFailureObserver?.({
             agentName: this.name,
@@ -1854,6 +1865,7 @@ Do not use markdown code blocks around the JSON.
     try {
       return { data: this.parseJSON<T>(response), rawResponse: response };
     } catch (parseError) {
+      if (parseError instanceof TruncatedLLMResponseError) throw parseError;
       const reason = parseError instanceof Error ? parseError.message : String(parseError);
       log.warn(`[${this.name}] JSON parse failed; re-sampling once for strictly valid JSON. (${reason.slice(0, 160)})`);
       const retryMessages: AgentMessage[] = [
@@ -2292,6 +2304,7 @@ Do not use markdown code blocks around the JSON.
           // Look backwards from current position to find the right spot
           const insertPos = this.findMissingBracePosition(json, i);
           if (insertPos !== -1) {
+            this.markResponseTruncated();
             json = json.slice(0, insertPos) + '}' + json.slice(insertPos);
             // Adjust index since we inserted a character
             i++;
@@ -2310,6 +2323,8 @@ Do not use markdown code blocks around the JSON.
       const open = stack.pop();
       suffix += open === '{' ? '}' : ']';
     }
+
+    if (suffix.length > 0) this.markResponseTruncated();
 
     return json + suffix;
   }

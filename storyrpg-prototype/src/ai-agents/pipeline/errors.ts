@@ -16,6 +16,7 @@ export type PipelineFailureCode =
   | 'provider_configuration_invalid'
   | 'provider_model_unavailable'
   | 'job_config_mismatch'
+  | 'generation_preflight_invalid'
   | 'structured_output_invalid'
   | 'scene_construction_conflict'
   | 'episode_plan_invalid'

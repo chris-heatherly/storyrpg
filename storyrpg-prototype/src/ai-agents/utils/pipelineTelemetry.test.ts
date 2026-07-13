@@ -172,6 +172,31 @@ describe('buildLlmCallObserver wiring', () => {
     expect(accumulated).toBe(162);
   });
 
+  it('separates transport success from structured-output acceptance', () => {
+    const telemetry = new PipelineTelemetry();
+    telemetry.observeProviderCall({
+      agentName: 'Story Architect',
+      provider: 'gemini',
+      success: true,
+      durationMs: 10,
+      queueWaitMs: 0,
+      attempt: 0,
+    });
+    telemetry.observeSemanticFailure('Story Architect', 'gemini', 'parse');
+
+    const ledger = telemetry.getLlmLedger()!;
+    expect(ledger.totals).toMatchObject({
+      transportSuccesses: 1,
+      structuredFailures: 1,
+      acceptedResponses: 0,
+    });
+    expect(ledger.byAgent[0]).toMatchObject({
+      transportSuccesses: 1,
+      structuredFailures: 1,
+      acceptedResponses: 0,
+    });
+  });
+
   it('resolves a telemetry getter per call so it follows run-time reassignment', () => {
     let current = new PipelineTelemetry();
     const observer = buildLlmCallObserver(() => current);

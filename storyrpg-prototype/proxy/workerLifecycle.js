@@ -302,6 +302,12 @@ function buildWorkerRequestSnapshot(mode, payload, explicitStoryTitle) {
         story: brief?.story ? { title: brief.story.title, genre: brief.story.genre } : undefined,
         episode: brief?.episode ? { number: brief.episode.number, title: brief.episode.title } : undefined,
         hasSeasonPlan: !!brief?.seasonPlan,
+        sourceKind: generationInput?.manifest?.sourceKind || brief?.generationManifest?.sourceKind,
+        requestedEpisodes: generationInput?.manifest?.requestedEpisodes || brief?.generationManifest?.requestedEpisodes,
+        seasonPlanId: generationInput?.manifest?.seasonPlanId || brief?.generationManifest?.seasonPlanId,
+        seasonPlanHash: generationInput?.manifest?.seasonPlanHash || brief?.generationManifest?.seasonPlanHash,
+        narrativeGraphHash: generationInput?.manifest?.narrativeGraphHash || brief?.generationManifest?.narrativeGraphHash,
+        compilerVersion: generationInput?.manifest?.compilerVersion || brief?.generationManifest?.compilerVersion,
       }
       : mode === 'image-generation'
         ? {

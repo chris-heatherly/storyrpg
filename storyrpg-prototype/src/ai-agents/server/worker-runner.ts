@@ -22,6 +22,7 @@ import { narrativeProviderPreflight, validateNarrativeJobContract } from './prov
 import { installResilientHttp } from './resilientHttp';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { Story } from '../../types';
+import { assertGenerationPreflight } from '../pipeline/generationPreflight';
 
 // Make every outbound provider call (Gemini/Anthropic/OpenAI/ElevenLabs/blob/…)
 // reuse keep-alive connections and transparently retry transient connection
@@ -277,7 +278,14 @@ async function runAnalysis(payload: WorkerPayload) {
 
 async function runGeneration(payload: WorkerPayload) {
   if (!payload.generationInput) throw new Error('generationInput is required for generation mode');
-  const { brief, sourceAnalysis, episodeRange } = payload.generationInput;
+  const { brief, sourceAnalysis, episodeRange, manifest } = payload.generationInput;
+  assertGenerationPreflight({
+    brief: brief as unknown as FullCreativeBrief,
+    sourceAnalysis: sourceAnalysis as SourceMaterialAnalysis | undefined,
+    episodeRange,
+    manifest,
+    fallbackEpisode: Number((brief as any)?.episode?.number || 1),
+  });
   emit('step_start', { step: 'generation' });
   const { pipeline, result } = await runStoryGeneration({
     config: payload.config,
@@ -285,6 +293,7 @@ async function runGeneration(payload: WorkerPayload) {
     brief: brief as unknown as FullCreativeBrief,
     sourceAnalysis: sourceAnalysis as SourceMaterialAnalysis | undefined,
     episodeRange,
+    manifest,
     resumeCheckpoint: payload.resumeCheckpoint,
     onEvent: emitPipelineEvent,
     onImageJobEvent: (rawEvent: any) => {

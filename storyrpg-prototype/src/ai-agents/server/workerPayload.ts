@@ -1,5 +1,6 @@
 import type { CompileEpisodeRequest } from '../pipeline/episodeCompiler';
 import { createHash } from 'node:crypto';
+import type { GenerationManifest } from '../pipeline/generationPreflight';
 
 type EndingMode = 'single' | 'multiple';
 
@@ -35,6 +36,7 @@ export type WorkerPayload = {
     brief: Record<string, unknown>;
     sourceAnalysis?: Record<string, unknown>;
     episodeRange?: { start: number; end: number; specific?: number[] };
+    manifest?: GenerationManifest;
   };
   imageGenerationInput?: {
     outputDirectory: string;
@@ -117,6 +119,24 @@ function isValidTargetSlot(value: unknown): value is { episodeNumber: number; sc
   );
 }
 
+function isValidGenerationManifest(value: unknown): value is GenerationManifest {
+  if (!isRecord(value)) return false;
+  const validSourceKinds = ['invent', 'authored', 'authored_lite', 'derived_from_lite'];
+  return (
+    value.version === 1
+    && typeof value.sourceKind === 'string'
+    && validSourceKinds.includes(value.sourceKind)
+    && Array.isArray(value.requestedEpisodes)
+    && value.requestedEpisodes.length > 0
+    && value.requestedEpisodes.every((episode) => typeof episode === 'number' && Number.isInteger(episode) && episode > 0)
+    && (value.sourceAnalysisHash == null || typeof value.sourceAnalysisHash === 'string')
+    && (value.seasonPlanId == null || typeof value.seasonPlanId === 'string')
+    && (value.seasonPlanHash == null || typeof value.seasonPlanHash === 'string')
+    && (value.narrativeGraphHash == null || typeof value.narrativeGraphHash === 'string')
+    && (value.compilerVersion == null || typeof value.compilerVersion === 'string')
+  );
+}
+
 export function assertValidWorkerPayload(value: unknown): asserts value is WorkerPayload {
   if (!isRecord(value)) {
     throw new Error('Worker payload must be an object.');
@@ -158,6 +178,9 @@ export function assertValidWorkerPayload(value: unknown): asserts value is Worke
     }
     if (!isRecord(value.generationInput.brief)) {
       throw new Error('generationInput.brief is required for generation mode.');
+    }
+    if (value.generationInput.manifest != null && !isValidGenerationManifest(value.generationInput.manifest)) {
+      throw new Error('generationInput.manifest is malformed.');
     }
   }
 

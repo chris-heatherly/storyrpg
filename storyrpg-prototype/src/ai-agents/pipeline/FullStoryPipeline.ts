@@ -427,10 +427,13 @@ export type { PipelineEvent } from './events';
 // PipelineError moved to ./errors (pure move) so pipeline/phases/* can use it
 // without importing this monolith. Re-exported here for existing consumers.
 import { PipelineError } from './errors';
+import { assertCanonicalPlanAttached } from './generationPreflight';
 export { PipelineError };
 
 // Full creative brief for complete story generation
 export interface FullCreativeBrief {
+  /** Immutable source/plan revision contract verified before any generation call. */
+  generationManifest?: import('./generationPreflight').GenerationManifest;
   // Story foundation
   story: {
     title: string;
@@ -4969,15 +4972,8 @@ export class FullStoryPipeline {
     // scenes, and the §4 final contract then fail-closes on season-promise
     // plan-use AFTER the full generation spend (bite-me 2026-07-04: 4
     // "not consumed into concrete plan artifacts" blockers at the ep1 seal).
-    // Callers must attach the SeasonPlanner output to `brief.seasonPlan`
-    // (the generator UI does via buildCreativeBrief). Warn loudly here.
-    if (!baseBrief.seasonPlan && (analysis.sourceFormat === 'story_treatment' || analysis.treatmentMetadata?.detected)) {
-      this.emit({
-        type: 'warning',
-        phase: 'multi_episode_init',
-        message: 'Treatment-sourced run has no brief.seasonPlan — plan-time fidelity checks will skip and the final story contract will likely fail-close on season-promise plan-use. Attach the SeasonPlanner output to the brief.',
-      });
-    }
+    // Direct callers that bypass the service preflight still fail closed here.
+    assertCanonicalPlanAttached(baseBrief, analysis);
 
     // WS1 (contracts upstream): the two plan-checkable §4 fidelity gates
     // (authored episode conformance, Story Circle anchor conformance) run HERE,

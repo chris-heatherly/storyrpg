@@ -59,6 +59,16 @@ Skip telemetry (debug events): `thread_twist_skipped_authored_lite`,
 Cognee remains advisory-only: index compiled ESC/ledger facts, not competing
 LLM plans.
 
+Authored generation is admitted through `GenerationManifest` preflight. The
+manifest pins `sourceKind`, requested episodes, source-analysis hash,
+season-plan id/hash, graph hash, and compiler version using the JSON wire
+representation shared by the browser and worker. Generator state may recover a
+matching saved plan, but UI, worker, service, and pipeline boundaries fail
+closed before provider calls when the plan, graph, planned scenes, or
+`EpisodeEventPlan` projection is missing or has drifted. `StoryArchitect`
+receives the explicit source kind and cannot infer invent mode from a missing
+optional plan field.
+
 ### Non-authored-lite / invent-mode
 
 1. Optional source analysis via `SourceMaterialAnalyzer`.

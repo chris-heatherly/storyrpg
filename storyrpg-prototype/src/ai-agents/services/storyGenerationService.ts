@@ -11,6 +11,10 @@ import {
 import type { EndingMode, SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { SeasonPlan } from '../../types/seasonPlan';
 import { compileAndApplyNarrativeContracts } from '../pipeline/narrativeContractCompiler';
+import {
+  assertGenerationPreflight,
+  type GenerationManifest,
+} from '../pipeline/generationPreflight';
 
 type StoryAnalysisPreferences = {
   targetScenesPerEpisode?: number;
@@ -55,6 +59,7 @@ export interface StoryGenerationRequest extends PipelineHookOptions {
   brief: FullCreativeBrief;
   sourceAnalysis?: SourceMaterialAnalysis;
   episodeRange?: { start: number; end: number; specific?: number[] };
+  manifest?: GenerationManifest;
   resumeCheckpoint?: ResumeCheckpoint;
   externalJobId?: string;
 }
@@ -187,6 +192,13 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
 }
 
 export async function runStoryGeneration(request: StoryGenerationRequest): Promise<StoryGenerationResponse> {
+  assertGenerationPreflight({
+    brief: request.brief,
+    sourceAnalysis: request.sourceAnalysis,
+    episodeRange: request.episodeRange,
+    manifest: request.manifest ?? request.brief.generationManifest,
+    fallbackEpisode: request.brief.episode?.number || 1,
+  });
   const effectiveConfig = request.config?.generation?.assetGenerationMode === 'story-only'
     ? {
         ...request.config,

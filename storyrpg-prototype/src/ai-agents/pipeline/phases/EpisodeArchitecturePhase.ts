@@ -156,6 +156,9 @@ export class EpisodeArchitecturePhase {
     const targetSceneCount = Math.max(configuredTargetSceneCount, plannedSceneCount);
 
     const architectureInput: StoryArchitectInput = {
+      sourceKind: brief.generationManifest?.sourceKind
+        ?? seasonEpisode?.treatmentGuidance?.sourceKind
+        ?? (brief.multiEpisode?.sourceAnalysis?.sourceFormat === 'story_treatment' ? 'authored' : 'invent'),
       storyTitle: brief.story.title,
       genre: brief.story.genre,
       synopsis: brief.story.synopsis,

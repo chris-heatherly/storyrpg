@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { BaseAgent } from './BaseAgent';
 import { StoryArchitect, type StoryArchitectInput } from './StoryArchitect';
 import { BlueprintContractHygieneValidator } from '../validators/BlueprintContractHygieneValidator';
 
@@ -28,6 +29,38 @@ function makeInput(overrides?: Partial<StoryArchitectInput>): StoryArchitectInpu
     ...overrides,
   };
 }
+
+describe('StoryArchitect authored-mode preflight', () => {
+  it('refuses invent mode without making an LLM call', async () => {
+    const transport = vi.fn(async () => '{"unexpected":true}');
+    BaseAgent.setLlmTransportOverride(transport);
+    try {
+      const result = await new StoryArchitect(config).execute(makeInput({ sourceKind: 'authored_lite' }));
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/Refuse invent-mode StoryArchitect/);
+      expect(result.metadata?.failure).toMatchObject({
+        code: 'episode_plan_invalid',
+        issueCodes: ['authored_invent_mode_forbidden'],
+      });
+      expect(transport).not.toHaveBeenCalled();
+    } finally {
+      BaseAgent.setLlmTransportOverride(null);
+    }
+  });
+
+  it('does not blindly re-sample a lossy truncated invent-mode blueprint', async () => {
+    const transport = vi.fn(async () => '{"episodeId":"ep1","scenes":[');
+    BaseAgent.setLlmTransportOverride(transport);
+    try {
+      const result = await new StoryArchitect(config).execute(makeInput({ sourceKind: 'invent' }));
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/rejecting lossy parse/i);
+      expect(transport).toHaveBeenCalledTimes(1);
+    } finally {
+      BaseAgent.setLlmTransportOverride(null);
+    }
+  });
+});
 
 // -----------------------------------------------------------------------
 // buildSeasonPlanDirectivesSection

@@ -57,6 +57,12 @@ export interface LlmLedgerAgentRow {
   provider: 'anthropic' | 'openai' | 'gemini' | 'openrouter';
   calls: number;
   successes: number;
+  /** Provider responses received successfully, before parse/schema/contract acceptance. */
+  transportSuccesses: number;
+  /** Parse or validation rejections observed after a successful provider response. */
+  structuredFailures: number;
+  /** Conservative accepted count: transport successes minus structured failures. */
+  acceptedResponses: number;
   failures: number;
   /** Sum of per-call durationMs. With concurrency this can exceed wall time. */
   totalDurationMs: number;
@@ -98,6 +104,9 @@ export interface LlmLedger {
   totals: {
     calls: number;
     successes: number;
+    transportSuccesses: number;
+    structuredFailures: number;
+    acceptedResponses: number;
     failures: number;
     totalDurationMs: number;
     avgDurationMs: number;
@@ -249,6 +258,9 @@ export class PipelineTelemetry {
           provider: m.provider,
           calls: 0,
           successes: 0,
+          transportSuccesses: 0,
+          structuredFailures: 0,
+          acceptedResponses: 0,
           failures: 0,
           totalDurationMs: 0,
           avgDurationMs: 0,
@@ -266,6 +278,7 @@ export class PipelineTelemetry {
       }
       row.calls += 1;
       if (m.success) row.successes += 1;
+      if (m.success) row.transportSuccesses += 1;
       else row.failures += 1;
       row.totalDurationMs += m.durationMs;
       row.totalQueueWaitMs += m.queueWaitMs;
@@ -286,6 +299,7 @@ export class PipelineTelemetry {
       const row = byAgent.get(`${failure.agentName}::${failure.provider}`);
       if (row) {
         row.failureCategories[failure.category] = (row.failureCategories[failure.category] ?? 0) + 1;
+        row.structuredFailures += 1;
       }
     }
 
@@ -293,11 +307,18 @@ export class PipelineTelemetry {
       row.avgDurationMs = Math.round(row.totalDurationMs / row.calls);
       row.avgQueueWaitMs = Math.round(row.totalQueueWaitMs / row.calls);
       row.truncatedResponses = this.truncationCounts.get(`${row.agentName}::${row.provider}`) ?? 0;
+      row.acceptedResponses = Math.max(0, row.transportSuccesses - row.structuredFailures);
     }
 
     const totals = {
       calls: this.providerCallMetrics.length,
       successes: this.providerCallMetrics.filter((m) => m.success).length,
+      transportSuccesses: this.providerCallMetrics.filter((m) => m.success).length,
+      structuredFailures: this.semanticFailures.length,
+      acceptedResponses: Math.max(
+        0,
+        this.providerCallMetrics.filter((m) => m.success).length - this.semanticFailures.length,
+      ),
       failures: 0,
       totalDurationMs: this.providerCallMetrics.reduce((s, m) => s + m.durationMs, 0),
       avgDurationMs: 0,

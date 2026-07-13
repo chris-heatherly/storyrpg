@@ -143,6 +143,15 @@ function duplicateSceneTurnConflicts(scenes: ArchitectureSceneLike[]): Architect
       const rightEvents = sceneEventIds(right);
       const sharedEvents = [...leftEvents].filter((eventId) => rightEvents.has(eventId));
       const similarity = jaccard(leftFingerprint, planningFingerprint(right));
+      const hasDistinctCanonicalOwnership = leftEvents.size > 0
+        && rightEvents.size > 0
+        && sharedEvents.length === 0;
+      // Once both scenes carry non-empty canonical assignments, those IDs are
+      // authoritative. Shared episode pressure, advisory seeds, locations, or
+      // cast can make neighboring scenes lexically near-identical without
+      // restaging the same event. Semantic overlap remains the fallback only
+      // when at least one side lacks canonical event identity.
+      if (hasDistinctCanonicalOwnership) continue;
       // Lexical overlap is only a fallback for legacy projections. Keep it
       // deliberately high: adjacent scenes often share location, characters,
       // and aftermath vocabulary without restaging the same turn. Canonical

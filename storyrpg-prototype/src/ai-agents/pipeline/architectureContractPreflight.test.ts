@@ -230,4 +230,42 @@ describe('validateEpisodeArchitectureContract', () => {
 
     expect(conflicts.some((conflict) => conflict.code === 'PLAN_DUPLICATE_SCENE_TURN')).toBe(true);
   });
+
+  it('trusts disjoint canonical event ownership over shared scaffold and advisory context', () => {
+    const sharedPressure = 'Can the newcomer start over in a city that is already watching her?';
+    const arrival = 'The newcomer arrives in the city with two suitcases and an old address.';
+    const conflicts = validateEpisodeArchitectureContract([
+      {
+        id: 's1-1',
+        title: arrival,
+        description: sharedPressure,
+        dramaticPurpose: sharedPressure,
+        turnContract: {
+          turnId: 's1-1-turn', source: 'treatment', centralTurn: arrival,
+          beforeState: 'She is in transit.', turnEvent: arrival, afterState: 'She is newly arrived.', handoff: 'She starts exploring.',
+        },
+        requiredBeats: [{ id: 's1-1-rb1', sourceTurn: arrival, mustDepict: arrival, tier: 'authored' }],
+        narrativeEventIds: ['event:ep1-arrival'],
+        narrativeEventPlanVersion: 3,
+      },
+      {
+        id: 's1-2',
+        title: 'The newcomer explores the city streets.',
+        description: sharedPressure,
+        dramaticPurpose: sharedPressure,
+        turnContract: {
+          turnId: 's1-2-turn', source: 'treatment', centralTurn: 'The newcomer explores the city streets.',
+          beforeState: 'She has just arrived.', turnEvent: 'The newcomer explores the city streets.', afterState: 'She learns the shape of the city.', handoff: 'A workshop catches her attention.',
+        },
+        requiredBeats: [
+          { id: 's1-2-rb1', sourceTurn: 'The newcomer explores the city streets.', mustDepict: 'The newcomer explores the city streets.', tier: 'authored' },
+          { id: 's1-2-seed1', sourceTurn: arrival, mustDepict: arrival, tier: 'seed' },
+        ],
+        narrativeEventIds: ['event:ep1-exploration'],
+        narrativeEventPlanVersion: 3,
+      },
+    ]);
+
+    expect(conflicts.filter((conflict) => conflict.code === 'PLAN_DUPLICATE_SCENE_TURN')).toEqual([]);
+  });
 });

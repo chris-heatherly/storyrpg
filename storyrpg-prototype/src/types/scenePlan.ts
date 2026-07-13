@@ -34,6 +34,7 @@ import type { ChoiceType } from './choice';
 import type { TreatmentEventAtom } from './treatmentEvent';
 import type { SpineRealizationIntent } from './episodeSpine';
 import type {
+  AuthoredEventSemanticIR,
   EpisodeEventPlan,
   NarrativeContractGraph,
   NarrativeEventCue,
@@ -1285,6 +1286,8 @@ export interface SeasonScenePlan {
   setupPayoffEdges: SetupPayoffEdge[];
   /** Canonical source of event identity, chronology, and cross-episode obligations. */
   narrativeContractGraph?: NarrativeContractGraph;
+  /** LLM-authored semantic decomposition consumed by the canonical compiler. */
+  semanticEventIr?: AuthoredEventSemanticIR;
   /** Immutable episode-local ownership projections keyed by episode number. */
   episodeEventPlans?: Record<number, EpisodeEventPlan>;
   /** Parsed treatment-field obligations assigned across the scene plan. */

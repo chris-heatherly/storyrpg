@@ -159,4 +159,46 @@ describe('semanticValidationCoordinator', () => {
 
     expect(judge.calls).toBe(1);
   });
+
+  it('reuses a positive receipt when unrelated evidence changes', async () => {
+    const judge = new FakeJudge((claim) => verdict(claim, 'fulfilled', 'Dusk Club is born'));
+    await validateSemanticRealizationTasks({
+      sceneId: 's1', tasks: [task()],
+      sceneContent: { beats: [{ text: 'The Dusk Club is born.' }] },
+      judge,
+    });
+    await validateSemanticRealizationTasks({
+      sceneId: 's1', tasks: [task()],
+      sceneContent: { beats: [{ text: 'An unrelated arrival happens outside.' }, { text: 'The Dusk Club is born.' }] },
+      judge,
+    });
+
+    expect(judge.calls).toBe(1);
+  });
+
+  it('classifies provider failure separately from missing content', async () => {
+    const judge: SemanticRealizationJudgeLike = {
+      identity: () => ({ policyVersion: 'test-v1', provider: 'test', model: 'test-judge' }),
+      execute: async () => ({
+        success: false,
+        error: 'provider timeout',
+        failureKind: 'provider_unavailable',
+      }),
+    };
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1', tasks: [task()],
+      sceneContent: { beats: [{ text: 'The Dusk Club is born.' }] },
+      judge,
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      code: 'SEMANTIC_VALIDATION_UNAVAILABLE',
+      missingEvidenceAtoms: ['atom:formation'],
+    });
+    expect(result.receipt.semanticVerdicts?.[0]).toMatchObject({
+      disposition: 'inconclusive',
+      executionStatus: 'provider_unavailable',
+    });
+  });
 });

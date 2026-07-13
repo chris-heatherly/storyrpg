@@ -421,7 +421,6 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
   it('does not run ChoiceAuthor or mark the scene complete after unresolved prose ownership', async () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
     const calls: string[] = [];
-    const sceneWriterPrompts: string[] = [];
     const invalidScene = {
       sceneId: 's1-3', sceneName: 'The Bookshop', startingBeatId: 'b1',
       beats: [{ id: 'b1', text: 'Kylie watches traffic slide past the club windows.' }],
@@ -432,8 +431,15 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
       sceneWriter: {
         execute: async (input: { storyContext?: { userPrompt?: string } }) => {
           calls.push('sceneWriter');
-          sceneWriterPrompts.push(input.storyContext?.userPrompt ?? '');
           return { success: true, data: structuredClone(invalidScene) };
+        },
+        executeSemanticPatch: async (input: { baseSceneHash: string; targetTaskId: string; targetAtomIds: string[] }) => {
+          calls.push('semanticPatch');
+          return { success: true, data: {
+            baseSceneHash: input.baseSceneHash, targetTaskId: input.targetTaskId, targetAtomIds: input.targetAtomIds,
+            operations: [{ op: 'replace_beat_text', beatId: 'b1', text: 'Kylie keeps watching traffic slide past the club windows.' }],
+            claimedEvidence: [{ atomId: input.targetAtomIds[0], beatIds: ['b1'] }],
+          } };
         },
         setContractLoadTemperature: () => undefined,
       },
@@ -491,15 +497,7 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
       config: { generation: {} }, emit: () => undefined,
     } as never)).rejects.toThrow(/OwnerStageRealizationBlocker/);
     expect(calls.filter((call) => call === 'choiceAuthor')).toHaveLength(0);
-    expect(calls.filter((call) => call === 'sceneWriter').length).toBeGreaterThanOrEqual(3);
-    expect(sceneWriterPrompts.slice(1)).toEqual(expect.arrayContaining([
-      expect.stringContaining('CURRENT ACCEPTED READER-FACING SURFACE'),
-    ]));
-    expect(sceneWriterPrompts.slice(1)).toEqual(expect.arrayContaining([
-      expect.stringContaining('Kylie watches traffic slide past the club windows.'),
-    ]));
-    expect(sceneWriterPrompts.slice(1)).toEqual(expect.arrayContaining([
-      expect.stringContaining('smallest prose edit'),
-    ]));
+    expect(calls.filter((call) => call === 'sceneWriter')).toHaveLength(1);
+    expect(calls.filter((call) => call === 'semanticPatch')).toHaveLength(2);
   });
 });

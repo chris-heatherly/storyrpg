@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   improvesMissingRealization,
   insertMissingMomentBeats,
+  isNonStageableRequiredMomentSource,
   missingRequiredMoments,
   realizationRetryFeedback,
   requiredMomentsFor,
@@ -19,6 +20,23 @@ const BLUEPRINT_SCENE = {
   signatureMoment: 'Cișmigiu at 1am: eight seconds of fog, a shadow, a scream, and a rescue.',
   choicePoint: { setsTreatmentSeeds: ['treatment_seed_ep1_1'] },
 };
+
+describe('isNonStageableRequiredMomentSource', () => {
+  it('defers planning register but keeps concrete authored actions actionable', () => {
+    expect(isNonStageableRequiredMomentSource({
+      validator: 'RequiredBeatRealizationValidator',
+      tier: 'storyCircle:need',
+      moment: 'Name the episode want that makes the pressure active.',
+      missingTokens: ['pressure'],
+    })).toBe(true);
+    expect(isNonStageableRequiredMomentSource({
+      validator: 'RequiredBeatRealizationValidator',
+      tier: 'authored',
+      moment: 'Kylie pulls Iulia out of the path of the attacker.',
+      missingTokens: ['pulls', 'iulia'],
+    })).toBe(false);
+  });
+});
 
 describe('requiredMomentsFor', () => {
   it('collects authored + seed + signature beats and the scene signatureMoment; skips connective', () => {

@@ -337,6 +337,22 @@ function isTreatmentSummaryProse(moment: string): boolean {
 }
 
 /**
+ * True when the required-moment source is writer guidance or synopsis register,
+ * not prose that a deterministic recovery path could ever place on-page.
+ */
+export function isNonStageableRequiredMomentSource(
+  missing: MissingMoment,
+  currentProse: string = '',
+): boolean {
+  return isStoryCircleSummaryTier(missing.tier)
+    || missing.tier === 'sceneTurn'
+    || missing.tier.startsWith('arcPressure')
+    || Boolean(characterIntroductionMomentName(missing.moment))
+    || isTreatmentSummaryProse(missing.moment)
+    || momentNamesProtagonistInSecondPersonStory(missing.moment, currentProse);
+}
+
+/**
  * Verbatim paste of an unsafe treatment synopsis into beat.text must not count
  * as dramatization — otherwise insertMissingMomentBeats can "satisfy" the gate
  * that justified the paste.

@@ -18,7 +18,8 @@ export interface RealizationTaskGateFinding {
     | 'OWNER_FORBIDDEN_EVIDENCE_PRESENT'
     | 'SEMANTIC_REALIZATION_MISSING'
     | 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT'
-    | 'SEMANTIC_VALIDATION_INCONCLUSIVE';
+    | 'SEMANTIC_VALIDATION_INCONCLUSIVE'
+    | 'SEMANTIC_VALIDATION_UNAVAILABLE';
   taskId: string;
   contractId: string;
   sceneId: string;

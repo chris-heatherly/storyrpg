@@ -36,6 +36,11 @@ import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter'
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { QARunner, QAReport, ContinuityChecker } from '../agents/QAAgents';
 import { SemanticRealizationJudge } from '../agents/SemanticRealizationJudge';
+import {
+  semanticContractEventSeeds,
+  validateAuthoredEventSemanticIR,
+} from './semanticContractIr';
+import { stableHash } from './artifacts/store';
 import { aggregateProseCraftReports, aggregateResponsivenessReports } from '../agents/QualityJudges';
 import { SourceMaterialAnalyzer, SourceMaterialInput } from '../agents/SourceMaterialAnalyzer';
 import { SeasonPlan } from '../../types/seasonPlan';
@@ -4886,6 +4891,59 @@ export class FullStoryPipeline {
         ...baseBrief,
         seasonPlan: rebuildTreatmentSeasonScenePlan(baseBrief.seasonPlan),
       };
+    }
+    const semanticScenePlan = baseBrief.seasonPlan?.scenePlan;
+    const semanticGraph = semanticScenePlan?.narrativeContractGraph;
+    const hasDepictionEvents = semanticGraph?.events
+      .some((event) => event.realizationMode === 'depiction');
+    if (hasDepictionEvents && !semanticScenePlan?.semanticEventIr) {
+      throw new PipelineError(
+        'Season plan has depiction events but no persisted semantic contract IR. Re-run story analysis so the SemanticContractCompiler can compile source-grounded claims before episode generation.',
+        'season_planning',
+        {
+          agent: 'SemanticContractCompiler',
+          failure: {
+            code: 'season_graph_invalid',
+            ownerStage: 'season_plan',
+            retryClass: 'none',
+            issueCodes: ['semantic_contract_ir_missing'],
+            repairTarget: 'season-plan',
+          },
+          context: {
+            graphSourceHash: semanticScenePlan?.narrativeContractGraph?.sourceHash,
+            compilerVersion: semanticScenePlan?.narrativeContractGraph?.compilerVersion,
+          },
+        },
+      );
+    }
+    if (hasDepictionEvents && semanticScenePlan?.semanticEventIr && semanticGraph) {
+      const knownLocations = [...new Set(semanticScenePlan.scenes.flatMap((scene) => scene.locations ?? []).filter(Boolean))];
+      const semanticValidation = validateAuthoredEventSemanticIR(
+        semanticScenePlan.semanticEventIr,
+        semanticContractEventSeeds(semanticGraph),
+        knownLocations,
+      );
+      const graphIrMatches = stableHash(semanticGraph.semanticEventIr) === stableHash(semanticScenePlan.semanticEventIr);
+      if (!semanticValidation.passed || !graphIrMatches) {
+        throw new PipelineError(
+          `Season plan semantic contract IR failed preflight: ${[
+            ...semanticValidation.issues,
+            ...(!graphIrMatches ? ['Scene-plan IR does not match the graph-embedded IR.'] : []),
+          ].join(' | ')}`,
+          'season_planning',
+          {
+            agent: 'SemanticContractCompiler',
+            failure: {
+              code: 'season_graph_invalid',
+              ownerStage: 'season_plan',
+              retryClass: 'none',
+              issueCodes: ['semantic_contract_ir_invalid'],
+              repairTarget: 'season-plan',
+            },
+            context: { graphSourceHash: semanticGraph.sourceHash, semanticValidation },
+          },
+        );
+      }
     }
     baseBrief = this.reconcileBriefStoryMetadataFromPlan(baseBrief, analysis);
     // Arm treatmentSourced: the final-contract fidelity path reads the treatment

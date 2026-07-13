@@ -29,6 +29,7 @@ export type PipelineFailureCode =
   | 'owner_stage_not_executed'
   | 'owner_stage_coverage_mismatch'
   | 'validator_snapshot_mismatch'
+  | 'semantic_judge_unavailable'
   | 'semantic_validation_inconclusive'
   | 'character_presence_contract_failed'
   | 'output_boundary_invalid'

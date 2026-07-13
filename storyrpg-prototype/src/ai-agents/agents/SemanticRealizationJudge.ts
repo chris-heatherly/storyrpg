@@ -20,6 +20,10 @@ export interface SemanticRealizationClaim {
   polarity: 'required' | 'forbidden';
   participantIds: string[];
   prerequisiteAtomIds: string[];
+  semanticRole?: string;
+  temporalSlot?: string;
+  stagedLocation?: string;
+  referencedLocations?: string[];
   excerpts: NarrativeEvidenceExcerpt[];
 }
 
@@ -36,6 +40,15 @@ export interface SemanticRealizationJudgeOutput {
   verdicts: SemanticRealizationJudgeVerdict[];
 }
 
+export type SemanticRealizationJudgeFailureKind =
+  | 'provider_unavailable'
+  | 'malformed_output'
+  | 'policy_error';
+
+export type SemanticRealizationJudgeResponse = AgentResponse<SemanticRealizationJudgeOutput> & {
+  failureKind?: SemanticRealizationJudgeFailureKind;
+};
+
 export interface SemanticRealizationJudgeIdentity {
   policyVersion: string;
   provider: string;
@@ -44,14 +57,14 @@ export interface SemanticRealizationJudgeIdentity {
 
 export interface SemanticRealizationJudgeLike {
   identity(): SemanticRealizationJudgeIdentity;
-  execute(claims: SemanticRealizationClaim[]): Promise<AgentResponse<SemanticRealizationJudgeOutput>>;
+  execute(claims: SemanticRealizationClaim[]): Promise<SemanticRealizationJudgeResponse>;
 }
 
-function semanticJudgeSchema() {
+function semanticJudgeSchema(claimCount: number) {
   return {
     name: 'semantic_realization_verdicts',
     description: 'Evidence-backed categorical verdicts for narrative propositions.',
-    maxOutputTokens: 6144,
+    maxOutputTokens: Math.min(2048, Math.max(640, 320 * claimCount)),
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -59,6 +72,8 @@ function semanticJudgeSchema() {
       properties: {
         verdicts: {
           type: 'array',
+          minItems: claimCount,
+          maxItems: claimCount,
           items: {
             type: 'object',
             additionalProperties: false,
@@ -69,10 +84,10 @@ function semanticJudgeSchema() {
                 type: 'string',
                 enum: ['fulfilled', 'partial', 'not_fulfilled', 'contradicted', 'uncertain'],
               },
-              evidenceRefs: { type: 'array', items: { type: 'string' } },
-              evidenceQuotes: { type: 'array', items: { type: 'string' } },
-              missingCriteria: { type: 'array', items: { type: 'string' } },
-              rationale: { type: 'string' },
+              evidenceRefs: { type: 'array', maxItems: 3, items: { type: 'string', maxLength: 240 } },
+              evidenceQuotes: { type: 'array', maxItems: 3, items: { type: 'string', maxLength: 320 } },
+              missingCriteria: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 240 } },
+              rationale: { type: 'string', maxLength: 360 },
             },
           },
         },
@@ -99,13 +114,13 @@ export class SemanticRealizationJudge extends BaseAgent implements SemanticReali
     };
   }
 
-  async execute(claims: SemanticRealizationClaim[]): Promise<AgentResponse<SemanticRealizationJudgeOutput>> {
+  async execute(claims: SemanticRealizationClaim[]): Promise<SemanticRealizationJudgeResponse> {
     if (claims.length === 0) return { success: true, data: { verdicts: [] } };
     try {
       const response = await this.callLLM(
         [{ role: 'user', content: this.buildPrompt(claims) }],
         2,
-        { jsonSchema: semanticJudgeSchema() },
+        { jsonSchema: semanticJudgeSchema(claims.length) },
       );
       const parsed = this.parseJSON<SemanticRealizationJudgeOutput>(response);
       const claimIds = new Set(claims.map((claim) => claim.id));
@@ -118,15 +133,32 @@ export class SemanticRealizationJudge extends BaseAgent implements SemanticReali
         && Array.isArray(verdict.missingCriteria)
         && typeof verdict.rationale === 'string',
       );
+      if (verdicts.length !== claims.length) {
+        return {
+          success: false,
+          error: `Semantic judge returned ${verdicts.length}/${claims.length} valid verdicts.`,
+          failureKind: 'malformed_output',
+          rawResponse: response,
+        };
+      }
       return { success: true, data: { verdicts }, rawResponse: response };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[SemanticRealizationJudge] judge call failed: ${message}`);
-      return { success: false, error: message };
+      const failureKind: SemanticRealizationJudgeFailureKind = /truncat|max_tokens|timeout|timed out|429|rate limit|503|502|network|fetch/i.test(message)
+        ? 'provider_unavailable'
+        : /json|schema|parse|verdict/i.test(message)
+          ? 'malformed_output'
+          : 'policy_error';
+      return { success: false, error: message, failureKind };
     }
   }
 
   private buildPrompt(claims: SemanticRealizationClaim[]): string {
+    const excerpts = new Map<string, { id: string; text: string }>();
+    for (const claim of claims) {
+      for (const excerpt of claim.excerpts) excerpts.set(excerpt.id, { id: excerpt.id, text: excerpt.text });
+    }
     const payload = claims.map((claim) => ({
       id: claim.id,
       proposition: claim.proposition,
@@ -134,7 +166,11 @@ export class SemanticRealizationJudge extends BaseAgent implements SemanticReali
       polarity: claim.polarity,
       participantIds: claim.participantIds,
       prerequisiteAtomIds: claim.prerequisiteAtomIds,
-      excerpts: claim.excerpts.map((excerpt) => ({ id: excerpt.id, text: excerpt.text })),
+      semanticRole: claim.semanticRole,
+      temporalSlot: claim.temporalSlot,
+      stagedLocation: claim.stagedLocation,
+      referencedLocations: claim.referencedLocations,
+      excerptIds: claim.excerpts.map((excerpt) => excerpt.id),
     }));
     return [
       'You are a conservative narrative evidence judge.',
@@ -146,8 +182,9 @@ export class SemanticRealizationJudge extends BaseAgent implements SemanticReali
       'Use fulfilled only when the proposition is clearly established. Use partial for incomplete realization, contradicted for an explicit opposite, not_fulfilled when absent, and uncertain only when the excerpts genuinely cannot decide.',
       'A fulfilled verdict must cite at least one excerpt id and copy a short exact quote from that excerpt. Never invent or normalize a quote.',
       'For non-fulfilled verdicts, list the concrete criteria still missing.',
+      'Keep rationale to one concise sentence. Do not restate the excerpts or proposition.',
       '',
-      JSON.stringify(payload),
+      JSON.stringify({ excerpts: [...excerpts.values()], claims: payload }),
     ].join('\n');
   }
 }

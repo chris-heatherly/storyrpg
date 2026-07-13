@@ -1,0 +1,61 @@
+import { describe, expect, it } from 'vitest';
+import type { SceneContent, SceneSemanticPatch } from '../agents/SceneWriter';
+import { stableHash } from './artifacts/store';
+import { applySceneSemanticPatch } from './sceneSemanticPatch';
+
+function scene(): SceneContent {
+  return {
+    sceneId: 's1-3', sceneName: 'Bookshop', startingBeatId: 'b1',
+    beats: [
+      { id: 'b1', text: 'Stela welcomes Kylie into the warmth of the bookshop.', nextBeatId: 'b2' },
+      { id: 'b2', text: 'Mika arrives with a burst of color.', nextBeatId: 'b3' },
+      { id: 'b3', text: 'The room settles around their new triangle.' },
+    ],
+    moodProgression: [], charactersInvolved: [], keyMoments: [], continuityNotes: [],
+  };
+}
+
+describe('applySceneSemanticPatch', () => {
+  it('changes only the requested beat and preserves accepted prose byte-for-byte', () => {
+    const baseline = scene();
+    const patch: SceneSemanticPatch = {
+      baseSceneHash: stableHash(baseline), targetTaskId: 'task:event', targetAtomIds: ['atom:club'],
+      operations: [{ op: 'replace_beat_text', beatId: 'b3', text: 'Stela offers to take Kylie into the secret nightlife orbit of Valescu Club.' }],
+      claimedEvidence: [{ atomId: 'atom:club', beatIds: ['b3'] }],
+    };
+    const result = applySceneSemanticPatch(baseline, patch);
+    expect(result.scene.beats[0].text).toBe(baseline.beats[0].text);
+    expect(result.scene.beats[1].text).toBe(baseline.beats[1].text);
+    expect(result.scene.beats[2].text).toContain('Valescu Club');
+    expect(baseline.beats[2].text).toBe('The room settles around their new triangle.');
+  });
+
+  it('rejects stale and nonlocal patches', () => {
+    const baseline = scene();
+    expect(() => applySceneSemanticPatch(baseline, {
+      baseSceneHash: 'stale', targetTaskId: 'task:event', targetAtomIds: ['atom'],
+      operations: [{ op: 'replace_beat_text', beatId: 'b1', text: 'A sufficiently long replacement line.' }],
+      claimedEvidence: [{ atomId: 'atom', beatIds: ['b1'] }],
+    })).toThrow(/stale/);
+    expect(() => applySceneSemanticPatch(baseline, {
+      baseSceneHash: stableHash(baseline), targetTaskId: 'task:event', targetAtomIds: ['atom'],
+      operations: [
+        { op: 'replace_beat_text', beatId: 'b1', text: 'A sufficiently long replacement line.' },
+        { op: 'replace_beat_text', beatId: 'b3', text: 'Another sufficiently long replacement line.' },
+      ],
+      claimedEvidence: [{ atomId: 'atom', beatIds: ['b1', 'b3'] }],
+    })).toThrow(/adjacent/);
+  });
+
+  it('measures adjacency against the immutable baseline when an insert shifts indexes', () => {
+    const baseline = scene();
+    const result = applySceneSemanticPatch(baseline, {
+      baseSceneHash: stableHash(baseline), targetTaskId: 'task-1', targetAtomIds: ['atom-1'], claimedEvidence: [],
+      operations: [
+        { op: 'insert_beat_after', beatId: 'b1', text: 'A new authored reaction makes the first meaning explicit.' },
+        { op: 'replace_beat_text', beatId: 'b2', text: 'The adjacent response now carries the required consequence.' },
+      ],
+    });
+    expect(result.scene.beats.map((beat) => beat.id)).toEqual(['b1', expect.stringContaining('semantic-repair'), 'b2', 'b3']);
+  });
+});

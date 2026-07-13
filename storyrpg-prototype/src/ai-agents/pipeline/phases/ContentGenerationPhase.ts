@@ -56,7 +56,7 @@ import {
 } from '../../remediation/gateRepairRouter';
 import {
   improvesMissingRealization,
-  insertMissingMomentBeats,
+  isNonStageableRequiredMomentSource,
   missingRequiredMoments,
   realizationRetryFeedback,
   rewriteLosesRequiredMoment,
@@ -292,6 +292,7 @@ import {
 } from '../realizationTaskGate';
 import { validateSemanticRealizationTasks } from '../semanticValidationCoordinator';
 import { inferNarrativeVerificationAuthority } from '../realizationVerificationAuthority';
+import { applySceneSemanticPatch } from '../sceneSemanticPatch';
 import type { NarrativeRealizationOwnerStage, NarrativeRealizationTask } from '../../../types/narrativeContract';
 import { stableHash } from '../artifacts/store';
 import { createValidatorExecutionRecord } from '../../validators/validatorExecutionRecords';
@@ -367,24 +368,6 @@ function ownerRealizationRepairFeedback(
   return `${finding.taskId}: ${finding.message}${requirements.length > 0 ? ` ${requirements.join('; ')}` : ''}`;
 }
 
-function ownerStageRepairBaseline(sceneContent: {
-  sceneId: string;
-  transitionIn?: string;
-  beats?: Array<{ id: string; text: string; textVariants?: Array<{ text?: string }> }>;
-  eventEvidence?: unknown;
-}): string {
-  return JSON.stringify({
-    sceneId: sceneContent.sceneId,
-    transitionIn: sceneContent.transitionIn,
-    beats: (sceneContent.beats ?? []).map((beat) => ({
-      id: beat.id,
-      text: beat.text,
-      textVariants: beat.textVariants?.map((variant) => ({ text: variant.text })),
-    })),
-    eventEvidence: sceneContent.eventEvidence,
-  });
-}
-
 // ========================================
 // DEPENDENCY TYPES
 // ========================================
@@ -400,7 +383,7 @@ function ownerStageRepairBaseline(sceneContent: {
  */
 export interface ContentGenerationPhaseDeps {
   // --- Agents ---
-  sceneWriter: Pick<SceneWriter, 'execute' | 'setContractLoadTemperature'>;
+  sceneWriter: Pick<SceneWriter, 'execute' | 'executeSemanticPatch' | 'setContractLoadTemperature'>;
   choiceAuthor: Pick<ChoiceAuthor, 'execute' | 'setEpisodeSkillTargets'>;
   encounterArchitect: Pick<EncounterArchitect, 'execute' | 'reauthorFallbackCostFields'>;
   semanticRealizationJudge: SemanticRealizationJudgeLike;
@@ -558,6 +541,25 @@ export class ContentGenerationPhase {
       ...input,
       judge: this.deps.semanticRealizationJudge,
     });
+    const unavailable = semantic.findings.filter((finding) => finding.code === 'SEMANTIC_VALIDATION_UNAVAILABLE');
+    if (unavailable.length > 0) {
+      throw new PipelineError(
+        `[SemanticValidationUnavailable] ${input.sceneId} could not obtain semantic verdicts; content was not regenerated.`,
+        'validation',
+        {
+          agent: 'SemanticRealizationJudge',
+          context: { sceneId: input.sceneId, findings: unavailable, receipt: semantic.receipt },
+          failure: {
+            code: 'semantic_judge_unavailable',
+            ownerStage: input.currentStage ?? 'scene_content',
+            retryClass: 'retry_provider',
+            issueCodes: ['SEMANTIC_VALIDATION_UNAVAILABLE'],
+            artifactRefs: [],
+            repairTarget: unavailable[0]?.taskId ?? input.sceneId,
+          },
+        },
+      );
+    }
     const inconclusive = semantic.findings.filter((finding) => finding.code === 'SEMANTIC_VALIDATION_INCONCLUSIVE');
     if (inconclusive.length > 0) {
       throw new PipelineError(
@@ -2307,31 +2309,17 @@ export class ContentGenerationPhase {
               // heuristics don't force literal summary words into fiction.
               const deferredSummaryMoments = new Set<string>();
               if (missing.length > 0) {
-                const beforeRecovery = missing;
-                const beatCountBeforeRecovery = sceneContent.beats.length;
-                insertMissingMomentBeats(sceneBlueprint.id, sceneContent.beats, missing, {
-                  sceneDensityOverloaded: densityReport ? isUnsafeTreatmentDensityReport(densityReport) : false,
-                  allowColdOpenInsertion: i === 0 || Boolean(sceneBlueprint.coldOpenProfile),
-                  onSkip: (m, reason) => {
-                    if (reason.includes('needs SceneWriter realization')) deferredSummaryMoments.add(m.moment);
-                    context.emit({
-                      type: 'warning',
-                      phase: 'scenes',
-                      message: `Scene ${sceneBlueprint.id} skipped deterministic authored-moment insertion for [${m.tier}] "${m.moment}": ${reason}.`,
-                      data: { missing: m, densityReport },
-                    });
-                  },
-                });
-                sceneContent.startingBeatId = sceneContent.beats[0]?.id ?? sceneContent.startingBeatId;
-                missing = missingRequiredMoments(sceneRealizationBlueprint, sceneContent.beats);
-                const insertedCount = Math.max(0, sceneContent.beats.length - beatCountBeforeRecovery);
+                const currentProse = sceneContent.beats.map((beat) => beat.text ?? '').join('\n');
+                for (const moment of missing) {
+                  if (isNonStageableRequiredMomentSource(moment, currentProse)) {
+                    deferredSummaryMoments.add(moment.moment);
+                  }
+                }
                 context.emit({
-                  type: missing.length > 0 ? 'warning' : 'debug',
+                  type: 'warning',
                   phase: 'scenes',
-                  message:
-                    `Scene ${sceneBlueprint.id} deterministic authored-moment recovery inserted ` +
-                    `${insertedCount}/${beforeRecovery.length} beat(s); ${missing.length} under-realized moment(s) remain`,
-                  data: { inserted: beforeRecovery.map((m) => ({ tier: m.tier, moment: m.moment })) },
+                  message: `Scene ${sceneBlueprint.id} left ${missing.length} authored moment(s) for LLM-owned final realization repair; deterministic prose insertion is disabled.`,
+                  data: { deferred: missing.map((moment) => ({ tier: moment.tier, moment: moment.moment })) },
                 });
               }
               const hardMissing = missing.filter((m) => !deferredSummaryMoments.has(m.moment));
@@ -2400,40 +2388,75 @@ export class ContentGenerationPhase {
             currentStage: 'scene_writer',
             candidateHash: stableHash(sceneContent),
           })).findings.filter((finding) => finding.blocking), canonicalSceneWriterTasks);
-          for (let attempt = 1; attempt <= 2 && ownerTaskFindings.length > 0; attempt += 1) {
+          let authoredRepairAttempts = 0;
+          let patchCallAttempts = 0;
+          while (authoredRepairAttempts < 2 && patchCallAttempts < 4 && ownerTaskFindings.length > 0) {
             const repairTarget = ownerTaskFindings[0];
             const feedback = [repairTarget]
               .map((finding) => `- ${ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks)}`)
               .join('\n');
-            const acceptedSurface = ownerStageRepairBaseline(sceneContent);
+            const targetAtomIds = [...new Set([
+              ...(repairTarget.missingEvidenceAtoms ?? []),
+              ...(repairTarget.matchedForbiddenAtoms ?? []),
+            ])];
+            patchCallAttempts += 1;
             context.emit({
               type: 'regeneration_triggered',
               phase: 'scenes',
-              message: `Scene ${sceneBlueprint.id} is repairing canonical realization fingerprint ${repairTarget.fingerprint} (${attempt}/2)`,
+              message: `Scene ${sceneBlueprint.id} is repairing canonical realization fingerprint ${repairTarget.fingerprint} (${authoredRepairAttempts + 1}/2)`,
               data: { repairTarget, findings: ownerTaskFindings },
             });
             const ownerTaskRetry = await withTimeout(
-              this.deps.sceneWriter.execute({
-                ...sceneWriterInput,
-                storyContext: {
-                  ...sceneWriterInput.storyContext,
-                  userPrompt: `${sceneWriterInput.storyContext.userPrompt || ''}\n\nOWNER-STAGE REALIZATION REPAIR:\n${feedback}\nRepair only the missing evidence above. Put an accepted realization directly in reader-facing beat.text, spoken dialogue, or textVariants[].text; primaryAction, visualMoment, relationshipDynamic, emotionalRead, and other metadata do not count. Show it naturally as concrete action, dialogue, sensory detail, or visible consequence. Do not paste planning text or contract labels into the prose.\n\nCURRENT ACCEPTED READER-FACING SURFACE:\n${acceptedSurface}\nEvery other immutable realization task and evidence atom currently passes against this surface. Preserve its canonical names, location orientation, relationship stage, event actions, and consequences. Return the complete SceneContent with the smallest prose edit that resolves the target; do not replace or summarize already-valid beats.`,
-                },
+              this.deps.sceneWriter.executeSemanticPatch({
+                baseSceneHash: stableHash(sceneContent),
+                scene: JSON.parse(JSON.stringify(sceneContent)),
+                targetTaskId: repairTarget.taskId,
+                targetAtomIds,
+                repairFeedback: feedback,
               }),
               PIPELINE_TIMEOUTS.llmAgent,
-              `SceneWriter.execute(${sceneBlueprint.id} owner-realization-retry-${attempt})`,
+              `SceneWriter.executeSemanticPatch(${sceneBlueprint.id} owner-realization-retry-${authoredRepairAttempts + 1})`,
             );
             if (!ownerTaskRetry.success || !ownerTaskRetry.data) continue;
-            const candidateSnapshot = JSON.parse(JSON.stringify(ownerTaskRetry.data)) as typeof ownerTaskRetry.data;
+            if (ownerTaskRetry.data.targetAtomIds.some((atomId) => !targetAtomIds.includes(atomId))) continue;
+            let appliedPatch: ReturnType<typeof applySceneSemanticPatch>;
+            try {
+              appliedPatch = applySceneSemanticPatch(sceneContent, ownerTaskRetry.data);
+            } catch (error) {
+              context.emit({
+                type: 'warning', phase: 'scenes',
+                message: `Scene ${sceneBlueprint.id} rejected an invalid semantic patch: ${error instanceof Error ? error.message : String(error)}`,
+              });
+              continue;
+            }
+            const attempt = authoredRepairAttempts + 1;
+            authoredRepairAttempts += 1;
+            const candidateSnapshot = appliedPatch.scene;
             const candidateHash = stableHash(candidateSnapshot);
-            const retryFindings = (await this.validateNarrativeRealization({
-              sceneId: sceneBlueprint.id,
-              tasks: canonicalSceneWriterTasks,
-              sceneContent: candidateSnapshot,
-              mode: 'owner',
-              currentStage: 'scene_writer',
-              candidateHash,
-            })).findings.filter((finding) => finding.blocking);
+            if (outputDirectory) {
+              await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-owner-repair-candidate-${attempt}.json`, {
+                schemaVersion: 1, episodeNumber: densityEpisodeNumber, sceneId: sceneBlueprint.id,
+                attempt, candidateHash, patch: ownerTaskRetry.data,
+                changedBeatIds: appliedPatch.changedBeatIds, insertedBeatIds: appliedPatch.insertedBeatIds,
+                candidate: candidateSnapshot,
+              });
+            }
+            let retryFindings: RealizationTaskGateFinding[] | undefined;
+            for (let judgeAttempt = 1; judgeAttempt <= 2 && !retryFindings; judgeAttempt += 1) {
+              try {
+                retryFindings = (await this.validateNarrativeRealization({
+                  sceneId: sceneBlueprint.id,
+                  tasks: canonicalSceneWriterTasks,
+                  sceneContent: candidateSnapshot,
+                  mode: 'owner',
+                  currentStage: 'scene_writer',
+                  candidateHash,
+                })).findings.filter((finding) => finding.blocking);
+              } catch (error) {
+                if (!(error instanceof PipelineError) || error.code !== 'semantic_judge_unavailable' || judgeAttempt >= 2) throw error;
+              }
+            }
+            if (!retryFindings) continue;
             const replayFindings = (await this.validateNarrativeRealization({
               sceneId: sceneBlueprint.id,
               tasks: canonicalSceneWriterTasks,
@@ -2492,6 +2515,9 @@ export class ContentGenerationPhase {
                 introducedFingerprints,
                 adopted: adoptCandidate,
                 candidateHash,
+                patch: ownerTaskRetry.data,
+                changedBeatIds: appliedPatch.changedBeatIds,
+                insertedBeatIds: appliedPatch.insertedBeatIds,
                 candidate: candidateSnapshot,
                 assignedEventIds: sceneBlueprint.assignedEventIds ?? sceneBlueprint.narrativeEventIds ?? [],
                 realizationTasks: canonicalSceneWriterTasks,

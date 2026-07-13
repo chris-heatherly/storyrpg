@@ -490,6 +490,28 @@ export interface SceneContent {
   settingContext?: SceneSettingContext;
 }
 
+export interface SceneSemanticPatchOperation {
+  op: 'replace_beat_text' | 'replace_transition_in' | 'insert_beat_after';
+  beatId?: string;
+  text: string;
+}
+
+export interface SceneSemanticPatch {
+  baseSceneHash: string;
+  targetTaskId: string;
+  targetAtomIds: string[];
+  operations: SceneSemanticPatchOperation[];
+  claimedEvidence: Array<{ atomId: string; beatIds: string[] }>;
+}
+
+export interface SceneSemanticPatchInput {
+  baseSceneHash: string;
+  scene: SceneContent;
+  targetTaskId: string;
+  targetAtomIds: string[];
+  repairFeedback: string;
+}
+
 function stripAgentFacingPressureLabel(value: string): string {
   return String(value || '')
     .replace(/^(?:pressure|choice pressure|forward pressure):\s*/i, '')
@@ -950,6 +972,73 @@ ${CHOICE_DENSITY_REQUIREMENTS}
         success: false,
         error: errorMsg,
       };
+    }
+  }
+
+  async executeSemanticPatch(input: SceneSemanticPatchInput): Promise<AgentResponse<SceneSemanticPatch>> {
+    const schema = {
+      name: 'scene_semantic_patch',
+      description: 'A bounded reader-facing prose patch for one semantic realization target.',
+      maxOutputTokens: 1536,
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['baseSceneHash', 'targetTaskId', 'targetAtomIds', 'operations', 'claimedEvidence'],
+        properties: {
+          baseSceneHash: { type: 'string' },
+          targetTaskId: { type: 'string' },
+          targetAtomIds: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string' } },
+          operations: {
+            type: 'array', minItems: 1, maxItems: 2,
+            items: {
+              type: 'object', additionalProperties: false, required: ['op', 'text'],
+              properties: {
+                op: { type: 'string', enum: ['replace_beat_text', 'replace_transition_in', 'insert_beat_after'] },
+                beatId: { type: 'string' },
+                text: { type: 'string', minLength: 12, maxLength: 1400 },
+              },
+            },
+          },
+          claimedEvidence: {
+            type: 'array', minItems: 1, maxItems: 8,
+            items: {
+              type: 'object', additionalProperties: false, required: ['atomId', 'beatIds'],
+              properties: {
+                atomId: { type: 'string' },
+                beatIds: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    };
+    const prompt = [
+      'You are repairing one semantic realization defect in an otherwise accepted interactive-fiction scene.',
+      'Write reader-facing prose. Return a patch only, never a replacement scene.',
+      'Change at most two adjacent beats. Preserve every unchanged word, canonical name, location, action, relationship stage, and consequence.',
+      'Use replace_beat_text when possible. Use insert_beat_after only when the meaning cannot fit naturally in an existing beat.',
+      'The patch must make the target meaning explicit through natural action or dialogue without copying contract language.',
+      '',
+      `BASE SCENE HASH: ${input.baseSceneHash}`,
+      `TARGET TASK: ${input.targetTaskId}`,
+      `TARGET ATOMS: ${input.targetAtomIds.join(', ')}`,
+      `REPAIR REQUIREMENT: ${input.repairFeedback}`,
+      'ACCEPTED SCENE:',
+      JSON.stringify({
+        sceneId: input.scene.sceneId,
+        transitionIn: input.scene.transitionIn,
+        beats: input.scene.beats.map((beat) => ({ id: beat.id, text: beat.text, speaker: beat.speaker })),
+      }),
+    ].join('\n');
+    try {
+      const response = await this.callLLM([{ role: 'user', content: prompt }], 2, { jsonSchema: schema });
+      const patch = this.parseJSON<SceneSemanticPatch>(response);
+      if (patch.baseSceneHash !== input.baseSceneHash || patch.targetTaskId !== input.targetTaskId) {
+        return { success: false, error: 'Scene semantic patch did not preserve its immutable base hash and task target.', rawResponse: response };
+      }
+      return { success: true, data: patch, rawResponse: response };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 

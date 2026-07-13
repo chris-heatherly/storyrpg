@@ -397,6 +397,8 @@ export interface ValidatorExecutionRecord {
       judgeModel: string;
       judgeResponseHash: string;
       sampleCount: number;
+      executionStatus?: 'decided' | 'inconclusive' | 'provider_unavailable' | 'malformed_output' | 'policy_error';
+      evidenceHashes?: string[];
     }>;
   };
   issues: ValidatorExecutionIssue[];

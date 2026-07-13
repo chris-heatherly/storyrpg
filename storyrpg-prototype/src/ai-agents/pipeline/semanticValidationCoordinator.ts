@@ -8,6 +8,7 @@ import type {
 import type { ValidatorExecutionRecord } from '../../types/validation';
 import type {
   SemanticRealizationClaim,
+  SemanticRealizationJudgeFailureKind,
   SemanticRealizationJudgeLike,
   SemanticRealizationJudgeVerdict,
   SemanticRealizationVerdict,
@@ -24,7 +25,15 @@ type SemanticReceiptVerdict = NonNullable<
   NonNullable<ValidatorExecutionRecord['realizationReceipt']>['semanticVerdicts']
 >[number];
 
-type ClaimOutcome = 'pass' | 'content_miss' | 'inconclusive';
+type ClaimOutcome = 'pass' | 'content_miss' | 'inconclusive' | 'judge_unavailable';
+
+type JudgeExecutionStatus = 'decided' | SemanticRealizationJudgeFailureKind;
+
+interface ClaimSample {
+  verdict: SemanticRealizationJudgeVerdict;
+  responseHash: string;
+  executionStatus: JudgeExecutionStatus;
+}
 
 interface ClaimConsensus {
   claim: SemanticRealizationClaim;
@@ -33,6 +42,7 @@ interface ClaimConsensus {
   verdictRecord: SemanticRealizationJudgeVerdict;
   responseHashes: string[];
   sampleCount: number;
+  executionStatus: JudgeExecutionStatus | 'inconclusive';
 }
 
 export interface SemanticValidationResult {
@@ -41,9 +51,11 @@ export interface SemanticValidationResult {
 }
 
 const semanticConsensusCache = new Map<string, ClaimConsensus>();
+const semanticEvidenceReceiptCache = new Map<string, ClaimConsensus>();
 
 export function clearSemanticValidationCache(): void {
   semanticConsensusCache.clear();
+  semanticEvidenceReceiptCache.clear();
 }
 
 function outcomeFor(verdict: SemanticRealizationVerdict, atom: NarrativeEvidenceAtom): ClaimOutcome {
@@ -51,6 +63,12 @@ function outcomeFor(verdict: SemanticRealizationVerdict, atom: NarrativeEvidence
   const propositionPresent = verdict === 'fulfilled' || verdict === 'partial';
   if (atom.polarity === 'forbidden') return propositionPresent ? 'content_miss' : 'pass';
   return verdict === 'fulfilled' ? 'pass' : 'content_miss';
+}
+
+function outcomeForSample(sample: ClaimSample, atom: NarrativeEvidenceAtom): ClaimOutcome {
+  return sample.executionStatus === 'decided'
+    ? outcomeFor(sample.verdict.verdict, atom)
+    : 'judge_unavailable';
 }
 
 function validJudgeVerdict(
@@ -83,24 +101,39 @@ function validJudgeVerdict(
 async function judgeBatch(
   judge: SemanticRealizationJudgeLike,
   claims: SemanticRealizationClaim[],
-): Promise<Map<string, { verdict: SemanticRealizationJudgeVerdict; responseHash: string }>> {
+): Promise<Map<string, ClaimSample>> {
   if (claims.length === 0) return new Map();
+  if (claims.length > 3) {
+    const merged = new Map<string, ClaimSample>();
+    for (let index = 0; index < claims.length; index += 3) {
+      for (const [id, sample] of await judgeBatch(judge, claims.slice(index, index + 3))) merged.set(id, sample);
+    }
+    return merged;
+  }
   const result = await judge.execute(claims);
+  if (!result.success && claims.length > 1) {
+    const merged = new Map<string, ClaimSample>();
+    for (const claim of claims) {
+      for (const [id, sample] of await judgeBatch(judge, [claim])) merged.set(id, sample);
+    }
+    return merged;
+  }
   const byId = new Map(result.data?.verdicts.map((verdict) => [verdict.id, verdict]) ?? []);
   const responseHash = stableHash(result.rawResponse ?? result.data ?? result.error ?? 'judge-unavailable');
   return new Map(claims.map((claim) => [claim.id, {
     verdict: validJudgeVerdict(claim, result.success ? byId.get(claim.id) : undefined),
     responseHash,
+    executionStatus: result.success ? 'decided' : (result.failureKind ?? 'policy_error'),
   }]));
 }
 
 function majorityConsensus(
   claim: SemanticRealizationClaim,
   atom: NarrativeEvidenceAtom,
-  samples: Array<{ verdict: SemanticRealizationJudgeVerdict; responseHash: string }>,
+  samples: ClaimSample[],
 ): ClaimConsensus {
-  const outcomes = samples.map((sample) => outcomeFor(sample.verdict.verdict, atom));
-  for (const outcome of ['pass', 'content_miss', 'inconclusive'] as const) {
+  const outcomes = samples.map((sample) => outcomeForSample(sample, atom));
+  for (const outcome of ['pass', 'content_miss'] as const) {
     if (outcomes.filter((candidate) => candidate === outcome).length < 2) continue;
     const winningIndex = outcomes.findIndex((candidate) => candidate === outcome);
     const winning = samples[winningIndex];
@@ -111,6 +144,7 @@ function majorityConsensus(
       verdictRecord: winning.verdict,
       responseHashes: samples.map((sample) => sample.responseHash),
       sampleCount: samples.length,
+      executionStatus: 'decided',
     };
   }
   const last = samples.at(-1)?.verdict ?? {
@@ -123,12 +157,45 @@ function majorityConsensus(
   };
   return {
     claim,
-    outcome: 'inconclusive',
+    outcome: outcomes.some((outcome) => outcome === 'judge_unavailable') ? 'judge_unavailable' : 'inconclusive',
     verdict: 'uncertain',
     verdictRecord: last,
     responseHashes: samples.map((sample) => sample.responseHash),
     sampleCount: samples.length,
+    executionStatus: samples.find((sample) => sample.executionStatus !== 'decided')?.executionStatus ?? 'inconclusive',
   };
+}
+
+function claimSemanticCacheKey(identity: ReturnType<SemanticRealizationJudgeLike['identity']>, claim: SemanticRealizationClaim): string {
+  return stableHash({
+    identity,
+    claim: {
+      id: claim.id,
+      taskId: claim.taskId,
+      atomId: claim.atomId,
+      proposition: claim.proposition,
+      criteria: claim.criteria,
+      polarity: claim.polarity,
+      participantIds: claim.participantIds,
+      prerequisiteAtomIds: claim.prerequisiteAtomIds,
+      semanticRole: claim.semanticRole,
+      temporalSlot: claim.temporalSlot,
+      stagedLocation: claim.stagedLocation,
+      referencedLocations: claim.referencedLocations,
+    },
+  });
+}
+
+function reusableEvidenceConsensus(claim: SemanticRealizationClaim, cached: ClaimConsensus | undefined): ClaimConsensus | undefined {
+  if (!cached || cached.outcome !== 'pass' || cached.verdictRecord.evidenceRefs.length === 0) return undefined;
+  const currentById = new Map(claim.excerpts.map((excerpt) => [excerpt.id, excerpt]));
+  const priorById = new Map(cached.claim.excerpts.map((excerpt) => [excerpt.id, excerpt]));
+  const unchanged = cached.verdictRecord.evidenceRefs.every((ref) => {
+    const current = currentById.get(ref);
+    const prior = priorById.get(ref);
+    return Boolean(current && prior && current.textHash === prior.textHash);
+  });
+  return unchanged ? { ...cached, claim } : undefined;
 }
 
 async function evaluateClaims(
@@ -140,29 +207,34 @@ async function evaluateClaims(
   const resolved = new Map<string, ClaimConsensus>();
   const pending: SemanticRealizationClaim[] = [];
   const cacheKeys = new Map<string, string>();
+  const evidenceCacheKeys = new Map<string, string>();
   for (const claim of claims) {
     const cacheKey = stableHash({ identity, claim });
     cacheKeys.set(claim.id, cacheKey);
+    const evidenceCacheKey = claimSemanticCacheKey(identity, claim);
+    evidenceCacheKeys.set(claim.id, evidenceCacheKey);
     const cached = semanticConsensusCache.get(cacheKey);
+    const evidenceCached = reusableEvidenceConsensus(claim, semanticEvidenceReceiptCache.get(evidenceCacheKey));
     if (cached) resolved.set(claim.id, cached);
+    else if (evidenceCached) resolved.set(claim.id, evidenceCached);
     else pending.push(claim);
   }
   if (pending.length === 0) return claims.map((claim) => resolved.get(claim.id)!);
 
   const first = await judgeBatch(judge, pending);
-  const samples = new Map<string, Array<{ verdict: SemanticRealizationJudgeVerdict; responseHash: string }>>();
+  const samples = new Map<string, ClaimSample[]>();
   for (const claim of pending) samples.set(claim.id, [first.get(claim.id)!]);
 
   const needsSecond = pending.filter((claim) => {
     const atom = atomsByClaimId.get(claim.id)!;
-    return outcomeFor(first.get(claim.id)!.verdict.verdict, atom) !== 'pass';
+    return outcomeForSample(first.get(claim.id)!, atom) !== 'pass';
   });
   const second = await judgeBatch(judge, needsSecond);
   for (const claim of needsSecond) samples.get(claim.id)!.push(second.get(claim.id)!);
 
   const needsThird = needsSecond.filter((claim) => {
     const atom = atomsByClaimId.get(claim.id)!;
-    const outcomes = samples.get(claim.id)!.map((sample) => outcomeFor(sample.verdict.verdict, atom));
+    const outcomes = samples.get(claim.id)!.map((sample) => outcomeForSample(sample, atom));
     return outcomes.length < 2 || outcomes[0] !== outcomes[1];
   });
   const third = await judgeBatch(judge, needsThird);
@@ -174,14 +246,18 @@ async function evaluateClaims(
     const consensus = claimSamples.length === 1
       ? {
           claim,
-          outcome: outcomeFor(claimSamples[0].verdict.verdict, atom),
+          outcome: outcomeForSample(claimSamples[0], atom),
           verdict: claimSamples[0].verdict.verdict,
           verdictRecord: claimSamples[0].verdict,
           responseHashes: [claimSamples[0].responseHash],
           sampleCount: 1,
+          executionStatus: claimSamples[0].executionStatus,
         } satisfies ClaimConsensus
       : majorityConsensus(claim, atom, claimSamples);
-    semanticConsensusCache.set(cacheKeys.get(claim.id)!, consensus);
+    if (consensus.outcome === 'pass' || consensus.outcome === 'content_miss') {
+      semanticConsensusCache.set(cacheKeys.get(claim.id)!, consensus);
+      semanticEvidenceReceiptCache.set(evidenceCacheKeys.get(claim.id)!, consensus);
+    }
     resolved.set(claim.id, consensus);
   }
   return claims.map((claim) => resolved.get(claim.id)!);
@@ -206,8 +282,14 @@ function buildTaskClaims(input: {
     : [{ groupKey: `${input.task.target.scope}:1`, texts: [], entries: [] }];
   return effectiveGroups.flatMap((group, groupIndex) => {
     const routeKey = targetRouteKey(input.task, groupIndex);
-    const excerpts: NarrativeEvidenceExcerpt[] = group.entries.map((entry, excerptIndex) => ({
-      id: `${input.task.id}:${group.groupKey}:excerpt:${excerptIndex + 1}`,
+    const occurrenceByText = new Map<string, number>();
+    const excerpts: NarrativeEvidenceExcerpt[] = group.entries.map((entry) => {
+      const textHash = stableHash(entry.text);
+      const occurrenceKey = `${entry.surface}:${textHash}`;
+      const occurrence = (occurrenceByText.get(occurrenceKey) ?? 0) + 1;
+      occurrenceByText.set(occurrenceKey, occurrence);
+      return {
+      id: `${input.task.id}:${group.groupKey}:${entry.surface}:${textHash.slice(0, 16)}:${occurrence}`,
       taskId: input.task.id,
       sceneId: input.sceneId,
       ownerStage: input.task.ownerStage,
@@ -216,8 +298,9 @@ function buildTaskClaims(input: {
       routeKey,
       outcomeTier: routeKey,
       text: entry.text.slice(0, 6000),
-      textHash: stableHash(entry.text),
-    }));
+      textHash,
+    };
+    });
     return input.task.evidenceAtoms.filter(isSemanticNarrativeAtom).map((atom) => ({
       groupKey: group.groupKey,
       atom,
@@ -226,12 +309,14 @@ function buildTaskClaims(input: {
         taskId: input.task.id,
         atomId: atom.id,
         proposition: atom.description,
-        criteria: atom.semanticCriteria?.length
-          ? [...atom.semanticCriteria]
-          : [...new Set([atom.sourceText, ...atom.acceptedPatterns].filter((value): value is string => Boolean(value)))],
+        criteria: atom.semanticCriteria?.length ? [...atom.semanticCriteria] : [atom.description],
         polarity: atom.polarity === 'forbidden' ? 'forbidden' : 'required',
         participantIds: [...(atom.participantIds ?? atom.subjectIds ?? [])],
         prerequisiteAtomIds: [...(atom.prerequisiteAtomIds ?? [])],
+        semanticRole: atom.semanticRole,
+        temporalSlot: atom.temporalSlot,
+        stagedLocation: atom.stagedLocation,
+        referencedLocations: [...(atom.referencedLocations ?? [])],
         excerpts,
       },
     }));
@@ -239,7 +324,7 @@ function buildTaskClaims(input: {
 }
 
 function receiptDisposition(consensus: ClaimConsensus): SemanticReceiptVerdict['disposition'] {
-  if (consensus.outcome === 'inconclusive') return 'inconclusive';
+  if (consensus.outcome === 'inconclusive' || consensus.outcome === 'judge_unavailable') return 'inconclusive';
   if (consensus.verdict === 'partial') return 'partial';
   return consensus.verdict === 'fulfilled' ? 'confirmed' : 'refuted';
 }
@@ -247,13 +332,16 @@ function receiptDisposition(consensus: ClaimConsensus): SemanticReceiptVerdict['
 function semanticGroupFailure(
   task: NarrativeRealizationTask,
   groupConsensus: ClaimConsensus[],
-): { missing: string[]; forbidden: string[]; inconclusive: string[] } {
+): { missing: string[]; forbidden: string[]; inconclusive: string[]; unavailable: string[] } {
   const byAtomId = new Map(groupConsensus.map((consensus) => [consensus.claim.atomId, consensus]));
   const semanticAtoms = task.evidenceAtoms.filter(isSemanticNarrativeAtom);
   const positive = semanticAtoms.filter((atom) => atom.polarity !== 'forbidden');
   const forbidden = semanticAtoms.filter((atom) => atom.polarity === 'forbidden');
   const inconclusive = semanticAtoms
     .filter((atom) => byAtomId.get(atom.id)?.outcome === 'inconclusive')
+    .map((atom) => atom.id);
+  const unavailable = semanticAtoms
+    .filter((atom) => byAtomId.get(atom.id)?.outcome === 'judge_unavailable')
     .map((atom) => atom.id);
   const passedPositive = new Set(positive
     .filter((atom) => byAtomId.get(atom.id)?.outcome === 'pass')
@@ -275,6 +363,7 @@ function semanticGroupFailure(
     missing: [...new Set(missing)],
     forbidden: forbidden.filter((atom) => byAtomId.get(atom.id)?.outcome === 'content_miss').map((atom) => atom.id),
     inconclusive: [...new Set(inconclusive)],
+    unavailable: [...new Set(unavailable)],
   };
 }
 
@@ -308,6 +397,18 @@ export async function validateSemanticRealizationTasks(input: {
       .filter(([key]) => key.startsWith(`${task.id}::`))
       .map(([key, values]) => ({ groupKey: key.slice(task.id.length + 2), values, failure: semanticGroupFailure(task, values) }));
     const inconclusive = [...new Set(groups.flatMap((group) => group.failure.inconclusive))];
+    const unavailable = [...new Set(groups.flatMap((group) => group.failure.unavailable))];
+    if (unavailable.length > 0) {
+      findings.push({
+        code: 'SEMANTIC_VALIDATION_UNAVAILABLE', taskId: task.id, contractId: task.contractId,
+        sceneId: input.sceneId, ownerStage: task.ownerStage, blocking: true,
+        field: task.artifactPath ?? 'scene',
+        message: `Semantic validation infrastructure was unavailable for ${unavailable.join(', ')}.`,
+        missingEvidenceAtoms: unavailable,
+        fingerprint: realizationTaskFindingFingerprint({ code: 'SEMANTIC_VALIDATION_UNAVAILABLE', taskId: task.id, sceneId: input.sceneId, evidenceAtomIds: unavailable }),
+      });
+      continue;
+    }
     if (inconclusive.length > 0) {
       findings.push({
         code: 'SEMANTIC_VALIDATION_INCONCLUSIVE', taskId: task.id, contractId: task.contractId,
@@ -363,6 +464,8 @@ export async function validateSemanticRealizationTasks(input: {
     judgeModel: identity.model,
     judgeResponseHash: stableHash(item.responseHashes),
     sampleCount: item.sampleCount,
+    executionStatus: item.executionStatus,
+    evidenceHashes: item.verdictRecord.evidenceRefs.map((ref) => item.claim.excerpts.find((excerpt) => excerpt.id === ref)?.textHash).filter((hash): hash is string => Boolean(hash)),
   }));
   return {
     findings,

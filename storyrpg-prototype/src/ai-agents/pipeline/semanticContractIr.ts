@@ -1,0 +1,203 @@
+import type {
+  AuthoredEventSemanticContract,
+  AuthoredEventSemanticIR,
+  AuthoredEventSemanticRole,
+  NarrativeContractGraph,
+  NarrativeEvidenceAtom,
+  NarrativeEventContract,
+} from '../../types/narrativeContract';
+import { stableHash } from './artifacts/store';
+
+export const SEMANTIC_CONTRACT_IR_POLICY_VERSION = 'semantic-contract-ir-v1';
+
+const SEMANTIC_ROLES: ReadonlySet<AuthoredEventSemanticRole> = new Set([
+  'action',
+  'introduction',
+  'information_transfer',
+  'state_change',
+  'relationship_change',
+  'location_entry',
+  'location_reference',
+  'transition_bridge',
+  'temporal_transition',
+  'decision',
+  'aftermath',
+]);
+
+export interface SemanticContractEventSeed {
+  eventId: string;
+  sourceText: string;
+  sources: Array<{ id: string; text: string }>;
+}
+
+export interface SemanticContractIrValidation {
+  passed: boolean;
+  issues: string[];
+}
+
+function clean(value: unknown): string {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function unique<T>(values: T[]): T[] {
+  return [...new Set(values)];
+}
+
+/**
+ * Extracts only authored source segments from the bootstrap graph. Existing
+ * heuristic atoms may carry supporting-intent provenance, but none of their
+ * inferred roles, participants, alternatives, or boundaries are reused.
+ */
+export function semanticContractEventSeeds(graph: NarrativeContractGraph): SemanticContractEventSeed[] {
+  return graph.events
+    .filter((event) => event.realizationMode === 'depiction')
+    .map((event) => {
+      const persistedContract = graph.semanticEventIr?.events.find((contract) => contract.eventId === event.id);
+      if (persistedContract) {
+        return {
+          eventId: event.id,
+          sourceText: clean(event.sourceText),
+          sources: persistedContract.sources.map((source) => ({ ...source })),
+        };
+      }
+      const sourceTexts = unique([
+        clean(event.sourceText),
+        ...(event.realizationAtoms ?? []).map((atom) => clean(atom.sourceText)),
+      ].filter(Boolean));
+      return {
+        eventId: event.id,
+        sourceText: clean(event.sourceText),
+        sources: sourceTexts.map((text, index) => ({
+          id: `${event.id}:source:${index + 1}`,
+          text,
+        })),
+      };
+    })
+    .sort((left, right) => left.eventId.localeCompare(right.eventId));
+}
+
+export function semanticContractSourceHash(events: SemanticContractEventSeed[]): string {
+  return stableHash(events.map((event) => ({
+    eventId: event.eventId,
+    sourceText: event.sourceText,
+    sources: event.sources,
+  })));
+}
+
+export function validateAuthoredEventSemanticIR(
+  ir: AuthoredEventSemanticIR,
+  expectedEvents: SemanticContractEventSeed[],
+  knownLocations: string[],
+): SemanticContractIrValidation {
+  const issues: string[] = [];
+  if (ir.version !== 1) issues.push(`Unsupported semantic IR version ${String(ir.version)}.`);
+  if (ir.policyVersion !== SEMANTIC_CONTRACT_IR_POLICY_VERSION) {
+    issues.push(`Semantic IR policy ${ir.policyVersion || '<missing>'} does not match ${SEMANTIC_CONTRACT_IR_POLICY_VERSION}.`);
+  }
+  const expectedHash = semanticContractSourceHash(expectedEvents);
+  if (ir.sourceHash !== expectedHash) issues.push('Semantic IR source hash does not match the depiction-event sources.');
+
+  const expectedById = new Map(expectedEvents.map((event) => [event.eventId, event]));
+  const actualIds = new Set<string>();
+  const knownLocationSet = new Set(knownLocations.map((location) => clean(location).toLowerCase()).filter(Boolean));
+
+  for (const event of ir.events ?? []) {
+    if (actualIds.has(event.eventId)) {
+      issues.push(`Semantic IR duplicates event ${event.eventId}.`);
+      continue;
+    }
+    actualIds.add(event.eventId);
+    const expected = expectedById.get(event.eventId);
+    if (!expected) {
+      issues.push(`Semantic IR contains unknown event ${event.eventId}.`);
+      continue;
+    }
+    if (event.sourceText !== expected.sourceText) issues.push(`Semantic IR changed source text for ${event.eventId}.`);
+    if (stableHash(event.sources) !== stableHash(expected.sources)) issues.push(`Semantic IR changed source segments for ${event.eventId}.`);
+    if (!Array.isArray(event.propositions) || event.propositions.length < 1 || event.propositions.length > 8) {
+      issues.push(`Semantic IR event ${event.eventId} must contain 1-8 propositions.`);
+      continue;
+    }
+    const sources = new Map(expected.sources.map((source) => [source.id, source.text]));
+    const citedSourceIds = new Set<string>();
+    const propositionIds = new Set<string>();
+    for (const [index, proposition] of event.propositions.entries()) {
+      const expectedId = `${event.eventId}:semantic:${index + 1}`;
+      if (proposition.id !== expectedId) issues.push(`Semantic proposition ${proposition.id || '<missing>'} must have stable id ${expectedId}.`);
+      if (propositionIds.has(proposition.id)) issues.push(`Semantic IR duplicates proposition ${proposition.id}.`);
+      propositionIds.add(proposition.id);
+      const source = sources.get(proposition.sourceId);
+      if (!source) {
+        issues.push(`Semantic proposition ${proposition.id} cites unknown source ${proposition.sourceId}.`);
+      } else if (!proposition.sourceSpan || !source.includes(proposition.sourceSpan)) {
+        issues.push(`Semantic proposition ${proposition.id} source span is not an exact substring of ${proposition.sourceId}.`);
+      } else {
+        citedSourceIds.add(proposition.sourceId);
+      }
+      if (!clean(proposition.proposition)) issues.push(`Semantic proposition ${proposition.id} has no proposition text.`);
+      if (!SEMANTIC_ROLES.has(proposition.semanticRole)) issues.push(`Semantic proposition ${proposition.id} has invalid role ${String(proposition.semanticRole)}.`);
+      if (!Array.isArray(proposition.semanticCriteria) || proposition.semanticCriteria.length < 1 || proposition.semanticCriteria.length > 6) {
+        issues.push(`Semantic proposition ${proposition.id} must contain 1-6 semantic criteria.`);
+      } else if (proposition.semanticCriteria.some((criterion) => !clean(criterion) || clean(criterion).length > 240)) {
+        issues.push(`Semantic proposition ${proposition.id} contains an empty or oversized criterion.`);
+      }
+      if (!Array.isArray(proposition.participantIds) || proposition.participantIds.length > 8) {
+        issues.push(`Semantic proposition ${proposition.id} has invalid participants.`);
+      }
+      if (proposition.stagedLocation && !knownLocationSet.has(clean(proposition.stagedLocation).toLowerCase())) {
+        issues.push(`Semantic proposition ${proposition.id} stages unknown location ${proposition.stagedLocation}.`);
+      }
+      for (const location of proposition.referencedLocations ?? []) {
+        if (!knownLocationSet.has(clean(location).toLowerCase())) {
+          issues.push(`Semantic proposition ${proposition.id} references unknown location ${location}.`);
+        }
+      }
+      for (const prerequisiteId of proposition.prerequisitePropositionIds ?? []) {
+        if (!propositionIds.has(prerequisiteId)) {
+          issues.push(`Semantic proposition ${proposition.id} prerequisite ${prerequisiteId} must refer to an earlier proposition in the same event.`);
+        }
+      }
+    }
+    for (const sourceId of sources.keys()) {
+      if (!citedSourceIds.has(sourceId)) issues.push(`Semantic IR event ${event.eventId} does not realize authored source segment ${sourceId}.`);
+    }
+  }
+
+  for (const expected of expectedEvents) {
+    if (!actualIds.has(expected.eventId)) issues.push(`Semantic IR is missing depiction event ${expected.eventId}.`);
+  }
+  return { passed: issues.length === 0, issues };
+}
+
+export function semanticAtomsForEvent(
+  event: Pick<NarrativeEventContract, 'id' | 'sourceText'>,
+  ir: AuthoredEventSemanticIR,
+): NarrativeEvidenceAtom[] {
+  const contract = ir.events.find((candidate) => candidate.eventId === event.id);
+  if (!contract) throw new Error(`[SemanticContractIR] Missing semantic contract for depiction event ${event.id}.`);
+  if (contract.sourceText !== clean(event.sourceText)) {
+    throw new Error(`[SemanticContractIR] Source text drift for depiction event ${event.id}.`);
+  }
+  return contract.propositions.map((proposition): NarrativeEvidenceAtom => ({
+    id: proposition.id,
+    description: proposition.proposition,
+    acceptedPatterns: [proposition.sourceSpan],
+    sourceText: contract.sources.find((source) => source.id === proposition.sourceId)?.text ?? contract.sourceText,
+    kind: 'semantic',
+    verificationAuthority: 'semantic_judge',
+    semanticCriteria: proposition.semanticCriteria,
+    semanticRole: proposition.semanticRole,
+    participantIds: proposition.participantIds,
+    prerequisiteAtomIds: proposition.prerequisitePropositionIds,
+    stagedLocation: proposition.stagedLocation,
+    referencedLocations: proposition.referencedLocations,
+    required: proposition.required,
+  }));
+}
+
+export function semanticContractForEvent(
+  ir: AuthoredEventSemanticIR,
+  eventId: string,
+): AuthoredEventSemanticContract | undefined {
+  return ir.events.find((event) => event.eventId === eventId);
+}

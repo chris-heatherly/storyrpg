@@ -1,5 +1,6 @@
 import type { SeasonPlan, SeasonResidueObligation } from '../../types/seasonPlan';
 import type {
+  AuthoredEventSemanticIR,
   EpisodeEventPlan,
   NarrativeContractGraph,
   NarrativeCharacterPresenceContract,
@@ -36,8 +37,13 @@ import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 import { plannedGroupFormation } from '../utils/relationshipPacingStagePolicy';
 import { compileEventRealizationAtoms, stagedLocationsForAtoms } from './eventAtomCompiler';
 import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
+import {
+  semanticAtomsForEvent,
+  validateAuthoredEventSemanticIR,
+  type SemanticContractEventSeed,
+} from './semanticContractIr';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v20';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v21';
 
 const DUPLICATE_SENSITIVE_CUES = new Set<NarrativeEventCue>([
   'arrival',
@@ -87,7 +93,13 @@ function eventRealizationAtoms(
   eventId: string,
   sourceText: string,
   knownLocations: string[],
+  semanticEventIr?: AuthoredEventSemanticIR,
 ) {
+  if (semanticEventIr) {
+    return semanticAtomsForEvent({ id: eventId, sourceText }, semanticEventIr);
+  }
+  // Bootstrap/migration only. Production plans are recompiled from the
+  // persisted semantic IR before they leave story analysis.
   const atoms = compileEventRealizationAtoms({
     eventId,
     sourceText,
@@ -160,7 +172,9 @@ function eventAndSupportingRealizationAtoms(
   knownLocations: string[],
   intents: SpineRealizationIntent[] | undefined,
   scene: PlannedScene,
+  semanticEventIr?: AuthoredEventSemanticIR,
 ) {
+  if (semanticEventIr) return eventRealizationAtoms(eventId, sourceText, knownLocations, semanticEventIr);
   const atoms = [
     ...behavioralIntentAtoms(eventId, intents, scene),
     ...eventRealizationAtoms(eventId, sourceText, knownLocations),
@@ -1553,7 +1567,7 @@ function topologicalEvents(events: NarrativeEventContract[]): { ordered: Narrati
 
 export function compileNarrativeContractGraph(
   plan: SeasonPlan,
-  scenePlan: Pick<SeasonScenePlan, 'scenes' | 'setupPayoffEdges' | 'episodeSpines' | 'sourceHash'>,
+  scenePlan: Pick<SeasonScenePlan, 'scenes' | 'setupPayoffEdges' | 'episodeSpines' | 'sourceHash' | 'semanticEventIr'>,
 ): NarrativeContractGraph {
   const events: NarrativeEventContract[] = [];
   const compilationIssues: NarrativeContractIssue[] = [
@@ -1570,6 +1584,7 @@ export function compileNarrativeContractGraph(
       .filter(Boolean),
   );
   const emittedSupplementalTexts = new Set<string>();
+  const semanticSeeds = new Map<string, SemanticContractEventSeed>();
 
   const spineEntries: Array<{ scene: PlannedScene; spineUnit?: EpisodeSpineUnit }> = [];
   const consumedSpineUnitIds = new Set<string>();
@@ -1636,7 +1651,7 @@ export function compileNarrativeContractGraph(
       cue: splitLateNightPayoff ? 'lateNightWriting' : cue ?? (!spineUnit ? diagnosticCue(text) : undefined),
       evidenceRequirements: eventEvidenceRequirements(id, splitLateNightPayoff ? 'lateNightWriting' : cue, originalText),
       realizationAtoms: depiction
-        ? eventAndSupportingRealizationAtoms(id, eventText, knownLocations, spineUnit?.supportingIntents, ownerScene)
+        ? eventAndSupportingRealizationAtoms(id, eventText, knownLocations, spineUnit?.supportingIntents, ownerScene, scenePlan.semanticEventIr)
         : undefined,
       routeRealizationPolicy: routeRealizationPolicy(splitLateNightPayoff ? 'lateNightWriting' : cue, originalText),
       requiredOutcomeTiers: routeRealizationPolicy(splitLateNightPayoff ? 'lateNightWriting' : cue, originalText) === 'all_routes'
@@ -1647,6 +1662,19 @@ export function compileNarrativeContractGraph(
         confidence: spineUnit || scene.planningOrigin || scene.requiredBeats?.length ? 'authoritative' : cue ? 'deterministic' : 'heuristic',
       },
     };
+    if (depiction) {
+      const sourceTexts = Array.from(new Set([
+        clean(eventText),
+        ...(spineUnit?.supportingIntents ?? [])
+          .filter((intent) => intent.kind === 'behavioral_intent')
+          .map((intent) => clean(intent.intentText)),
+      ].filter(Boolean)));
+      semanticSeeds.set(id, {
+        eventId: id,
+        sourceText: clean(eventText),
+        sources: sourceTexts.map((source, index) => ({ id: `${id}:source:${index + 1}`, text: source })),
+      });
+    }
     events.push(event);
     if (spineUnit) spineEventIds.set(spineUnit.id, id);
 
@@ -1677,12 +1705,17 @@ export function compileNarrativeContractGraph(
         ownerSceneId: scene.id,
         cue: supplementalCue,
         evidenceRequirements: eventEvidenceRequirements(supplementalId, supplementalCue, beatText),
-        realizationAtoms: eventRealizationAtoms(supplementalId, beatText, knownLocations),
+        realizationAtoms: eventRealizationAtoms(supplementalId, beatText, knownLocations, scenePlan.semanticEventIr),
         routeRealizationPolicy: routeRealizationPolicy(supplementalCue, beatText),
         requiredOutcomeTiers: routeRealizationPolicy(supplementalCue, beatText) === 'all_routes'
           ? ['victory', 'partialVictory', 'success', 'complicated', 'defeat', 'escape', 'failure']
           : undefined,
         provenance: { source: 'treatment_contract', confidence: 'authoritative' },
+      });
+      semanticSeeds.set(supplementalId, {
+        eventId: supplementalId,
+        sourceText: beatText,
+        sources: [{ id: `${supplementalId}:source:1`, text: beatText }],
       });
     }
     if (depiction && splitLateNightPayoff && !hasAftermathHelper) {
@@ -1700,8 +1733,29 @@ export function compileNarrativeContractGraph(
         prerequisiteEventIds: [id],
         cue: 'blogAftermath',
         evidenceRequirements: eventEvidenceRequirements(aftermathId, 'blogAftermath', aftermathText),
-        realizationAtoms: eventRealizationAtoms(aftermathId, aftermathText, knownLocations),
+        realizationAtoms: eventRealizationAtoms(aftermathId, aftermathText, knownLocations, scenePlan.semanticEventIr),
       });
+      semanticSeeds.set(aftermathId, {
+        eventId: aftermathId,
+        sourceText: aftermathText,
+        sources: [{ id: `${aftermathId}:source:1`, text: aftermathText }],
+      });
+    }
+  }
+
+  if (scenePlan.semanticEventIr) {
+    const expectedSemanticSeeds = [...semanticSeeds.values()].sort((left, right) => left.eventId.localeCompare(right.eventId));
+    const semanticValidation = validateAuthoredEventSemanticIR(
+      scenePlan.semanticEventIr,
+      expectedSemanticSeeds,
+      knownLocations,
+    );
+    if (!semanticValidation.passed) {
+      compilationIssues.push(...semanticValidation.issues.map((message) => ({
+        code: 'semantic_contract_ir_invalid',
+        severity: 'error' as const,
+        message,
+      })));
     }
   }
 
@@ -1891,6 +1945,7 @@ export function compileNarrativeContractGraph(
     compilerVersion: NARRATIVE_CONTRACT_COMPILER_VERSION,
     storyId: plan.id || slug(plan.sourceTitle || 'story'),
     sourceHash: '',
+    semanticEventIr: scenePlan.semanticEventIr,
     events,
     characterPresenceContracts,
     identityScheduleContracts,
@@ -1920,6 +1975,8 @@ export function compileNarrativeContractGraph(
   graph.sourceHash = stableHash({
     compilerVersion: graph.compilerVersion,
     scenePlanSourceHash: scenePlan.sourceHash,
+    semanticEventIrSourceHash: scenePlan.semanticEventIr?.sourceHash,
+    semanticEventIrHash: scenePlan.semanticEventIr ? stableHash(scenePlan.semanticEventIr) : undefined,
     events: graph.events,
     characterPresenceContracts: graph.characterPresenceContracts,
     identityScheduleContracts: graph.identityScheduleContracts,

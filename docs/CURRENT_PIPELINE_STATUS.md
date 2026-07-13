@@ -1,6 +1,6 @@
 # Current Pipeline Status
 
-**Last Updated:** July 12, 2026
+**Last Updated:** July 13, 2026
 
 This is the short operational status of the codebase as it exists now. It is
 intended to answer "what is live?" before older architecture notes or audit
@@ -105,9 +105,25 @@ active representation of surface and route placement; the former
 `requiredSurface` + `routePolicy` + top-level `outcomeTier` combination is
 accepted only by the checkpoint migration boundary.
 
-Compiler v20 derives non-ESC event identity from stable source text rather than
-scene IDs and decomposes compound depiction events into ordered, independently
-verifiable action atoms. Required beats that describe independent authored
+Compiler v21 derives non-ESC event identity from stable source text rather than
+scene IDs. After scene identity settles, `SemanticContractCompilerAgent`
+compiles every depiction event into a persisted, versioned
+`AuthoredEventSemanticIR`. Each proposition cites an exact authored source span,
+declares semantic criteria, role, participants, prerequisite propositions, and
+staged versus referenced locations. Deterministic validation enforces complete
+event coverage, exact source provenance, stable IDs, forward-only prerequisites,
+known locations, policy version, and source hash. It does not infer the meaning
+of the authored text.
+
+The previous regex event atomizer now runs only to build a transient bootstrap
+graph or migrate legacy artifacts. Its inferred clause boundaries, roles,
+participants, and semantic alternatives are never authoritative in a new
+production plan. `runStoryAnalysis` recompiles the scene plan from the LLM IR
+before returning either a fresh or resumed plan, and episode generation fails
+at preflight when depiction events lack that persisted IR. The graph artifact
+stores the IR and includes its source identity in the graph hash.
+
+Required beats that describe independent authored
 events retain separate event IDs instead of being folded into a scene's primary
 turn. Location evidence distinguishes staged action from referenced destinations;
 the compiler can rebind an independent event to a compatible same-episode scene
@@ -132,11 +148,16 @@ prose meaning. Deterministic matching never clears or blocks a
 `semantic_judge` atom. The low-temperature QA-model judge receives only
 addressable reader-facing excerpts already restricted to the task's owner
 surface and route, returns a categorical verdict with exact evidence quotes,
-and is checked deterministically for quote integrity. A negative verdict
-requires a second sample; disagreement requires a third. No stable majority
-produces `semantic_validation_inconclusive`, which stops packaging as
-validation infrastructure without spending an author repair attempt. Confirmed
-meaning misses retain the task's existing repair route.
+and is checked deterministically for quote integrity. Judge calls use focused
+micro-batches of at most three claims; a failed batch splits to individual
+claims so one malformed verdict cannot erase unrelated decisions. A negative
+verdict requires a second sample; disagreement requires a third. No stable
+majority produces `semantic_validation_inconclusive`. Provider unavailability,
+malformed structured output, and judge-policy errors produce typed validation
+infrastructure outcomes, never content-missing verdicts. Those failures retry
+the judge against the same immutable candidate and do not spend an authored
+repair attempt. Confirmed meaning misses retain the task's existing repair
+route.
 
 Each event atom now carries an optional producer stage and temporal slot. When a
 route-invariant relationship or state transition happens after a player-facing
@@ -176,14 +197,23 @@ episode, but it cannot itself generate until its projection passes.
 
 The content phase validates each task at its owning stage and supplies bounded,
 fingerprint-targeted feedback retries before accepting or checkpointing the
-artifact. Repair candidates are immutable snapshots and are replay-validated;
+artifact. SceneWriter-owned semantic misses use an LLM-authored
+`SceneSemanticPatch` against the immutable baseline: at most two adjacent beat
+texts or one transition may be replaced or inserted, while deterministic code
+checks the base hash and applies the returned text operations. The loop accepts
+at most two authored candidates and bounds provider/patch calls separately.
+The active content path no longer inserts deterministic required-moment prose.
+Repair candidates are immutable snapshots and are replay-validated;
 non-identical findings for the same snapshot fail with a typed
 `validator_snapshot_mismatch` error. A candidate is adopted only when it clears
 the targeted fingerprint without introducing another blocker. Unresolved SceneWriter-owned tasks abort
 before ChoiceAuthor, callback accounting, completion status, or checkpointing.
 Failed candidates and per-atom diagnostics are persisted for deterministic
-replay. Semantic verdicts are cached by task, atom, scoped excerpt hash, judge
-policy, provider, model, and schema. Every initial or regenerated choice set passes one transactional
+replay. Semantic verdicts are cached by task, atom, scoped evidence, judge
+policy, provider, model, and schema. Positive receipts may be reused after
+unrelated prose changes only when every cited excerpt still exists with the
+same text hash; inconclusive and infrastructure-failure verdicts are never
+cached. Every initial or regenerated choice set passes one transactional
 prepare/validate/commit path: canonical state setters, information markers,
 residue, and route fan-out are applied to a clone; owner and producer gates run
 on that exact clone; only a valid candidate replaces the committed choice set

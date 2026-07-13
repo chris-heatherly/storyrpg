@@ -116,6 +116,54 @@ export interface NarrativeEvidenceAtom {
   polarity?: 'required' | 'forbidden';
 }
 
+export type AuthoredEventSemanticRole = NonNullable<NarrativeEvidenceAtom['semanticRole']>;
+
+/**
+ * One exact authored source segment supplied to the semantic-contract compiler.
+ * Segments preserve supporting treatment intents without asking deterministic
+ * code to infer their meaning.
+ */
+export interface AuthoredEventSemanticSource {
+  id: string;
+  text: string;
+}
+
+/** An LLM-authored, source-grounded proposition used to judge realization. */
+export interface AuthoredEventSemanticProposition {
+  id: string;
+  sourceId: string;
+  sourceSpan: string;
+  proposition: string;
+  semanticRole: AuthoredEventSemanticRole;
+  participantIds: string[];
+  semanticCriteria: string[];
+  prerequisitePropositionIds: string[];
+  stagedLocation?: string;
+  referencedLocations: string[];
+  required: boolean;
+}
+
+export interface AuthoredEventSemanticContract {
+  eventId: string;
+  sourceText: string;
+  sources: AuthoredEventSemanticSource[];
+  propositions: AuthoredEventSemanticProposition[];
+}
+
+/**
+ * Persisted interpretive IR. An LLM decomposes authored events into semantic
+ * propositions; deterministic code only validates provenance and projects the
+ * accepted propositions into executable evidence atoms.
+ */
+export interface AuthoredEventSemanticIR {
+  version: 1;
+  policyVersion: string;
+  provider: string;
+  model: string;
+  sourceHash: string;
+  events: AuthoredEventSemanticContract[];
+}
+
 export interface NarrativeEvidenceGroup {
   id: string;
   description: string;
@@ -469,6 +517,8 @@ export interface NarrativeContractGraph {
   compilerVersion: string;
   storyId: string;
   sourceHash: string;
+  /** Persisted interpretive source for depiction-event evidence atoms. */
+  semanticEventIr?: AuthoredEventSemanticIR;
   events: NarrativeEventContract[];
   characterPresenceContracts: NarrativeCharacterPresenceContract[];
   identityScheduleContracts?: NarrativeIdentityScheduleContract[];

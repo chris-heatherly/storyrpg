@@ -1,4 +1,5 @@
 import { SeasonPlannerAgent } from '../agents/SeasonPlannerAgent';
+import { SemanticContractCompilerAgent } from '../agents/SemanticContractCompilerAgent';
 import { AgentConfig, PipelineConfig } from '../config';
 import {
   FullCreativeBrief,
@@ -9,6 +10,7 @@ import {
 } from '../pipeline/FullStoryPipeline';
 import type { EndingMode, SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { SeasonPlan } from '../../types/seasonPlan';
+import { compileAndApplyNarrativeContracts } from '../pipeline/narrativeContractCompiler';
 
 type StoryAnalysisPreferences = {
   targetScenesPerEpisode?: number;
@@ -131,13 +133,49 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
     | undefined;
 
   const seasonPlanner = new SeasonPlannerAgent(getSeasonPlannerConfig(request.config));
-  const seasonPlanResult = seasonAlreadyDone && resumedPlanResult
+  let seasonPlanResult = seasonAlreadyDone && resumedPlanResult
     ? resumedPlanResult
     : await seasonPlanner.execute({
         sourceAnalysis: analysisResult.analysis,
         preferences,
         storyCircleBlocking: request.config?.generation?.storyCircleBlocking,
       });
+
+  if (seasonPlanResult.success && seasonPlanResult.data?.scenePlan) {
+    try {
+      // Artifact payloads may be recursively frozen. Canonical compilation has
+      // runtime-only projection repairs, so it always receives an isolated copy.
+      const workingPlan = JSON.parse(JSON.stringify(seasonPlanResult.data)) as SeasonPlan;
+      let scenePlan = workingPlan.scenePlan!;
+      if (!scenePlan.narrativeContractGraph) {
+        scenePlan = compileAndApplyNarrativeContracts(workingPlan, scenePlan);
+      }
+      if (!scenePlan.semanticEventIr) {
+        const semanticCompiler = new SemanticContractCompilerAgent(getSeasonPlannerConfig(request.config));
+        const semanticResult = await semanticCompiler.execute(scenePlan);
+        if (!semanticResult.success || !semanticResult.data) {
+          throw new Error(semanticResult.error || 'Semantic contract compiler returned no IR.');
+        }
+        scenePlan = { ...scenePlan, semanticEventIr: semanticResult.data };
+      }
+      scenePlan = compileAndApplyNarrativeContracts(workingPlan, scenePlan);
+      workingPlan.scenePlan = scenePlan;
+      for (const episode of workingPlan.episodes ?? []) {
+        episode.plannedScenes = scenePlan.scenes
+          .filter((scene) => scene.episodeNumber === episode.episodeNumber)
+          .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+      }
+      workingPlan.notes ??= [];
+      const semanticNote = `Semantic contract IR: ${scenePlan.semanticEventIr?.events.length ?? 0} depiction events compiled by ${scenePlan.semanticEventIr?.provider}/${scenePlan.semanticEventIr?.model}.`;
+      if (!workingPlan.notes.includes(semanticNote)) workingPlan.notes.push(semanticNote);
+      seasonPlanResult = { ...seasonPlanResult, data: workingPlan };
+    } catch (error) {
+      seasonPlanResult = {
+        success: false,
+        error: `[SemanticContractIRGate] ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
 
   return {
     pipeline,

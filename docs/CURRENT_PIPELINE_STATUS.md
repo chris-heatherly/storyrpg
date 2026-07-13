@@ -114,7 +114,10 @@ the compiler can rebind an independent event to a compatible same-episode scene
 or repair a dedicated ESC shell from its bound event without changing chronology.
 Abstract subordinate pressure such as `After testing X, Y happens` compiles as a
 typed behavioral prerequisite on event Y rather than a standalone depiction
-event. Social-test evidence includes named-target and second-person question,
+event. If obligation rebinding moves the depiction beat, the scene-plan builder
+restores the ESC unit's behavioral intents to the unique depiction owner before
+relationship-milestone validation; scene position cannot silently detach an
+earning prerequisite from its canonical event. Social-test evidence includes named-target and second-person question,
 challenge, and probing realizations so fiction-first prose is not forced to use
 the treatment's synopsis register.
 Persisted abstract `Testing X` units migrate into their dependent event;

@@ -11,9 +11,11 @@ import {
   syncGenericSceneTitlesFromAuthoredBeats,
   projectSpineOntoScenes,
   inferAuthoredLocationFromText,
+  restoreSpineBehavioralIntentOwnership,
 } from './seasonScenePlanBuilder';
 import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type { PlannedScene } from '../../types/scenePlan';
+import type { EpisodeSpineContract } from '../../types/episodeSpine';
 import type { StoryCircleBeat } from '../../types/sourceAnalysis';
 
 describe('inferAuthoredLocationFromText', () => {
@@ -424,6 +426,47 @@ describe('buildSeasonScenePlan', () => {
     const contract = scenes[2].relationshipPacing?.find((candidate) => candidate.groupId === 'dusk-club');
     expect(contract?.blockedLabels).not.toContain('friend');
     expect(contract?.allowedLabels).toContain('friends');
+  });
+
+  it('restores a folded ESC social-test intent to the rebound milestone owner', () => {
+    const base = (id: string, order: number, text: string, npcsInvolved: string[]): PlannedScene => ({
+      id, episodeNumber: 1, order, kind: 'standard', title: text, dramaticPurpose: text,
+      narrativeRole: order === 1 ? 'turn' : 'development', locations: ['club'], npcsInvolved,
+      setsUp: [], paysOff: [], requiredBeats: [{ id: `${id}-beat`, sourceTurn: text, mustDepict: text, tier: 'authored' }],
+    } as PlannedScene);
+    const scenes = [
+      base('s1-1', 0, 'Kylie meets Stela and Mika.', ['Stela', 'Mika']),
+      base('s1-3', 1, 'The three become friends and form the Dusk Club.', ['Stela', 'Mika']),
+    ];
+    const spine: EpisodeSpineContract = {
+      episodeNumber: 1,
+      sourceHash: 'test-hash',
+      episodeStoryCircleBeats: ['you'],
+      polarityFacets: [],
+      units: [{
+        id: 'ep1-u2',
+        order: 1,
+        text: 'The three become friends and form the Dusk Club.',
+        kind: 'bond',
+        storyCircleFacets: ['you'],
+        prerequisites: [],
+        sceneKind: 'standard',
+        supportingIntents: [{
+          kind: 'behavioral_intent',
+          intentKind: 'social_test',
+          intentText: 'Testing Kylie',
+          relation: 'prerequisite',
+          requiredSlots: ['actor', 'target', 'mechanism', 'observable_response', 'state_change'],
+        }],
+      }],
+    };
+
+    expect(restoreSpineBehavioralIntentOwnership(scenes, { 1: spine })).toBe(1);
+    expect(restoreSpineBehavioralIntentOwnership(scenes, { 1: spine })).toBe(0);
+    expect(scenes[1].behavioralIntents).toEqual([expect.objectContaining({ intentKind: 'social_test' })]);
+    expect(() => compileAuthoredRelationshipMilestones(scenes)).not.toThrow();
+    expect(scenes[1].relationshipPacing?.find((contract) => contract.milestone)?.milestone?.testSceneIds)
+      .toContain('s1-3');
   });
 
   it('does not create relationship pacing contracts for the protagonist', () => {

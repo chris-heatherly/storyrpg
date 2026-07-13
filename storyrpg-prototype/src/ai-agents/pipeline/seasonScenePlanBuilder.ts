@@ -810,6 +810,75 @@ function authoredMilestoneText(scene: PlannedScene): string | undefined {
     );
 }
 
+function spineIntentKey(
+  intent: NonNullable<EpisodeSpineUnit['supportingIntents']>[number],
+): string {
+  if (intent.kind === 'behavioral_intent') {
+    return [
+      intent.kind,
+      intent.intentKind,
+      intent.intentText,
+      intent.relation ?? '',
+      ...intent.requiredSlots,
+    ].join('|');
+  }
+  if (intent.kind === 'concrete_event') return `${intent.kind}|${intent.eventText}`;
+  if (intent.kind === 'identity_constraint') return `${intent.kind}|${intent.factText}`;
+  return `${intent.kind}|${intent.contextText}`;
+}
+
+/**
+ * Scene rebinding may move an authored depiction beat without moving the ESC
+ * unit's non-owning behavioral intents. Restore those intents to the unique
+ * depiction owner before relationship milestones validate their earning path.
+ */
+export function restoreSpineBehavioralIntentOwnership(
+  scenes: PlannedScene[],
+  episodeSpines: Record<number, EpisodeSpineContract>,
+): number {
+  let restored = 0;
+
+  for (const spine of Object.values(episodeSpines)) {
+    const episodeScenes = scenes.filter((scene) => scene.episodeNumber === spine.episodeNumber);
+    for (const unit of spine.units) {
+      const intents = unit.supportingIntents ?? [];
+      if (intents.length === 0) continue;
+
+      const unitText = normalizedSpineTurnText(unit.text);
+      const depictionOwners = episodeScenes.filter((scene) =>
+        (scene.requiredBeats ?? []).some((beat) =>
+          ['authored', 'coldopen', 'signature'].includes(beat.tier)
+          && [beat.mustDepict, beat.sourceTurn]
+            .some((text) => normalizedSpineTurnText(text) === unitText),
+        ),
+      );
+      const idOwners = episodeScenes.filter((scene) => scene.spineUnitId === unit.id);
+      const owner = depictionOwners.length === 1
+        ? depictionOwners[0]
+        : idOwners.length === 1
+          ? idOwners[0]
+          : undefined;
+      if (!owner) continue;
+
+      const existing = owner.behavioralIntents ?? [];
+      const existingKeys = new Set(existing.map(spineIntentKey));
+      const missing = intents.filter((intent) => !existingKeys.has(spineIntentKey(intent)));
+      if (missing.length > 0) {
+        owner.behavioralIntents = [...existing, ...missing];
+        restored += missing.length;
+      }
+      if (intents.some((intent) =>
+        intent.kind === 'behavioral_intent' && intent.intentKind === 'social_test'
+      )) {
+        owner.hasChoice = true;
+        owner.encounterProfile = owner.encounterProfile || 'social_test';
+      }
+    }
+  }
+
+  return restored;
+}
+
 function removeMilestoneSentence(value: string | undefined, sourceText: string): string | undefined {
   if (!value) return value;
   const sourceWords = new Set(sourceText.toLowerCase().match(/[a-z0-9']{4,}/g) ?? []);
@@ -2770,6 +2839,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
       storyCircleRole: ep.storyCircleRole,
     });
   }
+  restoreSpineBehavioralIntentOwnership(scenes, seasonSpine.episodeSpines);
   compileAuthoredRelationshipMilestones(scenes, plan.protagonist, plan.characterIntroductions);
   normalizeRelationshipPacingStages(scenes);
   // Authored milestones can advance group and member contracts after the first

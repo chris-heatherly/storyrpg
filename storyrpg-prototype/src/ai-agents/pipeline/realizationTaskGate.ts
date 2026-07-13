@@ -148,9 +148,29 @@ function scopeTerms(task: NarrativeRealizationTask): string[] {
     .filter((term) => term.length >= 4);
 }
 
-function relationshipEvidenceMatches(task: NarrativeRealizationTask, pattern: string, text: string, kind?: string): boolean {
+function semanticTransitionPresent(pattern: string, text: string): boolean {
+  const needle = normalize(pattern);
+  const haystack = normalize(text);
+  if (haystack.includes(needle)) return true;
+  if (/\b(?:form|found|start|name|christen|born)\b/.test(needle)) {
+    return /\b(?:form(?:s|ed|ing)?|found(?:s|ed|ing)?|start(?:s|ed|ing)?|nam(?:e|es|ed|ing)|christen(?:s|ed|ing)?|born)\b/.test(haystack)
+      || (/\b(?:toast|glass|glasses|raise|lift)\b/.test(haystack)
+        && /\bto (?:the )?.*\b(?:club|circle|crew|society)\b/.test(haystack));
+  }
+  if (/\b(?:become|begin|befriend|bond|welcome|accept|offer|call)\b/.test(needle)) {
+    return /\b(?:becom(?:e|es|ing)|became|beg(?:in|ins|an|un|inning)|befriend(?:s|ed|ing)?|bond(?:s|ed|ing)?|welcom(?:e|es|ed|ing)|accept(?:s|ed|ing)?|offer(?:s|ed|ing)?|call(?:s|ed|ing)?)\b/.test(haystack);
+  }
+  return true;
+}
+
+function relationshipEvidenceMatches(task: NarrativeRealizationTask, atom: NarrativeRealizationTask['evidenceAtoms'][number], pattern: string, text: string): boolean {
+  const kind = atom.kind;
   if (kind === 'lexical') return normalize(text).includes(normalize(pattern));
-  if (kind !== 'relationship_label') return evidenceMatches(pattern, text);
+  if (kind !== 'relationship_label') {
+    if ((atom.semanticRole === 'relationship_change' || atom.semanticRole === 'state_change')
+      && !semanticTransitionPresent(pattern, text)) return false;
+    return evidenceMatches(pattern, text);
+  }
   const terms = scopeTerms(task);
   if (terms.length === 0) return evidenceMatches(pattern, text);
   const normalizedText = normalize(text);
@@ -176,6 +196,17 @@ function textsForSurfaces(
   return surfaces.flatMap((surface) => index[surface]).map(normalize);
 }
 
+function choicesForTaskInput(input: { sceneContent?: unknown; choiceSet?: unknown }): unknown[] {
+  if (input.choiceSet && typeof input.choiceSet === 'object') {
+    return (input.choiceSet as { choices?: unknown[] }).choices ?? [];
+  }
+  if (!input.sceneContent || typeof input.sceneContent !== 'object') return [];
+  const beats = (input.sceneContent as { beats?: unknown[] }).beats ?? [];
+  return beats.flatMap((beat) => beat && typeof beat === 'object'
+    ? ((beat as { choices?: unknown[] }).choices ?? [])
+    : []);
+}
+
 function taskTextGroups(input: { sceneContent?: unknown; choiceSet?: unknown; encounter?: unknown; task: NarrativeRealizationTask }): string[][] {
   const target = input.task.target;
   if (target.scope === 'owner') {
@@ -192,10 +223,7 @@ function taskTextGroups(input: { sceneContent?: unknown; choiceSet?: unknown; en
     )];
   }
   if (target.scope === 'all_options') {
-    const raw = input.choiceSet && typeof input.choiceSet === 'object'
-      ? (input.choiceSet as { choices?: unknown[] }).choices
-      : undefined;
-    return (raw ?? []).map((choice) => {
+    return choicesForTaskInput(input).map((choice) => {
       if (!choice || typeof choice !== 'object') return [];
       const record = choice as Record<string, unknown>;
       const structured = [
@@ -215,6 +243,16 @@ function taskTextGroups(input: { sceneContent?: unknown; choiceSet?: unknown; en
       return [...text, normalize(structured.join(' '))];
     });
   }
+  if (target.scope === 'all_choice_outcomes') {
+    return choicesForTaskInput(input).flatMap((choice) => {
+      if (!choice || typeof choice !== 'object') return [];
+      const outcomeTexts = (choice as { outcomeTexts?: Record<string, unknown> }).outcomeTexts;
+      return ['success', 'partial', 'failure'].map((tier) => {
+        const text = outcomeTexts?.[tier];
+        return typeof text === 'string' ? [normalize(text)] : [];
+      });
+    });
+  }
   return target.outcomeTiers.map((outcomeTier) => textsForSurfaces(
     collectRouteEvidenceSurfaceIndex({ ...input, outcomeTier }),
     target.surfaces,
@@ -231,7 +269,7 @@ function evaluateTaskGroup(task: NarrativeRealizationTask, texts: string[]): { m
     let best: EvidenceMatchDiagnostic = { atomId: atom.id, matched: false, score: 0, matchedTerms: [], missingTerms: [] };
     for (const pattern of atom.acceptedPatterns) {
       for (const text of texts) {
-        const matched = relationshipEvidenceMatches(task, pattern, text, atom.kind);
+        const matched = relationshipEvidenceMatches(task, atom, pattern, text);
         const score = evidenceMatchScore(pattern, text);
         if (matched || score.score > best.score) {
           best = { atomId: atom.id, matched, bestPattern: pattern, ...score, score: matched ? Math.max(score.score, 1) : score.score };
@@ -282,7 +320,7 @@ export function validateOwnerRealizationTasks(input: {
     const bestPositive = evaluations.reduce((best, candidate) => candidate.missing.length < best.missing.length ? candidate : best, evaluations[0] ?? { missing: task.evidenceAtoms.filter((atom) => atom.required && atom.polarity !== 'forbidden').map((atom) => atom.id), forbidden: [], diagnostics: [] });
     const missing = task.target.scope === 'any_route' && evaluations.some((evaluation) => evaluation.missing.length === 0)
       ? []
-      : task.target.scope === 'all_options'
+      : task.target.scope === 'all_options' || task.target.scope === 'all_choice_outcomes'
         ? (evaluations.length > 0
           ? [...new Set(evaluations.flatMap((evaluation) => evaluation.missing))]
           : task.evidenceAtoms.filter((atom) => atom.required && atom.polarity !== 'forbidden').map((atom) => atom.id))

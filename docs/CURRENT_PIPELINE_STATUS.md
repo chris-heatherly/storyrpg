@@ -96,7 +96,7 @@ behavior-preserving migrations.
 
 ## Canonical Narrative Realization Contract
 
-`NarrativeContractGraph` and `EpisodeEventPlan` version 5 compile premise,
+`NarrativeContractGraph` and `EpisodeEventPlan` version 6 compile premise,
 event, relationship-pacing, and route obligations into executable
 `NarrativeRealizationTask` records. A task has one owner (`SceneWriter`,
 `ChoiceAuthor`, or `EncounterArchitect`), one discriminated evidence `target`,
@@ -105,7 +105,7 @@ active representation of surface and route placement; the former
 `requiredSurface` + `routePolicy` + top-level `outcomeTier` combination is
 accepted only by the checkpoint migration boundary.
 
-Compiler v17 derives non-ESC event identity from stable source text rather than
+Compiler v18 derives non-ESC event identity from stable source text rather than
 scene IDs and decomposes compound depiction events into ordered, independently
 verifiable action atoms. Required beats that describe independent authored
 events retain separate event IDs instead of being folded into a scene's primary
@@ -117,7 +117,7 @@ typed behavioral prerequisite on event Y rather than a standalone depiction
 event. Social-test evidence includes named-target and second-person question,
 challenge, and probing realizations so fiction-first prose is not forced to use
 the treatment's synopsis register.
-owner. Persisted abstract `Testing X` units migrate into their dependent event;
+Persisted abstract `Testing X` units migrate into their dependent event;
 concrete tests with an actor and mechanism remain independent events. Static
 identity facts remain provenance/evidence but do not become chronological action
 atoms or force planning-register language into reader prose. Interpretive Story
@@ -130,6 +130,22 @@ Ordinary exploration atoms likewise compile location-aware walking, wandering,
 and city-motion alternatives so scenic prose can satisfy the event without
 copying the treatment sentence.
 
+Each event atom now carries an optional producer stage and temporal slot. When a
+route-invariant relationship or state transition happens after a player-facing
+choice, the compiler partitions the event into a pre-choice `SceneWriter` task
+and an all-outcome `ChoiceAuthor` resolution task linked by explicit task and
+atom prerequisites. `SceneWriter` receives the pressure and decision boundary;
+`ChoiceAuthor` authors one shared fiction-first resolution and the pipeline
+projects that authored passage into every option's success, partial, and failure
+outcome. No deterministic system invents the payoff. Generic group names are
+excluded from participant identity extraction. Equivalent repeated projections
+coalesce idempotently; scene-projected task and atom IDs include their owner
+scene, while conflicting ID reuse remains blocking. Task compilation also
+rejects dangling evidence-group atoms, backward producer dependencies, and
+unreachable outcome surfaces. Specialized evidence
+requirements are additive to the canonical atomized owner task and can no
+longer suppress it through compile order.
+
 Season graph validity remains global and blocking for event identity, chronology,
 canon, and cross-episode dependencies. Detailed scene executability is enforced
 when an episode enters the requested generation frontier. A later episode may
@@ -138,11 +154,17 @@ episode, but it cannot itself generate until its projection passes.
 
 The content phase validates each task at its owning stage and supplies bounded,
 fingerprint-targeted feedback retries before accepting or checkpointing the
-artifact. A candidate is adopted only when it clears the targeted fingerprint
-without introducing another blocker. Unresolved SceneWriter-owned tasks abort
+artifact. Repair candidates are immutable snapshots and are replay-validated;
+non-identical findings for the same snapshot fail with a typed
+`validator_snapshot_mismatch` error. A candidate is adopted only when it clears
+the targeted fingerprint without introducing another blocker. Unresolved SceneWriter-owned tasks abort
 before ChoiceAuthor, callback accounting, completion status, or checkpointing.
 Failed candidates and per-atom match diagnostics are persisted for deterministic
-replay. Route evidence
+replay. Every initial or regenerated choice set passes one transactional
+prepare/validate/commit path: canonical state setters, information markers,
+residue, and route fan-out are applied to a clone; owner and producer gates run
+on that exact clone; only a valid candidate replaces the committed choice set
+and its within-episode plant projection. Route evidence
 is evaluated per playable outcome and cannot be borrowed across routes or from
 an undeclared surface. `NarrativeContractValidator` repeats the same canonical
 gate after late story mutations as a regression net, and the owner-stage
@@ -150,7 +172,7 @@ fingerprint is preserved through final-contract repair accounting.
 
 Three older event heuristics (viral payoff, exact codename, and all-route threat
 checks) remain only for persisted graphs that have no compiled realization task.
-They do not execute alongside a version-5 task and are tracked for deletion in
+They do not execute alongside a version-6 task and are tracked for deletion in
 `docs/LEGACY_REMOVAL_REGISTRY.md`.
 
 Validation ownership now has two explicit levels:

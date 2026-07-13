@@ -122,6 +122,14 @@ function capitalizedNames(value: string): string[] {
     .filter((name) => !['She', 'He', 'They', 'The', 'At', 'By'].includes(name))));
 }
 
+function participantNames(value: string, knownLocations: string[]): string[] {
+  const excluded = new Set(knownLocations.flatMap((location) => capitalizedNames(location)));
+  for (const group of value.matchAll(/\b((?:[A-Z][A-Za-z'’-]+\s+)*(?:Club|Circle|Crew|Society))\b/g)) {
+    for (const token of capitalizedNames(group[1])) excluded.add(token);
+  }
+  return capitalizedNames(value).filter((name) => !excluded.has(name));
+}
+
 function semanticAlternatives(atom: NarrativeEvidenceAtom, clause: string): string[] {
   const alternatives = new Set([clause]);
   const names = capitalizedNames(clause);
@@ -191,7 +199,7 @@ export function compileEventRealizationAtoms(input: {
       sourceText: input.sourceText,
       kind: 'semantic',
       semanticRole: semanticRole(clause),
-      participantIds: capitalizedNames(clause),
+      participantIds: participantNames(clause, input.knownLocations ?? []),
       prerequisiteAtomIds: index > 0 ? [`${input.eventId}:atom:${index}`] : [],
       required: true,
     };

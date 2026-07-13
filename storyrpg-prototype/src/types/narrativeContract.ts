@@ -1,7 +1,7 @@
 /** Generator-only canonical contracts for narrative planning and realization. */
 
-export const NARRATIVE_CONTRACT_GRAPH_VERSION = 5;
-export const EPISODE_EVENT_PLAN_VERSION = 5;
+export const NARRATIVE_CONTRACT_GRAPH_VERSION = 6;
+export const EPISODE_EVENT_PLAN_VERSION = 6;
 export const NARRATIVE_REALIZATION_LEDGER_VERSION = 1;
 
 export type NarrativeEventCue =
@@ -36,6 +36,7 @@ export type NarrativeRealizationSurface =
   | 'beat_text'
   | 'dialogue'
   | 'choice_text'
+  | 'choice_outcome'
   | 'encounter_setup'
   | 'encounter_phase'
   | 'encounter_outcome'
@@ -56,6 +57,7 @@ export type NarrativeRouteEvidencePolicy =
 export type NarrativeEvidenceTarget =
   | { scope: 'owner'; surfaces: NarrativeRealizationSurface[] }
   | { scope: 'all_options'; surfaces: NarrativeRealizationSurface[] }
+  | { scope: 'all_choice_outcomes'; surfaces: NarrativeRealizationSurface[] }
   | { scope: 'route_path'; outcomeTier: string; surfaces: NarrativeRealizationSurface[] }
   | { scope: 'route_terminal'; outcomeTier: string; surfaces: NarrativeRealizationSurface[] }
   | { scope: 'any_route'; outcomeTiers: string[]; surfaces: NarrativeRealizationSurface[] };
@@ -80,6 +82,9 @@ export interface NarrativeEvidenceAtom {
   subjectIds?: string[];
   participantIds?: string[];
   prerequisiteAtomIds?: string[];
+  /** Producer and temporal placement assigned by the episode task compiler. */
+  producerStage?: NarrativeRealizationOwnerStage;
+  temporalSlot?: 'pre_choice' | 'choice_resolution' | 'owner_event' | 'encounter_route' | 'terminal';
   stagedLocation?: string;
   referencedLocations?: string[];
   required: boolean;
@@ -116,6 +121,8 @@ export interface NarrativeRealizationTask {
   sceneId?: string;
   beatId?: string;
   eventId?: string;
+  /** Tasks whose committed evidence must precede this task's evidence. */
+  prerequisiteTaskIds?: string[];
   /** Relationship-label evidence is evaluated near this subject, not against
    * unrelated names or groups mentioned elsewhere in the same scene. */
   evidenceScope?: { npcId?: string; groupId?: string };

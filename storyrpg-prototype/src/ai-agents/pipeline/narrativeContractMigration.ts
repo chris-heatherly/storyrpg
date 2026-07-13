@@ -76,6 +76,7 @@ export function normalizePersistedSeasonScenePlan(plan: SeasonScenePlan): Season
 export function describeNarrativeEvidenceTarget(target: NarrativeEvidenceTarget): string {
   if (target.scope === 'owner') return `owner surfaces=${target.surfaces.join(', ')}`;
   if (target.scope === 'all_options') return `every choice option surfaces=${target.surfaces.join(', ')}`;
+  if (target.scope === 'all_choice_outcomes') return `every choice outcome tier surfaces=${target.surfaces.join(', ')}`;
   if (target.scope === 'any_route') {
     return `any route [${target.outcomeTiers.join(', ')}] surfaces=${target.surfaces.join(', ')}`;
   }

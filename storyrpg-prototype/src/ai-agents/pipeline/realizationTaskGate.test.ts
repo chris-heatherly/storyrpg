@@ -182,6 +182,55 @@ describe('validateOwnerRealizationTasks', () => {
     })).toEqual([]);
   });
 
+  it('requires route-invariant choice resolution evidence in every option and outcome tier', () => {
+    const task = {
+      id: 'task:event:alliance:choice-resolution', contractId: 'event:alliance', canonicalEventId: 'event:alliance',
+      episodeNumber: 1, ownerStage: 'choice_author' as const, repairHandler: 'choice_reauthor' as const,
+      sceneId: 'scene-alliance', evidenceAtoms: [{
+        id: 'event:alliance:formation', description: 'Form the alliance', acceptedPatterns: ['form the Lantern Circle'],
+        kind: 'semantic' as const, semanticRole: 'relationship_change' as const, required: true,
+      }],
+      target: { scope: 'all_choice_outcomes' as const, surfaces: ['choice_outcome' as const] },
+      sourceContractIds: ['event:alliance'], blocking: true,
+    };
+    const choice = (failure: string) => ({ outcomeTexts: {
+      success: 'They form the Lantern Circle beneath the old bell.',
+      partial: 'Bruised pride remains, but they form the Lantern Circle together.',
+      failure,
+    } });
+
+    expect(validateOwnerRealizationTasks({
+      sceneId: 'scene-alliance', tasks: [task], currentStage: 'choice_author',
+      choiceSet: { choices: [choice('Even failure ends with them forming the Lantern Circle.'), choice('They form the Lantern Circle despite the argument.')] },
+    })).toEqual([]);
+    expect(validateOwnerRealizationTasks({
+      sceneId: 'scene-alliance', tasks: [task], currentStage: 'choice_author',
+      choiceSet: { choices: [choice('The argument sends everyone home alone.')] },
+    })[0]?.missingEvidenceAtoms).toEqual(['event:alliance:formation']);
+  });
+
+  it('replays route-invariant outcome tasks against embedded runtime choices', () => {
+    const task = {
+      id: 'task:event:pact:choice-resolution', contractId: 'event:pact', canonicalEventId: 'event:pact',
+      episodeNumber: 1, ownerStage: 'choice_author' as const, repairHandler: 'choice_reauthor' as const,
+      sceneId: 'scene-pact', evidenceAtoms: [{
+        id: 'event:pact:formation', description: 'Form the pact', acceptedPatterns: ['form the Lantern Circle'],
+        kind: 'semantic' as const, semanticRole: 'relationship_change' as const, required: true,
+      }],
+      target: { scope: 'all_choice_outcomes' as const, surfaces: ['choice_outcome' as const] },
+      sourceContractIds: ['event:pact'], blocking: true,
+    };
+    const completeOutcomes = {
+      success: 'They form the Lantern Circle with a toast.',
+      partial: 'They form the Lantern Circle despite the strain.',
+      failure: 'Even after the quarrel, they form the Lantern Circle.',
+    };
+    expect(validateOwnerRealizationTasks({
+      sceneId: 'scene-pact', tasks: [task], mode: 'final_regression',
+      sceneContent: { beats: [{ text: 'Choose.', choices: [{ text: 'Speak.', outcomeTexts: completeOutcomes }] }] },
+    })).toEqual([]);
+  });
+
   it('accepts scenic city walking as realization of an authored exploration event', () => {
     const atoms = compileEventRealizationAtoms({
       eventId: 'event:explore',

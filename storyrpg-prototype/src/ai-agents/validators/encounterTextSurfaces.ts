@@ -72,7 +72,7 @@ export type NarrativeEvidenceSurfaceIndex = Record<NarrativeRealizationSurface, 
 
 function emptyEvidenceSurfaceIndex(): NarrativeEvidenceSurfaceIndex {
   return {
-    beat_text: [], dialogue: [], choice_text: [], encounter_setup: [], encounter_phase: [],
+    beat_text: [], dialogue: [], choice_text: [], choice_outcome: [], encounter_setup: [], encounter_phase: [],
     encounter_outcome: [], terminal_storylet: [], text_variant: [],
   };
 }
@@ -101,6 +101,14 @@ function collectIndexedChoiceTexts(value: unknown, output: string[]): void {
   }
 }
 
+function collectIndexedChoiceOutcomes(value: unknown, output: string[]): void {
+  for (const rawChoice of valuesOf(recordOf(value)?.choices ?? value)) {
+    const choice = recordOf(rawChoice);
+    if (!choice) continue;
+    for (const outcome of valuesOf(choice.outcomeTexts)) pushUnknownText(output, outcome);
+  }
+}
+
 function collectIndexedBeats(
   value: unknown,
   index: NarrativeEvidenceSurfaceIndex,
@@ -116,6 +124,7 @@ function collectIndexedBeats(
       for (const rawVariant of valuesOf(beat[key])) pushUnknownText(index.text_variant, recordOf(rawVariant)?.text);
     }
     collectIndexedChoiceTexts(beat.choices, index.choice_text);
+    collectIndexedChoiceOutcomes(beat.choices, index.choice_outcome);
   }
 }
 
@@ -139,6 +148,7 @@ export function collectNarrativeEvidenceSurfaceIndex(input: {
   const scene = recordOf(input.sceneContent);
   collectIndexedBeats(scene?.beats, index, 'beat_text');
   collectIndexedChoiceTexts(input.choiceSet, index.choice_text);
+  collectIndexedChoiceOutcomes(input.choiceSet, index.choice_outcome);
   const encounter = recordOf(input.encounter);
   pushUnknownText(index.encounter_setup, encounter?.description);
   pushUnknownText(index.encounter_setup, encounter?.setupText);

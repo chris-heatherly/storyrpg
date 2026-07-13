@@ -2297,6 +2297,14 @@ export class ContentGenerationPhase {
         // repair opportunity before choices, media, or checkpointing can amplify
         // an under-realized opening/event/relationship surface.
         if (canonicalSceneWriterTasks.length > 0) {
+          const ownerRepairHistory: Array<{
+            attempt: number;
+            candidateHash: string;
+            targetFingerprint: string;
+            resolvedFingerprints: string[];
+            introducedFingerprints: string[];
+            adopted: boolean;
+          }> = [];
           let ownerTaskFindings = prioritizeOwnerRepairFindings(validateOwnerRealizationTasks({
             sceneId: sceneBlueprint.id,
             tasks: canonicalSceneWriterTasks,
@@ -2333,17 +2341,56 @@ export class ContentGenerationPhase {
               `SceneWriter.execute(${sceneBlueprint.id} owner-realization-retry-${attempt})`,
             );
             if (!ownerTaskRetry.success || !ownerTaskRetry.data) continue;
+            const candidateSnapshot = JSON.parse(JSON.stringify(ownerTaskRetry.data)) as typeof ownerTaskRetry.data;
+            const candidateHash = stableHash(candidateSnapshot);
             const retryFindings = validateOwnerRealizationTasks({
               sceneId: sceneBlueprint.id,
               tasks: canonicalSceneWriterTasks,
-              sceneContent: ownerTaskRetry.data,
+              sceneContent: candidateSnapshot,
               mode: 'owner',
               currentStage: 'scene_writer',
             }).filter((finding) => finding.blocking);
+            const replayFindings = validateOwnerRealizationTasks({
+              sceneId: sceneBlueprint.id,
+              tasks: canonicalSceneWriterTasks,
+              sceneContent: JSON.parse(JSON.stringify(candidateSnapshot)),
+              mode: 'owner',
+              currentStage: 'scene_writer',
+            }).filter((finding) => finding.blocking);
+            if (stableHash(retryFindings) !== stableHash(replayFindings)) {
+              throw new PipelineError(
+                `[OwnerStageValidatorSnapshotMismatch] ${sceneBlueprint.id} produced non-replayable realization findings.`,
+                'scenes',
+                {
+                  agent: 'SceneWriter',
+                  context: { sceneId: sceneBlueprint.id, candidateHash, retryFindings, replayFindings },
+                  failure: {
+                    code: 'validator_snapshot_mismatch',
+                    ownerStage: 'scene_writer',
+                    retryClass: 'none',
+                    issueCodes: ['OWNER_VALIDATOR_SNAPSHOT_MISMATCH'],
+                    artifactRefs: [],
+                    repairTarget: sceneBlueprint.id,
+                  },
+                },
+              );
+            }
             const adoptCandidate = shouldAdoptOwnerRepairCandidate({
               previous: ownerTaskFindings,
               candidate: retryFindings,
               targetFingerprint: repairTarget.fingerprint,
+            });
+            const previousFingerprints = new Set(ownerTaskFindings.map((finding) => finding.fingerprint));
+            const candidateFingerprints = new Set(retryFindings.map((finding) => finding.fingerprint));
+            const resolvedFingerprints = [...previousFingerprints].filter((fingerprint) => !candidateFingerprints.has(fingerprint));
+            const introducedFingerprints = [...candidateFingerprints].filter((fingerprint) => !previousFingerprints.has(fingerprint));
+            ownerRepairHistory.push({
+              attempt,
+              candidateHash,
+              targetFingerprint: repairTarget.fingerprint,
+              resolvedFingerprints,
+              introducedFingerprints,
+              adopted: adoptCandidate,
             });
             if (outputDirectory) {
               await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-owner-repair-attempt-${attempt}.json`, {
@@ -2354,15 +2401,19 @@ export class ContentGenerationPhase {
                 repairTarget,
                 previousFindings: ownerTaskFindings,
                 candidateFindings: retryFindings,
+                replayFindings,
+                replayVerified: true,
+                resolvedFingerprints,
+                introducedFingerprints,
                 adopted: adoptCandidate,
-                candidateHash: stableHash(ownerTaskRetry.data),
-                candidate: ownerTaskRetry.data,
+                candidateHash,
+                candidate: candidateSnapshot,
                 assignedEventIds: sceneBlueprint.assignedEventIds ?? sceneBlueprint.narrativeEventIds ?? [],
                 realizationTasks: canonicalSceneWriterTasks,
               });
             }
             if (adoptCandidate) {
-              Object.assign(sceneContent, ownerTaskRetry.data);
+              Object.assign(sceneContent, candidateSnapshot);
               sceneContent.sceneId = sceneBlueprint.id;
               sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
               sceneContent.locationId = sceneSettingContext.locationId;
@@ -2374,13 +2425,15 @@ export class ContentGenerationPhase {
           }
           if (ownerTaskFindings.length > 0) {
             if (outputDirectory) {
+              const committedSnapshot = JSON.parse(JSON.stringify(sceneContent));
               await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-realization-blockers.json`, {
                 schemaVersion: 2,
                 episodeNumber: densityEpisodeNumber,
                 sceneId: sceneBlueprint.id,
-                candidateHash: stableHash(sceneContent),
-                candidate: sceneContent,
+                candidateHash: stableHash(committedSnapshot),
+                candidate: committedSnapshot,
                 findings: ownerTaskFindings,
+                repairHistory: ownerRepairHistory,
                 assignedEventIds: sceneBlueprint.assignedEventIds ?? sceneBlueprint.narrativeEventIds ?? [],
                 realizationTasks: canonicalSceneWriterTasks,
               });
@@ -2405,9 +2458,14 @@ export class ContentGenerationPhase {
               },
             );
           }
+          const downstreamEventIds = new Set((sceneBlueprint.realizationTasks ?? [])
+            .filter((task) => task.blocking && task.ownerStage !== 'scene_writer')
+            .map((task) => task.canonicalEventId ?? task.eventId)
+            .filter((eventId): eventId is string => Boolean(eventId)));
           sceneContent.verifiedEventIds = Array.from(new Set(canonicalSceneWriterTasks
             .map((task) => task.canonicalEventId ?? task.eventId)
-            .filter((eventId): eventId is string => Boolean(eventId))));
+            .filter((eventId): eventId is string => Boolean(eventId))
+            .filter((eventId) => !downstreamEventIds.has(eventId))));
         }
 
         // Add branch metadata for visual differentiation
@@ -2456,6 +2514,70 @@ export class ContentGenerationPhase {
           `Scene written for ${sceneBlueprint.id}`
         );
 
+        const seasonResiduePlan = brief.seasonPlan?.residuePlan || [];
+        const requiredCanonicalStateIds = (brief.seasonPlan?.scenePlan?.narrativeContractGraph?.stateContracts ?? [])
+          .filter((state) => state.sourceEpisodeNumber === brief.episode.number && state.requiredSetterSurface === 'choice_consequence')
+          .map((state) => state.canonicalStateId);
+        const validateChoiceCandidate = (choiceSet: ChoiceSet): {
+          ownerBlockers: RealizationTaskGateFinding[];
+          producerBlockers: ProducerBlockerFinding[];
+        } => ({
+          ownerBlockers: validateOwnerRealizationTasks({
+            sceneId: sceneBlueprint.id,
+            tasks: sceneBlueprint.realizationTasks,
+            sceneContent,
+            choiceSet,
+            mode: 'owner',
+            currentStage: 'choice_author',
+          }).filter((finding) => finding.blocking),
+          producerBlockers: validateChoiceProducerOutput(sceneBlueprint.id, choiceSet),
+        });
+        const prepareChoiceCandidate = (choiceSet: ChoiceSet, choicePointBeat: GeneratedBeat): ChoiceSet => {
+          const candidate = JSON.parse(JSON.stringify({ ...choiceSet, sceneId: sceneBlueprint.id })) as ChoiceSet;
+          ensureCanonicalStateSetters(candidate.choices, requiredCanonicalStateIds);
+          emitSceneTreatmentSeeds(sceneBlueprint, candidate.choices);
+          emitSceneBranchAxes(sceneBlueprint, candidate.choices);
+          emitSceneInfoMarkers(sceneBlueprint, candidate.choices);
+          const residueBackstop = applyChoiceResidueBackstop(
+            {
+              beatId: choicePointBeat.id,
+              sceneId: sceneBlueprint.id,
+              choiceType: sceneBlueprint.choicePoint?.type || 'expression',
+              choices: candidate.choices,
+              overallStakes: { want: '', cost: '', identity: '' },
+              designNotes: '',
+            },
+            sceneBlueprint,
+            seasonResiduePlan,
+          );
+          if (residueBackstop.addedFlags > 0 || residueBackstop.stamped > 0) {
+            context.emit({
+              type: 'debug',
+              phase: 'choices',
+              message: `Residue backstop for ${sceneBlueprint.id}: stamped ${residueBackstop.stamped}, added ${residueBackstop.addedFlags} planned flag(s).`,
+            });
+          }
+          if ((new Set(sceneBlueprint.leadsTo ?? []).size) > 1) {
+            const repaired = repairBranchFanOut(candidate.choices, sceneBlueprint.leadsTo, {
+              pathHints: branchTargetHintsByScene.get(sceneBlueprint.id),
+            });
+            if (repaired) {
+              const hinted = branchTargetHintsByScene.has(sceneBlueprint.id);
+              context.emit({ type: 'warning', phase: 'choices', message: `Repaired branch fan-out for ${sceneBlueprint.id}: re-pointed a choice to its authored target [${[...new Set(sceneBlueprint.leadsTo ?? [])].join(', ')}]${hinted ? ' (matched to authored branch intent)' : ' (no branch-path hints - first-spare fallback)'}.` });
+            }
+          }
+          return candidate;
+        };
+        const refreshEpisodePlantsForChoiceSet = (choiceSet: ChoiceSet): void => {
+          for (let index = episodePlants.length - 1; index >= 0; index--) {
+            if (episodePlants[index].sceneId === sceneBlueprint.id) episodePlants.splice(index, 1);
+          }
+          const projected = { sceneId: sceneBlueprint.id, choices: choiceSet.choices };
+          episodePlants.push(...extractPlantsFromChoiceSet(projected, this.deps.callbackLedger));
+          episodePlants.push(...extractTintPlantsFromChoiceSet(projected));
+          episodePlants.push(...extractBranchResidueFromChoiceSet(projected));
+        };
+
         // Choice Author (for non-encounter scenes with choice points)
         context.emit({ type: 'debug', phase: 'scenes', message: `Scene ${sceneBlueprint.id} choicePoint: ${sceneRealizationBlueprint.choicePoint ? `YES (${sceneRealizationBlueprint.choicePoint.type})` : 'NO'}` });
         if (sceneRealizationBlueprint.choicePoint) {
@@ -2477,7 +2599,6 @@ export class ContentGenerationPhase {
               agent: 'ChoiceAuthor',
               message: `Creating choices for ${sceneBlueprint.name}`,
             });
-            const seasonResiduePlan = brief.seasonPlan?.residuePlan || [];
             const assignedResidueIds = new Set(sceneRealizationBlueprint.choicePoint?.residueObligationIds || []);
             const outgoingResidueObligations = seasonResiduePlan.filter((obligation) => assignedResidueIds.has(obligation.id));
             const dueResidueObligations = seasonResiduePlan.filter((obligation) =>
@@ -2588,14 +2709,16 @@ export class ContentGenerationPhase {
 
             const maxChoiceAuthorAttempts = 3;
             const choiceRealizationFindings = (choiceSet: ChoiceSet | undefined): RealizationTaskGateFinding[] =>
-              validateOwnerRealizationTasks({
-                sceneId: sceneBlueprint.id,
-                tasks: sceneBlueprint.realizationTasks,
-                sceneContent,
-                choiceSet,
-                mode: 'owner',
-                currentStage: 'choice_author',
-              });
+              choiceSet
+                ? validateOwnerRealizationTasks({
+                    sceneId: sceneBlueprint.id,
+                    tasks: sceneBlueprint.realizationTasks,
+                    sceneContent,
+                    choiceSet,
+                    mode: 'owner',
+                    currentStage: 'choice_author',
+                  })
+                : [];
             let choiceAuthorAttempt = 1;
             let choiceResult = await authorChoices(choiceAuthorInput, `ChoiceAuthor.execute(${sceneBlueprint.id})`);
             let choiceOwnerBlockers = choiceResult.success && choiceResult.data
@@ -2666,38 +2789,6 @@ export class ContentGenerationPhase {
               }
             }
 
-            // The treatment-seed / ending-axis / info-reveal on-page contracts must be
-            // planted on whatever choice set ultimately ships for this scene — the
-            // authored one OR a deterministic fallback. Factor it so both paths agree:
-            // before this, the failure path planted NONE of them, so a seed-bearing scene
-            // whose ChoiceAuthor failed hard-aborted the episode at GATE_TREATMENT_SEED_ONPAGE
-            // (bite-me-g14 ep2 s2-4: 4 seeds declared, choices never authored).
-            const applyOnPageContracts = (choices: ChoiceSet['choices']): void => {
-              // §3.3/GAP-C: SET authored consequence seeds (treatment_seed_*) so a later
-              // authored precondition reading the seed can be true. No-op off treatment runs.
-              emitSceneTreatmentSeeds(sceneBlueprint, choices);
-              // Ending reachability: SET the season's ending-axis flags (treatment_branch_*)
-              // so the finale's ending-route logic can read them and each named ending is
-              // mechanically reachable. No-op off treatment runs.
-              emitSceneBranchAxes(sceneBlueprint, choices);
-              // Step 3 (info-ledger): SET detectable setup/reveal/payoff flags for each
-              // INFO phase assigned to this scene, so the schedule validator can confirm
-              // authored information movement landed. No-op when the scene has no phases.
-              emitSceneInfoMarkers(sceneBlueprint, choices);
-              const residueBackstop = applyChoiceResidueBackstop(
-                { beatId: choicePointBeat.id, sceneId: sceneBlueprint.id, choiceType: sceneBlueprint.choicePoint?.type || 'expression', choices, overallStakes: { want: '', cost: '', identity: '' }, designNotes: '' },
-                sceneBlueprint,
-                seasonResiduePlan,
-              );
-              if (residueBackstop.addedFlags > 0 || residueBackstop.stamped > 0) {
-                context.emit({
-                  type: 'debug',
-                  phase: 'choices',
-                  message: `Residue backstop for ${sceneBlueprint.id}: stamped ${residueBackstop.stamped}, added ${residueBackstop.addedFlags} planned flag(s).`,
-                });
-              }
-            };
-
             if (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0) {
               // ChoiceAuthor failed after retries AND per-target regeneration — only now
               // fall back to deterministic templated choices. The scene ships without
@@ -2723,25 +2814,30 @@ export class ContentGenerationPhase {
                   ? this.deps.buildDeterministicChoiceSet(sceneBlueprint, choicePointBeat)
                   : undefined);
               if (fallbackChoiceSet) {
-                // Plant the on-page contracts on the deterministic fallback too — the
-                // success path is not the only place these obligations must be honored.
-                ensureCanonicalStateSetters(fallbackChoiceSet.choices, choiceAuthorInput.requiredCanonicalStateIds);
-                applyOnPageContracts(fallbackChoiceSet.choices);
-                const fallbackOwnerBlockers = choiceRealizationFindings(fallbackChoiceSet).filter((finding) => finding.blocking);
-                if (fallbackOwnerBlockers.length > 0) {
+                const preparedFallback = prepareChoiceCandidate(fallbackChoiceSet, choicePointBeat);
+                const fallbackValidation = validateChoiceCandidate(preparedFallback);
+                if (fallbackValidation.ownerBlockers.length > 0 || fallbackValidation.producerBlockers.length > 0) {
                   throw new PipelineError(
-                    `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} deterministic choice fallback cannot satisfy ${fallbackOwnerBlockers.length} assigned choice task(s).`,
+                    `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} deterministic choice fallback cannot satisfy its assigned choice contract.`,
                     'content_generation',
-                    { agent: 'ChoiceAuthor', context: { sceneId: sceneBlueprint.id, findings: fallbackOwnerBlockers } },
+                    { agent: 'ChoiceAuthor', context: { sceneId: sceneBlueprint.id, findings: [...fallbackValidation.ownerBlockers, ...fallbackValidation.producerBlockers] } },
                   );
                 }
-                choiceSets.push({ ...fallbackChoiceSet, sceneId: sceneBlueprint.id });
-                // Record the fallback's planted flags so later scenes can pay them off,
-                // exactly as the authored path does below.
-                episodePlants.push(...extractPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: fallbackChoiceSet.choices }, this.deps.callbackLedger));
-                context.emit({ type: 'warning', phase: 'choices', message: `Inserted deterministic fallback choice set for ${sceneBlueprint.id} (${fallbackChoiceSet.choices.length} choice(s)) and planted its on-page contracts after ChoiceAuthor failed.` });
+                choiceSets.push(preparedFallback);
+                refreshEpisodePlantsForChoiceSet(preparedFallback);
+                context.emit({ type: 'warning', phase: 'choices', message: `Inserted deterministic fallback choice set for ${sceneBlueprint.id} (${preparedFallback.choices.length} choice(s)) and planted its on-page contracts after ChoiceAuthor failed.` });
               }
             } else {
+            const preparedChoiceSet = prepareChoiceCandidate(choiceResult.data, choicePointBeat);
+            const preparedValidation = validateChoiceCandidate(preparedChoiceSet);
+            if (preparedValidation.ownerBlockers.length > 0 || preparedValidation.producerBlockers.length > 0) {
+              throw new PipelineError(
+                `[ChoiceCommitBlocker] ${sceneBlueprint.id} failed its choice contract after deterministic projections were applied.`,
+                'choices',
+                { agent: 'ChoiceAuthor', context: { sceneId: sceneBlueprint.id, findings: [...preparedValidation.ownerBlockers, ...preparedValidation.producerBlockers] } },
+              );
+            }
+            choiceResult.data = preparedChoiceSet;
             const choiceAdvisories = choiceRealizationFindings(choiceResult.data).filter((finding) => !finding.blocking);
             if (choiceAdvisories.length > 0) {
               context.emit({
@@ -2751,31 +2847,16 @@ export class ContentGenerationPhase {
                 data: { findings: choiceAdvisories },
               });
             }
-            ensureCanonicalStateSetters(choiceResult.data.choices, choiceAuthorInput.requiredCanonicalStateIds);
-            applyOnPageContracts(choiceResult.data.choices);
-            // Branch fan-out repair: a multi-target branch point (leadsTo.size>1) whose
-            // authored choices all route to ONE target leaves the other branch orphaned
-            // and hard-aborts the episode at GATE_BRANCH_FANOUT (the bite-me-gen-8 s1-1
-            // case: both choices → s1-2). Deterministically re-point a spare choice at
-            // each unreached target so the planned branch is realized. No-op for
-            // non-branch scenes or already-fanned choices.
-            if ((new Set(sceneBlueprint.leadsTo ?? []).size) > 1) {
-              const repaired = repairBranchFanOut(choiceResult.data.choices, sceneBlueprint.leadsTo, {
-                pathHints: branchTargetHintsByScene.get(sceneBlueprint.id),
-              });
-              if (repaired) {
-                const hinted = branchTargetHintsByScene.has(sceneBlueprint.id);
-                context.emit({ type: 'warning', phase: 'choices', message: `Repaired branch fan-out for ${sceneBlueprint.id}: re-pointed a choice to its authored target [${[...new Set(sceneBlueprint.leadsTo ?? [])].join(', ')}]${hinted ? ' (matched to authored branch intent)' : ' (no branch-path hints — first-spare fallback)'}.` });
-              }
-            }
-            choiceSets.push({ ...choiceResult.data, sceneId: sceneBlueprint.id });
-            // Phase 1: record this scene's planted flags so later scenes can pay them off.
-            episodePlants.push(...extractPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }, this.deps.callbackLedger));
-            // Phase F: also surface cosmetic tint: flags so later scenes acknowledge them (raises tint%).
-            episodePlants.push(...extractTintPlantsFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }));
-            // C1/C2: surface branch residue (route_/treatment_branch_ flags) so the
-            // reconvergence scene authors path-aware residue instead of generic prose.
-            episodePlants.push(...extractBranchResidueFromChoiceSet({ sceneId: sceneBlueprint.id, choices: choiceResult.data.choices }));
+            const choiceVerifiedEventIds = (sceneBlueprint.realizationTasks ?? [])
+              .filter((task) => task.ownerStage === 'choice_author')
+              .map((task) => task.canonicalEventId ?? task.eventId)
+              .filter((eventId): eventId is string => Boolean(eventId));
+            sceneContent.verifiedEventIds = Array.from(new Set([
+              ...(sceneContent.verifiedEventIds ?? []),
+              ...choiceVerifiedEventIds,
+            ]));
+            choiceSets.push(choiceResult.data);
+            refreshEpisodePlantsForChoiceSet(choiceResult.data);
 
             context.emit({
               type: 'agent_complete',
@@ -2852,11 +2933,22 @@ export class ContentGenerationPhase {
                     }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.execute(${sceneBlueprint.id} regen)`);
 
                     if (revisedChoiceResult.success && revisedChoiceResult.data) {
-                      currentChoiceData = { ...revisedChoiceResult.data, sceneId: sceneBlueprint.id };
+                      const preparedRevision = prepareChoiceCandidate(revisedChoiceResult.data, choicePointBeat);
+                      const revisionValidation = validateChoiceCandidate(preparedRevision);
+                      if (revisionValidation.ownerBlockers.length > 0 || revisionValidation.producerBlockers.length > 0) {
+                        context.emit({
+                          type: 'warning',
+                          phase: 'choices',
+                          message: `Rejected stakes rewrite for ${sceneBlueprint.id}: the candidate regressed its committed realization contract.`,
+                          data: { findings: [...revisionValidation.ownerBlockers, ...revisionValidation.producerBlockers] },
+                        });
+                        continue;
+                      }
+                      currentChoiceData = preparedRevision;
                       currentStakesResult = this.deps.incrementalValidator.validateStakes(currentChoiceData);
-                      
-                      // Update the choice set in the array
+
                       choiceSets[choiceSets.length - 1] = currentChoiceData;
+                      refreshEpisodePlantsForChoiceSet(currentChoiceData);
                     } else {
                       break; // Stop if regeneration fails
                     }
@@ -2873,7 +2965,8 @@ export class ContentGenerationPhase {
               }
 
               // Track flags and relationship changes set by choices for continuity
-              for (const choice of choiceResult.data.choices) {
+              const committedChoiceSet = choiceSets[choiceSets.length - 1] ?? choiceResult.data;
+              for (const choice of committedChoiceSet.choices) {
                 for (const consequence of choice.consequences || []) {
                   if (consequence.type === 'setFlag') {
                     this.deps.incrementalValidator.trackFlagSet((consequence as { flag: string }).flag);
@@ -3310,7 +3403,17 @@ export class ContentGenerationPhase {
                     break;
                   }
 
-                  const revisedChoiceSet = { ...revisedChoiceResult.data, sceneId: sceneBlueprint.id };
+                  const revisedChoiceSet = prepareChoiceCandidate(revisedChoiceResult.data, regenChoicePointBeat);
+                  const revisionValidation = validateChoiceCandidate(revisedChoiceSet);
+                  if (revisionValidation.ownerBlockers.length > 0 || revisionValidation.producerBlockers.length > 0) {
+                    context.emit({
+                      type: 'warning',
+                      phase: 'choices',
+                      message: `Rejected choice regeneration for ${sceneBlueprint.id}: the candidate regressed its committed realization contract.`,
+                      data: { findings: [...revisionValidation.ownerBlockers, ...revisionValidation.producerBlockers] },
+                    });
+                    continue;
+                  }
                   const revisedStakes = this.deps.incrementalValidator.validateStakes(revisedChoiceSet);
 
                   if (isChoiceRegenImprovement(currentStakes.issues.length, revisedStakes.issues.length, revisedStakes.passed)) {
@@ -3318,6 +3421,7 @@ export class ContentGenerationPhase {
                     // refresh the recorded scene validation result.
                     choiceSets[choiceSetIdx] = revisedChoiceSet;
                     currentChoiceSet = revisedChoiceSet;
+                    refreshEpisodePlantsForChoiceSet(revisedChoiceSet);
                     const valIdx = this.deps.sceneValidationResults.findIndex(v =>
                       v.sceneId === sceneBlueprint.id && (v.episodeNumber === undefined || v.episodeNumber === brief.episode.number)
                     );

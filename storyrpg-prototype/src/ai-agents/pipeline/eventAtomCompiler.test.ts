@@ -55,6 +55,7 @@ describe('compileEventRealizationAtoms', () => {
     expect(atoms[0].acceptedPatterns).toContain('I like her');
     expect(atoms[0].acceptedPatterns).toContain('she stays');
     expect(atoms[1].acceptedPatterns).toContain('Dusk Club is born');
+    expect(atoms.flatMap((atom) => atom.participantIds ?? [])).not.toEqual(expect.arrayContaining(['Dusk', 'Club']));
   });
 
   it('compiles exploration into location and city-motion alternatives', () => {

@@ -33,6 +33,11 @@ describe('compileNarrativeRealizationTasks', () => {
 
     const tasks = compileNarrativeRealizationTasks(graph, scenes);
     expect(tasks.find((task) => task.contractId === 'premise:wound')?.repairHandler).toBe('premise_realization');
+    expect(tasks.find((task) => task.id === 'task:event:ep1-u7:owner-event')).toMatchObject({
+      canonicalEventId: 'event:ep1-u7',
+      ownerStage: 'encounter_architect',
+      blocking: true,
+    });
     expect(tasks.find((task) => task.id === 'task:event:ep1-u7:rescue:route:victory')?.target).toEqual({
       scope: 'route_path',
       outcomeTier: 'victory',
@@ -116,5 +121,63 @@ describe('compileNarrativeRealizationTasks', () => {
     });
     expect(ownerTasks[0].evidenceAtoms[0]?.acceptedPatterns).toEqual(expect.arrayContaining([eventText]));
     expect(tasks.some((task) => task.id === 'task:story-circle-you-ep1-u3:story-circle')).toBe(false);
+  });
+
+  it('splits an unconditional choice milestone into pre-choice and all-outcome producer tasks', () => {
+    const sourceText = 'After a trial, the travelers become friends and form the Lantern Circle.';
+    const graph = {
+      events: [{
+        id: 'event:alliance', episodeNumber: 1, sourceOrder: 1, sourceText,
+        sourceContractIds: ['treatment:alliance'], realizationMode: 'depiction',
+        ownershipPolicy: 'exactly_one_scene', prerequisiteEventIds: [], targetSceneIds: ['scene-alliance'],
+        targetSpineUnitIds: [], ownerSceneId: 'scene-alliance', provenance: { source: 'treatment_contract', confidence: 'authoritative' },
+        realizationAtoms: [
+          { id: 'event:alliance:atom:1', description: 'Stage the trial', acceptedPatterns: ['tests the newcomer'], sourceText, kind: 'semantic', semanticRole: 'action', prerequisiteAtomIds: [], required: true },
+          { id: 'event:alliance:atom:2', description: 'Earn friendship', acceptedPatterns: ['become friends'], sourceText, kind: 'semantic', semanticRole: 'relationship_change', prerequisiteAtomIds: ['event:alliance:atom:1'], required: true },
+          { id: 'event:alliance:atom:3', description: 'Name the group', acceptedPatterns: ['form the Lantern Circle'], sourceText, kind: 'semantic', semanticRole: 'relationship_change', prerequisiteAtomIds: ['event:alliance:atom:2'], required: true },
+        ],
+      }],
+      dependencies: [],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [{
+      id: 'scene-alliance', episodeNumber: 1, order: 0, kind: 'standard',
+      relationshipPacing: [{
+        id: 'relationship:alliance', source: 'treatment', groupId: 'lantern-circle', startStage: 'spark', targetStage: 'friend',
+        allowedLabels: ['friend'], blockedLabels: [], requiredEvidence: [], minScenesSinceIntroduction: 1, maxDeltaThisScene: 2,
+        mechanicDimensions: ['trust'], milestone: {
+          id: 'milestone:alliance', kind: 'group_formation', sourceText, subjectType: 'group', subjectId: 'lantern-circle',
+          targetStage: 'friend', introductionSceneIds: ['scene-intro'], testSceneIds: ['scene-alliance'], choiceSceneId: 'scene-alliance',
+          memberNpcIds: ['npc-a', 'npc-b'], routeRealizationPolicy: 'all_routes', requiredEvidenceTags: ['respected_agency'],
+        },
+      }],
+    }] as any).filter((task) => task.canonicalEventId === 'event:alliance');
+
+    expect(tasks).toHaveLength(2);
+    expect(tasks.find((task) => task.ownerStage === 'scene_writer')).toMatchObject({
+      id: 'task:event:alliance:owner-event',
+      evidenceAtoms: [expect.objectContaining({ id: 'event:alliance:atom:1', temporalSlot: 'pre_choice' })],
+    });
+    expect(tasks.find((task) => task.ownerStage === 'choice_author')).toMatchObject({
+      id: 'task:event:alliance:choice-resolution',
+      prerequisiteTaskIds: ['task:event:alliance:owner-event'],
+      target: { scope: 'all_choice_outcomes', surfaces: ['choice_outcome'] },
+      evidenceAtoms: [
+        expect.objectContaining({ id: 'event:alliance:atom:2', temporalSlot: 'choice_resolution' }),
+        expect.objectContaining({ id: 'event:alliance:atom:3', temporalSlot: 'choice_resolution' }),
+      ],
+    });
+  });
+
+  it('coalesces equivalent repeated planning projections without weakening the task', () => {
+    const pacing = {
+      id: 'relationship:circle', source: 'treatment', groupId: 'lantern-circle', startStage: 'spark', targetStage: 'trust',
+      allowedLabels: ['ally'], blockedLabels: ['friend'], requiredEvidence: [], minScenesSinceIntroduction: 1,
+      maxDeltaThisScene: 1, mechanicDimensions: ['trust'],
+    };
+    const tasks = compileNarrativeRealizationTasks({ events: [], dependencies: [] } as unknown as NarrativeContractGraph, [{
+      id: 'scene-circle', episodeNumber: 1, order: 0, kind: 'standard', relationshipPacing: [pacing, { ...pacing }],
+    }] as any);
+
+    expect(tasks.filter((task) => task.id === 'task:relationship:circle:scene-circle:relationship-labels')).toHaveLength(1);
   });
 });

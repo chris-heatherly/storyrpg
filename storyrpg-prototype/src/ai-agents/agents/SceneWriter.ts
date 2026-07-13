@@ -1921,12 +1921,17 @@ ${input.sceneBlueprint.canonicalEvidenceRequirements?.length ? `
 These requirements belong to this scene's assigned event contracts. Realize them in the stated surface; evidence in another scene, metadata, or a sibling encounter route does not count. Keep the wording natural and fiction-first.
 ${input.sceneBlueprint.canonicalEvidenceRequirements.map((requirement) => `- ${requirement.eventId} / ${requirement.kind}: use one of [${requirement.acceptedPatterns.join(', ')}] on ${requirement.requiredSurface || 'the owner scene'}.`).join('\n')}
 ` : ''}
-${input.sceneBlueprint.realizationTasks?.length ? `
+${input.sceneBlueprint.realizationTasks?.some((task) => task.ownerStage === 'scene_writer') ? `
 ### Immutable Realization Tasks (owner-stage contract)
 These task IDs are assigned to this scene by the canonical narrative graph. Show the required evidence on the required surface; do not satisfy a task through synopsis, metadata, recap, or another scene. Return the IDs as diagnostics only after the prose actually realizes them.
 Canonical event IDs allowed in claimedEventIds/eventEvidence: ${(input.sceneBlueprint.assignedEventIds ?? input.sceneBlueprint.narrativeEventIds ?? []).join(', ') || 'none'}.
 Task IDs and planning labels are never event IDs and must not appear in claimedEventIds/eventEvidence.eventId.
-${input.sceneBlueprint.realizationTasks.map((task) => `- ${task.id}: ${describeNarrativeEvidenceTarget(task.target)}; evidence=${task.evidenceAtoms.map((atom) => atom.acceptedPatterns.join(' / ')).join(' | ')}`).join('\n')}
+${input.sceneBlueprint.realizationTasks.filter((task) => task.ownerStage === 'scene_writer').map((task) => `- ${task.id}: ${describeNarrativeEvidenceTarget(task.target)}; evidence=${task.evidenceAtoms.map((atom) => atom.acceptedPatterns.join(' / ')).join(' | ')}`).join('\n')}
+` : ''}
+${input.sceneBlueprint.realizationTasks?.some((task) => task.ownerStage === 'choice_author') ? `
+### Downstream Choice-Resolution Boundary
+The canonical payoff requirements below belong to ChoiceAuthor after the player acts. Build the pressure and decision that make them possible, then stop before resolving them in scene beats. Do not pre-empt or duplicate their payoff.
+${input.sceneBlueprint.realizationTasks.filter((task) => task.ownerStage === 'choice_author').flatMap((task) => task.evidenceAtoms.map((atom) => `- ${atom.description}`)).join('\n')}
 ` : ''}
 ${input.sceneBlueprint.turnContract ? `
 ### Scene Turn Contract
@@ -2250,8 +2255,9 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
       ?? [],
     );
     const claimedEventIds = content.claimedEventIds ?? content.realizedEventIds ?? [];
-    const allowedTaskIds = new Set((input.sceneBlueprint.realizationTasks ?? []).map((task) => task.id));
-    const allowedAtomIds = new Set((input.sceneBlueprint.realizationTasks ?? []).flatMap((task) => task.evidenceAtoms.map((atom) => atom.id)));
+    const ownedTasks = (input.sceneBlueprint.realizationTasks ?? []).filter((task) => task.ownerStage === 'scene_writer');
+    const allowedTaskIds = new Set(ownedTasks.map((task) => task.id));
+    const allowedAtomIds = new Set(ownedTasks.flatMap((task) => task.evidenceAtoms.map((atom) => atom.id)));
     for (const eventId of claimedEventIds) {
       if (!allowedEventIds.has(eventId)) {
         throw new Error(`Scene ${content.sceneId} acknowledged unassigned canonical event ${eventId}`);

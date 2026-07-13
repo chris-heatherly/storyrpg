@@ -56,6 +56,7 @@ import { buildStructuralContextSection } from '../prompts/storytellingPrinciples
 import { CHOICE_AUTHOR_RESIDUE_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { buildChoiceSetJsonSchema } from '../schemas/choiceSetSchema';
+import { materializeSharedChoiceResolution } from '../pipeline/choiceSharedResolution';
 import { normalizeChoiceStatCheck } from '../utils/statCheckNormalization';
 import {
   normalizeCanonicalConsequences,
@@ -279,6 +280,8 @@ export interface ChoiceSet {
   sceneId?: string;
   choiceType: ChoiceType;
   choices: GeneratedChoice[];
+  /** LLM-authored route-invariant payoff, projected into every playable outcome. */
+  sharedResolutionText?: string;
 
   // Overall stakes for this decision point
   overallStakes: StakesAnnotation;
@@ -644,6 +647,7 @@ Before finalizing:
       if (isGateEnabled('GATE_CHOICE_OUTCOME_TIER_REAUTHOR')) {
         await this.reauthorStubOutcomeTiers(choiceSet, input);
       }
+      materializeSharedChoiceResolution(choiceSet);
 
       return {
         success: true,
@@ -678,6 +682,12 @@ Before finalizing:
       ...(choice.outcomeTexts ? Object.values(choice.outcomeTexts) : []),
       ...(choice.residueHints ?? []).map((hint) => hint.description),
     ].filter((value): value is string => typeof value === 'string');
+    const sharedResolution = choiceSet.sharedResolutionText ?? '';
+    for (const label of blocked) {
+      if (new RegExp(`\\b${label.replace(/[.*+?^${}()|[\\]\\]/g, '\\\\$&')}\\b`, 'i').test(sharedResolution)) {
+        issues.push(`Shared choice resolution uses blocked early relationship label "${label}".`);
+      }
+    }
     for (const choice of choiceSet.choices ?? []) {
       const text = surfaces(choice).join(' ');
       for (const label of blocked) {
@@ -742,6 +752,7 @@ Before finalizing:
       choiceType: choicePoint?.type,
       branching: Boolean(choicePoint?.branches || input.requiredBranchTargets?.length),
       optionCount: input.optionCount,
+      requiresSharedResolution: this.choiceResolutionTasks(input).length > 0,
     });
   }
 
@@ -752,6 +763,7 @@ Before finalizing:
       branching: Boolean(choicePoint?.branches || input.requiredBranchTargets?.length),
       optionCount: input.optionCount,
       compact: true,
+      requiresSharedResolution: this.choiceResolutionTasks(input).length > 0,
     });
     return {
       ...schema,
@@ -772,6 +784,8 @@ Before finalizing:
       ? input.requiredBranchTargets.map(t => `${t.sceneId}: ${t.intent}`).join('\n')
       : '';
     const optionHints = (choicePoint.optionHints || []).slice(0, input.optionCount).join(' | ');
+    const choiceResolutionSection = this.buildChoiceResolutionTaskSection(input);
+    const requiresSharedResolution = choiceResolutionSection.length > 0;
 
     return `Return one complete compact ChoiceSet JSON object. The deterministic schema is supplied by the caller; match it exactly. Return ONLY JSON.
 
@@ -790,10 +804,10 @@ Choice point:
 - stakes.want: ${choicePoint.stakes.want}
 - stakes.cost: ${choicePoint.stakes.cost}
 - stakes.identity: ${choicePoint.stakes.identity}
-${isBranching ? `Next scene targets:\n${branchTargets || nextScenes || 'Use available next scenes from schema context.'}` : ''}
+${isBranching ? `Next scene targets:\n${branchTargets || nextScenes || 'Use available next scenes from schema context.'}` : ''}${choiceResolutionSection ? `\n${choiceResolutionSection}` : ''}
 
 Required choice fields:
-- Every choice: id, text, choiceType, choiceIntent, impactFactors, consequenceTier, stakesAnnotation, consequences, outcomeTexts.
+${requiresSharedResolution ? '- Top level: beatId, choiceType, choices, overallStakes, designNotes, sharedResolutionText.\n' : ''}- Every choice: id, text, choiceType, choiceIntent, impactFactors, consequenceTier, stakesAnnotation, consequences, outcomeTexts.
 ${isBranching ? '- Every choice must include nextSceneId.' : '- Every choice must include reactionText and tintFlag.'}
 ${meaningful ? '- Every choice must include statCheck.skillWeights, statCheck.difficulty, and at least one residueHints item.' : '- Expression choices must not include statCheck.'}
 ${choicePoint.type === 'dilemma' ? '- Every choice must include moralContract.' : ''}
@@ -825,6 +839,10 @@ Return JSON only.`;
     const issues: string[] = [];
     const plannedChoiceType = input.sceneBlueprint.choicePoint?.type || choiceSet.choiceType || 'expression';
     const choices = Array.isArray(choiceSet.choices) ? choiceSet.choices : [];
+
+    if (this.choiceResolutionTasks(input).length > 0 && !this.hasMeaningfulText(choiceSet.sharedResolutionText)) {
+      issues.push('Choice set omitted sharedResolutionText required by its canonical choice-resolution task.');
+    }
 
     if (choices.length < MIN_READER_CHOICES) {
       issues.push(`Choice set returned only ${choices.length} choice(s); at least ${MIN_READER_CHOICES} authored choices are required.`);
@@ -871,6 +889,20 @@ Return JSON only.`;
 
   private hasMeaningfulText(value: unknown): value is string {
     return typeof value === 'string' && value.trim().length > 0;
+  }
+
+  private choiceResolutionTasks(input: ChoiceAuthorInput) {
+    return (input.sceneBlueprint.realizationTasks ?? []).filter((task) =>
+      task.ownerStage === 'choice_author' && task.target.scope === 'all_choice_outcomes',
+    );
+  }
+
+  private buildChoiceResolutionTaskSection(input: ChoiceAuthorInput): string {
+    const tasks = this.choiceResolutionTasks(input);
+    if (tasks.length === 0) return '';
+    return `## Canonical Shared Choice Resolution
+Write one fiction-first sharedResolutionText passage that happens after any option resolves and before the route continues. It must naturally realize every requirement below. Do not paste task ids or planning labels. This passage is authored once and will be shown on every option and every outcome tier.
+${tasks.flatMap((task) => task.evidenceAtoms.map((atom) => `- ${atom.description}: use a natural realization equivalent to ${atom.acceptedPatterns.join(' / ')}`)).join('\n')}`;
   }
 
   private collectConsequenceCompletenessIssues(choice: GeneratedChoice, choiceId: string, input: ChoiceAuthorInput): string[] {
@@ -2108,6 +2140,8 @@ CRITICAL REQUIREMENTS:
     const branchTargets = input.requiredBranchTargets?.length
       ? input.requiredBranchTargets.map(t => `- ${t.sceneId}: ${t.intent}`).join('\n')
       : '';
+    const choiceResolutionSection = this.buildChoiceResolutionTaskSection(input);
+    const requiresSharedResolution = choiceResolutionSection.length > 0;
 
     return `Create a compact playable ChoiceSet. Return ONLY JSON. The deterministic response schema is supplied by the caller; match that schema exactly and do not invent fields.
 
@@ -2164,10 +2198,10 @@ ${input.sceneBlueprint.relationshipPacing.filter((contract) => contract.mileston
     return `- ${milestone.id}: group ${contract.groupId}; members ${milestone.memberNpcIds.join(', ')}; route policy ${milestone.routeRealizationPolicy ?? 'selected_route'}.${milestone.routeRealizationPolicy === 'all_routes' ? ' EVERY option must still realize formation; choices vary how it happens and what it costs, never whether it happens.' : ''}`;
   }).join('\n')}
 Use only the exact canonical NPC ids listed under Characters Present in every relationship consequence and relationshipValueEvidence entry.
-` : ''}
+` : ''}${choiceResolutionSection ? `\n${choiceResolutionSection}` : ''}
 
 ## Required Shape
-Top level fields: beatId, choiceType, choices, overallStakes, designNotes.
+Top level fields: beatId, choiceType, choices, overallStakes, designNotes${requiresSharedResolution ? ', sharedResolutionText' : ''}.
 Each choice fields: id, text, choiceType, choiceIntent, impactFactors, consequenceTier, stakesAnnotation, consequences, outcomeTexts.
 Non-branching choices also need reactionText and tintFlag.
 Relationship/strategic/dilemma choices also need statCheck and residueHints.
@@ -2182,7 +2216,7 @@ Branching choices need nextSceneId.
 - reactionText: exactly one sentence, at most 16 words.
 - residueHints.description: exactly one concrete sentence, at most 16 words.
 - designNotes: one short clause, at most 8 words.
-- Do not emit witnessReactions, failureResidue, reminderPlan, feedbackCue, visualResidueHint, memorableMoment, stakesLayers, storyVerb, affordanceSource, or authorNotes.
+${requiresSharedResolution ? '- sharedResolutionText: one or two vivid sentences; realize the route-invariant canonical payoff once.\n' : ''}- Do not emit witnessReactions, failureResidue, reminderPlan, feedbackCue, visualResidueHint, memorableMoment, stakesLayers, storyVerb, affordanceSource, or authorNotes.
 
 ## Consequences
 - setFlag: {"type":"setFlag","flag":"accepted_quartz","value":true}

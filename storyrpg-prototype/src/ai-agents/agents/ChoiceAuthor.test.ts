@@ -109,6 +109,16 @@ describe('ChoiceAuthor.validateChoices', () => {
     expect(branchChoice.required).not.toContain('tintFlag');
   });
 
+  it('requires shared resolution prose only for canonical all-outcome tasks', () => {
+    const schema = buildChoiceSetJsonSchema({
+      choiceType: 'relationship', branching: true, requiresSharedResolution: true,
+    }).schema as { required: string[]; properties: Record<string, unknown> };
+    expect(schema.required).toContain('sharedResolutionText');
+    expect(schema.properties).toHaveProperty('sharedResolutionText');
+    const ordinary = buildChoiceSetJsonSchema({ choiceType: 'relationship', branching: true }).schema as { required: string[] };
+    expect(ordinary.required).not.toContain('sharedResolutionText');
+  });
+
   it('uses a bounded but complete structured-output budget for compact Gemini retries', () => {
     const author: any = new ChoiceAuthor(config);
     const input = makeInput({

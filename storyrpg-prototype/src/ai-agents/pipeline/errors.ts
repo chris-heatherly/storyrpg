@@ -26,6 +26,7 @@ export type PipelineFailureCode =
   | 'scene_cap_exceeded'
   | 'prose_realization_failed'
   | 'owner_realization_failed'
+  | 'validator_snapshot_mismatch'
   | 'character_presence_contract_failed'
   | 'output_boundary_invalid'
   | 'final_contract_drift'

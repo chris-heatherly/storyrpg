@@ -1158,7 +1158,7 @@ export class EncounterArchitect extends BaseAgent {
       (beat) => beat.tier !== 'connective' && beat.mustDepict?.trim(),
     );
     const evidence = input.canonicalEventEvidenceRequirements ?? [];
-    const realizationTasks = input.realizationTasks ?? [];
+    const realizationTasks = (input.realizationTasks ?? []).filter((task) => task.ownerStage === 'encounter_architect');
     if (!input.centralConflict?.trim() && !input.signatureMoment?.trim() && beats.length === 0 && evidence.length === 0 && realizationTasks.length === 0) {
       return '';
     }

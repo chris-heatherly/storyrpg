@@ -143,6 +143,7 @@ export interface ChoiceSetSchemaOptions {
   branching?: boolean;
   optionCount?: number;
   compact?: boolean;
+  requiresSharedResolution?: boolean;
 }
 
 export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): StructuredJsonSchema {
@@ -163,6 +164,7 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
         choiceText: 90,
         short: 70,
         reaction: 120,
+        sharedResolution: 320,
         consequenceDescription: 120,
         moral: 140,
         residue: 120,
@@ -174,6 +176,7 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
         choiceText: 120,
         short: 80,
         reaction: 220,
+        sharedResolution: 420,
         consequenceDescription: 180,
         moral: 220,
         residue: 220,
@@ -205,11 +208,12 @@ export function buildChoiceSetJsonSchema(options: ChoiceSetSchemaOptions = {}): 
     schema: {
       type: 'object',
       additionalProperties: false,
-      required: ['beatId', 'choiceType', 'choices', 'overallStakes', 'designNotes'],
+      required: ['beatId', 'choiceType', 'choices', 'overallStakes', 'designNotes', ...(options.requiresSharedResolution ? ['sharedResolutionText'] : [])],
       properties: {
         beatId: { type: 'string' },
         sceneId: { type: 'string' },
         choiceType: { type: 'string' },
+        sharedResolutionText: shortString(stringLimits.sharedResolution),
         choices: {
           type: 'array',
           ...(optionCount ? { minItems: optionCount, maxItems: optionCount } : {}),

@@ -285,6 +285,16 @@ export const ENCOUNTER_OUTCOME_TIERS = [
   'failure',
 ] as const;
 
+/**
+ * One tier per PHYSICAL route. routeOutcomeKeys aliases success↔victory,
+ * complicated↔partialVictory, failure↔defeat at surface-lookup time, so
+ * contracts compiled per canonical tier still find prose stored under either
+ * spelling. Compiling blocking tasks over the raw alias list instead doubled
+ * the contract (14 tasks for 2 events in bite-me_2026-07-14T21-31-30) and
+ * validated the same physical text twice under two names.
+ */
+export const CANONICAL_ROUTE_TIERS = ['victory', 'complicated', 'defeat', 'escape'] as const;
+
 const PLAYABLE_OUTCOME_TIERS = ENCOUNTER_OUTCOME_TIERS;
 
 /**

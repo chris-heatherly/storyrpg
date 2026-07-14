@@ -36,6 +36,7 @@ import { buildCharacterTreatmentContractsForPlan } from '../utils/characterTreat
 import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 import { plannedGroupFormation } from '../utils/relationshipPacingStagePolicy';
 import { compileEventRealizationAtoms, stagedLocationsForAtoms } from './eventAtomCompiler';
+import { CANONICAL_ROUTE_TIERS } from '../validators/encounterTextSurfaces';
 import { atomizeTreatmentText } from '../utils/treatmentEventAtomizer';
 import {
   semanticAtomsForEvent,
@@ -1734,7 +1735,7 @@ export function compileNarrativeContractGraph(
         : undefined,
       routeRealizationPolicy: routeRealizationPolicy(splitLateNightPayoff ? 'lateNightWriting' : cue, originalText),
       requiredOutcomeTiers: routeRealizationPolicy(splitLateNightPayoff ? 'lateNightWriting' : cue, originalText) === 'all_routes'
-        ? ['victory', 'partialVictory', 'success', 'complicated', 'defeat', 'escape', 'failure']
+        ? [...CANONICAL_ROUTE_TIERS]
         : undefined,
       provenance: {
         source: spineUnit ? 'episode_spine' : depiction ? 'treatment_contract' : 'season_plan',
@@ -1787,7 +1788,7 @@ export function compileNarrativeContractGraph(
         realizationAtoms: eventRealizationAtoms(supplementalId, beatText, knownLocations, scenePlan.semanticEventIr),
         routeRealizationPolicy: routeRealizationPolicy(supplementalCue, beatText),
         requiredOutcomeTiers: routeRealizationPolicy(supplementalCue, beatText) === 'all_routes'
-          ? ['victory', 'partialVictory', 'success', 'complicated', 'defeat', 'escape', 'failure']
+          ? [...CANONICAL_ROUTE_TIERS]
           : undefined,
         provenance: { source: 'treatment_contract', confidence: 'authoritative' },
       });

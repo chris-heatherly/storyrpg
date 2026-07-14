@@ -10,6 +10,7 @@ import type {
   NarrativeRealizationTask,
 } from '../../types/narrativeContract';
 import { withNarrativeVerificationAuthority } from './realizationVerificationAuthority';
+import { CANONICAL_ROUTE_TIERS } from '../validators/encounterTextSurfaces';
 import { satisfactionExpressionForTask } from './realizationTaskSatisfaction';
 
 type SceneOwnedTaskKind = 'event' | 'premise' | 'presence' | 'transition' | 'story_circle' | 'relationship';
@@ -705,7 +706,7 @@ function targetForEventRequirement(
       scope: 'any_route',
       outcomeTiers: outcomeTier
         ? [outcomeTier]
-        : ['victory', 'partialVictory', 'success', 'complicated', 'defeat', 'escape', 'failure'],
+        : [...CANONICAL_ROUTE_TIERS],
       surfaces,
     };
   }

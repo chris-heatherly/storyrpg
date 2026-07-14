@@ -13,6 +13,8 @@ import { BaseValidator, ValidationIssue, ValidationResult } from './BaseValidato
 export interface ArcPressureArchitectureOptions {
   treatmentSourced?: boolean;
   arcPressureContracts?: ArcPressureTreatmentContract[];
+  /** Migration-only compatibility for contracts produced before stable arc IDs. */
+  allowLegacyEpisodeOverlapMatching?: boolean;
 }
 
 export interface ArcPressureArchitectureMetrics {
@@ -551,28 +553,53 @@ export class ArcPressureArchitectureValidator extends BaseValidator {
     for (const contract of contracts) {
       const arc = arcs.find((candidate) =>
         candidate.id === contract.arcId
-        || treatmentFieldCloseMatch(contract.arcTitle, candidate.name, 0.45)
-        || contract.targetEpisodeNumbers.some((episodeNumber) =>
-          episodeNumber >= candidate.episodeRange.start && episodeNumber <= candidate.episodeRange.end
+        || (
+          options.allowLegacyEpisodeOverlapMatching === true
+          && (
+            treatmentFieldCloseMatch(contract.arcTitle, candidate.name, 0.45)
+            || contract.targetEpisodeNumbers.some((episodeNumber) =>
+              episodeNumber >= candidate.episodeRange.start && episodeNumber <= candidate.episodeRange.end
+            )
+          )
         )
       );
       const location = `season.arcPressureContracts.${contract.id}`;
       if (!arc) {
-        issues.push(this.error(
-          `Authored arc contract "${contract.fieldName}" was not mapped to a SeasonArc.`,
-          location,
-          'Seed SeasonArc from parsed Arc Plan guidance before normalization so authored range/question/reframe/crisis/turnout fields cannot drift.',
-        ));
+        issues.push({
+          ...this.error(
+            `Authored arc "${contract.arcId}" (${contract.arcTitle}) is missing; contract "${contract.fieldName}" cannot be mapped to a SeasonArc.`,
+            location,
+            'Compile every authored SeasonArc by stable arc ID before applying LLM enrichment. Episode overlap is migration-only and cannot establish current ownership.',
+          ),
+          metadata: {
+            issueCode: 'authored_arc_missing',
+            contractId: contract.id,
+            ownerStage: 'season_plan',
+            retryClass: 'retry_structured_output',
+            repairHandler: 'season_arc_enrichment',
+            repairTargetId: contract.arcId,
+          },
+        });
         continue;
       }
 
       const arcText = this.arcFieldText(arc, contract);
       if (!arcText.trim() || !treatmentFieldCloseMatch(contract.sourceText, arcText, this.authoredMatchThreshold(contract))) {
-        issues.push(this.error(
-          `SeasonArc "${arc.name}" does not preserve authored arc field "${contract.fieldName}": "${contract.sourceText}".`,
-          `${location}:${arc.id}`,
-          'Carry authored arc field text into the SeasonArc field or an equivalent structured arc pressure field before scene planning.',
-        ));
+        issues.push({
+          ...this.error(
+            `SeasonArc "${arc.name}" does not preserve authored arc field "${contract.fieldName}": "${contract.sourceText}".`,
+            `${location}:${arc.id}`,
+            'Carry authored arc field text into the SeasonArc field or an equivalent structured arc pressure field before scene planning.',
+          ),
+          metadata: {
+            issueCode: 'authored_arc_field_drift',
+            contractId: contract.id,
+            ownerStage: 'season_plan',
+            retryClass: 'retry_structured_output',
+            repairHandler: 'season_arc_enrichment',
+            repairTargetId: arc.id,
+          },
+        });
       }
     }
   }

@@ -165,9 +165,29 @@ describe('SeasonPlannerAgent treatment handoff', () => {
           episodeRange: { start: 1, end: 8 },
           keyMoments: [],
         }],
-        episodeEncounters: {},
+        episodeEncounters: Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
+          const episodeNumber = index + 1;
+          return [episodeNumber, [{
+            id: `enc-${episodeNumber}`,
+            type: 'social',
+            description: `Episode ${episodeNumber} pressure encounter.`,
+            difficulty: 'moderate',
+            npcsInvolved: [],
+            stakes: 'Kylie must protect her voice.',
+            storyCircleTarget: 'search',
+            storyCircleTargetRationale: 'The encounter tests adaptation.',
+            encounterBuildup: 'Earlier scenes establish the relationship pressure.',
+          }]];
+        })),
         crossEpisodeBranches: [],
-        episodeEndingRoutes: {},
+        episodeEndingRoutes: Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
+          const episodeNumber = index + 1;
+          return [episodeNumber, [{
+            endingId: 'ending-1',
+            role: episodeNumber === 8 ? 'locks' : 'reinforces',
+            description: `Episode ${episodeNumber} preserves the ending route.`,
+          }]];
+        })),
       });
     };
 
@@ -184,6 +204,97 @@ describe('SeasonPlannerAgent treatment handoff', () => {
     expect(result.success).toBe(true);
     expect(calls).toBe(2);
     expect(result.data!.arcs[0].id).toBe('llm-arc');
+  });
+
+  it('repairs a collapsed provider arc list against canonical authored IDs', async () => {
+    const planner = makePlanner();
+    const canonical = [
+      { id: 'arc-1', name: 'Champagne', description: 'Champagne question?', episodeRange: { start: 1, end: 3 }, sourceText: 'Champagne source', sourceArcIndex: 1 },
+      { id: 'arc-2', name: 'Mirror', description: 'Mirror question?', episodeRange: { start: 4, end: 6 }, sourceText: 'Mirror source', sourceArcIndex: 2 },
+      { id: 'arc-3', name: 'Blood', description: 'Blood question?', episodeRange: { start: 7, end: 8 }, sourceText: 'Blood source', sourceArcIndex: 3 },
+    ];
+    let repairCalls = 0;
+    (planner as any).requestAuthoredArcEnrichments = async () => {
+      repairCalls += 1;
+      return canonical.map((arc) => ({
+        id: arc.id,
+        name: arc.name,
+        description: `${arc.name} enriched.`,
+        episodeRange: arc.episodeRange,
+        finaleAnswer: `${arc.name} answer.`,
+      }));
+    };
+
+    const repaired = await (planner as any).reconcileAuthoredArcTopology(
+      makeAnalysis(),
+      {
+        arcs: [{
+          id: 'arc-1-8',
+          name: 'Arc 1-8',
+          description: 'Generic full-season collapse.',
+          episodeRange: { start: 1, end: 8 },
+        }],
+      },
+      canonical,
+    );
+
+    expect(repairCalls).toBe(1);
+    expect(repaired.arcs.map((arc: any) => arc.id)).toEqual(['arc-1', 'arc-2', 'arc-3']);
+    expect(repaired.arcs.map((arc: any) => arc.episodeRange)).toEqual([
+      { start: 1, end: 3 },
+      { start: 4, end: 6 },
+      { start: 7, end: 8 },
+    ]);
+  });
+
+  it('returns a typed season-plan failure when focused arc repair stays incomplete', async () => {
+    const planner = makePlanner();
+    const canonical = [
+      { id: 'arc-1', name: 'Champagne', description: 'Question?', episodeRange: { start: 1, end: 3 }, sourceText: 'Source', sourceArcIndex: 1 },
+      { id: 'arc-2', name: 'Mirror', description: 'Question?', episodeRange: { start: 4, end: 6 }, sourceText: 'Source', sourceArcIndex: 2 },
+    ];
+    (planner as any).requestAuthoredArcEnrichments = async () => [{
+      id: 'arc-1',
+      name: 'Champagne',
+      episodeRange: { start: 1, end: 3 },
+    }];
+
+    await expect((planner as any).reconcileAuthoredArcTopology(
+      makeAnalysis(),
+      { arcs: [{ id: 'arc-1-8', name: 'Arc 1-8', episodeRange: { start: 1, end: 8 } }] },
+      canonical,
+    )).rejects.toMatchObject({
+      code: 'season_plan_topology_invalid',
+      ownerStage: 'season_plan',
+      retryClass: 'retry_structured_output',
+      repairTarget: 'season-arcs:arc-2',
+    });
+  });
+
+  it('merges focused episode-unit repair monotonically without replacing valid episodes', async () => {
+    const planner = makePlanner();
+    const analysis = {
+      ...makeAnalysis(),
+      resolvedEndings: [],
+      episodeBreakdown: makeAnalysis().episodeBreakdown.slice(0, 2),
+    } as any;
+    (planner as any).callLLM = async () => JSON.stringify({
+      episodeEncounters: [
+        { episodeNumber: 1, encounters: [{ id: 'overwrite-attempt' }] },
+        { episodeNumber: 2, encounters: [{ id: 'repaired-2', description: 'Episode 2 repair.' }] },
+      ],
+      episodeEndingRoutes: [],
+    });
+
+    const repaired = await (planner as any).repairMissingEpisodePlanUnits(analysis, {
+      episodeEncounters: {
+        1: [{ id: 'valid-1', description: 'Keep this valid encounter.' }],
+      },
+      episodeEndingRoutes: {},
+    });
+
+    expect(repaired.episodeEncounters[1][0].id).toBe('valid-1');
+    expect(repaired.episodeEncounters[2][0].id).toBe('repaired-2');
   });
 
   it('does not replace treatment-bound required beats with an LLM-authored scene spine', async () => {

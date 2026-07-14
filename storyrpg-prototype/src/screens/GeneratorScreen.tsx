@@ -1824,6 +1824,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
         try {
           const config = createPipelineConfig();
           const title = customStoryTitle || parsedDocument?.title || documentBrief?.story.title || 'Untitled Story';
+          let analysisJobIdForUpdates: string | null = null;
           const worker = await runWorkerJob<{
             success: boolean;
             analysisResult: SourceAnalysisResult;
@@ -1844,7 +1845,52 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
             idempotencyKey: `analysis:${title}:${sourceText.length}:${prompt || ''}`,
             storyTitle: title,
             episodeCount: 1,
-          }, (evt) => handleEvent(evt));
+          }, (evt) => handleEvent(evt), (statusData) => {
+            const progress = Math.max(0, Math.min(100, Number(statusData?.progress ?? 0)));
+            const phase = typeof statusData?.currentPhase === 'string'
+              ? statusData.currentPhase
+              : undefined;
+            setPipelineRuntime(buildPipelineRuntimeSnapshot(statusData, analysisJobIdForUpdates));
+            if (phase) setCurrentPhase(phase);
+            setLiveProgress(progress);
+            if (typeof statusData?.etaSeconds === 'number' || statusData?.etaSeconds === null) {
+              setEtaSeconds(statusData.etaSeconds);
+            }
+            if (analysisJobIdForUpdates) {
+              void updateGenJob(analysisJobIdForUpdates, {
+                status: (statusData?.status as any) || 'running',
+                friendlyName: typeof statusData?.friendlyName === 'string' ? statusData.friendlyName : undefined,
+                processTitle: typeof statusData?.processTitle === 'string' ? statusData.processTitle : undefined,
+                currentPhase: phase || 'source_analysis',
+                progress,
+                etaSeconds: typeof statusData?.etaSeconds === 'number' || statusData?.etaSeconds === null
+                  ? statusData.etaSeconds
+                  : undefined,
+              });
+            }
+            if (statusData?.status === 'failed') {
+              setLiveProgress(100);
+              setError(statusData.error || 'Source analysis failed');
+              setState('error');
+            }
+          }, async (jobId, startData) => {
+            analysisJobIdForUpdates = jobId;
+            setCurrentJobId(jobId);
+            setActiveJobId(jobId);
+            await registerGenJob({
+              id: jobId,
+              storyTitle: title,
+              friendlyName: startData.friendlyName,
+              processTitle: startData.processTitle,
+              startedAt: new Date().toISOString(),
+              status: 'running',
+              currentPhase: 'queued',
+              progress: 0,
+              episodeCount: 1,
+              currentEpisode: 1,
+              events: [],
+            });
+          });
 
           const result = worker.result.analysisResult;
           const normalizedAnalysis = applyEndingModeToAnalysis(worker.result.sourceAnalysis);

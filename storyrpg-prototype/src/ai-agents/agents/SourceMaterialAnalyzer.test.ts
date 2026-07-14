@@ -1401,6 +1401,9 @@ describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
 
     // N episodes -> N focused calls.
     expect(callSpy).toHaveBeenCalledTimes(estimatedEpisodes);
+    expect(callSpy.mock.calls[0][2]).toMatchObject({
+      jsonSchema: { name: 'source_analysis_single_episode', maxOutputTokens: 8192 },
+    });
     expect(breakdown.totalEpisodes).toBe(estimatedEpisodes);
     expect(breakdown.episodes).toHaveLength(estimatedEpisodes);
     // Order preserved 1..N regardless of settle order.
@@ -1462,8 +1465,8 @@ describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
     let call = 0;
 
     // First N per-episode calls return empty objects (no title/synopsis ->
-    // dropped by normalizeSingleEpisode). The fallback single call then returns
-    // a full breakdown.
+    // dropped by normalizeSingleEpisode). Missing slots are retried once before
+    // the fallback single call returns a full breakdown.
     const callSpy = vi
       .spyOn(analyzer as any, 'callLLM')
       .mockImplementation(async () => {
@@ -1493,10 +1496,51 @@ describe('SourceMaterialAnalyzer per-episode breakdown fan-out', () => {
       preferences,
     );
 
-    // N per-episode attempts + 1 fallback call.
-    expect(callSpy).toHaveBeenCalledTimes(estimatedEpisodes + 1);
+    // N per-episode attempts + N focused retries + 1 fallback call.
+    expect(callSpy).toHaveBeenCalledTimes((estimatedEpisodes * 2) + 1);
     expect(breakdown.episodes).toHaveLength(estimatedEpisodes);
     expect(breakdown.episodes[0].title).toBe('Fallback 1');
+  });
+
+  it('retries only unresolved episode slots and preserves successful siblings', async () => {
+    const analyzer = makeAnalyzer();
+    const estimatedEpisodes = 6;
+    const callsByEpisode = new Map<number, number>();
+
+    const callSpy = vi.spyOn(analyzer as any, 'callLLM').mockImplementation(async (...args: unknown[]) => {
+      const messages = args[0] as Array<{ content: string }>;
+      const episodeNumber = Number(messages[0].content.match(/Episode number: (\d+) of/)?.[1] ?? 0);
+      callsByEpisode.set(episodeNumber, (callsByEpisode.get(episodeNumber) ?? 0) + 1);
+      if (episodeNumber === 3 && callsByEpisode.get(episodeNumber) === 1) {
+        return JSON.stringify({});
+      }
+      return JSON.stringify({
+        episodeNumber,
+        title: `Title ${episodeNumber}`,
+        synopsis: `Synopsis ${episodeNumber}`,
+        sourceChapters: `${episodeNumber}`,
+        plotPoints: [`Plot ${episodeNumber}`],
+        mainCharacters: ['Mara'],
+        locations: ['Harbor City'],
+        narrativeArc: { setup: 's', conflict: 'c', resolution: 'r' },
+        storyCircleRole: [{ beat: 'search', roleKind: 'primary', source: 'llm' }],
+      });
+    });
+
+    const breakdown = await (analyzer as any).createEpisodeBreakdown(
+      'Rain and ledgers.',
+      makeStructure(estimatedEpisodes),
+      preferences,
+    );
+
+    expect(callSpy).toHaveBeenCalledTimes(estimatedEpisodes + 1);
+    expect(callsByEpisode.get(3)).toBe(2);
+    for (const episodeNumber of [1, 2, 4, 5, 6]) {
+      expect(callsByEpisode.get(episodeNumber)).toBe(1);
+    }
+    expect(breakdown.episodes.map((episode: any) => episode.title)).toEqual([
+      'Title 1', 'Title 2', 'Title 3', 'Title 4', 'Title 5', 'Title 6',
+    ]);
   });
 
   it('accepts an {episode:{...}} wrapped per-episode response shape', async () => {

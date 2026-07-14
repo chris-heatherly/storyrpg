@@ -22,6 +22,7 @@ export type PipelineFailureCode =
   | 'visible_output_starved'
   | 'scene_construction_conflict'
   | 'episode_plan_invalid'
+  | 'season_plan_topology_invalid'
   | 'season_graph_invalid'
   | 'treatment_binding_conflict'
   | 'treatment_density_conflict'

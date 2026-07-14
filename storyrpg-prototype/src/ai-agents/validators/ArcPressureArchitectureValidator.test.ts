@@ -151,6 +151,51 @@ describe('ArcPressureArchitectureValidator', () => {
     expect(result.issues.some((issue) => issue.message.includes('does not preserve authored arc field'))).toBe(true);
   });
 
+  it('does not use episode overlap to disguise a missing authored arc', () => {
+    const source = plan({
+      arcs: [{
+        ...plan().arcs[0],
+        id: 'arc-1-4',
+        name: 'Arc 1-4',
+        episodeRange: { start: 1, end: 4 },
+      }],
+    });
+    const contract = {
+      id: 'arc-pressure-arc-2-question',
+      source: 'treatment' as const,
+      arcId: 'arc-2',
+      arcTitle: 'Mirror',
+      fieldName: 'Arc dramatic question',
+      sourceText: 'What truth will the mirror force Mara to see?',
+      contractKind: 'arc_question' as const,
+      requiredRealization: ['season_arc'] as any,
+      targetEpisodeNumbers: [2],
+      targetSceneIds: [],
+      eventAtoms: [],
+      blockingLevel: 'treatment' as const,
+    };
+
+    const result = new ArcPressureArchitectureValidator().validate(source, {
+      treatmentSourced: true,
+      arcPressureContracts: [contract],
+    });
+
+    const missing = result.issues.find((issue) => issue.metadata?.issueCode === 'authored_arc_missing');
+    expect(missing?.message).toContain('arc-2');
+    expect(missing?.metadata).toMatchObject({
+      ownerStage: 'season_plan',
+      retryClass: 'retry_structured_output',
+      repairTargetId: 'arc-2',
+    });
+
+    const legacy = new ArcPressureArchitectureValidator().validate(source, {
+      treatmentSourced: true,
+      arcPressureContracts: [contract],
+      allowLegacyEpisodeOverlapMatching: true,
+    });
+    expect(legacy.issues.some((issue) => issue.metadata?.issueCode === 'authored_arc_missing')).toBe(false);
+  });
+
   it('warns when an arc falls outside the target 3-8 episode range', () => {
     const shortArc = plan({
       totalEpisodes: 2,

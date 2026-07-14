@@ -11,7 +11,11 @@
 
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
-import { buildSeasonPlanJsonSchema } from '../schemas/seasonPlanSchema';
+import {
+  buildSeasonArcEnrichmentJsonSchema,
+  buildSeasonEpisodeUnitRepairJsonSchema,
+  buildSeasonPlanJsonSchema,
+} from '../schemas/seasonPlanSchema';
 import {
   SourceMaterialAnalysis,
   EpisodeOutline,
@@ -66,6 +70,7 @@ import { buildSeasonPromiseContracts } from '../utils/seasonPromiseContracts';
 import { buildStakesArchitectureContracts } from '../utils/stakesArchitectureContracts';
 import { buildStoryCircleBeatContracts } from '../utils/storyCircleBeatContracts';
 import {
+  arcGuidanceId,
   buildArcPressureContracts,
   findAuthoredArcGuidanceForArc,
 } from '../utils/arcPressureContracts';
@@ -126,6 +131,12 @@ import type { SkillGrowthStep } from '../pipeline/expectedSkillCurve';
 import { consequenceFlags } from '../pipeline/consequenceFlags';
 import type { SeasonScenePlan } from '../../types/scenePlan';
 import type { ThreadLedger } from '../../types/narrativeThread';
+import { PipelineError } from '../pipeline/errors';
+import {
+  compileCanonicalSeasonArcTopology,
+  reconcileAuthoredSeasonArcs,
+  type CanonicalSeasonArcSkeleton,
+} from '../pipeline/seasonPlanTopologyCompiler';
 
 type MutablePlanData = Partial<SeasonPlan> & {
   encounterPlan?: any;
@@ -140,6 +151,11 @@ type MutablePlanData = Partial<SeasonPlan> & {
   informationLedger?: any[];
   choiceMoments?: any[];
   residuePlan?: any[];
+};
+
+type ProviderSeasonPlanDraft = Omit<MutablePlanData, 'episodeEncounters' | 'episodeEndingRoutes'> & {
+  episodeEncounters?: unknown;
+  episodeEndingRoutes?: unknown;
 };
 
 // ========================================
@@ -264,6 +280,7 @@ Your plans must define:
 
   async execute(input: SeasonPlannerInput): Promise<AgentResponse<SeasonPlan>> {
     const { sourceAnalysis, preferences } = input;
+    const canonicalArcTopology = compileCanonicalSeasonArcTopology(sourceAnalysis);
 
     console.log(`[SeasonPlanner] Creating season plan for: ${sourceAnalysis.sourceTitle}`);
 
@@ -282,13 +299,16 @@ Your plans must define:
 
     try {
       const prompt = this.buildPlanningPrompt(sourceAnalysis, preferences);
-      const { data: parsedPlan, rawResponse } = await this.callLLMForJson<MutablePlanData>([
+      const { data: parsedPlan, rawResponse } = await this.callLLMForJson<ProviderSeasonPlanDraft>([
         { role: 'user', content: prompt },
       ], {
-        jsonSchema: buildSeasonPlanJsonSchema(),
+        jsonSchema: buildSeasonPlanJsonSchema({
+          expectedArcCount: canonicalArcTopology.length || sourceAnalysis.storyArcs.length || 1,
+          expectedEpisodeCount: sourceAnalysis.totalEstimatedEpisodes,
+        }),
       });
       const response = rawResponse;
-      planData = parsedPlan;
+      planData = this.normalizeProviderPlanData(parsedPlan);
       const topKeys = Object.keys(planData);
       console.log(`[SeasonPlanner] LLM plan received with ${topKeys.length} top-level keys: ${topKeys.join(', ')}`);
       
@@ -298,12 +318,25 @@ Your plans must define:
       if (missingCritical.length > 0) {
         console.warn(`[SeasonPlanner] WARNING: LLM response may be truncated — missing fields: ${missingCritical.join(', ')}. Response length: ${response.length} chars. Re-fetching just those before any deterministic fallback.`);
         await this.refetchMissingPlanFields(planData, missingCritical, sourceAnalysis, preferences);
+        planData = this.normalizeProviderPlanData(planData);
+        const stillMissing = criticalFields.filter((field) => !(field in planData));
+        if (stillMissing.length > 0) {
+          console.warn(`[SeasonPlanner] Missing-field recovery left ${stillMissing.join(', ')} absent; using the source-derived fallback plan.`);
+          planData = this.buildFallbackPlan(sourceAnalysis);
+        }
       }
     } catch (error) {
       console.warn(`[SeasonPlanner] LLM planning failed, using fallback:`, error);
       planData = this.buildFallbackPlan(sourceAnalysis);
     }
+    planData = await this.reconcileAuthoredArcTopology(
+      sourceAnalysis,
+      planData,
+      canonicalArcTopology,
+    );
+    planData = await this.repairMissingEpisodePlanUnits(sourceAnalysis, planData);
     planData = this.mergeTreatmentGuidanceIntoPlanData(sourceAnalysis, planData);
+    this.assertEpisodePlanUnitCoverage(sourceAnalysis, planData);
 
     // Build the complete season plan
     const seasonPlan = this.buildSeasonPlan(sourceAnalysis, planData, preferences);
@@ -559,12 +592,27 @@ Your plans must define:
         // to. This throw is already observable upstream (caught in
         // storyGenerationService and folded into the failed-run quality ledger).
         const arcErrors = arcPressureGateResult.issues.filter((i) => i.severity === 'error');
-        throw new Error(
+        throw new PipelineError(
           `[ArcPressureGate] Season arc architecture failed the blocking gate (${arcPressureGate.blockingCount} issue(s)): ` +
             arcErrors.map((i) => i.message).join('; ') +
             (treatmentArcPlanSourced
               ? '. Treatment-authored arc plans are binding; repair the arc plan assignments instead of downgrading.'
               : '. Unset GATE_ARC_PRESSURE to downgrade to advisory.'),
+          'season_plan',
+          {
+            agent: 'ArcPressureArchitectureValidator',
+            context: {
+              issues: arcErrors,
+              metrics: arcPressureGateResult.metrics,
+            },
+            failure: {
+              code: treatmentArcPlanSourced ? 'season_plan_topology_invalid' : 'season_graph_invalid',
+              ownerStage: 'season_plan',
+              retryClass: treatmentArcPlanSourced ? 'retry_structured_output' : 'none',
+              issueCodes: arcErrors.map((issue) => issue.metadata?.issueCode || 'arc_pressure_invalid'),
+              repairTarget: 'season-arcs',
+            },
+          },
         );
       }
     }
@@ -677,6 +725,289 @@ Your plans must define:
     }
   }
 
+  private normalizeProviderPlanData(draft: ProviderSeasonPlanDraft | MutablePlanData): MutablePlanData {
+    return {
+      ...(draft as MutablePlanData),
+      episodeEncounters: this.normalizeEpisodeIndexedCollection(draft.episodeEncounters, 'encounters'),
+      episodeEndingRoutes: this.normalizeEpisodeIndexedCollection(draft.episodeEndingRoutes, 'routes'),
+    };
+  }
+
+  private normalizeEpisodeIndexedCollection(
+    value: unknown,
+    itemField: 'encounters' | 'routes',
+  ): Record<number | string, any[]> {
+    if (!value) return {};
+    if (!Array.isArray(value) && typeof value === 'object') {
+      const normalized: Record<number | string, any[]> = {};
+      for (const [episodeNumber, items] of Object.entries(value as Record<string, unknown>)) {
+        if (/^\d+$/.test(episodeNumber) && Array.isArray(items)) {
+          normalized[episodeNumber] = items;
+        }
+      }
+      return normalized;
+    }
+
+    if (!Array.isArray(value)) return {};
+    const normalized: Record<number | string, any[]> = {};
+    for (const entry of value) {
+      if (!entry || typeof entry !== 'object') continue;
+      const episodeNumber = Number((entry as Record<string, unknown>).episodeNumber);
+      const items = (entry as Record<string, unknown>)[itemField];
+      if (!Number.isInteger(episodeNumber) || episodeNumber < 1 || !Array.isArray(items)) continue;
+      normalized[episodeNumber] = items;
+    }
+    return normalized;
+  }
+
+  private async reconcileAuthoredArcTopology(
+    analysis: SourceMaterialAnalysis,
+    planData: MutablePlanData,
+    canonical: CanonicalSeasonArcSkeleton[],
+  ): Promise<MutablePlanData> {
+    if (canonical.length === 0) return planData;
+
+    let reconciliation = reconcileAuthoredSeasonArcs(canonical, planData.arcs);
+    const rejectedUnknown = reconciliation.issues.filter((issue) => issue.code === 'unknown_arc_rejected');
+    if (rejectedUnknown.length > 0) {
+      console.warn(
+        `[SeasonPlanner] Rejected ${rejectedUnknown.length} provider arc(s) outside the authored topology: ` +
+        rejectedUnknown.map((issue) => issue.candidateArcId || 'unknown').join(', '),
+      );
+    }
+
+    if (reconciliation.requiresLlmRepair) {
+      const missing = canonical.filter((arc) => reconciliation.missingArcIds.includes(arc.id));
+      try {
+        const repaired = await this.requestAuthoredArcEnrichments(analysis, missing);
+        reconciliation = reconcileAuthoredSeasonArcs(
+          canonical,
+          [...reconciliation.acceptedEnrichments, ...repaired],
+        );
+      } catch (error) {
+        throw this.authoredArcTopologyError(canonical, reconciliation, error);
+      }
+    }
+
+    if (reconciliation.requiresLlmRepair) {
+      throw this.authoredArcTopologyError(canonical, reconciliation);
+    }
+
+    return {
+      ...planData,
+      arcs: reconciliation.arcs as SeasonArc[],
+    };
+  }
+
+  private async requestAuthoredArcEnrichments(
+    analysis: SourceMaterialAnalysis,
+    arcs: CanonicalSeasonArcSkeleton[],
+  ): Promise<Partial<SeasonArc>[]> {
+    const guidanceById = new Map(
+      (analysis.treatmentSeasonGuidance?.arcGuidance?.arcs ?? [])
+        .map((guidance) => [arcGuidanceId(guidance), guidance] as const),
+    );
+    const repairPayload = arcs.map((arc) => ({
+      arcId: arc.id,
+      name: arc.name,
+      episodeRange: arc.episodeRange,
+      sourceText: arc.sourceText,
+      authoredGuidance: guidanceById.get(arc.id),
+      episodes: analysis.episodeBreakdown
+        .filter((episode) =>
+          episode.episodeNumber >= arc.episodeRange.start
+          && episode.episodeNumber <= arc.episodeRange.end
+        )
+        .map((episode) => ({
+          episodeNumber: episode.episodeNumber,
+          title: episode.title,
+          synopsis: episode.synopsis,
+          storyCircleRole: episode.storyCircleRole,
+        })),
+    }));
+    const prompt = `
+Repair ONLY the missing authored season-arc enrichments for "${analysis.sourceTitle}".
+
+The arc IDs, names, order, episode ranges, and authored field text below are immutable source canon.
+Return exactly one enrichment for every supplied arcId and no other arcs. Preserve authored dramatic
+questions, season relations, identity pressure, recontextualizations, crises, finale answers, handoffs,
+and episode turnouts verbatim where supplied. You may author only missing interpretive detail.
+
+Every arc must include id, name, description, episodeRange, arcQuestion, seasonQuestionRelation,
+identityPressureFacet, midpointRecontextualization, lateArcCrisis, finaleAnswer, handoffPressure, and
+one episodeTurnout for every episode in its range. A non-final arc must hand pressure into the next arc.
+The final arc may use an empty handoffPressure only when the season resolves completely.
+
+Canonical arc slots:
+${JSON.stringify(repairPayload, null, 2)}
+
+Return only: {"arcs":[...]}
+`;
+    const { data } = await this.callLLMForJson<{ arcs?: Partial<SeasonArc>[] }>([
+      { role: 'user', content: prompt },
+    ], {
+      jsonSchema: buildSeasonArcEnrichmentJsonSchema(arcs.length),
+    });
+    return Array.isArray(data.arcs) ? data.arcs : [];
+  }
+
+  private authoredArcTopologyError(
+    canonical: CanonicalSeasonArcSkeleton[],
+    reconciliation: ReturnType<typeof reconcileAuthoredSeasonArcs>,
+    originalError?: unknown,
+  ): PipelineError {
+    const issueCodes = reconciliation.issues
+      .filter((issue) => issue.code !== 'unknown_arc_rejected')
+      .map((issue) => `${issue.code}:${issue.arcId || 'unknown'}`);
+    return new PipelineError(
+      `[SeasonPlanTopology] Authored arc topology could not be enriched without changing source canon. ` +
+        `Expected [${canonical.map((arc) => arc.id).join(', ')}]; missing [${reconciliation.missingArcIds.join(', ')}].`,
+      'season_plan',
+      {
+        agent: 'SeasonPlanner',
+        originalError: originalError instanceof Error ? originalError : undefined,
+        context: {
+          canonicalArcs: canonical.map((arc) => ({
+            id: arc.id,
+            name: arc.name,
+            episodeRange: arc.episodeRange,
+          })),
+          issues: reconciliation.issues,
+        },
+        failure: {
+          code: 'season_plan_topology_invalid',
+          ownerStage: 'season_plan',
+          retryClass: 'retry_structured_output',
+          issueCodes: issueCodes.length > 0 ? issueCodes : ['authored_arc_enrichment_invalid'],
+          repairTarget: `season-arcs:${reconciliation.missingArcIds.join(',')}`,
+        },
+      },
+    );
+  }
+
+  private missingEpisodePlanUnits(
+    analysis: SourceMaterialAnalysis,
+    planData: MutablePlanData,
+  ): { encounterEpisodes: number[]; endingRouteEpisodes: number[] } {
+    const episodeNumbers = analysis.episodeBreakdown.map((episode) => episode.episodeNumber);
+    const encounters = planData.episodeEncounters ?? {};
+    const endingRoutes = planData.episodeEndingRoutes ?? {};
+    const requiresEndingRoutes = (analysis.resolvedEndings?.length ?? 0) > 0;
+    return {
+      encounterEpisodes: episodeNumbers.filter((episodeNumber) =>
+        !Array.isArray(encounters[episodeNumber]) || encounters[episodeNumber].length === 0
+      ),
+      endingRouteEpisodes: requiresEndingRoutes
+        ? episodeNumbers.filter((episodeNumber) =>
+            !Array.isArray(endingRoutes[episodeNumber]) || endingRoutes[episodeNumber].length === 0
+          )
+        : [],
+    };
+  }
+
+  private async repairMissingEpisodePlanUnits(
+    analysis: SourceMaterialAnalysis,
+    planData: MutablePlanData,
+  ): Promise<MutablePlanData> {
+    const missing = this.missingEpisodePlanUnits(analysis, planData);
+    const requestedEpisodes = [...new Set([
+      ...missing.encounterEpisodes,
+      ...missing.endingRouteEpisodes,
+    ])].sort((left, right) => left - right);
+    if (requestedEpisodes.length === 0) return planData;
+
+    const episodeSlots = analysis.episodeBreakdown
+      .filter((episode) => requestedEpisodes.includes(episode.episodeNumber))
+      .map((episode) => ({
+        episodeNumber: episode.episodeNumber,
+        title: episode.title,
+        synopsis: episode.synopsis,
+        storyCircleRole: episode.storyCircleRole,
+        treatmentGuidance: episode.treatmentGuidance,
+        needsEncounter: missing.encounterEpisodes.includes(episode.episodeNumber),
+        needsEndingRoutes: missing.endingRouteEpisodes.includes(episode.episodeNumber),
+      }));
+    const prompt = `
+Repair only the missing per-episode Season Planner units for "${analysis.sourceTitle}".
+Return encounter plans only for slots where needsEncounter=true and ending-route plans only where
+needsEndingRoutes=true. Every encounter must stage the episode's concrete playable pressure and carry
+its Story Circle function. Do not change episode identity, chronology, treatment events, or ending IDs.
+
+Valid ending IDs: ${JSON.stringify((analysis.resolvedEndings ?? []).map((ending) => ending.id))}
+Episode slots: ${JSON.stringify(episodeSlots, null, 2)}
+
+Return only:
+{"episodeEncounters":[{"episodeNumber":1,"encounters":[...]}],"episodeEndingRoutes":[{"episodeNumber":1,"routes":[...]}]}
+Use an empty array for a collection with no requested slots.
+`;
+
+    try {
+      const { data } = await this.callLLMForJson<ProviderSeasonPlanDraft>([
+        { role: 'user', content: prompt },
+      ], {
+        jsonSchema: buildSeasonEpisodeUnitRepairJsonSchema(
+          missing.encounterEpisodes.length,
+          missing.endingRouteEpisodes.length,
+        ),
+      });
+      const patch = this.normalizeProviderPlanData(data);
+      const encounterPatch = Object.fromEntries(
+        Object.entries(patch.episodeEncounters ?? {})
+          .filter(([episodeNumber]) => missing.encounterEpisodes.includes(Number(episodeNumber))),
+      );
+      const endingRoutePatch = Object.fromEntries(
+        Object.entries(patch.episodeEndingRoutes ?? {})
+          .filter(([episodeNumber]) => missing.endingRouteEpisodes.includes(Number(episodeNumber))),
+      );
+      return {
+        ...planData,
+        episodeEncounters: {
+          ...(planData.episodeEncounters ?? {}),
+          ...encounterPatch,
+        },
+        episodeEndingRoutes: {
+          ...(planData.episodeEndingRoutes ?? {}),
+          ...endingRoutePatch,
+        },
+      };
+    } catch (error) {
+      console.warn(
+        `[SeasonPlanner] Focused episode-unit repair failed; authored treatment projection may still supply the missing units: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return planData;
+    }
+  }
+
+  private assertEpisodePlanUnitCoverage(
+    analysis: SourceMaterialAnalysis,
+    planData: MutablePlanData,
+  ): void {
+    const missing = this.missingEpisodePlanUnits(analysis, planData);
+    if (missing.encounterEpisodes.length === 0 && missing.endingRouteEpisodes.length === 0) return;
+    const issueCodes = [
+      ...missing.encounterEpisodes.map((episodeNumber) => `episode_encounter_missing:${episodeNumber}`),
+      ...missing.endingRouteEpisodes.map((episodeNumber) => `episode_ending_routes_missing:${episodeNumber}`),
+    ];
+    throw new PipelineError(
+      `[SeasonPlanCoverage] Season planning remains incomplete after focused repair and authored projection. ` +
+        `Missing encounters for Episodes [${missing.encounterEpisodes.join(', ')}]; ` +
+        `missing ending routes for Episodes [${missing.endingRouteEpisodes.join(', ')}].`,
+      'season_plan',
+      {
+        agent: 'SeasonPlanner',
+        context: { missing },
+        failure: {
+          code: 'season_plan_topology_invalid',
+          ownerStage: 'season_plan',
+          retryClass: 'retry_structured_output',
+          issueCodes,
+          repairTarget: `season-episode-units:${[...new Set([...missing.encounterEpisodes, ...missing.endingRouteEpisodes])].join(',')}`,
+        },
+      },
+    );
+  }
+
   private buildPlanningPrompt(
     analysis: SourceMaterialAnalysis,
     preferences?: SeasonPlannerInput['preferences']
@@ -689,9 +1020,20 @@ Your plans must define:
       .map(c => `- ${c.name} (${c.role}): ${c.description}`)
       .join('\n');
 
-    const arcList = analysis.storyArcs
-      .map(arc => `- ${arc.name}: ${arc.description} (Episodes ${arc.estimatedEpisodeRange.start}-${arc.estimatedEpisodeRange.end})`)
-      .join('\n');
+    const canonicalArcTopology = compileCanonicalSeasonArcTopology(analysis);
+    const arcList = canonicalArcTopology.length > 0
+      ? canonicalArcTopology
+          .map((arc) =>
+            `- ${arc.id} | ${arc.name}: ${arc.description} ` +
+            `(Episodes ${arc.episodeRange.start}-${arc.episodeRange.end}; ID/name/range immutable)`
+          )
+          .join('\n')
+      : analysis.storyArcs
+          .map((arc) =>
+            `- ${arc.id} | ${arc.name}: ${arc.description} ` +
+            `(Episodes ${arc.estimatedEpisodeRange.start}-${arc.estimatedEpisodeRange.end})`
+          )
+          .join('\n');
     const activeEndingMode = preferences?.endingMode || analysis.resolvedEndingMode || analysis.detectedEndingMode || 'single';
     const endingList = (analysis.resolvedEndings || [])
       .map((ending) => {
@@ -974,6 +1316,7 @@ Return this JSON:
   ],
   "arcs": [
     {
+      "id": "arc-1",
       "name": "Arc name",
       "description": "Arc description",
       "episodeRange": { "start": 1, "end": 3 },
@@ -1012,8 +1355,10 @@ Return this JSON:
     "2": [1],
     "3": [1, 2]
   },
-  "episodeEncounters": {
-    "1": [
+  "episodeEncounters": [
+    {
+      "episodeNumber": 1,
+      "encounters": [
       {
         "id": "enc-1-1",
         "type": "combat|social|chase|stealth|puzzle|exploration|mixed",
@@ -1042,17 +1387,21 @@ Return this JSON:
           "escape": "Optional escape outcome"
         }
       }
-    ]
-  },
-  "episodeEndingRoutes": {
-    "1": [
+      ]
+    }
+  ],
+  "episodeEndingRoutes": [
+    {
+      "episodeNumber": 1,
+      "routes": [
       {
         "endingId": "ending-1",
         "role": "opens|reinforces|threatens|locks",
         "description": "How this episode moves the player toward or away from that ending"
       }
-    ]
-  },
+      ]
+    }
+  ],
   "episodeCliffhangers": {
     "1": {
       "type": "shock|emotional_hook|reframe|revelation|danger|betrayal|arrival|decision|mystery|loss|transformation",
@@ -1946,7 +2295,12 @@ CRITICAL RULES:
         ...this.normalizeArcPressureArchitecture(authoredArc as SeasonArc, analysis, episodes, storyCircleSpan),
       };
     });
-    arcs = this.repairArcStoryCircleCoverage(arcs, analysis, episodes, storyCircleRoleByEpisode);
+    const canonicalArcTopology = compileCanonicalSeasonArcTopology(analysis);
+    if (canonicalArcTopology.length > 0) {
+      this.assertAuthoredArcTopologyPreserved(arcs, canonicalArcTopology);
+    } else {
+      arcs = this.repairArcStoryCircleCoverage(arcs, analysis, episodes, storyCircleRoleByEpisode);
+    }
 
 	    const seasonPromiseArchitecture = this.normalizeSeasonPromiseArchitecture(
 	      planData.seasonPromiseArchitecture,
@@ -2750,6 +3104,53 @@ CRITICAL RULES:
       return text;
     }
     return 'escalation';
+  }
+
+  private assertAuthoredArcTopologyPreserved(
+    arcs: SeasonArc[],
+    canonical: CanonicalSeasonArcSkeleton[],
+  ): void {
+    const actualById = new Map(arcs.map((arc) => [arc.id, arc]));
+    const issueCodes: string[] = [];
+    for (const expected of canonical) {
+      const actual = actualById.get(expected.id);
+      if (!actual) {
+        issueCodes.push(`authored_arc_missing:${expected.id}`);
+        continue;
+      }
+      if (
+        actual.name !== expected.name
+        || actual.episodeRange.start !== expected.episodeRange.start
+        || actual.episodeRange.end !== expected.episodeRange.end
+      ) {
+        issueCodes.push(`authored_arc_identity_drift:${expected.id}`);
+      }
+    }
+    for (const actual of arcs) {
+      if (!canonical.some((expected) => expected.id === actual.id)) {
+        issueCodes.push(`unknown_arc_present:${actual.id}`);
+      }
+    }
+    if (issueCodes.length === 0) return;
+
+    throw new PipelineError(
+      `[SeasonPlanTopology] Authored arc topology changed during SeasonPlan normalization: ${issueCodes.join(', ')}.`,
+      'season_plan',
+      {
+        agent: 'SeasonPlanner',
+        context: {
+          expected: canonical.map((arc) => ({ id: arc.id, name: arc.name, episodeRange: arc.episodeRange })),
+          actual: arcs.map((arc) => ({ id: arc.id, name: arc.name, episodeRange: arc.episodeRange })),
+        },
+        failure: {
+          code: 'season_plan_topology_invalid',
+          ownerStage: 'season_plan',
+          retryClass: 'none',
+          issueCodes,
+          repairTarget: 'season-arcs',
+        },
+      },
+    );
   }
 
   private normalizeArcTurnoutType(value: unknown, fallback: ArcEpisodeTurnoutType): ArcEpisodeTurnoutType {

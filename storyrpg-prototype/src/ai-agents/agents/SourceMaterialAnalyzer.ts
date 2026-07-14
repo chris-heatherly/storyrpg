@@ -64,6 +64,7 @@ import {
 } from '../prompts/storytellingPrinciples';
 import { SOURCE_ANALYSIS_ABSTRACTION_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { mapOrderedWithConcurrency } from '../utils/concurrency';
+import { buildSingleEpisodeBreakdownJsonSchema } from '../schemas/sourceAnalysisSchema';
 
 /**
  * Minimum season length at which {@link SourceMaterialAnalyzer.createEpisodeBreakdown}
@@ -846,22 +847,54 @@ Return ONLY valid JSON.
     const episodeNumbers = Array.from({ length: estimatedEpisodes }, (_, i) => i + 1);
 
     try {
+      const generateEpisodeEntry = async (episodeNumber: number): Promise<EpisodeBreakdownEntry | null> => {
+        const prompt = this.buildSingleEpisodePrompt(
+          sharedContext,
+          episodeNumber,
+          estimatedEpisodes,
+        );
+        try {
+          // Structured LLM calls fall back to this.activeAbortSignal (set in execute()), so
+          // a whole-analysis timeout/abort cancels this slot without triggering
+          // a wasteful season-wide fallback.
+          const { data: parsed } = await this.callLLMForJson<SingleEpisodeBreakdownResponse>([
+            { role: 'user', content: prompt },
+          ], {
+            jsonSchema: buildSingleEpisodeBreakdownJsonSchema(),
+          });
+          return this.normalizeSingleEpisode(parsed, episodeNumber);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (this.activeAbortSignal?.aborted || /abort/i.test(message)) throw error;
+          console.warn(
+            `[SourceMaterialAnalyzer] Episode ${episodeNumber} focused breakdown failed after structured correction: ${message.slice(0, 180)}`,
+          );
+          return null;
+        }
+      };
+
       const entries = await mapOrderedWithConcurrency(
         episodeNumbers,
         PER_EPISODE_BREAKDOWN_CONCURRENCY,
-        async (episodeNumber) => {
-          const prompt = this.buildSingleEpisodePrompt(
-            sharedContext,
-            episodeNumber,
-            estimatedEpisodes,
-          );
-          // callLLM falls back to this.activeAbortSignal (set in execute()), so
-          // a whole-analysis timeout/abort cancels in-flight per-episode calls.
-          const response = await this.callLLM([{ role: 'user', content: prompt }]);
-          const parsed = this.parseJSON<SingleEpisodeBreakdownResponse>(response);
-          return this.normalizeSingleEpisode(parsed, episodeNumber);
-        },
+        generateEpisodeEntry,
       );
+
+      const missingEpisodeNumbers = episodeNumbers.filter((_, index) => entries[index] === null);
+      if (missingEpisodeNumbers.length > 0) {
+        console.warn(
+          `[SourceMaterialAnalyzer] Retrying ${missingEpisodeNumbers.length} unresolved episode breakdown slot(s): ` +
+          missingEpisodeNumbers.join(', '),
+        );
+        const retriedEntries = await mapOrderedWithConcurrency(
+          missingEpisodeNumbers,
+          PER_EPISODE_BREAKDOWN_CONCURRENCY,
+          generateEpisodeEntry,
+        );
+        for (let index = 0; index < missingEpisodeNumbers.length; index += 1) {
+          const episodeNumber = missingEpisodeNumbers[index];
+          if (retriedEntries[index]) entries[episodeNumber - 1] = retriedEntries[index];
+        }
+      }
 
       const assembled = entries.filter((entry): entry is EpisodeBreakdownEntry => entry !== null);
       if (assembled.length === estimatedEpisodes) {

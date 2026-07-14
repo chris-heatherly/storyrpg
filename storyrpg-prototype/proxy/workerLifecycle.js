@@ -2063,9 +2063,28 @@ function createWorkerLifecycle({
     });
 
     app.post('/worker-jobs/:jobId/resume', (req, res) => {
-      const sourceJob = loadWorkerJobs().find((j) => j.id === req.params.jobId)
+      const requestedJob = loadWorkerJobs().find((j) => j.id === req.params.jobId)
         || loadJobs().find((j) => j.id === req.params.jobId);
-      if (!sourceJob) return res.status(404).json({ error: 'Worker job not found' });
+      if (!requestedJob) return res.status(404).json({ error: 'Worker job not found' });
+      // Resume the deepest checkpoint in this job's resume chain, not the job
+      // the client happened to reference: stale UX ancestry replayed already-
+      // passed scenes on every attempt (and re-exposed them to provider
+      // variance). Jobs in one chain share projectId (root = first job's id).
+      // Pass exactJob: true to resume the referenced job verbatim.
+      let sourceJob = requestedJob;
+      if (!(req.body && req.body.exactJob)) {
+        const chainRoot = requestedJob.projectId || requestedJob.id;
+        const checkpoints = loadCheckpoints();
+        const latestInChain = loadWorkerJobs()
+          .filter((j) => (j.projectId || j.id) === chainRoot)
+          .filter((j) => j.status !== 'running' && j.status !== 'queued')
+          .filter((j) => checkpoints.some((c) => c.jobId === j.id) || j.checkpoint || j.resumeCheckpoint)
+          .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0];
+        if (latestInChain && latestInChain.id !== requestedJob.id) {
+          sourceJob = latestInChain;
+          console.info(`[WorkerLifecycle] Resume of ${requestedJob.id} redirected to latest chain checkpoint ${sourceJob.id}`);
+        }
+      }
       const hydratedCheckpoint = hydrateCheckpointOutputs(
         loadCheckpoints().find((c) => c.jobId === sourceJob.id)
         || sourceJob.checkpoint

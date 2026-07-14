@@ -17,6 +17,7 @@ import {
 import { runImageGenerationBatch, runStoryAnalysis, runStoryGeneration } from '../services/storyGenerationService';
 import { WorkerPayload, assertValidWorkerPayload, assertWorkerJobConfigHash } from './workerPayload';
 import { resolveMemoryConfig } from '../config';
+import { resolveWorkerGitSha } from '../utils/buildInfo';
 import { compileEpisode } from '../pipeline/episodeCompiler';
 import { isProviderQuotaError, PROVIDER_QUOTA_FAILURE_KIND } from '../utils/providerErrors';
 import { narrativeProviderPreflight, validateNarrativeJobContract } from './providerPreflight';
@@ -563,6 +564,7 @@ async function applyActiveCogneeProjectDataset(memory: ReturnType<typeof resolve
 async function main() {
   const payloadPath = process.argv[2];
   if (!payloadPath) throw new Error('Missing payload path');
+  console.info(`[Worker] code revision ${resolveWorkerGitSha() ?? 'unknown'}`);
   const payloadRaw = await fs.readFile(payloadPath, 'utf8');
   const payload = JSON.parse(payloadRaw) as unknown;
   assertValidWorkerPayload(payload);

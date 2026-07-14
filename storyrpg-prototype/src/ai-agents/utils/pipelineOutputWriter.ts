@@ -28,6 +28,7 @@ import type { QualityCouncilReport } from '../quality-council/types';
 import type { LlmLedger } from './pipelineTelemetry';
 import type { BranchShadowDiff } from './branchShadowDiff';
 import { appendQualityLedger } from './qualityLedger';
+import { resolveWorkerGitSha } from './buildInfo';
 import { analyzeStory as analyzeSentenceOpeners } from './sentenceOpenerStats';
 import {
   deriveStoryCircleQualityScore,
@@ -985,6 +986,7 @@ export async function appendFailedRunLedger(
       timestamp: new Date().toISOString(),
       runDir: runNameFromDir(outputDir),
       outcome: 'failed',
+      workerGitSha: resolveWorkerGitSha(),
       errorCount,
       blocked: details?.blocked,
       failureKind: details?.failureKind,
@@ -2347,6 +2349,7 @@ export async function savePipelineOutputs(
     await appendQualityLedger(ledgerBaseDir(outputDir), {
       timestamp: manifest.generatedAt || new Date().toISOString(),
       runDir: runNameFromDir(outputDir),
+      workerGitSha: resolveWorkerGitSha(),
       storyId: manifest.storyId,
       storyTitle: manifest.storyTitle,
       outcome: retainedPackage.verified ? 'success' : 'partial',

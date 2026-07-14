@@ -81,6 +81,8 @@ export interface QualityLedgerEntry {
   topBlockingValidator?: string;
   /** Fingerprint of resolved GATE_DEFAULTS + env overrides at fail time. */
   gateConfigHash?: string;
+  /** Git commit the worker actually ran — resolves which fixes a run exercised. */
+  workerGitSha?: string;
   /** The validator/agent that produced the blocking failure, when known. */
   validatorId?: string;
   /** S3: total remediation attempts (scene/encounter/choice regen, autofix) this run. */

@@ -511,7 +511,7 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
       });
   });
 
-  it('does not run ChoiceAuthor or mark the scene complete after unresolved prose ownership', async () => {
+  it('defers unresolved prose ownership to the episode contract and continues past the scene', async () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
     const calls: string[] = [];
     const patchCapacityTiers: string[] = [];
@@ -592,15 +592,24 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
       story: { title: 'Story', genre: 'romance', tone: 'tense' }, world: { premise: 'A dangerous city.' },
     } as never;
 
-    await expect(phase.run(brief, { locations: [] } as never, { characters: [] } as never, blueprint, undefined, undefined, 1, {
+    // Exhausted owner repair on a missing-evidence event task no longer aborts
+    // the run: the finding defers to the episode-level semantic contract (which
+    // re-judges and routes repair_scene_prose) and generation continues, so
+    // previously passed scenes are never discarded.
+    const result = await phase.run(brief, { locations: [] } as never, { characters: [] } as never, blueprint, undefined, undefined, 1, {
       config: { generation: {} }, emit: () => undefined,
-    } as never)).rejects.toMatchObject({
-      message: expect.stringMatching(/OwnerStageRealizationBlocker/),
-      code: 'visible_output_starved',
-      retryClass: 'none',
-    });
-    expect(calls.filter((call) => call === 'choiceAuthor')).toHaveLength(0);
-    expect(calls.filter((call) => call === 'sceneWriter')).toHaveLength(2);
+    } as never);
+    expect(result.deferredRealizationRecords).toEqual([
+      expect.objectContaining({
+        taskId: 'task:event:ep1-u3:owner-event',
+        sceneId: 's1-3',
+        reason: 'owner_repair_exhausted',
+      }),
+    ]);
+    expect(calls.filter((call) => call === 'choiceAuthor').length).toBeGreaterThan(0);
+    // Initial authoring + the escalation regen, plus any post-deferral authoring
+    // now that the scene continues instead of aborting the run.
+    expect(calls.filter((call) => call === 'sceneWriter').length).toBeGreaterThanOrEqual(2);
     expect(calls.filter((call) => call === 'semanticPatch')).toHaveLength(2);
     expect(patchCapacityTiers).toEqual(['standard', 'expanded']);
   });

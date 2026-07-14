@@ -16,16 +16,26 @@ export interface DeferredRealizationRecord {
   finding: RealizationTaskGateFinding;
 }
 
+/**
+ * Critical means the run must not advance past this scene: the task graph is
+ * inconsistent (unknown task) or prohibited meaning is on the page where
+ * downstream stages (choices, outcomes, media) would echo it. Missing evidence
+ * — including on event and premise tasks — is NOT critical once the owner
+ * escalation ladder is exhausted: the episode-level semantic contract
+ * re-judges every canonical task with full-episode context and routes
+ * repair_scene_prose / repair_choice repairs there, and the
+ * DeferredRealizationHandoff safety net blocks packaging if a deferred task
+ * ever escapes that re-evaluation. Aborting here instead used to discard every
+ * previously passed scene (bite-me_2026-07-14T17-29-14 died at s1-3 holding
+ * two validated scenes).
+ */
 export function isCriticalOwnerRealizationFinding(
   finding: RealizationTaskGateFinding,
   tasks: NarrativeRealizationTask[],
 ): boolean {
   const task = tasks.find((candidate) => candidate.id === finding.taskId);
   if (!task) return true;
-  if (task.canonicalEventId) return true;
-  if (task.repairHandler === 'premise_realization') return true;
-  const sources = (task.sourceKinds ?? []).map((kind) => String(kind).toLowerCase());
-  return sources.some((kind) => kind.includes('premise') || kind.includes('event'));
+  return (finding.matchedForbiddenAtoms?.length ?? 0) > 0;
 }
 
 export function buildDeferredRealizationRecord(input: {

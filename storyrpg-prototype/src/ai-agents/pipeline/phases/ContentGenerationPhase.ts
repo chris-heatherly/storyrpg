@@ -2534,6 +2534,10 @@ export class ContentGenerationPhase {
                 capacityTier = 'expanded';
                 continue;
               }
+              if (ownerTaskRetry.failure?.retryClass === 'correct_structured_output' && patchCallAttempts < 4) {
+                priorPatchFeedback = [ownerTaskRetry.error || 'Return the exact immutable patch target identifiers.'];
+                continue;
+              }
               break;
             }
             lastPatchFailure = undefined;

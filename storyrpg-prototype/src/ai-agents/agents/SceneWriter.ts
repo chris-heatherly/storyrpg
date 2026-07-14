@@ -1045,9 +1045,12 @@ ${CHOICE_DENSITY_REQUIREMENTS}
         additionalProperties: false,
         required: ['baseSceneHash', 'targetTaskId', 'targetAtomIds', 'operations', 'claimedEvidence'],
         properties: {
-          baseSceneHash: { type: 'string' },
-          targetTaskId: { type: 'string' },
-          targetAtomIds: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string' } },
+          baseSceneHash: { type: 'string', enum: [input.baseSceneHash] },
+          targetTaskId: { type: 'string', enum: [input.targetTaskId] },
+          targetAtomIds: {
+            type: 'array', minItems: input.targetAtomIds.length, maxItems: input.targetAtomIds.length,
+            items: { type: 'string', enum: input.targetAtomIds },
+          },
           operations: {
             type: 'array', minItems: 1, maxItems: 2,
             items: {
@@ -1064,7 +1067,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
             items: {
               type: 'object', additionalProperties: false, required: ['atomId', 'beatIds'],
               properties: {
-                atomId: { type: 'string' },
+                atomId: { type: 'string', enum: input.targetAtomIds },
                 beatIds: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'string' } },
               },
             },
@@ -1098,18 +1101,38 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       const response = await this.callLLM([{ role: 'user', content: prompt }], 2, { jsonSchema: schema });
       const patch = this.parseJSON<SceneSemanticPatch>(response);
       if (patch.baseSceneHash !== input.baseSceneHash || patch.targetTaskId !== input.targetTaskId) {
-        return { success: false, error: 'Scene semantic patch did not preserve its immutable base hash and task target.', rawResponse: response };
+        return {
+          success: false,
+          error: 'Scene semantic patch did not preserve its immutable base hash and task target.',
+          rawResponse: response,
+          failure: { code: 'structured_output_invalid', retryClass: 'correct_structured_output', provider: this.config.provider },
+        };
       }
       const returnedAtomIds = new Set(patch.targetAtomIds);
       if (returnedAtomIds.size !== input.targetAtomIds.length || input.targetAtomIds.some((atomId) => !returnedAtomIds.has(atomId))) {
-        return { success: false, error: 'Scene semantic patch did not preserve the exact target atom set.', rawResponse: response };
+        return {
+          success: false,
+          error: 'Scene semantic patch did not preserve the exact target atom set.',
+          rawResponse: response,
+          failure: { code: 'structured_output_invalid', retryClass: 'correct_structured_output', provider: this.config.provider },
+        };
       }
       if (patch.operations.some((operation) => operation.beatId && !patchableBeatIds.has(operation.beatId))) {
-        return { success: false, error: 'Scene semantic patch targeted a beat outside its bounded patch window.', rawResponse: response };
+        return {
+          success: false,
+          error: 'Scene semantic patch targeted a beat outside its bounded patch window.',
+          rawResponse: response,
+          failure: { code: 'structured_output_invalid', retryClass: 'correct_structured_output', provider: this.config.provider },
+        };
       }
       const claimedAtomIds = new Set(patch.claimedEvidence.map((claim) => claim.atomId));
       if (input.targetAtomIds.some((atomId) => !claimedAtomIds.has(atomId))) {
-        return { success: false, error: 'Scene semantic patch omitted claimed evidence for a target atom.', rawResponse: response };
+        return {
+          success: false,
+          error: 'Scene semantic patch omitted claimed evidence for a target atom.',
+          rawResponse: response,
+          failure: { code: 'structured_output_invalid', retryClass: 'correct_structured_output', provider: this.config.provider },
+        };
       }
       return { success: true, data: patch, rawResponse: response };
     } catch (error) {

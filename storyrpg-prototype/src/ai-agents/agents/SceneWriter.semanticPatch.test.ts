@@ -130,4 +130,38 @@ describe('SceneWriter semantic patch contract', () => {
       },
     });
   });
+
+  it('classifies immutable target drift for bounded structured correction', async () => {
+    BaseAgent.setLlmTransportOverride(async () => JSON.stringify({
+      baseSceneHash: 'base-hash',
+      targetTaskId: 'task-1',
+      targetAtomIds: ['atom-club'],
+      operations: [{
+        op: 'replace_beat_text',
+        beatId: 'beat-2',
+        text: 'Stela offers Kylie a chair and waits until she accepts it.',
+      }],
+      claimedEvidence: [{ atomId: 'atom-club', beatIds: ['beat-2'] }],
+    }));
+
+    const result = await writer().executeSemanticPatch({
+      baseSceneHash: 'base-hash',
+      scene,
+      targetTaskId: 'task-1',
+      targetAtomIds: ['atom-friendly'],
+      targetAtoms: [targetAtoms[0]],
+      preserveAtoms: [],
+      forbiddenAtoms: [],
+      concurrentFindings: [],
+      repairFeedback: 'Show the missing relationship change.',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      failure: {
+        code: 'structured_output_invalid',
+        retryClass: 'correct_structured_output',
+      },
+    });
+  });
 });

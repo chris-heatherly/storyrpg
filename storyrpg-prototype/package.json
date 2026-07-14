@@ -52,6 +52,7 @@
     "analyze:stat-balance": "npx ts-node --esm scripts/analyze-stat-balance.ts",
     "analyze:openers": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/analyze-sentence-openers.ts",
     "replay:gates": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/replay-gates.ts",
+    "replay:owner-repair": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/replay-owner-repair.ts",
     "rollout:gates": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/gate-rollout-status.ts",
     "validation:audit": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/audit-validation.ts",
     "validation:kill-table": "node scripts/gate-kill-table.mjs",

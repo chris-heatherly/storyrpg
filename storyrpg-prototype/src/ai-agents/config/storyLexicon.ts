@@ -98,6 +98,7 @@ function normalizeDeclaredContainer(value: string): string {
     .replace(/['’]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/^(?:set in|the city of)\s+/, '')
+    .replace(/^(?:(?:modern day|present day|near future|far future|post war|postwar|ancient|modern|contemporary|medieval|victorian|regency|renaissance|futuristic|future)\s+)+/, '')
     .replace(/\s+/g, ' ')
     .trim();
 }

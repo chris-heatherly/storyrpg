@@ -34,7 +34,7 @@ describe('storyLexicon (R2.4)', () => {
 
   it('derives a run-scoped container from the declared primary setting', () => {
     const lexicon = withDeclaredContainerLocations(GENRE_NEUTRAL_LEXICON, [
-      'Lisbon, Portugal (including Alfama and the riverfront)',
+      'Modern Lisbon, Portugal (including Alfama and the riverfront)',
     ]);
     expect(lexicon.containerCities).toContain('lisbon');
     expect(lexicon.containerCities).not.toContain('portugal');

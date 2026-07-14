@@ -36,7 +36,7 @@ describe('sceneSpatialUnitPolicy', () => {
 
   it('does not split a declared city container from its child scene location', () => {
     setStoryLexicon(withDeclaredContainerLocations(GENRE_NEUTRAL_LEXICON, [
-      'Nairobi, Kenya (including Westlands and Karura Forest)',
+      'Present-day Nairobi, Kenya (including Westlands and Karura Forest)',
     ]));
     const violation = detectSpatialUnitViolations({
       sceneId: 's1-1',
@@ -54,7 +54,7 @@ describe('sceneSpatialUnitPolicy', () => {
 
   it('maps city exploration to its declared container instead of an abstract location', () => {
     setStoryLexicon(withDeclaredContainerLocations(GENRE_NEUTRAL_LEXICON, [
-      'Nairobi, Kenya',
+      'Modern Nairobi, Kenya',
     ]));
     expect(strictSceneLocationCues(
       ['Nairobi Streets'],

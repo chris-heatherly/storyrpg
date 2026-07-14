@@ -58,4 +58,21 @@ describe('applySceneSemanticPatch', () => {
     });
     expect(result.scene.beats.map((beat) => beat.id)).toEqual(['b1', expect.stringContaining('semantic-repair'), 'b2', 'b3']);
   });
+
+  it('allows a caller-bounded third local operation without widening the beat window', () => {
+    const baseline = scene();
+    const patch = {
+      baseSceneHash: stableHash(baseline), targetTaskId: 'task-1', targetAtomIds: ['atom-1'], claimedEvidence: [],
+      operations: [
+        { op: 'replace_beat_text' as const, beatId: 'b1', text: 'Stela gives Kylie her full name and offers a chair by the counter.' },
+        { op: 'replace_beat_text' as const, beatId: 'b2', text: 'Mika tests the newcomer with a question, then accepts her answer.' },
+        { op: 'insert_beat_after' as const, beatId: 'b2', text: 'Stela answers by telling Kylie where the Lantern Circle meets.' },
+      ],
+    };
+
+    expect(() => applySceneSemanticPatch(baseline, patch)).toThrow(/between one and 2 operations/);
+    const result = applySceneSemanticPatch(baseline, patch, 3);
+    expect(result.changedBeatIds).toEqual(expect.arrayContaining(['b1', 'b2']));
+    expect(result.insertedBeatIds).toHaveLength(1);
+  });
 });

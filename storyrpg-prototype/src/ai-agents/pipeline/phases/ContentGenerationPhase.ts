@@ -2546,6 +2546,7 @@ export class ContentGenerationPhase {
               message: `Scene ${sceneBlueprint.id} is repairing canonical realization fingerprint ${repairTarget.fingerprint} (call ${patchCallAttempts}, authored ${authoredRepairAttempts + 1}/2, ${capacityTier})`,
               data: { repairTarget, findings: ownerTaskFindings, requestHash, capacityTier },
             });
+            const semanticPatchOperationLimit = capacityTier === 'expanded' ? 4 : 3;
             const ownerTaskRetry = await withTimeout(
               this.deps.sceneWriter.executeSemanticPatch({
                 baseSceneHash: stableHash(sceneContent),
@@ -2558,6 +2559,7 @@ export class ContentGenerationPhase {
                 concurrentFindings,
                 repairFeedback: feedback,
                 capacityTier,
+                maxOperations: semanticPatchOperationLimit,
               }),
               PIPELINE_TIMEOUTS.llmAgent,
               `SceneWriter.executeSemanticPatch(${sceneBlueprint.id} owner-realization-retry-${authoredRepairAttempts + 1})`,
@@ -2599,7 +2601,11 @@ export class ContentGenerationPhase {
             const authoredAttempt = authoredRepairAttempts + 1;
             let appliedPatch: ReturnType<typeof applySceneSemanticPatch>;
             try {
-              appliedPatch = applySceneSemanticPatch(sceneContent, ownerTaskRetry.data);
+              appliedPatch = applySceneSemanticPatch(
+                sceneContent,
+                ownerTaskRetry.data,
+                semanticPatchOperationLimit,
+              );
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
               ownerRepairHistory.push({
@@ -2612,7 +2618,7 @@ export class ContentGenerationPhase {
                 error: message,
               });
               priorPatchFeedback = [message];
-              capacityTier = 'standard';
+              if (/operations/i.test(message) && capacityTier === 'standard') capacityTier = 'expanded';
               context.emit({
                 type: 'warning', phase: 'scenes',
                 message: `Scene ${sceneBlueprint.id} rejected an invalid semantic patch: ${message}`,

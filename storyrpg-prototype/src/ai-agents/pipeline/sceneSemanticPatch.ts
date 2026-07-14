@@ -26,11 +26,12 @@ function assertPatchText(text: string): void {
 export function applySceneSemanticPatch(
   scene: SceneContent,
   patch: SceneSemanticPatch,
+  maxOperations = 2,
 ): AppliedSceneSemanticPatch {
   const baseHash = stableHash(scene);
   if (patch.baseSceneHash !== baseHash) throw new Error('Semantic patch base scene hash is stale.');
-  if (!Array.isArray(patch.operations) || patch.operations.length < 1 || patch.operations.length > 2) {
-    throw new Error('Semantic patch must contain one or two operations.');
+  if (!Array.isArray(patch.operations) || patch.operations.length < 1 || patch.operations.length > maxOperations) {
+    throw new Error(`Semantic patch must contain between one and ${maxOperations} operations.`);
   }
 
   const candidate = cloneScene(scene);

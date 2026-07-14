@@ -243,7 +243,9 @@ the targeted fingerprint without introducing a newly failing task; atom-level
 fingerprints may move only within tasks that were already blocking. Each patch
 request also carries every currently passing positive atom from every scene-owned
 task as immutable preserve guidance, rather than protecting only siblings of the
-target atom. Unresolved SceneWriter-owned tasks abort
+target atom. Production patches permit up to three operations over the same two
+adjacent beats, or four only after an explicit expanded-capacity escalation; the
+whole candidate still replays every scene-owned task before adoption. Unresolved SceneWriter-owned tasks abort
 before ChoiceAuthor, callback accounting, completion status, or checkpointing.
 Failed candidates and full semantic receipts are persisted before failure for
 deterministic replay. Typed failure code, owner stage, retry class, issue codes,

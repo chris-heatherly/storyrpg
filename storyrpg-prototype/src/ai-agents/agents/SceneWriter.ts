@@ -516,6 +516,7 @@ export interface SceneSemanticPatchInput {
   concurrentFindings: string[];
   repairFeedback: string;
   capacityTier?: 'standard' | 'expanded';
+  maxOperations?: number;
 }
 
 function semanticPatchWindow(scene: SceneContent, atoms: NarrativeEvidenceAtom[]): GeneratedBeat[] {
@@ -1032,6 +1033,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
 
   async executeSemanticPatch(input: SceneSemanticPatchInput): Promise<AgentResponse<SceneSemanticPatch>> {
     const capacityTier = input.capacityTier ?? 'standard';
+    const maxOperations = Math.max(1, Math.min(4, input.maxOperations ?? 2));
     const patchableBeats = semanticPatchWindow(input.scene, input.targetAtoms);
     const patchableBeatIds = new Set(patchableBeats.map((beat) => beat.id));
     const schema = {
@@ -1052,7 +1054,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
             items: { type: 'string', enum: input.targetAtomIds },
           },
           operations: {
-            type: 'array', minItems: 1, maxItems: 2,
+            type: 'array', minItems: 1, maxItems: maxOperations,
             items: {
               type: 'object', additionalProperties: false, required: ['op', 'text'],
               properties: {
@@ -1078,7 +1080,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
     const prompt = [
       'You are repairing one semantic realization defect in an otherwise accepted interactive-fiction scene.',
       'Write reader-facing prose. Return a patch only, never a replacement scene.',
-      'Change at most two adjacent beats. Preserve every unchanged word, canonical name, location, action, relationship stage, and consequence.',
+      `Use the minimum edits needed, with at most ${maxOperations} operations across the same two adjacent beats. Preserve every unchanged word, canonical name, location, action, relationship stage, and consequence.`,
       'Use replace_beat_text when possible. Use insert_beat_after only when the meaning cannot fit naturally in an existing beat.',
       'For required target atoms, make the missing meaning explicit through natural action or dialogue without copying contract language.',
       'For forbidden target atoms, remove the prohibited label or meaning while preserving the earned behavior and every unrelated fact.',

@@ -87,9 +87,11 @@ describe('SceneWriter semantic patch contract', () => {
       }] as any,
       concurrentFindings: ['A premature relationship label is present.'],
       repairFeedback: 'Realize both missing meanings without advancing the relationship label.',
+      maxOperations: 3,
     });
 
     expect(result.success).toBe(true);
+    expect(prompt).toContain('at most 3 operations across the same two adjacent beats');
     expect(prompt).toContain('Stela is the speaker');
     expect(prompt).toContain('Do not label them friends yet');
     expect(prompt).toContain('beat-5');

@@ -240,7 +240,10 @@ Repair candidates are immutable snapshots and are replay-validated;
 non-identical findings for the same snapshot fail with a typed
 `validator_snapshot_mismatch` error. A candidate is adopted only when it clears
 the targeted fingerprint without introducing a newly failing task; atom-level
-fingerprints may move only within tasks that were already blocking. Unresolved SceneWriter-owned tasks abort
+fingerprints may move only within tasks that were already blocking. Each patch
+request also carries every currently passing positive atom from every scene-owned
+task as immutable preserve guidance, rather than protecting only siblings of the
+target atom. Unresolved SceneWriter-owned tasks abort
 before ChoiceAuthor, callback accounting, completion status, or checkpointing.
 Failed candidates and full semantic receipts are persisted before failure for
 deterministic replay. Typed failure code, owner stage, retry class, issue codes,

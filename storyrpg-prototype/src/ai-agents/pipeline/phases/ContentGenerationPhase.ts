@@ -291,6 +291,7 @@ import {
 } from '../realizationTaskGate';
 import { validateSemanticRealizationTasks } from '../semanticValidationCoordinator';
 import { inferNarrativeVerificationAuthority } from '../realizationVerificationAuthority';
+import type { NarrativeAtomVerdict } from '../realizationTaskSatisfaction';
 import { applySceneSemanticPatch } from '../sceneSemanticPatch';
 import type {
   NarrativeEvidenceAtom,
@@ -373,6 +374,25 @@ export function ownerRealizationCraftInstruction(atom: NarrativeEvidenceAtom): s
     default:
       return '';
   }
+}
+
+export function passedScenePreserveAtoms(
+  tasks: NarrativeRealizationTask[],
+  verdicts: NarrativeAtomVerdict[],
+  targetAtomIds: Set<string>,
+): NarrativeEvidenceAtom[] {
+  const outcomesByTaskAtom = new Map<string, NarrativeAtomVerdict['outcome'][]>();
+  for (const verdict of verdicts) {
+    const key = `${verdict.taskId}\u0000${verdict.atomId}`;
+    const outcomes = outcomesByTaskAtom.get(key) ?? [];
+    outcomes.push(verdict.outcome);
+    outcomesByTaskAtom.set(key, outcomes);
+  }
+  return tasks.flatMap((task) => task.evidenceAtoms.filter((atom) => {
+    if (atom.polarity === 'forbidden' || targetAtomIds.has(atom.id)) return false;
+    const outcomes = outcomesByTaskAtom.get(`${task.id}\u0000${atom.id}`) ?? [];
+    return outcomes.length > 0 && outcomes.every((outcome) => outcome === 'pass');
+  }));
 }
 
 function ownerRealizationRepairFeedback(
@@ -2454,14 +2474,19 @@ export class ContentGenerationPhase {
             error?: string;
             failure?: AgentResponse<unknown>['failure'];
           }> = [];
-          let ownerTaskFindings = prioritizeOwnerRepairFindings((await this.validateNarrativeRealization({
+          const initialOwnerValidation = await this.validateNarrativeRealization({
             sceneId: sceneBlueprint.id,
             tasks: canonicalSceneWriterTasks,
             sceneContent,
             mode: 'owner',
             currentStage: 'scene_writer',
             candidateHash: stableHash(sceneContent),
-          })).findings.filter((finding) => finding.blocking), canonicalSceneWriterTasks);
+          });
+          let ownerTaskFindings = prioritizeOwnerRepairFindings(
+            initialOwnerValidation.findings.filter((finding) => finding.blocking),
+            canonicalSceneWriterTasks,
+          );
+          let ownerAtomVerdicts = initialOwnerValidation.semanticReceipt.atomVerdicts;
           let authoredRepairAttempts = 0;
           let patchCallAttempts = 0;
           let capacityTier: 'standard' | 'expanded' = 'standard';
@@ -2481,8 +2506,11 @@ export class ContentGenerationPhase {
             ])];
             const targetAtomIdSet = new Set(targetAtomIds);
             const targetAtoms = targetTask?.evidenceAtoms.filter((atom) => targetAtomIdSet.has(atom.id)) ?? [];
-            const preserveAtoms = targetTask?.evidenceAtoms.filter((atom) =>
-              atom.polarity !== 'forbidden' && !targetAtomIdSet.has(atom.id)) ?? [];
+            const preserveAtoms = passedScenePreserveAtoms(
+              canonicalSceneWriterTasks,
+              ownerAtomVerdicts,
+              targetAtomIdSet,
+            );
             const forbiddenAtoms = canonicalSceneWriterTasks.flatMap((task) =>
               task.evidenceAtoms.filter((atom) => atom.polarity === 'forbidden'));
             const concurrentFindings = ownerTaskFindings.map((finding) =>
@@ -2603,22 +2631,23 @@ export class ContentGenerationPhase {
                 candidate: candidateSnapshot,
               });
             }
-            let retryFindings: RealizationTaskGateFinding[] | undefined;
-            for (let judgeAttempt = 1; judgeAttempt <= 2 && !retryFindings; judgeAttempt += 1) {
+            let retryValidation: Awaited<ReturnType<ContentGenerationPhase['validateNarrativeRealization']>> | undefined;
+            for (let judgeAttempt = 1; judgeAttempt <= 2 && !retryValidation; judgeAttempt += 1) {
               try {
-                retryFindings = (await this.validateNarrativeRealization({
+                retryValidation = await this.validateNarrativeRealization({
                   sceneId: sceneBlueprint.id,
                   tasks: canonicalSceneWriterTasks,
                   sceneContent: candidateSnapshot,
                   mode: 'owner',
                   currentStage: 'scene_writer',
                   candidateHash,
-                })).findings.filter((finding) => finding.blocking);
+                });
               } catch (error) {
                 if (!(error instanceof PipelineError) || error.code !== 'semantic_judge_unavailable' || judgeAttempt >= 2) throw error;
               }
             }
-            if (!retryFindings) continue;
+            if (!retryValidation) continue;
+            const retryFindings = retryValidation.findings.filter((finding) => finding.blocking);
             const replayFindings = (await this.validateNarrativeRealization({
               sceneId: sceneBlueprint.id,
               tasks: canonicalSceneWriterTasks,
@@ -2652,20 +2681,23 @@ export class ContentGenerationPhase {
             });
             let finalAdopt = adoptCandidate;
             let finalFindings = retryFindings;
+            let finalAtomVerdicts = retryValidation.semanticReceipt.atomVerdicts;
             // R1.3: if rejected solely due to a single newly appeared claim, re-sample once.
             if (!adoptCandidate) {
               const previousFingerprintsProbe = new Set(ownerTaskFindings.map((finding) => finding.fingerprint));
               const introduced = retryFindings.filter((finding) => !previousFingerprintsProbe.has(finding.fingerprint));
               if (introduced.length === 1) {
-                const resampled = (await this.validateNarrativeRealization({
+                const resampledValidation = await this.validateNarrativeRealization({
                   sceneId: sceneBlueprint.id,
                   tasks: canonicalSceneWriterTasks,
                   sceneContent: candidateSnapshot,
                   mode: 'owner',
                   currentStage: 'scene_writer',
                   candidateHash,
-                })).findings.filter((finding) => finding.blocking);
+                });
+                const resampled = resampledValidation.findings.filter((finding) => finding.blocking);
                 finalFindings = resampled;
+                finalAtomVerdicts = resampledValidation.semanticReceipt.atomVerdicts;
                 finalAdopt = shouldAdoptOwnerRepairCandidate({
                   previous: ownerTaskFindings,
                   candidate: resampled,
@@ -2722,6 +2754,7 @@ export class ContentGenerationPhase {
               sceneContent.requiredBeats = sceneRealizationBlueprint.requiredBeats;
               sceneContent.signatureMoment = sceneRealizationBlueprint.signatureMoment;
               ownerTaskFindings = prioritizeOwnerRepairFindings(finalFindings, canonicalSceneWriterTasks);
+              ownerAtomVerdicts = finalAtomVerdicts;
               priorPatchFeedback = [];
             } else {
               priorPatchFeedback = finalFindings.map((finding) =>

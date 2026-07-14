@@ -435,6 +435,34 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
     })).toBe('');
   });
 
+  it('protects every currently satisfied scene atom during a focused patch', async () => {
+    const { passedScenePreserveAtoms } = await import('./ContentGenerationPhase');
+    const tasks = [{
+      id: 'event-task',
+      evidenceAtoms: [
+        { id: 'target', polarity: 'required' },
+        { id: 'event-pass', polarity: 'required' },
+      ],
+    }, {
+      id: 'presence-task',
+      evidenceAtoms: [
+        { id: 'full-name', polarity: 'required' },
+        { id: 'blocked-label', polarity: 'forbidden' },
+      ],
+    }] as any;
+    const verdicts = [
+      { taskId: 'event-task', atomId: 'target', outcome: 'miss' },
+      { taskId: 'event-task', atomId: 'event-pass', outcome: 'pass' },
+      { taskId: 'presence-task', atomId: 'full-name', outcome: 'pass' },
+      { taskId: 'presence-task', atomId: 'blocked-label', outcome: 'pass' },
+    ] as any;
+
+    expect(passedScenePreserveAtoms(tasks, verdicts, new Set(['target'])).map((atom) => atom.id)).toEqual([
+      'event-pass',
+      'full-name',
+    ]);
+  });
+
   it('returns owner-stage semantic uncertainty to the repair loop but blocks it at final regression', async () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
     const phase = new ContentGenerationPhase({

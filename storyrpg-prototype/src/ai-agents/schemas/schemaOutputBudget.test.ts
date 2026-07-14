@@ -27,6 +27,7 @@ const BUILDER_ARGS: Record<string, unknown[]> = {
   buildSceneContentJsonSchema: [6],
   buildCharacterBibleJsonSchema: [4],
   buildBranchAnnotationJsonSchema: [{ pathCount: 3, reconvergenceCount: 2 }],
+  buildEpisodeBlueprintJsonSchema: [{ targetSceneCount: 6 }],
 };
 
 const SCHEMA_DIR = __dirname;

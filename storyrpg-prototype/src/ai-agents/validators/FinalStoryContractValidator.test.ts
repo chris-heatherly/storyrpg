@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { BITE_ME_LEXICON, resetStoryLexiconFromEnv, setStoryLexicon } from '../config/storyLexicon';
 import type { Story } from '../../types';
 import { EncounterProseIntegrityValidator } from './EncounterProseIntegrityValidator';
 import { FinalStoryContractValidator } from './FinalStoryContractValidator';
+
+beforeEach(() => setStoryLexicon(BITE_ME_LEXICON));
+afterEach(() => resetStoryLexiconFromEnv({}));
 
 const skills = {
   perception: 10,

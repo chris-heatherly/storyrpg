@@ -1,5 +1,7 @@
 import type { StructuredJsonSchema } from '../agents/BaseAgent';
 
+export const CHARACTER_BIBLE_SCHEMA_VERSION = '2';
+
 const stringArray = {
   type: 'array',
   items: { type: 'string' },

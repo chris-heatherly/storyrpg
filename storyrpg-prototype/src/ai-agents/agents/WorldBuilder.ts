@@ -13,6 +13,9 @@ import { BaseAgent, AgentResponse } from './BaseAgent';
 import { resolveAuthoredContext } from '../utils/documentSectionSlice';
 import { buildWorldBibleJsonSchema, buildWorldLocationsJsonSchema } from '../schemas/worldBibleSchema';
 
+/** Bump whenever prompt assembly or normalization changes cache-relevant output semantics. */
+export const WORLD_BUILDER_PROMPT_POLICY_VERSION = '2026-07-14.1';
+
 // Input types
 export interface WorldBuilderInput {
   // Story context

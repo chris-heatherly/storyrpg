@@ -1,6 +1,7 @@
 import type { ChoiceSet } from '../agents/ChoiceAuthor';
 import type { EncounterStructure } from '../agents/EncounterArchitect';
 import type { SceneContent } from '../agents/SceneWriter';
+import type { DeferredRealizationRecord } from './deferredRealization';
 
 export const EPISODE_DRAFT_CHECKPOINT_VERSION = 1;
 
@@ -12,6 +13,7 @@ export interface EpisodeDraftCheckpoint {
   sceneContents: SceneContent[];
   choiceSets: ChoiceSet[];
   encounters: Array<[string, EncounterStructure]>;
+  deferredRealizationRecords?: DeferredRealizationRecord[];
 }
 
 export function buildEpisodeDraftCheckpoint(input: {
@@ -20,6 +22,7 @@ export function buildEpisodeDraftCheckpoint(input: {
   sceneContents: SceneContent[];
   choiceSets: ChoiceSet[];
   encounters: Map<string, EncounterStructure>;
+  deferredRealizationRecords?: DeferredRealizationRecord[];
 }): EpisodeDraftCheckpoint {
   return {
     version: EPISODE_DRAFT_CHECKPOINT_VERSION,
@@ -29,6 +32,7 @@ export function buildEpisodeDraftCheckpoint(input: {
     sceneContents: input.sceneContents,
     choiceSets: input.choiceSets,
     encounters: Array.from(input.encounters.entries()),
+    deferredRealizationRecords: input.deferredRealizationRecords ?? [],
   };
 }
 
@@ -40,7 +44,7 @@ export function buildEpisodeDraftCheckpoint(input: {
 export function readEpisodeDraftCheckpoint(
   value: unknown,
   expected: { episodeNumber: number; blueprintId?: string },
-): Pick<EpisodeDraftCheckpoint, 'sceneContents' | 'choiceSets' | 'encounters'> | undefined {
+): Pick<EpisodeDraftCheckpoint, 'sceneContents' | 'choiceSets' | 'encounters' | 'deferredRealizationRecords'> | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const candidate = value as Partial<EpisodeDraftCheckpoint>;
   if (candidate.version === undefined) {
@@ -49,6 +53,9 @@ export function readEpisodeDraftCheckpoint(
       sceneContents: candidate.sceneContents,
       choiceSets: candidate.choiceSets,
       encounters: Array.isArray(candidate.encounters) ? candidate.encounters : [],
+      deferredRealizationRecords: Array.isArray(candidate.deferredRealizationRecords)
+        ? candidate.deferredRealizationRecords
+        : [],
     };
   }
   if (
@@ -64,5 +71,8 @@ export function readEpisodeDraftCheckpoint(
     sceneContents: candidate.sceneContents,
     choiceSets: candidate.choiceSets,
     encounters: candidate.encounters,
+    deferredRealizationRecords: Array.isArray(candidate.deferredRealizationRecords)
+      ? candidate.deferredRealizationRecords
+      : [],
   };
 }

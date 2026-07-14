@@ -4,6 +4,8 @@ import { resolveStructuredCallBudget, structuredMaxTokens } from '../agents/Base
 import { buildSceneContentJsonSchema } from './sceneContentSchema';
 import { buildWorldBibleJsonSchema, buildWorldLocationsJsonSchema } from './worldBibleSchema';
 import { buildCharacterBibleJsonSchema } from './characterBibleSchema';
+import { buildEpisodeBlueprintJsonSchema } from './episodeBlueprintSchema';
+import { buildSeasonPlanJsonSchema } from './seasonPlanSchema';
 
 // The default cap used by every provider path when a schema declares no
 // maxOutputTokens. Keep this in sync with BaseAgent's callLLM sites (8192).
@@ -71,6 +73,34 @@ describe('provider-aware structured call budgets', () => {
       provider: 'gemini',
       model: 'gemini-2.5-pro',
     })).toThrow(/requires 2304, but the available cap is 2048/);
+  });
+
+  it('preserves complete planning JSON capacity on Gemini 2.5 and Gemini 3', () => {
+    const fullBlueprint = buildEpisodeBlueprintJsonSchema({ targetSceneCount: 8 });
+    const compactBlueprint = buildEpisodeBlueprintJsonSchema({ targetSceneCount: 8, compact: true });
+    const fullSeason = buildSeasonPlanJsonSchema();
+
+    expect(resolveStructuredCallBudget({
+      configured: 32768,
+      schema: fullBlueprint,
+      defaultCap: DEFAULT_CAP,
+      provider: 'gemini',
+      model: 'gemini-2.5-pro',
+    })).toMatchObject({ visibleTokens: 22000, reasoningTokens: 2048, maxOutputTokens: 24560 });
+    expect(resolveStructuredCallBudget({
+      configured: 32768,
+      schema: fullSeason,
+      defaultCap: DEFAULT_CAP,
+      provider: 'gemini',
+      model: 'gemini-3-pro',
+    })).toMatchObject({ visibleTokens: 22000, reasoningTokens: 4096, maxOutputTokens: 26608 });
+    expect(resolveStructuredCallBudget({
+      configured: 32768,
+      schema: compactBlueprint,
+      defaultCap: DEFAULT_CAP,
+      provider: 'gemini',
+      model: 'gemini-3-pro',
+    })).toMatchObject({ visibleTokens: 14000, reasoningTokens: 2048, maxOutputTokens: 16560 });
   });
 });
 

@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { BITE_ME_LEXICON, resetStoryLexiconFromEnv, setStoryLexicon } from '../config/storyLexicon';
 import { detectPrimaryStoryEventCues, detectRealizedStoryEventCues, detectStoryEventCues } from './storyEventCues';
+
+beforeEach(() => setStoryLexicon(BITE_ME_LEXICON));
+afterEach(() => resetStoryLexiconFromEnv({}));
 
 describe('detectStoryEventCues', () => {
   it('does not treat a social group name alone as a venue-door event', () => {

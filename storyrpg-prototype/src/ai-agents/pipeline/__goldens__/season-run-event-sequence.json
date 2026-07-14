@@ -423,7 +423,7 @@
     {
       "type": "debug",
       "phase": "incremental_contract_ep_1",
-      "message": "Episode 1 contract has 25 blocker(s); attempting episode-local repair before completion."
+      "message": "Episode 1 contract has 25 blocker(s) and 0 deferred realization handoff(s); running episode-local semantic repair before completion."
     },
     {
       "type": "debug",
@@ -813,7 +813,7 @@
     {
       "type": "debug",
       "phase": "incremental_contract_ep_2",
-      "message": "Episode 2 contract has 24 blocker(s); attempting episode-local repair before completion."
+      "message": "Episode 2 contract has 24 blocker(s) and 0 deferred realization handoff(s); running episode-local semantic repair before completion."
     },
     {
       "type": "debug",

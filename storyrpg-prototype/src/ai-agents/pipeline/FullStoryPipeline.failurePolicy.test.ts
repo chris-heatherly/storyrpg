@@ -107,6 +107,13 @@ function makeParams(outputDirectory: string, brief = makeBrief()) {
 }
 
 describe('FullStoryPipeline episode failure policy', () => {
+  it('surfaces terminal failure fingerprints as worker checkpoints', async () => {
+    const pipeline = await makePipeline('fail_fast');
+
+    expect((pipeline as any).mapCheckpointPhaseToStepId('failure_fingerprint'))
+      .toBe('failure_fingerprint');
+  });
+
   it('rethrows episode generation failures when generation.failurePolicy is fail_fast', async () => {
     const outputDirectory = mkdtempSync(join(tmpdir(), 'storyrpg-fail-fast-'));
     try {

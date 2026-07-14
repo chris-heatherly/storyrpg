@@ -484,6 +484,7 @@
         "blueprintId",
         "choiceSets",
         "contentContract",
+        "deferredRealizationRecords",
         "encounters",
         "episodeNumber",
         "sceneContents",

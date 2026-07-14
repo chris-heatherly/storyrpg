@@ -21,6 +21,9 @@ import type { CharacterTreatmentRealizationContract } from '../../types/scenePla
 import { resolveAuthoredContext } from '../utils/documentSectionSlice';
 import { buildCharacterBibleJsonSchema } from '../schemas/characterBibleSchema';
 
+/** Bump whenever prompt assembly or normalization changes cache-relevant output semantics. */
+export const CHARACTER_DESIGNER_PROMPT_POLICY_VERSION = '2026-07-14.1';
+
 // Input types
 export interface CharacterDesignerInput {
   // Story context

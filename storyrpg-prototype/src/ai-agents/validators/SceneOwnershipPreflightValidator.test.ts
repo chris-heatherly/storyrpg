@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { BITE_ME_LEXICON, resetStoryLexiconFromEnv, setStoryLexicon } from '../config/storyLexicon';
 import { SceneOwnershipPreflightValidator, type SceneOwnershipPreflightScene } from './SceneOwnershipPreflightValidator';
+
+beforeEach(() => setStoryLexicon(BITE_ME_LEXICON));
+afterEach(() => resetStoryLexiconFromEnv({}));
 
 function scene(overrides: Partial<SceneOwnershipPreflightScene>): SceneOwnershipPreflightScene {
   return {

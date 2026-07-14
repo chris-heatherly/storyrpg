@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { BITE_ME_LEXICON, resetStoryLexiconFromEnv, setStoryLexicon } from '../config/storyLexicon';
 
 import type { SceneConstructionSceneLike } from './sceneConstructionProfile';
 import {
@@ -9,6 +10,9 @@ import {
   collectSceneConstructionProfileIssues,
   compileSceneConstructionProfile,
 } from './sceneConstructionProfile';
+
+beforeEach(() => setStoryLexicon(BITE_ME_LEXICON));
+afterEach(() => resetStoryLexiconFromEnv({}));
 
 describe('sceneConstructionProfile compiler', () => {
   it('compiles one primary turn and merges duplicate obligations from different lanes', () => {

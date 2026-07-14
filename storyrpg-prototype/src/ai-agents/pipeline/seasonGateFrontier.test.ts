@@ -24,4 +24,9 @@ describe('createSeasonGateEnforcement (R2.3)', () => {
     });
     expect(enforce()).toBe(true);
   });
+
+  it('does not hard-enforce episode two when no prior episode is generated', () => {
+    expect(createSeasonGateEnforcement({ episodeNumber: 1, generatedThroughEpisode: 0 })()).toBe(true);
+    expect(createSeasonGateEnforcement({ episodeNumber: 2, generatedThroughEpisode: 0 })()).toBe(false);
+  });
 });

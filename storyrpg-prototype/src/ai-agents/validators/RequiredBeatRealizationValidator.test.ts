@@ -15,7 +15,8 @@
  *  - a plan with no authored standard beats → trivially valid.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { BITE_ME_LEXICON, resetStoryLexiconFromEnv, setStoryLexicon } from '../config/storyLexicon';
 import {
   RequiredBeatRealizationValidator,
   type RequiredBeatRealizationInput,
@@ -23,6 +24,9 @@ import {
 import type { PlannedScene, RequiredBeat, SceneKind, SeasonScenePlan } from '../../types/scenePlan';
 import type { Beat } from '../../types/content';
 import type { Episode, Scene, Story } from '../../types/story';
+
+beforeEach(() => setStoryLexicon(BITE_ME_LEXICON));
+afterEach(() => resetStoryLexiconFromEnv({}));
 
 // --- builders -------------------------------------------------------------
 

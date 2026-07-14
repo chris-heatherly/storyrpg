@@ -7,10 +7,8 @@
  * ACTIVE lexicon, so a different story can supply its own proper nouns and
  * plot phrases instead of silently false-negativing on Bite-Me's.
  *
- * R2.4: Flip to genre-neutral with STORYRPG_STORY_LEXICON=genre_neutral after
- * corpus/golden regen. Until then the Bite-Me pack remains the default so
- * existing fixtures stay byte-stable. Pipeline boot calls
- * resetStoryLexiconFromEnv(); tests may still setStoryLexicon() explicitly.
+ * The default is genre-neutral. Story packs are explicit compatibility inputs,
+ * never ambient global canon inherited by unrelated generation jobs.
  */
 
 export interface StoryLexicon {
@@ -72,14 +70,14 @@ export const GENRE_NEUTRAL_LEXICON: StoryLexicon = {
   publicationTitles: [],
 };
 
-// R2.4: Bite-Me remains default until STORYRPG_STORY_LEXICON=genre_neutral.
 let activeLexicon: StoryLexicon = resolveStoryLexiconFromEnv();
 
-export function resolveStoryLexiconFromEnv(env: NodeJS.ProcessEnv = process.env): StoryLexicon {
+export function resolveStoryLexiconFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): StoryLexicon {
   const raw = (env.STORYRPG_STORY_LEXICON || '').trim().toLowerCase();
-  if (raw === 'genre_neutral' || raw === 'neutral') return GENRE_NEUTRAL_LEXICON;
-  if (raw === 'bite_me' || raw === 'biteme' || raw === '') return BITE_ME_LEXICON;
-  return BITE_ME_LEXICON;
+  if (raw === 'bite_me' || raw === 'biteme') return BITE_ME_LEXICON;
+  return GENRE_NEUTRAL_LEXICON;
 }
 
 export function getStoryLexicon(): StoryLexicon {
@@ -92,7 +90,9 @@ export function setStoryLexicon(lexicon: StoryLexicon): void {
 }
 
 /** Re-read env (tests / worker boot). */
-export function resetStoryLexiconFromEnv(env: NodeJS.ProcessEnv = process.env): StoryLexicon {
+export function resetStoryLexiconFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): StoryLexicon {
   activeLexicon = resolveStoryLexiconFromEnv(env);
   return activeLexicon;
 }

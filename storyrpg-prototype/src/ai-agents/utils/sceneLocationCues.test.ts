@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { BITE_ME_LEXICON, resetStoryLexiconFromEnv, setStoryLexicon } from '../config/storyLexicon';
 
 import {
   anchoredSceneLocationCues,
@@ -7,6 +8,9 @@ import {
   normalizeSceneLocationCue,
   uniqueMajorLocationCues,
 } from './sceneLocationCues';
+
+beforeEach(() => setStoryLexicon(BITE_ME_LEXICON));
+afterEach(() => resetStoryLexiconFromEnv({}));
 
 describe('normalizeSceneLocationCue', () => {
   it('collapses venue aliases and strips articles/accents', () => {

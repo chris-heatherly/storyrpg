@@ -167,6 +167,8 @@ export function resolveQualityCouncilConfig(
 
 // Generation settings from UI
 export interface GenerationSettingsConfig {
+  /** Optional injected cache root for deterministic tests and isolated workers. */
+  foundationCacheDir?: string;
   // Scene structure
   /** Max scenes per episode (cap)—engine may generate fewer */
   maxScenesPerEpisode?: number;

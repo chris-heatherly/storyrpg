@@ -5513,13 +5513,7 @@ REQUIREMENTS:
       }
 
       let response: string;
-      const previousMaxTokens = this.config.maxTokens;
       try {
-        if (isCompactTruncationRetry && typeof previousMaxTokens === 'number' && previousMaxTokens > 0) {
-          // Optional budget bump on the compact attempt only — same request shape is
-          // what BaseAgent refuses to blindly re-sample after MAX_TOKENS.
-          this.config.maxTokens = Math.min(Math.ceil(previousMaxTokens * 1.5), previousMaxTokens + 8192);
-        }
         response = await this.callLLM(messages, 4, {
           jsonSchema: buildEpisodeBlueprintJsonSchema({
             targetSceneCount: input.targetSceneCount,
@@ -5543,8 +5537,6 @@ REQUIREMENTS:
           });
         }
         throw llmError;
-      } finally {
-        this.config.maxTokens = previousMaxTokens;
       }
 
       console.log(`[StoryArchitect] Received response (${response.length} chars)`);

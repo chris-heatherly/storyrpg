@@ -114,13 +114,16 @@ import {
 import { PipelineEvent, PipelineEventHandler } from './events';
 import {
   computeFailureFingerprint,
-  shouldRefuseIdenticalResume,
+  guardFailureResume,
+  type FailureResumeCheckpoint,
   type FailureFingerprintRecord,
 } from './failureFingerprint';
+import { persistTerminalFailureFingerprint } from './failureFingerprintPersistence';
 import {
-  buildFoundationCacheIdentity,
-  defaultFoundationCacheDir,
+  buildCharacterFoundationCacheIdentity,
+  buildWorldFoundationCacheIdentity,
   readFoundationArtifact,
+  resolveFoundationCacheDir,
   writeFoundationArtifact,
 } from './foundationArtifactCache';
 import { resetStoryLexiconFromEnv } from '../config/storyLexicon';
@@ -243,6 +246,7 @@ import { Assembly } from './assembly';
 import { QAPhase, type QAPhaseDeps } from './phases/QAPhase';
 import { QuickValidationPhase, type QuickValidationPhaseDeps } from './phases/QuickValidationPhase';
 import { ContentGenerationPhase, type ContentGenerationPhaseDeps, type ContentGenerationResult } from './phases/ContentGenerationPhase';
+import { mergeDeferredRealizationRecords, type DeferredRealizationRecord } from './deferredRealization';
 import { AssemblyPhase } from './phases/AssemblyPhase';
 import { bindStoryMediaAssets, rethrowAsImagePhaseFailure } from './mediaBinding';
 import { EpisodeArchitecturePhase, type EpisodeArchitecturePhaseDeps } from './phases/EpisodeArchitecturePhase';
@@ -756,6 +760,7 @@ export class FullStoryPipeline {
   private set sceneValidationResults(v: SceneValidationResult[]) { this.runState.episode.sceneValidationResults = v; }
   private get allSceneValidationResults(): SceneValidationResult[] { return this.runState.run.allSceneValidationResults; }
   private set allSceneValidationResults(v: SceneValidationResult[]) { this.runState.run.allSceneValidationResults = v; }
+  private deferredRealizationRecords: DeferredRealizationRecord[] = [];
 
   // Per-encounter telemetry (I2). `encounterTelemetry` is reset per episode; season-
   // final consumers read `allEncounterTelemetry`. See encounterTelemetryCollect.ts.
@@ -1317,6 +1322,7 @@ export class FullStoryPipeline {
     bestPracticesReport?: ComprehensiveValidationReport;
     phase: string;
     validationScope?: import('../validators/runFidelityValidators').FidelityValidationScope;
+    deferredRealizationRecords?: DeferredRealizationRecord[];
   }): Promise<FinalStoryContractReport | undefined> {
     const evidence = await this.recallValidatorEvidence(
       'FinalStoryContractValidator',
@@ -1324,7 +1330,13 @@ export class FullStoryPipeline {
       input.brief,
       { artifactKinds: ['story-json', 'qa-report', 'final-contract'], artifactIds: input.brief.story.title ? [input.brief.story.title] : undefined },
     );
-    const report = await this.finalContract().enforceFinalStoryContract(input);
+    const requestedEpisodes = new Set(input.requestedEpisodeNumbers ?? []);
+    const deferredRealizationRecords = (input.deferredRealizationRecords ?? this.deferredRealizationRecords)
+      .filter((record) => requestedEpisodes.size === 0 || requestedEpisodes.has(record.episodeNumber));
+    const report = await this.finalContract().enforceFinalStoryContract({
+      ...input,
+      deferredRealizationRecords,
+    });
     if (report) {
       report.memoryEvidence = [
         this.validatorEvidenceService().summarize(evidence, evidence.corroborationRequired ? 'corroborated-evidence' : 'advisory-memory'),
@@ -1697,6 +1709,8 @@ export class FullStoryPipeline {
         return 'final_story';
       case 'Output Directory':
         return 'output_directory';
+      case 'failure_fingerprint':
+        return 'failure_fingerprint';
       default:
         return null;
     }
@@ -2535,50 +2549,14 @@ export class FullStoryPipeline {
 
   async generate(
     brief: FullCreativeBrief,
-    resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> }
+    resumeCheckpoint?: FailureResumeCheckpoint,
   ): Promise<FullPipelineResult> {
     // Input validation
     this.validateBrief(brief);
     resetStoryLexiconFromEnv();
     this.armRealizationPovContext(brief);
 
-    // R1.5: refuse identical-failure resume loops without repair patches.
-    const priorFingerprint = (resumeCheckpoint?.outputs?.failure_fingerprint
-      ?? this.getResumeOutput<FailureFingerprintRecord>(resumeCheckpoint, 'failure_fingerprint')) as FailureFingerprintRecord | undefined;
-    const hasRepairPatches = Boolean(
-      resumeCheckpoint?.outputs?.payload_patch
-      || resumeCheckpoint?.outputs?.outputs_patch
-      || (Array.isArray((resumeCheckpoint as { resumeContext?: { changedInputs?: unknown[] } } | undefined)?.resumeContext?.changedInputs)
-        && ((resumeCheckpoint as { resumeContext?: { changedInputs?: unknown[] } }).resumeContext!.changedInputs!.length > 0)),
-    );
-    if (shouldRefuseIdenticalResume({ record: priorFingerprint, hasRepairPatches })) {
-      throw new PipelineError(
-        `[DeterministicResumeLoop] Refusing resume of identical failure fingerprint ${priorFingerprint!.fingerprint} without repair patches.`,
-        'resume',
-        {
-          context: {
-            failureKind: 'deterministic_resume_loop',
-            failureFingerprint: priorFingerprint!.fingerprint,
-            resumeCount: priorFingerprint!.resumeCount,
-          },
-          failure: {
-            code: 'deterministic_resume_loop',
-            ownerStage: 'packaging',
-            retryClass: 'none',
-            issueCodes: ['deterministic_resume_loop'],
-            repairTarget: priorFingerprint!.fingerprint,
-          },
-        },
-      );
-    }
-    if (priorFingerprint?.fingerprint && resumeCheckpoint?.outputs) {
-      resumeCheckpoint.outputs.failure_fingerprint = {
-        ...priorFingerprint,
-        resumeCount: (priorFingerprint.resumeCount ?? 0) + 1,
-        recordedAt: new Date().toISOString(),
-      } satisfies FailureFingerprintRecord;
-    }
-
+    const priorFingerprint = guardFailureResume(resumeCheckpoint);
     this.events = [];
     this.checkpoints = [];
     this.telemetry = new PipelineTelemetry();
@@ -2594,6 +2572,7 @@ export class FullStoryPipeline {
     };
     this.sceneValidationResults = [];
     this.allSceneValidationResults = [];
+    this.deferredRealizationRecords = [];
     this.allEncounterTelemetry = [];
     this.resetQualityCouncil();
     this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
@@ -3043,6 +3022,7 @@ export class FullStoryPipeline {
           choiceSets: resumedSceneContent.choiceSets || [],
           encounters: new Map<string, EncounterStructure>(resumedSceneContent.encounters || []),
           validationExecutionRecords: [],
+          deferredRealizationRecords: resumedSceneContent.deferredRealizationRecords || [],
         };
       } else {
         const contentOutcome = await this.runContentGenerationWithArchitectureRetry({
@@ -3061,6 +3041,7 @@ export class FullStoryPipeline {
       }
       const { sceneContents } = contentGenerationResult;
       ({ choiceSets, encounters } = contentGenerationResult);
+      mergeDeferredRealizationRecords(this.deferredRealizationRecords, contentGenerationResult.deferredRealizationRecords);
       this.markPhaseComplete('content_generation');
       // Mark this single episode complete in the structure plan (covers the
       // resume path, where setSceneBeats never ran for the cached scenes).
@@ -3087,6 +3068,7 @@ export class FullStoryPipeline {
 	            sceneContents,
 	            choiceSets,
 	            encounters,
+	            deferredRealizationRecords: contentGenerationResult.deferredRealizationRecords,
 	          }),
 	          true
 	        );
@@ -4024,6 +4006,16 @@ export class FullStoryPipeline {
         }
       }
 
+      if (outputDirectory && !(error instanceof JobCancelledError)) {
+        await persistTerminalFailureFingerprint({
+          error,
+          errorMessage,
+          outputDirectory,
+          prior: priorFingerprint,
+          checkpoint: (record) => this.addCheckpoint('failure_fingerprint', record, false),
+        });
+      }
+
       // R0.10: never discard assembled work on abort — even if final gates never ran.
       if (outputDirectory && story) {
         try {
@@ -4061,32 +4053,34 @@ export class FullStoryPipeline {
   // unchanged while the body lives in the typed phase module.
   private async runWorldBuilding(brief: FullCreativeBrief): Promise<WorldBible> {
     const agentConfig = this.config.agents.storyArchitect;
-    const identity = buildFoundationCacheIdentity({
-      kind: 'world_bible',
+    const memoryContext = await this.getScopedAgentMemoryContext('WorldBuilder', 'world-building', brief, {
+      artifactKinds: ['source-analysis', 'season-plan'],
+    });
+    const stageInput = {
+      story: brief.story,
+      userPrompt: brief.userPrompt,
+      world: brief.world,
+      startingLocationId: brief.episode.startingLocation,
+      rawDocument: brief.rawDocument,
+      memoryContext: memoryContext || undefined,
+      locationIntroductions: brief.seasonPlan?.locationIntroductions,
+      debug: this.config.debug,
+    };
+    const identity = buildWorldFoundationCacheIdentity({
       brief,
       provider: agentConfig.provider,
       model: agentConfig.model,
+      stageInput,
+      memoryContext,
     });
-    const cacheDir = defaultFoundationCacheDir();
+    const cacheDir = resolveFoundationCacheDir(this.config.generation?.foundationCacheDir);
     const cached = readFoundationArtifact<WorldBible>(cacheDir, identity);
     if (cached) {
       this.emit({ type: 'debug', phase: 'world', message: 'Hydrated world bible from foundation artifact cache' });
       return cached;
     }
-    const memoryContext = await this.getScopedAgentMemoryContext('WorldBuilder', 'world-building', brief, {
-      artifactKinds: ['source-analysis', 'season-plan'],
-    });
     const worldBible = await new WorldBuildingPhase(this.worldBuilder).run(
-      {
-        story: brief.story,
-        userPrompt: brief.userPrompt,
-        world: brief.world,
-        startingLocationId: brief.episode.startingLocation,
-        rawDocument: brief.rawDocument,
-        memoryContext: memoryContext || undefined,
-        locationIntroductions: brief.seasonPlan?.locationIntroductions,
-        debug: this.config.debug,
-      },
+      stageInput,
       {
         config: this.config,
         emit: this.emit.bind(this),
@@ -4106,25 +4100,27 @@ export class FullStoryPipeline {
     worldBible: WorldBible
   ): Promise<CharacterBible> {
     const agentConfig = this.config.agents.storyArchitect;
-    const identity = buildFoundationCacheIdentity({
-      kind: 'character_bible',
+    const memoryContext = await this.getScopedAgentMemoryContext('CharacterDesigner', 'character-design', brief, {
+      artifactKinds: ['source-analysis', 'world-bible'],
+      characterIds: [brief.protagonist.id, ...brief.npcs.map((npc) => npc.id)],
+    });
+    const effectiveMemoryContext = memoryContext || this.renderedPipelineMemory;
+    const identity = buildCharacterFoundationCacheIdentity({
       brief,
+      worldBible,
       provider: agentConfig.provider,
       model: agentConfig.model,
+      memoryContext: effectiveMemoryContext,
     });
-    const cacheDir = defaultFoundationCacheDir();
+    const cacheDir = resolveFoundationCacheDir(this.config.generation?.foundationCacheDir);
     const cached = readFoundationArtifact<CharacterBible>(cacheDir, identity);
     if (cached) {
       this.emit({ type: 'debug', phase: 'characters', message: 'Hydrated character bible from foundation artifact cache' });
       return cached;
     }
-    const memoryContext = await this.getScopedAgentMemoryContext('CharacterDesigner', 'character-design', brief, {
-      artifactKinds: ['source-analysis', 'world-bible'],
-      characterIds: [brief.protagonist.id, ...brief.npcs.map((npc) => npc.id)],
-    });
     const deps = { characterDesigner: this.characterDesigner } satisfies Partial<CharacterDesignPhaseDeps> as unknown as CharacterDesignPhaseDeps;
     Object.defineProperties(deps, {
-      cachedPipelineMemory: { get: () => memoryContext || this.renderedPipelineMemory },
+      cachedPipelineMemory: { get: () => effectiveMemoryContext },
     });
     const characterBible = await new CharacterDesignPhase(deps).run(brief, worldBible, {
       config: this.config,
@@ -4933,12 +4929,14 @@ export class FullStoryPipeline {
     baseBrief: FullCreativeBrief,
     analysis: SourceMaterialAnalysis,
     episodeRange: { start: number; end: number; specific?: number[] },
-    resumeCheckpoint?: { steps?: Record<string, { status?: string }>; outputs?: Record<string, unknown> }
+    resumeCheckpoint?: FailureResumeCheckpoint,
   ): Promise<FullPipelineResult> {
     // Input validation
     this.validateBrief(baseBrief);
+    resetStoryLexiconFromEnv();
     this.armRealizationPovContext(baseBrief);
     BaseAgent.resetBillingQuotaState(); // WS1b: stale quota latch must not poison a resumed run
+    const priorFingerprint = guardFailureResume(resumeCheckpoint);
     analysis = this.refreshAnalysisFromTreatmentDocument(analysis, baseBrief.rawDocument);
     baseBrief = this.refreshBriefSeasonPlanFromAnalysis(baseBrief, analysis);
     if (baseBrief.seasonPlan && isSceneFirstPlanningEnabled()) {
@@ -5133,6 +5131,7 @@ export class FullStoryPipeline {
     };
     this.sceneValidationResults = [];
     this.allSceneValidationResults = [];
+    this.deferredRealizationRecords = [];
     this.allEncounterTelemetry = [];
     this.resetQualityCouncil();
     this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
@@ -6201,28 +6200,14 @@ export class FullStoryPipeline {
           // message. PipelineError carries .context (e.g. the final story
           // contract's blocking issues); ValidationError carries .issues (e.g.
           // the specific treatment-fidelity anchors that drifted).
-          const failure = episodeFailureMetadataFromError(error);
-          const failureFingerprint = failure
-            ? computeFailureFingerprint({
-                code: failure.code,
-                ownerStage: failure.ownerStage,
-                repairTarget: failure.repairTarget,
-                issueCodes: failure.issueCodes,
-                phase: failure.phase,
-                message: errorMessage,
-              })
-            : computeFailureFingerprint({ phase: 'pipeline_abort', message: errorMessage });
-          this.addCheckpoint('failure_fingerprint', {
-            fingerprint: failureFingerprint,
-            resumeCount: 0,
-            recordedAt: new Date().toISOString(),
-          } satisfies FailureFingerprintRecord, false);
-          await saveEarlyDiagnostic(this._currentOutputDirectory, 'failure-fingerprint.json', {
-            fingerprint: failureFingerprint,
-            failure,
-            message: errorMessage,
-            recordedAt: new Date().toISOString(),
+          const persistedFailure = await persistTerminalFailureFingerprint({
+            error,
+            errorMessage,
+            outputDirectory: this._currentOutputDirectory,
+            prior: priorFingerprint,
+            checkpoint: (record) => this.addCheckpoint('failure_fingerprint', record, false),
           });
+          const { failure, fingerprint: failureFingerprint } = persistedFailure;
           const details: Record<string, unknown> | undefined = failure
             ? { ...failure, failureFingerprint }
             : error instanceof ValidationError && error.issues?.length ? { issues: error.issues, failureFingerprint } : { failureFingerprint };
@@ -6628,13 +6613,14 @@ export class FullStoryPipeline {
         seasonSkillPlan: this.seasonSkillPlan,
       });
       let repairedByEpisodeContract = false;
+      const deferredForEpisode = this.deferredRealizationRecords.filter((record) => record.episodeNumber === i);
 
-      if (!report.passed || report.blockingIssues.length > 0) {
+      if (!report.passed || report.blockingIssues.length > 0 || deferredForEpisode.length > 0) {
         this.emit({
           type: 'debug',
           phase: `incremental_contract_ep_${i}`,
-          message: `Episode ${i} contract has ${report.blockingIssues.length} blocker(s); attempting episode-local repair before completion.`,
-          data: { blockingIssues: report.blockingIssues.slice(0, 5) },
+          message: `Episode ${i} contract has ${report.blockingIssues.length} blocker(s) and ${deferredForEpisode.length} deferred realization handoff(s); running episode-local semantic repair before completion.`,
+          data: { blockingIssues: report.blockingIssues.slice(0, 5), deferredRealizationRecords: deferredForEpisode },
         });
         const repairedReport = await this.enforceEpisodeIncrementalContractWithTimeout(i, {
           story: oneEpisodeStory,
@@ -6878,7 +6864,14 @@ export class FullStoryPipeline {
         },
       });
       blueprint = contentOutcome.blueprint;
-      const { sceneContents, choiceSets, encounters, validationExecutionRecords } = contentOutcome.content;
+      const {
+        sceneContents,
+        choiceSets,
+        encounters,
+        validationExecutionRecords,
+        deferredRealizationRecords,
+      } = contentOutcome.content;
+      mergeDeferredRealizationRecords(this.deferredRealizationRecords, deferredRealizationRecords);
       await this.qualityCouncil?.runChoice({
         brief: episodeBrief,
         sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,
@@ -7135,6 +7128,7 @@ export class FullStoryPipeline {
       if (narrativeDiagnosticsReport) {
         await enforceEpisodePlanCraftGates({
           episodeNumber: i,
+          generatedThroughEpisode: Math.max(0, ...this.seasonCanon.sealedEpisodeNumbers()),
           narrativeDiagnosticsReport,
           callbackLedger: this.callbackLedger,
           sceneContents,

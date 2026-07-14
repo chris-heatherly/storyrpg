@@ -22,6 +22,7 @@ import type { NarrativeDiagnosticsReport } from '../validators/narrativeDiagnost
 
 export interface EpisodePlanCraftGateDeps {
   episodeNumber: number;
+  generatedThroughEpisode: number;
   narrativeDiagnosticsReport: NarrativeDiagnosticsReport;
   callbackLedger: CallbackLedger;
   sceneContents: SceneContent[];
@@ -65,7 +66,7 @@ export async function enforceEpisodePlanCraftGates(deps: EpisodePlanCraftGateDep
         // R2.3: enforce plan gates inside the generation frontier (+1); shadow beyond.
         const seasonGateEnforcement = createSeasonGateEnforcement({
           episodeNumber: i,
-          generatedThroughEpisode: i,
+          generatedThroughEpisode: deps.generatedThroughEpisode,
         });
 
         // UNIFIED-LEDGER GATE SOURCE (2026-07-03): both setup-payoff and

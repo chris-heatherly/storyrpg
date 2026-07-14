@@ -43,6 +43,7 @@ import { EncounterStructure } from '../../agents/EncounterArchitect';
 import { BranchAnalysis } from '../../agents/BranchManager';
 import { QAReport } from '../../agents/QAAgents';
 import { Story, Episode } from '../../../types';
+import type { DeferredRealizationRecord } from '../deferredRealization';
 
 // ========================================
 // PHASE CONTEXT & RESULTS
@@ -141,6 +142,7 @@ export interface ContentGenerationResult {
   sceneContents: SceneContent[];
   choiceSets: ChoiceSet[];
   encounters: Map<string, EncounterStructure>;
+  deferredRealizationRecords: DeferredRealizationRecord[];
 }
 
 export interface QAValidationResult {

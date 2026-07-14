@@ -7,7 +7,7 @@ const config = {
   provider: 'anthropic' as const,
   model: 'test-model',
   apiKey: 'test-key',
-  maxTokens: 1024,
+  maxTokens: 32768,
   temperature: 0.1,
 };
 

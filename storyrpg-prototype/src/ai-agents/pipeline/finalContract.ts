@@ -66,6 +66,7 @@ import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { rebalanceSeasonSkillCoverage } from './seasonSkillRebalance';
 import { type SeasonChoicePlan } from './seasonChoicePlan';
 import { type SeasonSkillPlan } from './seasonSkillPlan';
+import type { DeferredRealizationRecord } from './deferredRealization';
 import { foldTintFlagIntoConsequences } from './choiceAssembly';
 import { plannedChoiceTypesByScene, plannedConsequenceTiersByScene } from './plannedSceneBudgets';
 import { normalizeEncounterOutcomeNavigation } from './encounterOutcomeNavigation';
@@ -852,6 +853,7 @@ export class FinalContract {
     bestPracticesReport?: ComprehensiveValidationReport;
     phase: string;
     validationScope?: FidelityValidationScope;
+    deferredRealizationRecords?: DeferredRealizationRecord[];
   }): Promise<FinalStoryContractReport | undefined> {
     if (!this.deps.config.validation?.enabled || this.deps.config.validation?.mode === 'disabled') {
       return undefined;
@@ -1070,6 +1072,27 @@ export class FinalContract {
         judge: semanticJudge,
       });
       const semanticFindings = semanticResults.flatMap((result) => result.findings);
+      const unavailableSemantic = semanticFindings.filter(
+        (finding) => finding.code === 'SEMANTIC_VALIDATION_UNAVAILABLE',
+      );
+      if (unavailableSemantic.length > 0) {
+        throw new PipelineError(
+          `[SemanticValidationUnavailable] Final regression could not reach the semantic judge for ${unavailableSemantic.length} task(s); no prose repair was attempted.`,
+          'validation',
+          {
+            agent: 'SemanticRealizationJudge',
+            context: { findings: unavailableSemantic, receipts: semanticResults.map((result) => result.receipt) },
+            failure: {
+              code: 'semantic_judge_unavailable',
+              ownerStage: 'final_contract',
+              retryClass: 'retry_provider',
+              issueCodes: ['SEMANTIC_VALIDATION_UNAVAILABLE'],
+              artifactRefs: [],
+              repairTarget: unavailableSemantic[0]?.taskId,
+            },
+          },
+        );
+      }
       const inconclusiveSemantic = semanticFindings.filter(
         (finding) => finding.code === 'SEMANTIC_VALIDATION_INCONCLUSIVE',
       );
@@ -1095,6 +1118,31 @@ export class FinalContract {
         (input.brief.seasonPlan?.scenePlan?.narrativeContractGraph?.realizationTasks ?? [])
           .map((task) => [task.id, task]),
       );
+      const evaluatedTaskIds = new Set(
+        semanticResults.flatMap((result) => result.receipt.taskIds ?? []),
+      );
+      for (const deferred of input.deferredRealizationRecords ?? []) {
+        const task = realizationTaskById.get(deferred.taskId);
+        if (task && evaluatedTaskIds.has(deferred.taskId)) continue;
+        r.blockingIssues.push({
+          type: 'semantic_realization_violation',
+          severity: 'error',
+          disposition: 'confirmed',
+          message: `Deferred owner realization ${deferred.taskId} was not re-evaluated by the final semantic contract.`,
+          validator: 'DeferredRealizationHandoff',
+          episodeNumber: deferred.episodeNumber,
+          sceneId: deferred.sceneId,
+          taskId: deferred.taskId,
+          contractId: deferred.finding.contractId,
+          eventId: task?.eventId,
+          repairHandler: deferred.repairHandler,
+          issueCode: 'DEFERRED_REALIZATION_HANDOFF_MISSING',
+          ownerStage: deferred.ownerStage,
+          retryClass: 'none',
+          realizationFingerprint: deferred.finding.fingerprint,
+          suggestion: 'Restore the canonical realization task to final semantic validation before retrying content repair.',
+        });
+      }
       for (const finding of semanticFindings) {
         const task = realizationTaskById.get(finding.taskId);
         const issue = {

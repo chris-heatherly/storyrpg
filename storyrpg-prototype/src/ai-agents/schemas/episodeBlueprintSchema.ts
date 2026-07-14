@@ -10,7 +10,20 @@ export function buildEpisodeBlueprintJsonSchema(input: {
   return {
     name: input.compact ? 'episode_blueprint_compact' : 'episode_blueprint',
     description: 'Complete episode blueprint with connected scene graph.',
-    maxOutputTokens: input.compact ? 8192 : 16384,
+    maxOutputTokens: 32768,
+    outputBudget: input.compact
+      ? {
+          visibleTokens: 14000,
+          reasoningProfile: 'minimal',
+          safetyTokens: 512,
+          totalCeiling: 32768,
+        }
+      : {
+          visibleTokens: 22000,
+          reasoningProfile: 'standard',
+          safetyTokens: 512,
+          totalCeiling: 32768,
+        },
     schema: {
       type: 'object',
       additionalProperties: true,

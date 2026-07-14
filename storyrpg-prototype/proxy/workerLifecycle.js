@@ -2092,10 +2092,16 @@ function createWorkerLifecycle({
 
       const resumeSteps = normalizeResumeStepsForOutputs(hydratedCheckpoint?.steps || {}, patchedOutputs);
 
+      const repairResumeContext = {
+        ...(hydratedCheckpoint?.resumeContext || {}),
+        changedInputs: Object.keys(payloadPatch),
+        changedOutputs: Object.keys(outputsPatch),
+      };
       const resumeCheckpoint = {
         ...(hydratedCheckpoint || {}),
         steps: resumeSteps,
         outputs: patchedOutputs,
+        resumeContext: repairResumeContext,
       };
 
       const mode = sourceJob.mode || resumeContext.mode || 'generation';

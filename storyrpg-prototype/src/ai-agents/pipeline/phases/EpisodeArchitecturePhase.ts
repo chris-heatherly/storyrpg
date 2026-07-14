@@ -376,8 +376,10 @@ export class EpisodeArchitecturePhase {
             seasonPlan: brief.seasonPlan,
             episodeNumber: brief.episode.number,
             reason: failure?.code || 'episode_plan_invalid',
+            failure,
           });
-          if (repair.refreshed) {
+          if (repair.refreshed && repair.repairedSeasonPlan) {
+            brief.seasonPlan = repair.repairedSeasonPlan;
             const refreshed = scenesForEpisode(brief.seasonPlan.scenePlan!, brief.episode.number);
             if (architectureInput.seasonPlanDirectives) {
               architectureInput.seasonPlanDirectives.plannedScenes = refreshed;
@@ -392,6 +394,12 @@ export class EpisodeArchitecturePhase {
             });
             continue;
           }
+          context.emit({
+            type: 'debug',
+            phase: 'architecture',
+            message: repair.note,
+            data: { failure, repairStatus: repair.status, beforeHash: repair.beforeHash, afterHash: repair.afterHash },
+          });
         }
         context.emit({
           type: 'debug',
@@ -408,8 +416,10 @@ export class EpisodeArchitecturePhase {
             seasonPlan: brief.seasonPlan,
             episodeNumber: brief.episode.number,
             reason: 'treatment_density_conflict',
+            failure,
           });
-          if (repair.refreshed) {
+          if (repair.refreshed && repair.repairedSeasonPlan) {
+            brief.seasonPlan = repair.repairedSeasonPlan;
             const refreshed = scenesForEpisode(brief.seasonPlan.scenePlan!, brief.episode.number);
             if (architectureInput.seasonPlanDirectives) {
               architectureInput.seasonPlanDirectives.plannedScenes = refreshed;
@@ -424,6 +434,12 @@ export class EpisodeArchitecturePhase {
             });
             continue;
           }
+          context.emit({
+            type: 'debug',
+            phase: 'architecture',
+            message: repair.note,
+            data: { failure, repairStatus: repair.status, beforeHash: repair.beforeHash, afterHash: repair.afterHash },
+          });
         }
         context.emit({
           type: 'debug',

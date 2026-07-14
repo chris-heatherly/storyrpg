@@ -13,8 +13,9 @@ describe('storyLexicon (R2.4)', () => {
     resetStoryLexiconFromEnv({});
   });
 
-  it('defaults to Bite-Me when env is unset (golden stability)', () => {
-    expect(resolveStoryLexiconFromEnv({})).toBe(BITE_ME_LEXICON);
+  it('defaults to genre-neutral when env is unset or unrecognized', () => {
+    expect(resolveStoryLexiconFromEnv({})).toBe(GENRE_NEUTRAL_LEXICON);
+    expect(resolveStoryLexiconFromEnv({ STORYRPG_STORY_LEXICON: 'unknown-story' })).toBe(GENRE_NEUTRAL_LEXICON);
   });
 
   it('flips to genre-neutral when STORYRPG_STORY_LEXICON=genre_neutral', () => {

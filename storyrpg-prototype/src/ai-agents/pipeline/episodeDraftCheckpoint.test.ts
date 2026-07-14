@@ -21,6 +21,7 @@ describe('episodeDraftCheckpoint', () => {
       sceneContents: [{ sceneId: 's1' }],
       choiceSets: [{ sceneId: 's1', choices: [] }],
       encounters: [['s1', { sceneId: 's1' }]],
+      deferredRealizationRecords: [],
     });
   });
 

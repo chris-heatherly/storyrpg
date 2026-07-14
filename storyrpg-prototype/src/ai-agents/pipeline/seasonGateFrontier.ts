@@ -6,6 +6,6 @@ export function createSeasonGateEnforcement(input: {
   episodeNumber: number;
   generatedThroughEpisode: number;
 }): () => boolean {
-  const frontier = Math.max(1, input.generatedThroughEpisode) + 1;
+  const frontier = Math.max(0, input.generatedThroughEpisode) + 1;
   return () => input.episodeNumber <= frontier;
 }

@@ -5,7 +5,20 @@ export function buildSeasonPlanJsonSchema(input?: { compact?: boolean }): Struct
   return {
     name: input?.compact ? 'season_plan_compact' : 'season_plan_mutable',
     description: 'Season planning fields: arcs, episode encounters, cross-episode branches, ending routes.',
-    maxOutputTokens: input?.compact ? 8192 : 16384,
+    maxOutputTokens: 32768,
+    outputBudget: input?.compact
+      ? {
+          visibleTokens: 14000,
+          reasoningProfile: 'minimal',
+          safetyTokens: 512,
+          totalCeiling: 32768,
+        }
+      : {
+          visibleTokens: 22000,
+          reasoningProfile: 'standard',
+          safetyTokens: 512,
+          totalCeiling: 32768,
+        },
     schema: {
       type: 'object',
       additionalProperties: true,

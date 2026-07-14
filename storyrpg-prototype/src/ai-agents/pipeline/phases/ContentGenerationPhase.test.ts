@@ -454,11 +454,14 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
     };
 
     await expect((phase as any).validateNarrativeRealization({ ...validationInput, mode: 'owner' }))
-      .resolves.toMatchObject({ findings: [{ code: 'SEMANTIC_VALIDATION_INCONCLUSIVE' }] });
+      .resolves.toMatchObject({
+        findings: [],
+        deferredFindings: [{ code: 'SEMANTIC_VALIDATION_INCONCLUSIVE' }],
+      });
     await expect((phase as any).validateNarrativeRealization({ ...validationInput, mode: 'final_regression' }))
       .rejects.toMatchObject({
         code: 'semantic_validation_inconclusive',
-        retryClass: 'repair_final_contract',
+        retryClass: 'none',
         repairTarget: 'task:premise:role',
       });
   });
@@ -552,7 +555,7 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
       retryClass: 'none',
     });
     expect(calls.filter((call) => call === 'choiceAuthor')).toHaveLength(0);
-    expect(calls.filter((call) => call === 'sceneWriter')).toHaveLength(1);
+    expect(calls.filter((call) => call === 'sceneWriter')).toHaveLength(2);
     expect(calls.filter((call) => call === 'semanticPatch')).toHaveLength(2);
     expect(patchCapacityTiers).toEqual(['standard', 'expanded']);
   });

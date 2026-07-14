@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { BITE_ME_LEXICON, resetStoryLexiconFromEnv, setStoryLexicon } from '../config/storyLexicon';
 import type { ArcPressureTreatmentContract, AuthoredTreatmentFieldContract, PlannedScene } from '../../types/scenePlan';
 import { rebindPlannedSceneObligations } from './plannedSceneObligationBinder';
 import { analyzeEpisodeTreatmentDensity, unsafeTreatmentDensityReports } from './gateRepairRouter';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
+
+beforeEach(() => setStoryLexicon(BITE_ME_LEXICON));
+afterEach(() => resetStoryLexiconFromEnv({}));
 
 function contract(
   id: string,

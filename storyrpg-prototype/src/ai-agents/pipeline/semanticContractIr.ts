@@ -36,6 +36,7 @@ export interface SemanticContractPremiseSeed {
   fieldName: string;
   fieldKind: string;
   sourceText: string;
+  narrativeVoice: 'second_person';
 }
 
 export interface SemanticContractIrValidation {
@@ -112,6 +113,7 @@ export function semanticContractPremiseSeeds(graph: NarrativeContractGraph): Sem
       fieldName: premise.fieldName,
       fieldKind: premise.fieldKind,
       sourceText: clean(premise.sourceText),
+      narrativeVoice: graph.narrativeVoice ?? 'second_person',
     }))
     .sort((left, right) => left.premiseId.localeCompare(right.premiseId));
 }

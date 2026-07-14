@@ -11,6 +11,10 @@ import {
   inferNarrativeVerificationAuthority,
   isDeterministicNarrativeAtom,
 } from './realizationVerificationAuthority';
+import {
+  evaluateTaskSatisfaction,
+  type NarrativeAtomVerdict,
+} from './realizationTaskSatisfaction';
 
 export interface RealizationTaskGateFinding {
   code:
@@ -441,12 +445,14 @@ export function collectNarrativeTaskEvidenceTextGroups(input: {
 
 function evaluateTaskGroup(
   task: NarrativeRealizationTask,
+  groupKey: string,
   texts: string[],
   sceneContent?: unknown,
-): { missing: string[]; forbidden: string[]; diagnostics: EvidenceMatchDiagnostic[] } {
+): { missing: string[]; forbidden: string[]; diagnostics: EvidenceMatchDiagnostic[]; atomVerdicts: NarrativeAtomVerdict[] } {
   const missing: string[] = [];
   const forbidden: string[] = [];
   const diagnostics: EvidenceMatchDiagnostic[] = [];
+  const atomVerdicts: NarrativeAtomVerdict[] = [];
   const deterministicAtoms = task.evidenceAtoms.filter(isDeterministicNarrativeAtom);
   const positiveAtoms = deterministicAtoms.filter((atom) => atom.polarity !== 'forbidden');
   const matchedPositiveAtoms = new Set<string>();
@@ -479,6 +485,15 @@ function evaluateTaskGroup(
     }
     const matched = best.matched;
     diagnostics.push(best);
+    atomVerdicts.push({
+      taskId: task.id,
+      atomId: atom.id,
+      groupKey,
+      authority: inferNarrativeVerificationAuthority(atom),
+      outcome: atom.polarity === 'forbidden'
+        ? (matched ? 'miss' : 'pass')
+        : (matched ? 'pass' : 'miss'),
+    });
     if (atom.polarity === 'forbidden') {
       if (matched) forbidden.push(atom.id);
     } else {
@@ -505,7 +520,30 @@ function evaluateTaskGroup(
       missing.push(...groupAtoms.filter((atom) => !matchedPositiveAtoms.has(atom.id)).map((atom) => atom.id));
     }
   }
-  return { missing: [...new Set(missing)], forbidden: [...new Set(forbidden)], diagnostics };
+  return { missing: [...new Set(missing)], forbidden: [...new Set(forbidden)], diagnostics, atomVerdicts };
+}
+
+export function evaluateDeterministicRealizationTaskVerdicts(input: {
+  sceneId: string;
+  tasks?: NarrativeRealizationTask[];
+  sceneContent?: unknown;
+  choiceSet?: unknown;
+  encounter?: unknown;
+  mode?: 'owner' | 'final_regression';
+  currentStage?: NarrativeRealizationOwnerStage;
+}): NarrativeAtomVerdict[] {
+  return (input.tasks ?? []).flatMap((task) => {
+    if ((input.mode ?? 'owner') === 'owner' && input.currentStage && task.ownerStage !== input.currentStage) return [];
+    const semanticGroups = collectNarrativeTaskEvidenceTextGroups({ ...input, task });
+    const deterministicGroups = taskTextGroups({ ...input, task });
+    const groups = semanticGroups.length > 0
+      ? semanticGroups
+      : (deterministicGroups.length > 0 ? deterministicGroups : [[]]).map((texts, index) => ({
+          groupKey: `${task.target.scope}:${index + 1}`, texts, entries: [],
+        }));
+    return groups.flatMap((group, index) =>
+      evaluateTaskGroup(task, group.groupKey, deterministicGroups[index] ?? group.texts, input.sceneContent).atomVerdicts);
+  });
 }
 
 export function validateOwnerRealizationTasks(input: {
@@ -520,20 +558,40 @@ export function validateOwnerRealizationTasks(input: {
   const findings: RealizationTaskGateFinding[] = [];
   for (const task of input.tasks ?? []) {
     if ((input.mode ?? 'owner') === 'owner' && input.currentStage && task.ownerStage !== input.currentStage) continue;
-    const evaluations = taskTextGroups({ ...input, task })
-      .map((texts) => evaluateTaskGroup(task, texts, input.sceneContent));
+    const semanticGroups = collectNarrativeTaskEvidenceTextGroups({ ...input, task });
+    const deterministicGroups = taskTextGroups({ ...input, task });
+    const groups = semanticGroups.length > 0
+      ? semanticGroups
+      : (deterministicGroups.length > 0 ? deterministicGroups : [[]]).map((texts, index) => ({
+          groupKey: `${task.target.scope}:${index + 1}`, texts, entries: [],
+        }));
+    const evaluations = groups
+      .map((group, index) => {
+        const evaluated = evaluateTaskGroup(task, group.groupKey, deterministicGroups[index] ?? group.texts, input.sceneContent);
+        return {
+          ...evaluated,
+          satisfaction: evaluateTaskSatisfaction(task, evaluated.atomVerdicts),
+        };
+      });
     const deterministicRequiredAtomIds = task.evidenceAtoms
       .filter((atom) => isDeterministicNarrativeAtom(atom) && atom.required && atom.polarity !== 'forbidden')
       .map((atom) => atom.id);
-    const bestPositive = evaluations.reduce((best, candidate) => candidate.missing.length < best.missing.length ? candidate : best, evaluations[0] ?? { missing: deterministicRequiredAtomIds, forbidden: [], diagnostics: [] });
-    const missing = task.target.scope === 'any_route' && evaluations.some((evaluation) => evaluation.missing.length === 0)
+    const fallback = { missing: deterministicRequiredAtomIds, forbidden: [], diagnostics: [], atomVerdicts: [], satisfaction: evaluateTaskSatisfaction(task, []) };
+    const bestPositive = evaluations.reduce((best, candidate) => candidate.satisfaction.missingAtomIds.length < best.satisfaction.missingAtomIds.length ? candidate : best, evaluations[0] ?? fallback);
+    const missing = task.target.scope === 'any_route' && evaluations.some((evaluation) => evaluation.satisfaction.status === 'satisfied' || evaluation.satisfaction.status === 'pending')
       ? []
       : task.target.scope === 'all_options' || task.target.scope === 'all_choice_outcomes'
         ? (evaluations.length > 0
-          ? [...new Set(evaluations.flatMap((evaluation) => evaluation.missing))]
+          ? [...new Set(evaluations.flatMap((evaluation) => evaluation.satisfaction.status === 'missing'
+            ? evaluation.satisfaction.missingAtomIds.filter((atomId) => task.evidenceAtoms.find((atom) => atom.id === atomId)?.polarity !== 'forbidden')
+            : []))]
           : deterministicRequiredAtomIds)
-        : bestPositive.missing;
-    const forbidden = [...new Set(evaluations.flatMap((evaluation) => evaluation.forbidden))];
+        : bestPositive.satisfaction.status === 'missing'
+          ? bestPositive.satisfaction.missingAtomIds.filter((atomId) => task.evidenceAtoms.find((atom) => atom.id === atomId)?.polarity !== 'forbidden')
+          : [];
+    const forbidden = [...new Set(evaluations.flatMap((evaluation) => evaluation.satisfaction.status === 'missing'
+      ? evaluation.satisfaction.missingAtomIds.filter((atomId) => task.evidenceAtoms.find((atom) => atom.id === atomId)?.polarity === 'forbidden')
+      : []))];
     if (missing.length > 0) {
       const outcomeTier = outcomeTierForTask(task);
       findings.push({

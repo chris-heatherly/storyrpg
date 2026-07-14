@@ -16,10 +16,16 @@ import type {
 import { stableHash } from './artifacts/store';
 import {
   collectNarrativeTaskEvidenceTextGroups,
+  evaluateDeterministicRealizationTaskVerdicts,
   realizationTaskFindingFingerprint,
   type RealizationTaskGateFinding,
 } from './realizationTaskGate';
 import { isSemanticNarrativeAtom } from './realizationVerificationAuthority';
+import {
+  evaluateTaskSatisfaction,
+  semanticAtomsNeededForTask,
+  type NarrativeAtomVerdict,
+} from './realizationTaskSatisfaction';
 
 type SemanticReceiptVerdict = NonNullable<
   NonNullable<ValidatorExecutionRecord['realizationReceipt']>['semanticVerdicts']
@@ -201,6 +207,7 @@ function claimSemanticCacheKey(identity: ReturnType<SemanticRealizationJudgeLike
       temporalSlot: claim.temporalSlot,
       stagedLocation: claim.stagedLocation,
       referencedLocations: claim.referencedLocations,
+      narrativeVoice: claim.narrativeVoice,
     },
   });
 }
@@ -358,6 +365,7 @@ function buildTaskClaims(input: {
         temporalSlot: atom.temporalSlot,
         stagedLocation: atom.stagedLocation,
         referencedLocations: [...(atom.referencedLocations ?? [])],
+        narrativeVoice: 'second_person',
         excerpts,
       },
     }));
@@ -368,75 +376,6 @@ function receiptDisposition(consensus: ClaimConsensus): SemanticReceiptVerdict['
   if (consensus.outcome === 'inconclusive' || consensus.outcome === 'judge_unavailable') return 'inconclusive';
   if (consensus.verdict === 'partial') return 'partial';
   return consensus.verdict === 'fulfilled' ? 'confirmed' : 'refuted';
-}
-
-function semanticGroupFailure(
-  task: NarrativeRealizationTask,
-  groupConsensus: ClaimConsensus[],
-): { missing: string[]; forbidden: string[]; inconclusive: string[]; unavailable: string[] } {
-  const byAtomId = new Map(groupConsensus.map((consensus) => [consensus.claim.atomId, consensus]));
-  const semanticAtoms = task.evidenceAtoms.filter(isSemanticNarrativeAtom);
-  const positive = semanticAtoms.filter((atom) => atom.polarity !== 'forbidden');
-  const forbidden = semanticAtoms.filter((atom) => atom.polarity === 'forbidden');
-  const aggregate = (
-    atoms: NarrativeEvidenceAtom[],
-    requirement: 'all' | 'any' | 'minimum',
-    minimumEvidenceHits?: number,
-  ) => {
-    const needed = requirement === 'any'
-      ? 1
-      : requirement === 'minimum'
-        ? Math.max(1, minimumEvidenceHits ?? 1)
-        : atoms.length;
-    const passed = atoms.filter((atom) => byAtomId.get(atom.id)?.outcome === 'pass');
-    const inconclusiveAtoms = atoms.filter((atom) => byAtomId.get(atom.id)?.outcome === 'inconclusive');
-    const unavailableAtoms = atoms.filter((atom) => byAtomId.get(atom.id)?.outcome === 'judge_unavailable');
-    const misses = atoms.filter((atom) => byAtomId.get(atom.id)?.outcome === 'content_miss');
-    if (passed.length >= needed) return { missing: [], inconclusive: [], unavailable: [] };
-    if (passed.length + inconclusiveAtoms.length + unavailableAtoms.length < needed) {
-      return { missing: misses.map((atom) => atom.id), inconclusive: [], unavailable: [] };
-    }
-    return {
-      missing: [],
-      inconclusive: inconclusiveAtoms.map((atom) => atom.id),
-      unavailable: unavailableAtoms.map((atom) => atom.id),
-    };
-  };
-  const requiredPositive = task.minimumEvidenceHits != null
-    ? positive
-    : positive.filter((atom) => atom.required);
-  const base = aggregate(
-    requiredPositive,
-    task.minimumEvidenceHits != null ? 'minimum' : 'all',
-    task.minimumEvidenceHits,
-  );
-  const missing = [...base.missing];
-  const inconclusive = [...base.inconclusive];
-  const unavailable = [...base.unavailable];
-  for (const group of task.evidenceGroups ?? []) {
-    const atoms = group.atomIds
-      .map((atomId) => semanticAtoms.find((atom) => atom.id === atomId))
-      .filter((atom): atom is NarrativeEvidenceAtom => Boolean(atom && atom.polarity !== 'forbidden'));
-    if (atoms.length === 0) continue;
-    const result = aggregate(atoms, group.requirement, group.minimumEvidenceHits);
-    missing.push(...result.missing);
-    inconclusive.push(...result.inconclusive);
-    unavailable.push(...result.unavailable);
-  }
-  const stableFailure = missing.length > 0
-    || forbidden.some((atom) => byAtomId.get(atom.id)?.outcome === 'content_miss');
-  return {
-    missing: [...new Set(missing)],
-    forbidden: forbidden.filter((atom) => byAtomId.get(atom.id)?.outcome === 'content_miss').map((atom) => atom.id),
-    inconclusive: stableFailure ? [] : [...new Set([
-      ...inconclusive,
-      ...forbidden.filter((atom) => byAtomId.get(atom.id)?.outcome === 'inconclusive').map((atom) => atom.id),
-    ])],
-    unavailable: stableFailure ? [] : [...new Set([
-      ...unavailable,
-      ...forbidden.filter((atom) => byAtomId.get(atom.id)?.outcome === 'judge_unavailable').map((atom) => atom.id),
-    ])],
-  };
 }
 
 export async function validateSemanticRealizationTasks(input: {
@@ -451,25 +390,55 @@ export async function validateSemanticRealizationTasks(input: {
   judge: SemanticRealizationJudgeLike;
 }): Promise<SemanticValidationResult> {
   const tasks = (input.tasks ?? []).filter((task) =>
-    task.evidenceAtoms.some(isSemanticNarrativeAtom)
-    && ((input.mode ?? 'owner') !== 'owner' || !input.currentStage || task.ownerStage === input.currentStage),
+    (input.mode ?? 'owner') !== 'owner' || !input.currentStage || task.ownerStage === input.currentStage,
   );
-  const built = tasks.flatMap((task) => buildTaskClaims({ ...input, task }));
+  const deterministicVerdicts = evaluateDeterministicRealizationTaskVerdicts(input);
+  const built = tasks.flatMap((task) => buildTaskClaims({ ...input, task }))
+    .filter((item) => {
+      const task = tasks.find((candidate) => candidate.id === item.claim.taskId);
+      if (!task) return false;
+      return semanticAtomsNeededForTask(task, item.groupKey, deterministicVerdicts).has(item.atom.id);
+    });
   const atomsByClaimId = new Map(built.map(({ claim, atom }) => [claim.id, atom]));
   const consensus = await evaluateClaims(input.judge, built.map(({ claim }) => claim), atomsByClaimId);
-  const consensusByTaskAndGroup = new Map<string, ClaimConsensus[]>();
+  const semanticVerdictsByTaskAndGroup = new Map<string, NarrativeAtomVerdict[]>();
   for (const item of consensus) {
-    const key = `${item.claim.taskId}::${item.claim.id.split('::').at(-1)}`;
-    consensusByTaskAndGroup.set(key, [...(consensusByTaskAndGroup.get(key) ?? []), item]);
+    const groupKey = item.claim.id.split('::').at(-1) ?? 'owner:1';
+    const key = `${item.claim.taskId}::${groupKey}`;
+    const outcome: NarrativeAtomVerdict['outcome'] = item.outcome === 'pass'
+      ? 'pass'
+      : item.outcome === 'content_miss'
+        ? 'miss'
+        : item.outcome === 'judge_unavailable'
+          ? 'unavailable'
+          : 'inconclusive';
+    semanticVerdictsByTaskAndGroup.set(key, [...(semanticVerdictsByTaskAndGroup.get(key) ?? []), {
+      taskId: item.claim.taskId,
+      atomId: item.claim.atomId,
+      groupKey,
+      authority: 'semantic_judge',
+      outcome,
+    }]);
   }
 
   const findings: RealizationTaskGateFinding[] = [];
+  const taskEvaluations: NonNullable<ValidatorExecutionRecord['realizationReceipt']>['taskEvaluations'] = [];
   for (const task of tasks) {
-    const groups = [...consensusByTaskAndGroup.entries()]
-      .filter(([key]) => key.startsWith(`${task.id}::`))
-      .map(([key, values]) => ({ groupKey: key.slice(task.id.length + 2), values, failure: semanticGroupFailure(task, values) }));
-    const inconclusive = [...new Set(groups.flatMap((group) => group.failure.inconclusive))];
-    const unavailable = [...new Set(groups.flatMap((group) => group.failure.unavailable))];
+    const collectedGroupKeys = collectNarrativeTaskEvidenceTextGroups({ ...input, task }).map((group) => group.groupKey);
+    const groupKeys = collectedGroupKeys.length > 0 ? collectedGroupKeys : [`${task.target.scope}:1`];
+    const groups = groupKeys.map((groupKey) => {
+      const verdicts = [
+        ...deterministicVerdicts.filter((verdict) => verdict.taskId === task.id && verdict.groupKey === groupKey),
+        ...(semanticVerdictsByTaskAndGroup.get(`${task.id}::${groupKey}`) ?? []),
+      ];
+      return { groupKey, verdicts, satisfaction: evaluateTaskSatisfaction(task, verdicts) };
+    });
+    taskEvaluations.push(...groups.map((group) => ({ taskId: task.id, groupKey: group.groupKey, ...group.satisfaction })));
+    const relevantGroups = task.target.scope === 'any_route' && groups.some((group) => group.satisfaction.status === 'satisfied')
+      ? groups.filter((group) => group.satisfaction.status === 'satisfied')
+      : groups;
+    const inconclusive = [...new Set(relevantGroups.flatMap((group) => group.satisfaction.inconclusiveAtomIds))];
+    const unavailable = [...new Set(relevantGroups.flatMap((group) => group.satisfaction.unavailableAtomIds))];
     if (unavailable.length > 0) {
       findings.push({
         code: 'SEMANTIC_VALIDATION_UNAVAILABLE', taskId: task.id, contractId: task.contractId,
@@ -492,31 +461,34 @@ export async function validateSemanticRealizationTasks(input: {
       });
       continue;
     }
-    const bestGroup = [...groups].sort((left, right) => left.failure.missing.length - right.failure.missing.length)[0];
+    const bestGroup = [...groups].sort((left, right) => left.satisfaction.missingAtomIds.length - right.satisfaction.missingAtomIds.length)[0];
     const missing = task.target.scope === 'any_route'
-      ? (groups.some((group) => group.failure.missing.length === 0) ? [] : bestGroup?.failure.missing ?? [])
+      ? (groups.some((group) => group.satisfaction.status === 'satisfied') ? [] : bestGroup?.satisfaction.missingAtomIds ?? [])
       : task.target.scope === 'all_options' || task.target.scope === 'all_choice_outcomes'
-        ? [...new Set(groups.flatMap((group) => group.failure.missing))]
-        : bestGroup?.failure.missing ?? [];
-    const forbidden = [...new Set(groups.flatMap((group) => group.failure.forbidden))];
-    if (missing.length > 0) {
+        ? [...new Set(groups.flatMap((group) => group.satisfaction.missingAtomIds))]
+        : bestGroup?.satisfaction.missingAtomIds ?? [];
+    const forbidden = missing.filter((atomId) => task.evidenceAtoms.find((atom) => atom.id === atomId)?.polarity === 'forbidden');
+    const positiveMissing = missing.filter((atomId) => !forbidden.includes(atomId));
+    if (positiveMissing.length > 0) {
+      const semanticFailure = positiveMissing.some((atomId) => task.evidenceAtoms.find((atom) => atom.id === atomId)?.verificationAuthority === 'semantic_judge');
       findings.push({
-        code: 'SEMANTIC_REALIZATION_MISSING', taskId: task.id, contractId: task.contractId,
+        code: semanticFailure ? 'SEMANTIC_REALIZATION_MISSING' : 'OWNER_REALIZATION_MISSING', taskId: task.id, contractId: task.contractId,
         sceneId: input.sceneId, ownerStage: task.ownerStage, blocking: task.blocking,
         field: task.artifactPath ?? 'scene',
-        message: `Meaning-aware validation confirms that task ${task.id} is missing: ${missing.join(', ')}.`,
-        missingEvidenceAtoms: missing,
-        fingerprint: realizationTaskFindingFingerprint({ code: 'SEMANTIC_REALIZATION_MISSING', taskId: task.id, sceneId: input.sceneId, evidenceAtomIds: missing }),
+        message: `Canonical realization validation confirms that task ${task.id} is missing: ${positiveMissing.join(', ')}.`,
+        missingEvidenceAtoms: positiveMissing,
+        fingerprint: realizationTaskFindingFingerprint({ code: semanticFailure ? 'SEMANTIC_REALIZATION_MISSING' : 'OWNER_REALIZATION_MISSING', taskId: task.id, sceneId: input.sceneId, evidenceAtomIds: positiveMissing }),
       });
     }
     if (forbidden.length > 0) {
+      const semanticFailure = forbidden.some((atomId) => task.evidenceAtoms.find((atom) => atom.id === atomId)?.verificationAuthority === 'semantic_judge');
       findings.push({
-        code: 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT', taskId: task.id, contractId: task.contractId,
+        code: semanticFailure ? 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT' : 'OWNER_FORBIDDEN_EVIDENCE_PRESENT', taskId: task.id, contractId: task.contractId,
         sceneId: input.sceneId, ownerStage: task.ownerStage, blocking: task.blocking,
         field: task.artifactPath ?? 'scene',
-        message: `Meaning-aware validation confirms forbidden evidence for task ${task.id}: ${forbidden.join(', ')}.`,
+        message: `Canonical realization validation confirms forbidden evidence for task ${task.id}: ${forbidden.join(', ')}.`,
         matchedForbiddenAtoms: forbidden,
-        fingerprint: realizationTaskFindingFingerprint({ code: 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT', taskId: task.id, sceneId: input.sceneId, evidenceAtomIds: forbidden }),
+        fingerprint: realizationTaskFindingFingerprint({ code: semanticFailure ? 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT' : 'OWNER_FORBIDDEN_EVIDENCE_PRESENT', taskId: task.id, sceneId: input.sceneId, evidenceAtomIds: forbidden }),
       });
     }
   }
@@ -559,6 +531,8 @@ export async function validateSemanticRealizationTasks(input: {
       }),
       taskIds: tasks.map((task) => task.id).sort(),
       findingFingerprints: findings.map((finding) => finding.fingerprint).sort(),
+      atomVerdicts: [...deterministicVerdicts, ...[...semanticVerdictsByTaskAndGroup.values()].flat()],
+      taskEvaluations,
       semanticVerdicts,
     },
   };

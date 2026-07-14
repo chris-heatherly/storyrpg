@@ -287,7 +287,6 @@ import {
 import {
   prioritizeOwnerRepairFindings,
   shouldAdoptOwnerRepairCandidate,
-  validateOwnerRealizationTasks,
   type RealizationTaskGateFinding,
 } from '../realizationTaskGate';
 import { validateSemanticRealizationTasks } from '../semanticValidationCoordinator';
@@ -538,19 +537,18 @@ export class ContentGenerationPhase {
     currentStage?: NarrativeRealizationOwnerStage;
     candidateHash?: string;
   }) {
-    const deterministicFindings = validateOwnerRealizationTasks(input);
     const semantic = await validateSemanticRealizationTasks({
       ...input,
       judge: this.deps.semanticRealizationJudge,
     });
-    const combinedFindings = [...deterministicFindings, ...semantic.findings];
+    const combinedFindings = semantic.findings;
     let receiptRef: string | undefined;
     if (this.outputDirectory) {
       const ownerStage = input.currentStage ?? 'scene_regression';
       const candidateHash = semantic.receipt.candidateHash;
       receiptRef = `episode-${this.episodeNumber ?? 1}-scene-${input.sceneId.replace(/[^a-z0-9_-]+/gi, '-')}-semantic-validation-${ownerStage}-${candidateHash.slice(0, 12)}.json`;
       await saveEarlyDiagnostic(this.outputDirectory, receiptRef, {
-        schemaVersion: 1,
+        schemaVersion: 2,
         generatedAt: new Date().toISOString(),
         episodeNumber: this.episodeNumber,
         sceneId: input.sceneId,
@@ -2436,7 +2434,7 @@ export class ContentGenerationPhase {
             const targetAtomIdSet = new Set(targetAtomIds);
             const targetAtoms = targetTask?.evidenceAtoms.filter((atom) => targetAtomIdSet.has(atom.id)) ?? [];
             const preserveAtoms = targetTask?.evidenceAtoms.filter((atom) =>
-              atom.required !== false && atom.polarity !== 'forbidden' && !targetAtomIdSet.has(atom.id)) ?? [];
+              atom.polarity !== 'forbidden' && !targetAtomIdSet.has(atom.id)) ?? [];
             const forbiddenAtoms = canonicalSceneWriterTasks.flatMap((task) =>
               task.evidenceAtoms.filter((atom) => atom.polarity === 'forbidden'));
             const concurrentFindings = ownerTaskFindings.map((finding) =>

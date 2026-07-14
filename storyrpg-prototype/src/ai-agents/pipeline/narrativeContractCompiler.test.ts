@@ -641,7 +641,7 @@ describe('NarrativeContractCompiler', () => {
     expect(canonical.sourceHash).toBe(compileNarrativeContractGraph(planned, scenePlan(scenes)).sourceHash);
   });
 
-  it('distributes blocking opening premises across the first two scenes', () => {
+  it('keeps canonical identity in metadata and distributes prose premises across the first two scenes', () => {
     const planned = plan([1]);
     planned.protagonist = { id: 'protagonist', name: 'Avery', description: '' };
     planned.characterTreatmentContracts = [
@@ -677,8 +677,68 @@ describe('NarrativeContractCompiler', () => {
     }, {});
 
     expect(new Set(targets)).toEqual(new Set(['ep1-opening', 'ep1-followup']));
-    expect(load).toEqual({ 'ep1-opening': 2, 'ep1-followup': 2 });
-    expect(graph.realizationTasks?.filter((task) => task.sourceKinds?.includes('premise'))).toHaveLength(4);
+    expect(load).toEqual({ 'ep1-opening': 2, 'ep1-followup': 1 });
+    expect(graph.premiseContracts?.some((contract) => contract.fieldKind === 'canonical_identity')).toBe(false);
+    expect(graph.realizationTasks?.filter((task) => task.sourceKinds?.includes('premise'))).toHaveLength(3);
+  });
+
+  it('splits independently required compound premise meanings across opening scene owners', () => {
+    const planned = plan([1]);
+    const sourceText = "Her cancelled engagement left her publicly humiliated, and her grandmother's unexplained escape left her family history unresolved.";
+    planned.characterTreatmentContracts = [{
+      id: 'character-wound', source: 'treatment', subject: 'protagonist', characterId: 'protagonist',
+      characterName: 'Avery', fieldName: 'Defining wound', sourceText, contractKind: 'wound_pressure',
+      requiredRealization: ['scene_turn', 'final_prose'], targetEpisodeNumbers: [1], targetSceneIds: [],
+      targetEndingIds: [], blockingLevel: 'treatment',
+    }];
+    const scenes = [
+      scene({ id: 'ep1-opening', episodeNumber: 1, order: 0 }),
+      scene({ id: 'ep1-followup', episodeNumber: 1, order: 1 }),
+    ];
+    const bootstrapPlan = scenePlan(scenes);
+    const bootstrapGraph = compileNarrativeContractGraph(planned, bootstrapPlan);
+    const eventSeeds = semanticContractEventSeeds(bootstrapGraph);
+    const premiseSeeds = semanticContractPremiseSeeds(bootstrapGraph);
+    const premiseId = premiseSeeds[0].premiseId;
+    const semanticEventIr: AuthoredEventSemanticIR = {
+      version: 1, policyVersion: SEMANTIC_CONTRACT_IR_POLICY_VERSION, provider: 'gemini', model: 'gemini-test',
+      sourceHash: semanticContractSourceHash(eventSeeds),
+      events: eventSeeds.map((event) => ({
+        ...event,
+        propositions: event.sources.map((source, index) => ({
+          id: `${event.eventId}:semantic:${index + 1}`, sourceId: source.id, sourceSpan: source.text,
+          proposition: source.text, semanticRole: 'action' as const, participantIds: [],
+          semanticCriteria: ['The authored event occurs'], prerequisitePropositionIds: [],
+          referencedLocations: [], required: true,
+        })),
+      })),
+      premiseSourceHash: semanticContractPremiseSourceHash(premiseSeeds),
+      premises: [{
+        premiseId, sourceText, minimumEvidenceHits: 2,
+        propositions: [
+          {
+            id: `${premiseId}:semantic:1`, sourceSpan: 'Her cancelled engagement left her publicly humiliated',
+            proposition: 'The protagonist carries public humiliation from her cancelled engagement.',
+            semanticCriteria: ['The cancelled engagement caused public humiliation'], verificationAuthority: 'semantic_judge', required: true,
+          },
+          {
+            id: `${premiseId}:semantic:2`, sourceSpan: "her grandmother's unexplained escape left her family history unresolved",
+            proposition: "The protagonist lacks closure about her grandmother's escape and family history.",
+            semanticCriteria: ['The grandmother mystery leaves family history unresolved'], verificationAuthority: 'semantic_judge', required: true,
+          },
+        ],
+      }],
+    };
+
+    const graph = compileNarrativeContractGraph(planned, { ...bootstrapPlan, semanticEventIr });
+    const premise = graph.premiseContracts?.[0];
+    const tasks = graph.realizationTasks?.filter((task) => task.contractId === premiseId) ?? [];
+
+    expect(graph.validation.passed).toBe(true);
+    expect(new Set(premise?.targetSceneIds)).toEqual(new Set(['ep1-opening', 'ep1-followup']));
+    expect(tasks).toHaveLength(2);
+    expect(new Set(tasks.map((task) => task.sceneId))).toEqual(new Set(['ep1-opening', 'ep1-followup']));
+    expect(tasks.every((task) => task.evidenceAtoms.length === 1 && task.minimumEvidenceHits === 1)).toBe(true);
   });
 
   it('rejects a semantically compiled scene that exceeds the blocking premise claim budget', () => {
@@ -727,7 +787,7 @@ describe('NarrativeContractCompiler', () => {
         premiseId: premise.premiseId,
         sourceText: premise.sourceText,
         minimumEvidenceHits: 1,
-        propositions: Array.from({ length: 4 }, (_, index) => ({
+        propositions: Array.from({ length: 5 }, (_, index) => ({
           id: `${premise.premiseId}:semantic:${index + 1}`,
           sourceSpan: premise.sourceText,
           proposition: `${premise.sourceText} This is proposition ${index + 1}.`,

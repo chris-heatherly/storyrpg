@@ -10,6 +10,7 @@ import type {
   NarrativeRealizationTask,
 } from '../../types/narrativeContract';
 import { withNarrativeVerificationAuthority } from './realizationVerificationAuthority';
+import { satisfactionExpressionForTask } from './realizationTaskSatisfaction';
 
 type SceneOwnedTaskKind = 'event' | 'premise' | 'presence' | 'transition' | 'story_circle' | 'relationship';
 
@@ -361,12 +362,12 @@ function mergeProjectionIntoOwnerTask(
 }
 
 export class NarrativeTaskCompilerError extends Error {
-  readonly code: 'owner_stage_unreachable';
+  readonly code: 'owner_stage_unreachable' | 'task_unsatisfiable';
 
-  constructor(message: string) {
-    super(`[NarrativeTaskCompiler][owner_stage_unreachable] ${message}`);
+  constructor(message: string, code: NarrativeTaskCompilerError['code'] = 'owner_stage_unreachable') {
+    super(`[NarrativeTaskCompiler][${code}] ${message}`);
     this.name = 'NarrativeTaskCompilerError';
-    this.code = 'owner_stage_unreachable';
+    this.code = code;
   }
 }
 
@@ -477,6 +478,20 @@ function assertTaskFeasibility(
       throw new Error(`[NarrativeTaskCompiler] Outcome task ${task.id} is assigned to ${task.ownerStage}.`);
     }
     const atomIds = new Set(task.evidenceAtoms.map((atom) => atom.id));
+    const satisfaction = satisfactionExpressionForTask(task);
+    const referencedSatisfactionAtoms = [
+      ...satisfaction.allOfAtomIds,
+      ...satisfaction.anyOfGroups.flatMap((group) => group.atomIds),
+    ];
+    const danglingSatisfactionAtoms = referencedSatisfactionAtoms.filter((atomId) => !atomIds.has(atomId));
+    if (danglingSatisfactionAtoms.length > 0) {
+      throw new NarrativeTaskCompilerError(`Task ${task.id} satisfaction policy references missing atoms: ${[...new Set(danglingSatisfactionAtoms)].join(', ')}.`, 'task_unsatisfiable');
+    }
+    for (const group of satisfaction.anyOfGroups) {
+      if (group.minimumHits < 1 || group.minimumHits > group.atomIds.length) {
+        throw new NarrativeTaskCompilerError(`Task ${task.id} satisfaction group ${group.id} has unreachable minimum ${group.minimumHits}/${group.atomIds.length}.`, 'task_unsatisfiable');
+      }
+    }
     for (const group of task.evidenceGroups ?? []) {
       const danglingAtomIds = group.atomIds.filter((atomId) => !atomIds.has(atomId));
       if (danglingAtomIds.length > 0) {
@@ -523,6 +538,8 @@ function taskCompatibilitySignature(task: NarrativeRealizationTask): string {
     evidenceScope: task.evidenceScope,
     artifactPath: task.artifactPath,
     minimumEvidenceHits: task.minimumEvidenceHits,
+    enforcementMode: task.enforcementMode,
+    satisfaction: task.satisfaction,
     target: task.target,
     blocking: task.blocking,
   });
@@ -607,28 +624,38 @@ export function compileNarrativeRealizationTasks(
   const tasks: NarrativeRealizationTask[] = [];
 
   for (const premise of graph.premiseContracts ?? []) {
-    const sceneId = premise.targetSceneIds[0];
-    const execution = resolveTaskExecutionTarget({
-      scene: sceneId ? sceneById.get(sceneId) : undefined,
-      episodeNumber: premise.episodeNumber,
-      kind: 'premise',
-      preferredSurfaces: premise.requiredSurface as NarrativeRealizationSurface[],
-    });
-    tasks.push({
-      id: `task:${premise.id}`,
-      contractId: premise.id,
-      sourceKinds: ['premise'],
-      episodeNumber: premise.episodeNumber,
-      ownerStage: execution.ownerStage,
-      repairHandler: execution.repairHandler,
-      sceneId,
-      artifactPath: execution.artifactPath,
-      evidenceAtoms: premiseAtoms(premise),
-      minimumEvidenceHits: premise.minimumEvidenceHits,
-      target: { scope: 'owner', surfaces: execution.surfaces },
-      sourceContractIds: premise.sourceContractIds,
-      blocking: premise.blocking,
-    });
+    const atoms = premiseAtoms(premise);
+    const requiredAtoms = atoms.filter((atom) => atom.required && atom.polarity !== 'forbidden');
+    const splitAcrossOwners = premise.minimumEvidenceHits > 1
+      && requiredAtoms.length === premise.minimumEvidenceHits
+      && premise.targetSceneIds.length === requiredAtoms.length;
+    const projections = splitAcrossOwners
+      ? requiredAtoms.map((atom, index) => ({ sceneId: premise.targetSceneIds[index], atoms: [atom], minimumEvidenceHits: 1, suffix: `:part:${index + 1}` }))
+      : [{ sceneId: premise.targetSceneIds[0], atoms, minimumEvidenceHits: premise.minimumEvidenceHits, suffix: '' }];
+    for (const projection of projections) {
+      const execution = resolveTaskExecutionTarget({
+        scene: projection.sceneId ? sceneById.get(projection.sceneId) : undefined,
+        episodeNumber: premise.episodeNumber,
+        kind: 'premise',
+        preferredSurfaces: premise.requiredSurface as NarrativeRealizationSurface[],
+      });
+      tasks.push({
+        id: `task:${premise.id}${projection.suffix}`,
+        contractId: premise.id,
+        sourceKinds: ['premise'],
+        episodeNumber: premise.episodeNumber,
+        ownerStage: execution.ownerStage,
+        repairHandler: execution.repairHandler,
+        sceneId: projection.sceneId,
+        artifactPath: execution.artifactPath,
+        evidenceAtoms: projection.atoms,
+        enforcementMode: premise.enforcementMode ?? 'positive_realization',
+        minimumEvidenceHits: projection.minimumEvidenceHits,
+        target: { scope: 'owner', surfaces: execution.surfaces },
+        sourceContractIds: premise.sourceContractIds,
+        blocking: premise.blocking,
+      });
+    }
   }
 
   for (const event of graph.events) {
@@ -955,10 +982,17 @@ export function compileNarrativeRealizationTasks(
     }
   }
 
-  const coalescedTasks = coalesceEquivalentTasks(tasks).map((task) => ({
-    ...task,
-    evidenceAtoms: task.evidenceAtoms.map(withNarrativeVerificationAuthority),
-  }));
+  const coalescedTasks = coalesceEquivalentTasks(tasks).map((task) => {
+    const evidenceAtoms = task.evidenceAtoms.map(withNarrativeVerificationAuthority);
+    const normalized = { ...task, evidenceAtoms };
+    return {
+      ...normalized,
+      enforcementMode: task.enforcementMode ?? (evidenceAtoms.every((atom) => atom.polarity === 'forbidden')
+        ? 'contradiction_only'
+        : 'positive_realization'),
+      satisfaction: satisfactionExpressionForTask(normalized),
+    };
+  });
   const canonicalOwnerTasks = new Set<string>();
   for (const task of coalescedTasks) {
     if (!task.blocking || !task.canonicalEventId || (!task.id.endsWith(':owner-event') && !task.id.endsWith(':choice-resolution'))) continue;

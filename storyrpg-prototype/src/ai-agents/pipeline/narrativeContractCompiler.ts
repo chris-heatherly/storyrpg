@@ -46,7 +46,7 @@ import {
   type SemanticContractEventSeed,
 } from './semanticContractIr';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v24';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v25';
 
 const MAX_BLOCKING_PREMISE_PROPOSITIONS_PER_SCENE = 12;
 
@@ -972,7 +972,10 @@ function compilePremiseContracts(
   semanticIr?: AuthoredEventSemanticIR,
 ): NarrativePremiseContract[] {
   const sourceContracts = buildCharacterTreatmentContractsForPlan(plan);
-  const premiseKinds = new Set(['canonical_identity', 'role_fact', 'origin_pressure', 'wound_pressure', 'starting_identity']);
+  // Canonical name/pronouns are artifact invariants, not positive prose
+  // obligations. Character-treatment validation owns metadata presence while
+  // protagonist/NPC pronoun validation owns contradictions when references occur.
+  const premiseKinds = new Set(['role_fact', 'origin_pressure', 'wound_pressure', 'starting_identity']);
   const openingScenes = scenes
     .filter((scene) => scene.episodeNumber === 1)
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
@@ -1010,14 +1013,25 @@ function compilePremiseContracts(
             contract.contractKind as NarrativePremiseContract['fieldKind'],
             contract.sourceText,
           );
-      const preferred = contract.targetSceneIds.filter((sceneId) => openingOrder.has(sceneId));
-      const candidates = uniqueStrings([...preferred, ...openingScenes.map((scene) => scene.id)]);
-      const targetSceneId = candidates.sort((left, right) =>
-        (sceneLoad.get(left) ?? Number.MAX_SAFE_INTEGER) - (sceneLoad.get(right) ?? Number.MAX_SAFE_INTEGER)
-        || Number(preferred.includes(right)) - Number(preferred.includes(left))
-        || (openingOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (openingOrder.get(right) ?? Number.MAX_SAFE_INTEGER)
-        || left.localeCompare(right))[0];
-      if (targetSceneId) sceneLoad.set(targetSceneId, (sceneLoad.get(targetSceneId) ?? 0) + 1);
+      const threshold = compiled?.minimumEvidenceHits ?? Math.min(2, Math.max(1, evidenceAtoms.length));
+      const requiredAtoms = evidenceAtoms.filter((atom) => atom.required);
+      const assignmentCount = compiled && threshold > 1 && requiredAtoms.length === threshold && requiredAtoms.length <= openingScenes.length
+        ? requiredAtoms.length
+        : 1;
+      const targetSceneIds: string[] = [];
+      for (let assignment = 0; assignment < assignmentCount; assignment += 1) {
+        const preferred = contract.targetSceneIds.filter((sceneId) => openingOrder.has(sceneId));
+        const candidates = uniqueStrings([...preferred, ...openingScenes.map((scene) => scene.id)]);
+        const targetSceneId = candidates.sort((left, right) =>
+          (sceneLoad.get(left) ?? Number.MAX_SAFE_INTEGER) - (sceneLoad.get(right) ?? Number.MAX_SAFE_INTEGER)
+          || Number(preferred.includes(right)) - Number(preferred.includes(left))
+          || (openingOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (openingOrder.get(right) ?? Number.MAX_SAFE_INTEGER)
+          || left.localeCompare(right))[0];
+        if (targetSceneId) {
+          targetSceneIds.push(targetSceneId);
+          sceneLoad.set(targetSceneId, (sceneLoad.get(targetSceneId) ?? 0) + 1);
+        }
+      }
       contracts.push({
         id: premiseId,
         episodeNumber: 1,
@@ -1026,8 +1040,9 @@ function compilePremiseContracts(
         sourceText: contract.sourceText,
         evidencePatterns,
         evidenceAtoms,
-        minimumEvidenceHits: compiled?.minimumEvidenceHits ?? Math.min(2, Math.max(1, evidenceAtoms.length)),
-        targetSceneIds: targetSceneId ? [targetSceneId] : [],
+        enforcementMode: 'positive_realization',
+        minimumEvidenceHits: threshold,
+        targetSceneIds,
         requiredSurface: ['beat_text', 'dialogue', 'choice_text'],
         sourceContractIds: [contract.id],
         blocking: contract.blockingLevel !== 'warning',
@@ -1552,7 +1567,8 @@ function validateGraph(graph: NarrativeContractGraph): NarrativeContractIssue[] 
     }
   }
   for (const premise of graph.premiseContracts ?? []) {
-    if (premise.minimumEvidenceHits < 1 || premise.minimumEvidenceHits > premise.evidencePatterns.length) {
+    const evidenceCandidateCount = premise.evidenceAtoms?.length ?? premise.evidencePatterns.length;
+    if (premise.minimumEvidenceHits < 1 || premise.minimumEvidenceHits > evidenceCandidateCount) {
       issues.push({ code: 'invalid_premise_evidence_threshold', severity: 'error', message: `Premise contract "${premise.id}" has an invalid evidence threshold.` });
     }
   }
@@ -2008,6 +2024,7 @@ export function compileNarrativeContractGraph(
     compilerVersion: NARRATIVE_CONTRACT_COMPILER_VERSION,
     storyId: plan.id || slug(plan.sourceTitle || 'story'),
     sourceHash: '',
+    narrativeVoice: 'second_person',
     knownLocationNames: knownLocations,
     semanticEventIr: scenePlan.semanticEventIr,
     events,

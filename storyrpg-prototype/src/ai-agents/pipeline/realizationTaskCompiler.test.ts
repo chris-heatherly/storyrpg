@@ -289,6 +289,21 @@ describe('compileNarrativeRealizationTasks', () => {
     expect(() => compileNarrativeRealizationTasks(graph, [])).toThrow(/owner_stage_unreachable.*missing scene missing/i);
   });
 
+  it('rejects an unsatisfiable threshold before prose generation', () => {
+    const graph = {
+      events: [], dependencies: [], premiseContracts: [{
+        id: 'premise:impossible', episodeNumber: 1, fieldName: 'Wound', fieldKind: 'wound_pressure',
+        sourceText: 'One meaning.', evidencePatterns: ['one'], minimumEvidenceHits: 2,
+        targetSceneIds: ['s1'], requiredSurface: ['beat_text'], sourceContractIds: ['treatment'],
+        blocking: true, provenance: { source: 'treatment', confidence: 'authoritative' },
+      }],
+    } as unknown as NarrativeContractGraph;
+
+    expect(() => compileNarrativeRealizationTasks(graph, [
+      { id: 's1', episodeNumber: 1, order: 0, kind: 'standard' },
+    ] as any)).toThrow(/task_unsatisfiable.*unreachable minimum 2\/1/i);
+  });
+
   it('rejects an exact literal requirement that is also forbidden on the same owner surface', () => {
     expect(() => assertNoContradictoryLiteralEvidence([{
       id: 'task:presence', contractId: 'presence', episodeNumber: 1, sceneId: 'club',

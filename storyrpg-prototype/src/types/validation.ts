@@ -383,6 +383,22 @@ export interface ValidatorExecutionRecord {
     candidateHash: string;
     taskIds: string[];
     findingFingerprints: string[];
+    atomVerdicts?: Array<{
+      taskId: string;
+      atomId: string;
+      groupKey: string;
+      authority: 'literal' | 'structured' | 'semantic_judge';
+      outcome: 'pass' | 'miss' | 'inconclusive' | 'unavailable';
+    }>;
+    taskEvaluations?: Array<{
+      taskId: string;
+      groupKey: string;
+      status: 'satisfied' | 'missing' | 'pending' | 'inconclusive' | 'unavailable';
+      missingAtomIds: string[];
+      inconclusiveAtomIds: string[];
+      unavailableAtomIds: string[];
+      unresolvedAtomIds: string[];
+    }>;
     semanticVerdicts?: Array<{
       taskId: string;
       atomId: string;

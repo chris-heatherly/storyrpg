@@ -1,7 +1,7 @@
 /** Generator-only canonical contracts for narrative planning and realization. */
 
-export const NARRATIVE_CONTRACT_GRAPH_VERSION = 8;
-export const EPISODE_EVENT_PLAN_VERSION = 8;
+export const NARRATIVE_CONTRACT_GRAPH_VERSION = 9;
+export const EPISODE_EVENT_PLAN_VERSION = 9;
 export const NARRATIVE_REALIZATION_LEDGER_VERSION = 1;
 
 export type NarrativeVerificationAuthority =
@@ -76,8 +76,8 @@ export interface NarrativeEvidenceAtom {
   kind: 'lexical' | 'semantic' | 'relationship_label' | 'route';
   /**
    * The only subsystem allowed to decide whether this atom is satisfied.
-   * Version-8 compilers always write this field. It remains optional at the
-   * TypeScript boundary so version-7 checkpoints can be normalized safely.
+   * Version-8+ compilers always write this field. It remains optional at the
+   * TypeScript boundary so older checkpoints can be normalized safely.
    */
   verificationAuthority?: NarrativeVerificationAuthority;
   /** Concrete semantic criteria supplied to the judge. These are meaning
@@ -192,6 +192,22 @@ export interface NarrativeEvidenceGroup {
   sourceContractIds: string[];
 }
 
+export type NarrativeContractEnforcementMode =
+  | 'artifact_assertion'
+  | 'positive_realization'
+  | 'contradiction_only';
+
+/** Explicit Boolean satisfaction policy. Verification authority selects an
+ * evaluator; it never changes this expression or independently fails a task. */
+export interface NarrativeTaskSatisfactionExpression {
+  allOfAtomIds: string[];
+  anyOfGroups: Array<{
+    id: string;
+    atomIds: string[];
+    minimumHits: number;
+  }>;
+}
+
 /**
  * The smallest blocking unit that can be assigned, authored, validated, and
  * repaired by one pipeline stage. The LLM may report these ids, but validators
@@ -220,6 +236,10 @@ export interface NarrativeRealizationTask {
   artifactPath?: string;
   evidenceAtoms: NarrativeEvidenceAtom[];
   evidenceGroups?: NarrativeEvidenceGroup[];
+  enforcementMode?: NarrativeContractEnforcementMode;
+  /** Canonical satisfaction policy for version-9 tasks. Legacy thresholds are
+   * normalized at evaluation and migration boundaries. */
+  satisfaction?: NarrativeTaskSatisfactionExpression;
   /** Minimum number of positive evidence atoms required when the task models
    * a threshold contract such as a premise. Omitted means every required atom
    * must be present. */
@@ -340,6 +360,7 @@ export interface NarrativePremiseContract {
   /** Typed evidence replaces brittle adjacent source n-grams while retaining
    * evidencePatterns for version-2 readers and migration diagnostics. */
   evidenceAtoms?: NarrativePremiseEvidenceAtom[];
+  enforcementMode?: NarrativeContractEnforcementMode;
   minimumEvidenceHits: number;
   targetSceneIds: string[];
   requiredSurface: Array<'beat_text' | 'dialogue' | 'choice_text' | 'encounter_outcome'>;
@@ -538,6 +559,9 @@ export interface NarrativeContractGraph {
   compilerVersion: string;
   storyId: string;
   sourceHash: string;
+  /** Player-facing story prose is authored in second person. Planning and
+   * visual metadata may still name the protagonist in third person. */
+  narrativeVoice?: 'second_person';
   /** Locked world-canon location names accepted by semantic event contracts. */
   knownLocationNames?: string[];
   /** Persisted interpretive source for depiction-event evidence atoms. */

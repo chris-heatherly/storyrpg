@@ -405,6 +405,7 @@ Rules:
 - Preserve authored meaning without adding biography, motives, causality, or facts absent from sourceText.
 - semanticCriteria are concise meaning conditions, never keyword lists or stylistic directions.
 - Use literal only when exact reader-facing identity or terminology is itself required, and then make sourceSpan the minimal exact name or term. Use semantic_judge for paraphrasable facts, behavior, wound, origin, or role meaning.
+- In second_person narration, the protagonist is represented by you/your. Never create a proposition requiring the protagonist's name or third-person pronouns merely to prove subject identity.
 - minimumEvidenceHits is the number of propositions needed to unmistakably establish this field. Prefer 1; use 2 only when two independently load-bearing meanings are necessary. It may not exceed the proposition count.
 - Keep no more than 3 propositions unless the authored source contains four genuinely independent, load-bearing meanings.
 - Mark a proposition required only when it contributes to minimumEvidenceHits.

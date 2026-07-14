@@ -14,6 +14,7 @@ import type { SeasonScenePlan } from '../../types/scenePlan';
 import { ENCOUNTER_OUTCOME_TIERS } from '../validators/encounterTextSurfaces';
 import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 import { withNarrativeVerificationAuthority } from './realizationVerificationAuthority';
+import { satisfactionExpressionForTask } from './realizationTaskSatisfaction';
 
 function normalized(value: string | undefined): string {
   return (value ?? '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -96,19 +97,42 @@ export function normalizePersistedRealizationTask(
         return { ...shared, target: legacyTarget(task) };
       })();
   const evidenceAtoms = canonical.evidenceAtoms.map(withNarrativeVerificationAuthority);
-  if (isCanonicalTask(task) && evidenceAtoms.every((atom, index) => atom === canonical.evidenceAtoms[index])) {
+  const normalized = {
+    ...canonical,
+    evidenceAtoms,
+    enforcementMode: canonical.enforcementMode ?? (evidenceAtoms.every((atom) => atom.polarity === 'forbidden')
+      ? 'contradiction_only' as const
+      : 'positive_realization' as const),
+  };
+  const satisfaction = satisfactionExpressionForTask(normalized);
+  if (isCanonicalTask(task)
+    && canonical.enforcementMode === normalized.enforcementMode
+    && canonical.satisfaction
+    && evidenceAtoms.every((atom, index) => atom === canonical.evidenceAtoms[index])) {
     return canonical;
   }
-  return { ...canonical, evidenceAtoms };
+  return { ...normalized, satisfaction };
+}
+
+function isLegacyCanonicalIdentityPremise(task: NarrativeRealizationTask): boolean {
+  return (task.sourceKinds?.includes('premise') === true || task.repairHandler === 'premise_realization')
+    && /canonical[-_:]?identity/i.test(`${task.contractId} ${task.id}`);
 }
 
 export function normalizePersistedNarrativeContractGraph(
   graph: NarrativeContractGraph,
 ): NarrativeContractGraph {
-  const realizationTasks = (graph.realizationTasks ?? []).map((task) =>
-    normalizePersistedRealizationTask(task as PersistedNarrativeRealizationTask),
-  );
+  const identityPremiseIds = new Set((graph.premiseContracts ?? [])
+    .filter((premise) => premise.fieldKind === 'canonical_identity')
+    .map((premise) => premise.id));
+  const realizationTasks = (graph.realizationTasks ?? [])
+    .map((task) => normalizePersistedRealizationTask(task as PersistedNarrativeRealizationTask))
+    .filter((task) => !identityPremiseIds.has(task.contractId) && !isLegacyCanonicalIdentityPremise(task));
+  const premiseContracts = (graph.premiseContracts ?? []).filter((premise) => premise.fieldKind !== 'canonical_identity');
   const current = graph.version === NARRATIVE_CONTRACT_GRAPH_VERSION
+    && graph.narrativeVoice === 'second_person'
+    && realizationTasks.length === (graph.realizationTasks ?? []).length
+    && premiseContracts.length === (graph.premiseContracts ?? []).length
     && realizationTasks.every((task, index) => task === graph.realizationTasks?.[index]);
   if (current) return graph;
   return {
@@ -116,16 +140,24 @@ export function normalizePersistedNarrativeContractGraph(
     version: NARRATIVE_CONTRACT_GRAPH_VERSION,
     compilerVersion: graph.version === NARRATIVE_CONTRACT_GRAPH_VERSION
       ? graph.compilerVersion
-      : `${graph.compilerVersion}:migration-v8`,
+      : `${graph.compilerVersion}:migration-v9`,
+    narrativeVoice: 'second_person',
+    premiseContracts,
     realizationTasks,
   };
 }
 
 export function normalizePersistedEpisodeEventPlan(plan: EpisodeEventPlan): EpisodeEventPlan {
-  const realizationTasks = (plan.realizationTasks ?? []).map((task) =>
-    normalizePersistedRealizationTask(task as PersistedNarrativeRealizationTask),
-  );
+  const identityPremiseIds = new Set((plan.premiseContracts ?? [])
+    .filter((premise) => premise.fieldKind === 'canonical_identity')
+    .map((premise) => premise.id));
+  const realizationTasks = (plan.realizationTasks ?? [])
+    .map((task) => normalizePersistedRealizationTask(task as PersistedNarrativeRealizationTask))
+    .filter((task) => !identityPremiseIds.has(task.contractId) && !isLegacyCanonicalIdentityPremise(task));
+  const premiseContracts = (plan.premiseContracts ?? []).filter((premise) => premise.fieldKind !== 'canonical_identity');
   const current = plan.version === EPISODE_EVENT_PLAN_VERSION
+    && realizationTasks.length === (plan.realizationTasks ?? []).length
+    && premiseContracts.length === (plan.premiseContracts ?? []).length
     && realizationTasks.every((task, index) => task === plan.realizationTasks?.[index]);
   if (current) return plan;
   return {
@@ -133,7 +165,8 @@ export function normalizePersistedEpisodeEventPlan(plan: EpisodeEventPlan): Epis
     version: EPISODE_EVENT_PLAN_VERSION,
     compilerVersion: plan.version === EPISODE_EVENT_PLAN_VERSION
       ? plan.compilerVersion
-      : `${plan.compilerVersion}:migration-v8`,
+      : `${plan.compilerVersion}:migration-v9`,
+    premiseContracts,
     realizationTasks,
   };
 }

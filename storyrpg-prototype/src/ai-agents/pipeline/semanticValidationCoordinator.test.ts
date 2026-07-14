@@ -146,6 +146,37 @@ describe('semanticValidationCoordinator', () => {
     });
   });
 
+  it('aggregates mixed literal and semantic alternatives once and skips an unnecessary judge call', async () => {
+    const identityTask = task({
+      id: 'task:premise:canonical-identity',
+      canonicalEventId: undefined,
+      minimumEvidenceHits: 1,
+      evidenceAtoms: [
+        {
+          id: 'atom:name', description: 'The protagonist is named Kylie Marinescu.',
+          acceptedPatterns: ['Kylie Marinescu'], kind: 'semantic', verificationAuthority: 'literal', required: true,
+        },
+        {
+          id: 'atom:pronouns', description: 'The protagonist uses she/her pronouns.',
+          acceptedPatterns: ['she/her'], kind: 'semantic', verificationAuthority: 'semantic_judge', required: false,
+        },
+      ],
+    });
+    const judge = new FakeJudge((claim) => verdict(claim, 'not_fulfilled'));
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1', tasks: [identityTask],
+      sceneContent: { beats: [{ text: 'In this city, you are simply Kylie Marinescu.' }] }, judge,
+    });
+
+    expect(result.findings).toEqual([]);
+    expect(judge.calls).toBe(0);
+    expect(result.receipt.atomVerdicts).toContainEqual(expect.objectContaining({
+      atomId: 'atom:name', authority: 'literal', outcome: 'pass',
+    }));
+    expect(result.receipt.semanticVerdicts).toEqual([]);
+  });
+
   it('lets focused adjudication resolve two inconclusive samples', async () => {
     let executeCalls = 0;
     let adjudicationCalls = 0;

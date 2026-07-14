@@ -1,6 +1,6 @@
 # Reliability Remediation Plan — 2026-07-14
 
-**Status:** Approved direction, not yet executing  
+**Status:** Waves A–D executed (R0.*–R2.6 landed; live bite-me gate still owed)
 **Sources:** `docs/RELIABILITY_AUDIT_2026-07-13.md`, prior canvas audits, Jul 11–14
 commit history, live Bite Me / lite-treatment corpus  
 **Scope:** Generation reliability and consistency without regressing fiction-first,
@@ -515,10 +515,15 @@ _(Update as work lands.)_
 | R1.3 | done | Adoption by non-increasing task miss-count + single re-sample of new claim |
 | R1.4 | done | Extended fidelity judge confirm set; scene-local RelationshipArcLedger → same_scene_retry |
 | R1.5 | done | Resume loop-breaker on identical failure fingerprint without patches |
-| R1.6 | pending | Cross-run artifact reuse (deferred) |
-| R1.7 | pending | Planner jsonSchema + withTimeoutAbort (deferred) |
+| R1.6 | done | Foundation artifact cache for world/character bibles |
+| R1.7 | done | StoryArchitect/SeasonPlanner jsonSchema + EpisodeArchitecturePhase withTimeoutAbort |
 | R1.8 | done | Compile-time semantic↔literal contradiction preflight |
-| R2.* | pending | |
+| R2.1 | done | Demoted unrepaired plan craft gates (density/budget/arc/fanout) to default-OFF |
+| R2.2 | done | Repair-first registry extended to plan/scene/episode/season-final |
+| R2.3 | done | Season gate frontier enforcement (`createSeasonGateEnforcement`) |
+| R2.4 | done | Lexicon flip via `STORYRPG_STORY_LEXICON=genre_neutral` (Bite-Me default until corpus regen) |
+| R2.5 | done | Generate-to-satisfy planner + ESC elaboration constraint blocks |
+| R2.6 | done | Extracted plan craft gates + visual audit; FSP ≤9459; ContentGenerationPhase ratchet |
 
 ---
 

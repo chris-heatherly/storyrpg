@@ -455,7 +455,10 @@ const baselines = {
   // abort at ~4% that discarded a healthy cached analysis + season plan), plus
   // the two call-site rewires and TS-narrowing consts. No new logic beyond the
   // retry orchestration; kill-switch GATE_SCENE_CONSTRUCTION_ARCH_RETRY.
-  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9461,
+  'src/ai-agents/pipeline/FullStoryPipeline.ts': 9459,
+  // R2.6: ContentGenerationPhase extracted from FullStoryPipeline; ratchet locks
+  // the current size so scene/choice/encounter generation does not grow in place.
+  'src/ai-agents/pipeline/phases/ContentGenerationPhase.ts': 5313,
   // 2026-06-10: +4 — doc comments on two caller-attached metadata fields
   // (visualCast/coveragePlan) typed during the FullStoryPipeline de-@ts-nocheck.
   'src/ai-agents/services/imageGenerationService.ts': 6566,

@@ -11,6 +11,7 @@
 
 import { AgentConfig } from '../config';
 import { BaseAgent, AgentResponse } from './BaseAgent';
+import { buildSeasonPlanJsonSchema } from '../schemas/seasonPlanSchema';
 import {
   SourceMaterialAnalysis,
   EpisodeOutline,
@@ -283,7 +284,9 @@ Your plans must define:
       const prompt = this.buildPlanningPrompt(sourceAnalysis, preferences);
       const { data: parsedPlan, rawResponse } = await this.callLLMForJson<MutablePlanData>([
         { role: 'user', content: prompt },
-      ]);
+      ], {
+        jsonSchema: buildSeasonPlanJsonSchema(),
+      });
       const response = rawResponse;
       planData = parsedPlan;
       const topKeys = Object.keys(planData);

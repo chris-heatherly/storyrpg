@@ -40,12 +40,27 @@ describe('gate registry policy (repair-first, CI-enforced)', () => {
     }
   });
 
-  it('does NOT fire the repair-first rule for plan/scene/episode placements or shadow (defaultOn=false) gates', () => {
+  it('the repair-first rule fires for plan/scene/episode placements too (R2.2)', () => {
     const planGate: GateSpec = { id: 'GATE_TEST_PLAN', placement: 'plan', kind: 'blocking', defaultOn: true };
-    const shadowGate: GateSpec = { id: 'GATE_TEST_SHADOW', placement: 'season-final', kind: 'blocking', defaultOn: false };
-    GATE_REGISTRY.push(planGate, shadowGate);
+    GATE_REGISTRY.push(planGate);
     try {
-      const violations = validateGateRegistry({ ...GATE_DEFAULTS, GATE_TEST_PLAN: true, GATE_TEST_SHADOW: false });
+      const violations = validateGateRegistry({ ...GATE_DEFAULTS, GATE_TEST_PLAN: true });
+      expect(violations.some((v) => v.gateId === 'GATE_TEST_PLAN' && v.problem.includes('repair-first policy'))).toBe(true);
+    } finally {
+      GATE_REGISTRY.pop();
+    }
+  });
+
+  it('does NOT fire the repair-first rule for shadow (defaultOn=false) gates', () => {
+    const shadowGate: GateSpec = { id: 'GATE_TEST_SHADOW', placement: 'season-final', kind: 'blocking', defaultOn: false };
+    const repairedPlan: GateSpec = { id: 'GATE_TEST_PLAN_REPAIRED', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' };
+    GATE_REGISTRY.push(shadowGate, repairedPlan);
+    try {
+      const violations = validateGateRegistry({
+        ...GATE_DEFAULTS,
+        GATE_TEST_SHADOW: false,
+        GATE_TEST_PLAN_REPAIRED: true,
+      });
       expect(violations.filter((v) => v.gateId.startsWith('GATE_TEST_'))).toEqual([]);
     } finally {
       GATE_REGISTRY.pop();

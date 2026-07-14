@@ -21,6 +21,7 @@ import {
   ThemeArgumentContract,
 } from '../../types/sourceAnalysis';
 import { BaseAgent, AgentResponse, AgentMessage, TruncatedLLMResponseError } from './BaseAgent';
+import { buildEpisodeBlueprintJsonSchema } from '../schemas/episodeBlueprintSchema';
 import {
   BRANCH_AND_BOTTLENECK,
   CRAFT_PRESSURE_GUIDANCE,
@@ -144,6 +145,10 @@ import { finalizeEpisodeSceneOwnership } from '../utils/episodeSceneOwnership';
 import { normalizeRelationshipPacingStages } from '../utils/relationshipPacingStagePolicy';
 import { getFlagRegistry } from '../pipeline/flagRegistry';
 import { getStoryLexicon, lexiconAlternation } from '../config/storyLexicon';
+import {
+  buildEscElaborationPatchConstraint,
+  buildGenerateToSatisfyPlannerBlock,
+} from '../pipeline/generateToSatisfyConstraints';
 import {
   detectPrimaryStoryEventCues,
   STORY_EVENT_CUE_DESCRIPTIONS,
@@ -5274,6 +5279,20 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
   async execute(
     input: StoryArchitectInput,
     retry: number | StoryArchitectRetryState = 0,
+    options?: { signal?: AbortSignal },
+  ): Promise<AgentResponse<EpisodeBlueprint>> {
+    const previousSignal = this.activeAbortSignal;
+    if (options?.signal) this.activeAbortSignal = options.signal;
+    try {
+      return await this.executeInner(input, retry);
+    } finally {
+      this.activeAbortSignal = previousSignal;
+    }
+  }
+
+  private async executeInner(
+    input: StoryArchitectInput,
+    retry: number | StoryArchitectRetryState = 0,
   ): Promise<AgentResponse<EpisodeBlueprint>> {
     const maxRetries = 2;
     const maxFormatRetries = 1;
@@ -5295,6 +5314,7 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
     const plannedScenes = input.seasonPlanDirectives?.plannedScenes;
     if (plannedScenes && plannedScenes.length > 0) {
       console.info(`[StoryArchitect] Elaborate-mode: building blueprint from ${plannedScenes.length} planned scene(s)`);
+      console.info(`[StoryArchitect] ${buildEscElaborationPatchConstraint().split('\n')[0]}`);
       const blueprint = this.buildBlueprintFromPlannedScenes(input);
       this.repairChoiceDensity(blueprint, input);
       this.repairPlannedEncounterCoverage(blueprint, input);
@@ -5500,7 +5520,12 @@ REQUIREMENTS:
           // what BaseAgent refuses to blindly re-sample after MAX_TOKENS.
           this.config.maxTokens = Math.min(Math.ceil(previousMaxTokens * 1.5), previousMaxTokens + 8192);
         }
-        response = await this.callLLM(messages);
+        response = await this.callLLM(messages, 4, {
+          jsonSchema: buildEpisodeBlueprintJsonSchema({
+            targetSceneCount: input.targetSceneCount,
+            compact: isCompactTruncationRetry,
+          }),
+        });
       } catch (llmError) {
         if (
           llmError instanceof TruncatedLLMResponseError
@@ -6172,6 +6197,8 @@ Create an episode blueprint for the following story.
 5. **THEN** write the full JSON blueprint.
 
 Do NOT adapt the source material rigidly. Invent or heighten confrontations, crises, and conflicts to maximise drama. A quiet scene in the source can become an intense encounter if the themes support it.
+
+${buildGenerateToSatisfyPlannerBlock()}
 
 ## Story Context
 - **Title**: ${input.storyTitle}

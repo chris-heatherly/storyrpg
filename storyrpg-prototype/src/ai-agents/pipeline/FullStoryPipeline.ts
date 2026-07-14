@@ -117,6 +117,15 @@ import {
   shouldRefuseIdenticalResume,
   type FailureFingerprintRecord,
 } from './failureFingerprint';
+import {
+  buildFoundationCacheIdentity,
+  defaultFoundationCacheDir,
+  readFoundationArtifact,
+  writeFoundationArtifact,
+} from './foundationArtifactCache';
+import { resetStoryLexiconFromEnv } from '../config/storyLexicon';
+import { enforceEpisodePlanCraftGates } from './episodePlanCraftGates';
+import { auditStoryVisualContractPersistence as auditStoryVisualContractPersistenceImpl } from './visualContractPersistenceAudit';
 import { commitEpisodeGenerationAfterLock, emitEpisodeGenerationStart, episodeFailureMetadataFromError, handleEpisodeGenerationFailure, type EpisodeGenerationResult } from './episodeGenerationEvents';
 
 import {
@@ -338,21 +347,17 @@ import {
   type SceneGraphBranchValidationResult,
   runNarrativeDiagnostics,
   type NarrativeDiagnosticsReport,
-  ChoiceDensityValidator,
-  PropIntroductionValidator,
   ArcPressureArchitectureValidator,
 } from '../validators';
 import type { PhaseValidationResult } from '../validators/PhaseValidator';
-import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
-import { buildPropIntroductionInput } from '../remediation/propIntroductionGate';
+import { PLAN_GATE_FLAGS } from '../remediation/planGatePolicy';
 import { stabilizeByHysteresis } from '../remediation/judgeStabilizer';
 
 import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
 import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { buildGateShadowRecord, buildValidatorPromotionRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
-import { isGateEnabled, isShadowLoggingEnabled, resolveGateConfigHash } from '../remediation/gateDefaults';
+import { isGateEnabled, resolveGateConfigHash } from '../remediation/gateDefaults';
 import { setRealizationPovContext } from '../remediation/realizationEvaluator';
-import { repairAndRevalidatePropIntroduction } from '../remediation/repairs/propIntroductionRepair';
 import {
   ComprehensiveValidationReport,
   QuickValidationResult,
@@ -2252,50 +2257,8 @@ export class FullStoryPipeline {
     };
   }
 
-  private auditStoryVisualContractPersistence(story: Story): {
-    passed: boolean;
-    sceneCount: number;
-    scenesWithSequencePlan: number;
-    nonEstablishingBeatCount: number;
-    nonEstablishingBeatsWithCoveragePlan: number;
-    missingScenePlanIds: string[];
-    missingCoverageBeatIds: string[];
-  } {
-    const report = {
-      passed: true,
-      sceneCount: 0,
-      scenesWithSequencePlan: 0,
-      nonEstablishingBeatCount: 0,
-      nonEstablishingBeatsWithCoveragePlan: 0,
-      missingScenePlanIds: [] as string[],
-      missingCoverageBeatIds: [] as string[],
-    };
-
-    for (const episode of story.episodes || []) {
-      for (const scene of episode.scenes || []) {
-        report.sceneCount += 1;
-        if (scene.sceneVisualSequencePlan) {
-          report.scenesWithSequencePlan += 1;
-        } else if ((scene.beats || []).length > 1) {
-          report.missingScenePlanIds.push(scene.id);
-        }
-
-        for (const beat of scene.beats || []) {
-          const isEstablishingBeat = (beat as Beat & { shotType?: string }).shotType === 'establishing'
-            || beat.coveragePlan?.stagingPattern === 'environment';
-          if (isEstablishingBeat) continue;
-          report.nonEstablishingBeatCount += 1;
-          if (beat.coveragePlan) {
-            report.nonEstablishingBeatsWithCoveragePlan += 1;
-          } else {
-            report.missingCoverageBeatIds.push(`${scene.id}::${beat.id}`);
-          }
-        }
-      }
-    }
-
-    report.passed = report.missingScenePlanIds.length === 0 && report.missingCoverageBeatIds.length === 0;
-    return report;
+  private auditStoryVisualContractPersistence(story: Story) {
+    return auditStoryVisualContractPersistenceImpl(story);
   }
 
   async generateImagesForDraft(
@@ -2576,6 +2539,7 @@ export class FullStoryPipeline {
   ): Promise<FullPipelineResult> {
     // Input validation
     this.validateBrief(brief);
+    resetStoryLexiconFromEnv();
     this.armRealizationPovContext(brief);
 
     // R1.5: refuse identical-failure resume loops without repair patches.
@@ -4096,10 +4060,23 @@ export class FullStoryPipeline {
   // keeps all three call sites (single-episode, world retry, multi-episode)
   // unchanged while the body lives in the typed phase module.
   private async runWorldBuilding(brief: FullCreativeBrief): Promise<WorldBible> {
+    const agentConfig = this.config.agents.storyArchitect;
+    const identity = buildFoundationCacheIdentity({
+      kind: 'world_bible',
+      brief,
+      provider: agentConfig.provider,
+      model: agentConfig.model,
+    });
+    const cacheDir = defaultFoundationCacheDir();
+    const cached = readFoundationArtifact<WorldBible>(cacheDir, identity);
+    if (cached) {
+      this.emit({ type: 'debug', phase: 'world', message: 'Hydrated world bible from foundation artifact cache' });
+      return cached;
+    }
     const memoryContext = await this.getScopedAgentMemoryContext('WorldBuilder', 'world-building', brief, {
       artifactKinds: ['source-analysis', 'season-plan'],
     });
-    return new WorldBuildingPhase(this.worldBuilder).run(
+    const worldBible = await new WorldBuildingPhase(this.worldBuilder).run(
       {
         story: brief.story,
         userPrompt: brief.userPrompt,
@@ -4116,6 +4093,8 @@ export class FullStoryPipeline {
         addCheckpoint: this.addCheckpoint.bind(this),
       }
     );
+    writeFoundationArtifact(cacheDir, identity, worldBible);
+    return worldBible;
   }
 
   // Extracted to phases/CharacterDesignPhase.ts (pure move). Thin delegating
@@ -4126,6 +4105,19 @@ export class FullStoryPipeline {
     brief: FullCreativeBrief,
     worldBible: WorldBible
   ): Promise<CharacterBible> {
+    const agentConfig = this.config.agents.storyArchitect;
+    const identity = buildFoundationCacheIdentity({
+      kind: 'character_bible',
+      brief,
+      provider: agentConfig.provider,
+      model: agentConfig.model,
+    });
+    const cacheDir = defaultFoundationCacheDir();
+    const cached = readFoundationArtifact<CharacterBible>(cacheDir, identity);
+    if (cached) {
+      this.emit({ type: 'debug', phase: 'characters', message: 'Hydrated character bible from foundation artifact cache' });
+      return cached;
+    }
     const memoryContext = await this.getScopedAgentMemoryContext('CharacterDesigner', 'character-design', brief, {
       artifactKinds: ['source-analysis', 'world-bible'],
       characterIds: [brief.protagonist.id, ...brief.npcs.map((npc) => npc.id)],
@@ -4134,11 +4126,13 @@ export class FullStoryPipeline {
     Object.defineProperties(deps, {
       cachedPipelineMemory: { get: () => memoryContext || this.renderedPipelineMemory },
     });
-    return new CharacterDesignPhase(deps).run(brief, worldBible, {
+    const characterBible = await new CharacterDesignPhase(deps).run(brief, worldBible, {
       config: this.config,
       emit: this.emit.bind(this),
       addCheckpoint: this.addCheckpoint.bind(this),
     });
+    writeFoundationArtifact(cacheDir, identity, characterBible);
+    return characterBible;
   }
 
   // Extracted to phases/EpisodeArchitecturePhase.ts (pure move). Thin
@@ -7137,241 +7131,19 @@ export class FullStoryPipeline {
         });
       }
 
-      // Bucket D: plan-time craft gates (opt-in, default OFF). The validators ran
-      // advisory inside runNarrativeDiagnostics above (report unchanged); these only
-      // HARD-BLOCK on error-severity findings when the per-rule flag is set. The gate
-      // checks run OUTSIDE the diagnostics try/catch so a real gate failure propagates
-      // as a PipelineError instead of being swallowed as a non-fatal warning. With the
-      // flags unset, shouldGate returns gate:false → behavior is unchanged.
-      // NOTE(de-@ts-nocheck): this block previously referenced out-of-scope
-      // `brief`/`story` copied from generate(). The `brief` ReferenceError
-      // killed runNarrativeDiagnostics above as a "non-fatal" warning, which
-      // left narrativeDiagnosticsReport undefined and silently skipped every
-      // plan-time gate in multi-episode runs. Fixed to baseBrief; the gate
-      // shadow records pass storyId: undefined (no Story exists in this
-      // scope — the season story is assembled later by the driver).
+      // Bucket D: plan-time craft gates (extracted — episodePlanCraftGates.ts).
       if (narrativeDiagnosticsReport) {
-        const isEnabled = isGateEnabled;
-        const shadow = isShadowLoggingEnabled();
-        // SHADOW-ONLY in the season path: before the scope fix above, these
-        // gates could never fire here, so their default-ON promotion was
-        // validated exclusively against single-episode shadow data (the
-        // season fixture trips ConsequenceBudget immediately). Validation +
-        // shadow records run with the real flags; blocking stays disabled
-        // until a fresh multi-episode shadow pass proves the profile clean.
-        const seasonGateEnforcement = () => false;
-        const checkIssues = (name: NarrativeDiagnosticsReport['checks'][number]['name']) =>
-          narrativeDiagnosticsReport.checks.find((c) => c.name === name)?.issues ?? [];
-
-        // UNIFIED-LEDGER GATE SOURCE (2026-07-03): both setup-payoff and
-        // callback-coverage gates now read the ObligationLedgerValidator's
-        // kind-filtered findings instead of the legacy diagnostics arms
-        // (SetupPayoffValidator / CallbackCoverageValidator produced ZERO
-        // findings across all 202 archived runs — the unified ledger is the
-        // live source of truth for thread and callback debt).
-        const obligationGateFindings = (() => {
-          try {
-            return validateObligationLedger(this.callbackLedger, {
-              episodeNumber: i,
-              generatedThroughEpisode: i,
-            }).findings;
-          } catch {
-            return [];
-          }
-        })();
-        const setupPayoffIssues = obligationGateFindings.filter((f) => f.gateId === 'GATE_SETUP_PAYOFF');
-        const setupPayoffGate = shouldGate(PLAN_GATE_FLAGS.setupPayoff, setupPayoffIssues, seasonGateEnforcement);
-        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.setupPayoff, 'ObligationLedgerValidator', setupPayoffGate.blockingCount, setupPayoffIssues, undefined);
-        if (setupPayoffGate.gate) {
-          const errs = setupPayoffIssues.filter((iss) => iss.severity === 'error');
-          // S3: record the hard block before throwing (best-effort).
-          await this.recordRemediationSafe({
-            rule: 'setup_payoff_gate', scope: 'episode', attempted: 1,
-            succeeded: false, degraded: false, blocked: true, attempts: 1,
-            storyId: undefined, details: `Setup/payoff gate blocked episode ${i}: ${setupPayoffGate.blockingCount} issue(s)`,
-          });
-          throw new PipelineError(
-            `[SetupPayoffGate] Setup/payoff failed the blocking gate (${setupPayoffGate.blockingCount} issue(s)): ` +
-              errs.map((iss) => iss.message).join('; ') +
-              '. Unset GATE_SETUP_PAYOFF to downgrade to advisory.',
-            `episode_${i}_setup_payoff_gate`,
-            { context: { episode: i, blockingCount: setupPayoffGate.blockingCount } },
-          );
-        }
-
-        // Callback-coverage gate: all callback-family obligation kinds
-        // (choice_callback / flag_promise / score_promise / forward_promise)
-        // route to GATE_CALLBACK_COVERAGE in the unified ledger.
-        const callbackGateIssues = obligationGateFindings.filter((f) => f.gateId === 'GATE_CALLBACK_COVERAGE');
-        const callbackGate = shouldGate(PLAN_GATE_FLAGS.callbackCoverage, callbackGateIssues, seasonGateEnforcement);
-        await this.recordPlanGateShadow(PLAN_GATE_FLAGS.callbackCoverage, 'ObligationLedgerValidator', callbackGate.blockingCount, callbackGateIssues, undefined);
-        if (callbackGate.gate) {
-          const errs = callbackGateIssues.filter((iss) => iss.severity === 'error');
-          // S3: record the hard block before throwing (best-effort).
-          await this.recordRemediationSafe({
-            rule: 'callback_coverage_gate', scope: 'episode', attempted: 1,
-            succeeded: false, degraded: false, blocked: true, attempts: 1,
-            storyId: undefined, details: `Callback coverage gate blocked episode ${i}: ${callbackGate.blockingCount} issue(s)`,
-          });
-          throw new PipelineError(
-            `[CallbackCoverageGate] Callback coverage failed the blocking gate (${callbackGate.blockingCount} issue(s)): ` +
-              errs.map((iss) => iss.message).join('; ') +
-              '. Unset GATE_CALLBACK_COVERAGE to downgrade to advisory.',
-            `episode_${i}_callback_coverage_gate`,
-            { context: { episode: i, blockingCount: callbackGate.blockingCount } },
-          );
-        }
-
-        // ChoiceDensity gate (default OFF; GATE_CHOICE_DENSITY=1). The validator
-        // emits 'error' only for the "zero choices" case; all genuine structural
-        // (D4) and timing-cap violations are warning-level by default, so the
-        // gate would never fire on them. When the flag is on we re-run the
-        // validator in STRICT mode (a pure, deterministic re-eval of the same
-        // beats/scenes) so those violations surface as 'error' for shouldGate.
-        // With the flag OFF this branch is skipped entirely → behavior unchanged.
-        if (isEnabled(PLAN_GATE_FLAGS.choiceDensity) || shadow) {
-          const densityResult = await new ChoiceDensityValidator().validate(
-            {
-              beats: sceneContents.flatMap((sc) =>
-                (sc.beats ?? []).map((b) => ({
-                  id: b.id,
-                  text: b.text ?? b.content ?? '',
-                  isChoicePoint: ((b as GeneratedBeat & { choices?: unknown[] }).choices?.length ?? 0) > 0 || b.isChoicePoint,
-                })),
-              ),
-              scenes: sceneContents.map((sc) => ({
-                id: sc.sceneId,
-                beats: (sc.beats ?? []).map((b) => ({
-                  id: b.id,
-                  text: b.text ?? b.content ?? '',
-                  isChoicePoint: ((b as GeneratedBeat & { choices?: unknown[] }).choices?.length ?? 0) > 0 || b.isChoicePoint,
-                })),
-              })),
-            },
-            { strict: true },
-          );
-          const densityIssues = densityResult.issues.map((iss) => ({ severity: iss.level, message: iss.message }));
-          const densityGate = shouldGate(PLAN_GATE_FLAGS.choiceDensity, densityIssues, seasonGateEnforcement);
-          await this.recordPlanGateShadow(PLAN_GATE_FLAGS.choiceDensity, 'ChoiceDensityValidator', densityGate.blockingCount, densityIssues, undefined);
-          if (densityGate.gate) {
-            const errs = densityIssues.filter((iss) => iss.severity === 'error');
-            await this.recordRemediationSafe({
-              rule: 'choice_density_gate', scope: 'episode', attempted: 1,
-              succeeded: false, degraded: false, blocked: true, attempts: 1,
-              storyId: undefined, details: `Choice density gate blocked episode ${i}: ${densityGate.blockingCount} issue(s)`,
-            });
-            throw new PipelineError(
-              `[ChoiceDensityGate] Choice density failed the blocking gate (${densityGate.blockingCount} issue(s)): ` +
-                errs.map((iss) => iss.message).join('; ') +
-                '. Unset GATE_CHOICE_DENSITY to downgrade to advisory.',
-              `episode_${i}_choice_density_gate`,
-              { context: { episode: i, blockingCount: densityGate.blockingCount } },
-            );
-          }
-        }
-
-        // Consequence-budget balance is a season-plan property. Do not re-run
-        // the whole-season percentage validator against this generated episode
-        // slice; FinalStoryContractValidator checks per-scene consequence-tier
-        // conformance against the season plan instead.
-
-        // PropIntroduction gate (default OFF; GATE_PROP_INTRODUCTION=1). PARTIAL
-        // gate (see propIntroductionGate.ts SCOPE NOTE): the deterministic
-        // episode-level subset. Known entities = declared cast (ids + display
-        // names) folded with every scene's declared introductions; references
-        // come from each scene's charactersInvolved (the only per-scene entity
-        // signal available at this seam — props are not yet a tracked field, so
-        // unresolved-prop detection is deferred to a future SceneContent
-        // .referencedEntityIds/.introducesEntityIds population). The validator
-        // emits only warning-level issues today, so the gate fires only if it
-        // begins emitting 'error' (shouldGate counts error-severity); with the
-        // flag OFF this branch is skipped → behavior unchanged.
-        if (isEnabled(PLAN_GATE_FLAGS.propIntroduction) || shadow) {
-          const propInput = buildPropIntroductionInput(
-            (characterBible.characters ?? []).flatMap((c) => [c.id, c.name]),
-            sceneContents.map((sc) => ({
-              sceneId: sc.sceneId,
-              sceneName: sc.sceneName,
-              referencedEntityIds: sc.charactersInvolved ?? [],
-            })),
-          );
-          // strict: this block only runs when GATE_PROP_INTRODUCTION is set, so escalate
-          // unresolved references to error-severity here so the gate can actually fire.
-          const propResult = new PropIntroductionValidator().validate(propInput, { strict: true });
-          const propIssues = propResult.issues.map((iss) => ({ severity: iss.severity, message: iss.message }));
-          const propGate = shouldGate(PLAN_GATE_FLAGS.propIntroduction, propIssues, seasonGateEnforcement);
-          await this.recordGateShadowSafe(buildValidatorPromotionRecord({
-            gate: PLAN_GATE_FLAGS.propIntroduction,
-            validator: 'PropIntroductionValidator',
-            scope: 'episode',
-            placement: 'plan',
-            enabled: isEnabled(PLAN_GATE_FLAGS.propIntroduction),
-            blockingCount: propGate.blockingCount,
-            wouldRepairCount: propGate.blockingCount,
-            repairAttempted: false,
-            residualBlockingCount: propGate.blockingCount,
-            issues: propIssues,
-            details: `episode=${i}; unresolved=${propGate.blockingCount}; repairTelemetry=pre`,
-          }));
-          if (propGate.blockingCount > 0) {
-            // Wave 4 repair loop: resolve raw label->canonical-id references (the
-            // witness-bug class) and re-validate before aborting. Genuinely-unknown
-            // references are NOT rewritten, so a real dangling reference still blocks.
-            const propRoster = (characterBible.characters ?? []).map((c) => ({ id: c.id, name: c.name }));
-            const propRepairScenes = sceneContents
-              .filter((sc) => Array.isArray(sc.charactersInvolved))
-              .map((sc) => ({ sceneId: sc.sceneId, sceneName: sc.sceneName, referencedEntityIds: sc.charactersInvolved as string[] }));
-            const propRepair = await repairAndRevalidatePropIntroduction(propRepairScenes, propRoster, {
-              canSpend: () => propGate.gate ? shouldAttemptRemediation(this.remediationBudget) : true,
-            });
-            if (propGate.gate) {
-              for (const rec of propRepair.records) await this.recordRemediationSafe(rec);
-            }
-            const repairedPropResult = new PropIntroductionValidator().validate(
-              buildPropIntroductionInput(
-                propRoster.flatMap((r) => [r.id, r.name]),
-                propRepairScenes.map((sc) => ({
-                  sceneId: sc.sceneId,
-                  sceneName: sc.sceneName,
-                  referencedEntityIds: sc.referencedEntityIds,
-                })),
-              ),
-              { strict: true },
-            );
-            const remainingUnknownCount = repairedPropResult.issues.filter((iss) => iss.severity === 'error').length;
-            await this.recordGateShadowSafe(buildValidatorPromotionRecord({
-              gate: PLAN_GATE_FLAGS.propIntroduction,
-              validator: 'PropIntroductionValidator',
-              scope: 'episode',
-              placement: 'plan',
-              enabled: isEnabled(PLAN_GATE_FLAGS.propIntroduction),
-              blockingCount: propGate.blockingCount,
-              wouldRepairCount: propGate.blockingCount,
-              repairAttempted: true,
-              repairSucceeded: propRepair.passed,
-              residualBlockingCount: remainingUnknownCount,
-              issues: repairedPropResult.issues.map((iss) => ({ severity: iss.severity, message: iss.message })),
-              details:
-                `episode=${i}; wouldRepairCount=${propGate.blockingCount}; repairedCount=${propRepair.fixedCount}; ` +
-                `remainingUnknownCount=${remainingUnknownCount}; examples=${propRepair.examples.join(',') || 'none'}`,
-            }));
-            if (propGate.gate && !propRepair.passed) {
-              const errs = propIssues.filter((iss) => iss.severity === 'error');
-              await this.recordRemediationSafe({
-                rule: 'prop_introduction_gate', scope: 'episode', attempted: 1,
-                succeeded: false, degraded: false, blocked: true, attempts: 1,
-                storyId: undefined, details: `Prop introduction gate blocked episode ${i}: ${propGate.blockingCount} issue(s)`,
-              });
-              throw new PipelineError(
-                `[PropIntroductionGate] Prop introduction failed the blocking gate (${propGate.blockingCount} unresolved reference(s)): ` +
-                  errs.map((iss) => iss.message).join('; ') +
-                  '. Unset GATE_PROP_INTRODUCTION to downgrade to advisory.',
-                `episode_${i}_prop_introduction_gate`,
-                { context: { episode: i, blockingCount: propGate.blockingCount } },
-              );
-            }
-          }
-        }
+        await enforceEpisodePlanCraftGates({
+          episodeNumber: i,
+          narrativeDiagnosticsReport,
+          callbackLedger: this.callbackLedger,
+          sceneContents,
+          characterBible,
+          remediationBudget: this.remediationBudget,
+          recordPlanGateShadow: this.recordPlanGateShadow.bind(this),
+          recordRemediationSafe: this.recordRemediationSafe.bind(this),
+          recordGateShadowSafe: this.recordGateShadowSafe.bind(this),
+        });
       }
 
       const episode = this.assembleEpisode(

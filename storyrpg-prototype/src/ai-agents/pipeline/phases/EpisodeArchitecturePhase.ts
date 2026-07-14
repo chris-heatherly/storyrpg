@@ -23,7 +23,7 @@ import { WorldBible } from '../../agents/WorldBuilder';
 import { type AgentResponse } from '../../agents/BaseAgent';
 import { clampSceneCount } from '../../../constants/pipeline';
 import { plannedIntroductionsForEpisode } from '../../utils/npcIntroductionLedger';
-import { withTimeout, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
+import { withTimeoutAbort, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
 import { classifyArchitectGateWarnings } from '../../remediation/architectGatePolicy';
 import { gateEnabledPredicate } from '../../remediation/gateDefaults';
 import { buildSeasonPlanDirectives } from '../planningHelpers';
@@ -215,10 +215,10 @@ export class EpisodeArchitecturePhase {
       && Boolean(architectureInput.seasonPlanDirectives?.plannedScenes?.length);
     let previousConflictSignature: string | undefined;
     for (let attempt = 1; attempt <= maxArchitectureAttempts; attempt += 1) {
-      result = await withTimeout(
-        this.deps.storyArchitect.execute(architectureInput),
+      result = await withTimeoutAbort(
+        (signal) => this.deps.storyArchitect.execute(architectureInput, 0, { signal }),
         PIPELINE_TIMEOUTS.storyArchitect,
-        attempt === 1 ? 'StoryArchitect.execute' : `StoryArchitect.execute(branch-repair-${attempt})`
+        attempt === 1 ? 'StoryArchitect.execute' : `StoryArchitect.execute(branch-repair-${attempt})`,
       );
 
       if (result.success && result.data) {

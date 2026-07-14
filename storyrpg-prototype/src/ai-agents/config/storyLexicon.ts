@@ -7,13 +7,10 @@
  * ACTIVE lexicon, so a different story can supply its own proper nouns and
  * plot phrases instead of silently false-negativing on Bite-Me's.
  *
- * ROLLOUT NOTE: the default is deliberately the Bite-Me lexicon for now —
- * this step is a pure vocabulary RELOCATION with byte-identical behavior
- * (goldens + the defect corpus replay unchanged). Flipping the default to
- * GENRE_NEUTRAL_LEXICON changes cue detection for existing fixtures and is
- * gated on a corpus/golden regen plus the owed live `=1` run, like every
- * other behavior flip. Callers (pipeline start) can already opt in per story
- * via setStoryLexicon().
+ * R2.4: Flip to genre-neutral with STORYRPG_STORY_LEXICON=genre_neutral after
+ * corpus/golden regen. Until then the Bite-Me pack remains the default so
+ * existing fixtures stay byte-stable. Pipeline boot calls
+ * resetStoryLexiconFromEnv(); tests may still setStoryLexicon() explicitly.
  */
 
 export interface StoryLexicon {
@@ -75,8 +72,15 @@ export const GENRE_NEUTRAL_LEXICON: StoryLexicon = {
   publicationTitles: [],
 };
 
-// See ROLLOUT NOTE above: defaults stay Bite-Me until the live-run-gated flip.
-let activeLexicon: StoryLexicon = BITE_ME_LEXICON;
+// R2.4: Bite-Me remains default until STORYRPG_STORY_LEXICON=genre_neutral.
+let activeLexicon: StoryLexicon = resolveStoryLexiconFromEnv();
+
+export function resolveStoryLexiconFromEnv(env: NodeJS.ProcessEnv = process.env): StoryLexicon {
+  const raw = (env.STORYRPG_STORY_LEXICON || '').trim().toLowerCase();
+  if (raw === 'genre_neutral' || raw === 'neutral') return GENRE_NEUTRAL_LEXICON;
+  if (raw === 'bite_me' || raw === 'biteme' || raw === '') return BITE_ME_LEXICON;
+  return BITE_ME_LEXICON;
+}
 
 export function getStoryLexicon(): StoryLexicon {
   return activeLexicon;
@@ -85,6 +89,12 @@ export function getStoryLexicon(): StoryLexicon {
 /** Select the lexicon for the current run (pipeline start / tests). */
 export function setStoryLexicon(lexicon: StoryLexicon): void {
   activeLexicon = lexicon;
+}
+
+/** Re-read env (tests / worker boot). */
+export function resetStoryLexiconFromEnv(env: NodeJS.ProcessEnv = process.env): StoryLexicon {
+  activeLexicon = resolveStoryLexiconFromEnv(env);
+  return activeLexicon;
 }
 
 /** Build a regex alternation from lexicon terms; null-safe for empty lists. */

@@ -153,11 +153,13 @@ const RAW_GATE_REGISTRY = [
   // ── Wave 4: plan-time gates (blocking is cheap fail-fast before prose) ──
   { id: 'GATE_SETUP_PAYOFF', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_CALLBACK_COVERAGE', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix' },
-  { id: 'GATE_CHOICE_DENSITY', placement: 'plan', kind: 'blocking', defaultOn: true },
-  { id: 'GATE_CONSEQUENCE_BUDGET', placement: 'plan', kind: 'blocking', defaultOn: true },
+  // R2.1: craft density/budget/pressure demoted from default-ON hard abort →
+  // QualityScore / advisory (re-enable via env). No repair route existed.
+  { id: 'GATE_CHOICE_DENSITY', placement: 'plan', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_CONSEQUENCE_BUDGET', placement: 'plan', kind: 'blocking', defaultOn: false },
   { id: 'GATE_PROP_INTRODUCTION', placement: 'plan', kind: 'blocking', defaultOn: false, repair: 'autofix' },
   { id: 'GATE_CHOICE_DISTRIBUTION', placement: 'plan', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_ARC_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: true },
+  { id: 'GATE_ARC_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false },
 
   // ── 2026-07-01 audit 4.2: formerly unregistered live flags (see gateDefaults) ──
   { id: 'GATE_SEASON_BUDGETS', placement: 'plan', kind: 'blocking', defaultOn: false },
@@ -168,7 +170,8 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_TREATMENT_FIDELITY', placement: 'plan', kind: 'blocking', defaultOn: false },
   { id: 'GATE_THEME_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false },
   { id: 'GATE_EPISODE_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_BRANCH_FANOUT', placement: 'plan', kind: 'blocking', defaultOn: true },
+  // R2.1: craft fanout demoted — score/advisory until a plan-repair route lands.
+  { id: 'GATE_BRANCH_FANOUT', placement: 'plan', kind: 'blocking', defaultOn: false },
   { id: 'GATE_SCENE_CONSTRUCTION_PREFLIGHT', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // Bounded architecture re-run when the SceneConstructionGate blocks content
   // generation (2026-07-07: the gate's error said "Re-run architecture…" but no
@@ -356,15 +359,18 @@ export interface GateRegistryViolation {
 }
 
 /**
+/**
  * Enforce registry completeness, default-drift, and the repair-first policy.
  * Returns violations (empty = compliant). The unit test pins this to
  * GATE_DEFAULTS so CI fails the moment a gate ships unregistered, drifts from
- * its registered default, or goes default-ON blocking at season-final without
- * a repair route or a written exception.
+ * its registered default, or goes default-ON blocking at plan / scene /
+ * episode / season-final without a repair route or a written exception (R2.2).
  */
 export function validateGateRegistry(defaults: Record<string, boolean> = GATE_DEFAULTS): GateRegistryViolation[] {
   const violations: GateRegistryViolation[] = [];
   const registered = new Map(GATE_REGISTRY.map((g) => [g.id, g]));
+  /** Placements where a default-ON hard abort must be repair-first (R2.2). */
+  const repairFirstPlacements = new Set<GatePlacement>(['plan', 'scene', 'episode', 'season-final']);
 
   for (const id of Object.keys(defaults)) {
     if (!registered.has(id)) {
@@ -382,18 +388,19 @@ export function validateGateRegistry(defaults: Record<string, boolean> = GATE_DE
     if (spec.policyException !== undefined && spec.policyException.trim().length < 40) {
       violations.push({ gateId: spec.id, problem: 'policyException must be a substantive written rationale (>= 40 chars) naming the planned fix' });
     }
-    // Repair-first applies wherever the gate can block at season-final: primary
-    // placement OR an auditPlacements regression-net entry (audit 4.4 — a
-    // plan-placed gate re-executing at the final contract is the same
-    // "73-minute abort with no recovery" shape).
-    const blocksAtSeasonFinal =
-      spec.placement === 'season-final' || (spec.auditPlacements ?? []).includes('season-final');
+    // Repair-first: default-ON blockers at plan/scene/episode/season-final
+    // (primary placement OR auditPlacements) need a repair route or exception.
+    const executionPlacements = new Set<GatePlacement>([
+      spec.placement,
+      ...(spec.auditPlacements ?? []),
+    ]);
+    const blocksAtRepairFirstPlacement = [...executionPlacements].some((p) => repairFirstPlacements.has(p));
     const violatesRepairFirst =
-      spec.kind === 'blocking' && spec.defaultOn && blocksAtSeasonFinal && !spec.repair && !spec.policyException;
+      spec.kind === 'blocking' && spec.defaultOn && blocksAtRepairFirstPlacement && !spec.repair && !spec.policyException;
     if (violatesRepairFirst) {
       violations.push({
         gateId: spec.id,
-        problem: 'repair-first policy: a default-ON blocking gate that executes at season-final (placement or auditPlacements) must declare a repair route (autofix/regen/judge) or carry a written policyException',
+        problem: 'repair-first policy: a default-ON blocking gate at plan/scene/episode/season-final (placement or auditPlacements) must declare a repair route (autofix/regen/judge) or carry a written policyException',
       });
     }
   }

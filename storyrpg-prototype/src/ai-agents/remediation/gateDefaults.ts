@@ -215,8 +215,9 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // no regen loop required. Each is reversible per-env via `<FLAG>=0` (kill-switch).
   GATE_SETUP_PAYOFF: true,
   GATE_CALLBACK_COVERAGE: true,
-  GATE_CHOICE_DENSITY: true,
-  GATE_CONSEQUENCE_BUDGET: true,
+  // R2.1: craft density/budget demoted from default-ON hard abort (no repair route).
+  GATE_CHOICE_DENSITY: false,
+  GATE_CONSEQUENCE_BUDGET: false,
   // STILL OFF — fires on every shadow run pre-repair (5/5 runs, 16 blocking issues
   // total) via the cast-reference subset. It has a repair loop
   // (repairAndRevalidatePropIntroduction) that resolves the raw-label→canonical-id
@@ -252,11 +253,9 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   GATE_TREATMENT_FIDELITY: false,
   GATE_THEME_PRESSURE: false,
   GATE_EPISODE_PRESSURE: false,
-  // PROMOTED ON after plan-time shadow telemetry started recording this seam:
-  // the local ledger shows 84 records across 72 runs with 0 would-gate rows and
-  // 0 residual blockers. Plan placement means a true defect fails before prose is
-  // generated. Reversible via =0.
-  GATE_ARC_PRESSURE: true,
+  // R2.1: demoted from default-ON — craft pressure without a dedicated repair
+  // route. Shadow/advisory + QualityScore until plan-repair lands. Reversible via =1.
+  GATE_ARC_PRESSURE: false,
 
   // ── Gen-4 audit follow-ups ──
   // ENABLED: precise structural / backstop checks with a low false-positive profile
@@ -266,7 +265,8 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // point (leadsTo.size>1) whose own choices fan out to <2 of those targets
   // assembled as a linear pass-through. The metric is always recorded; this flag
   // promotes it to a blocking SceneGraphBranchValidator error.
-  GATE_BRANCH_FANOUT: true,
+  // R2.1: demoted default-OFF until a repair route exists (re-enable via =1).
+  GATE_BRANCH_FANOUT: false,
   // Scene-construction preflight: each scene must own one primary turn and one
   // owner per route event before SceneWriter/EncounterArchitect. Detection
   // (SceneOwnershipPreflightValidator + construction/event-ownership profiles)

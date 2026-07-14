@@ -219,6 +219,13 @@ fingerprint-targeted feedback retries before accepting or checkpointing the
 artifact. Owner-stage semantic uncertainty remains inside that bounded repair
 loop instead of terminating the job before the owning agent can clarify its
 prose; unresolved uncertainty at final regression remains blocking.
+Repair feedback is semantic-role aware without becoming deterministic prose:
+relationship changes require an observable bid, reciprocity, and changed
+footing; introductions preserve the named introducer; information transfers
+preserve the specified speaker; and actions, decisions, state changes, and
+aftermath must be staged through their completion threshold. The authoring LLM
+chooses the fiction-first realization and the semantic judge remains the sole
+authority over its meaning.
 SceneWriter-owned semantic misses use an LLM-authored
 `SceneSemanticPatch` against the immutable baseline: at most two adjacent beat
 texts or one transition may be replaced or inserted, while deterministic code

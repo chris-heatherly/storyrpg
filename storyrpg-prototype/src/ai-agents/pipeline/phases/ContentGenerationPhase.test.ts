@@ -418,6 +418,23 @@ describe('ContentGenerationPhase treatment density gate', () => {
 });
 
 describe('ContentGenerationPhase canonical owner transaction', () => {
+  it('turns semantic roles into observable, content-agnostic repair craft', async () => {
+    const { ownerRealizationCraftInstruction } = await import('./ContentGenerationPhase');
+
+    expect(ownerRealizationCraftInstruction({
+      id: 'relationship', description: 'Two participants become friendly.', acceptedPatterns: [],
+      kind: 'semantic', semanticRole: 'relationship_change', required: true,
+    })).toContain('the other accepts or reciprocates');
+    expect(ownerRealizationCraftInstruction({
+      id: 'information', description: 'One participant shares a destination.', acceptedPatterns: [],
+      kind: 'semantic', semanticRole: 'information_transfer', required: true,
+    })).toContain('specified source participant');
+    expect(ownerRealizationCraftInstruction({
+      id: 'forbidden', description: 'Do not reveal the secret.', acceptedPatterns: [],
+      kind: 'semantic', semanticRole: 'information_transfer', polarity: 'forbidden', required: true,
+    })).toBe('');
+  });
+
   it('returns owner-stage semantic uncertainty to the repair loop but blocks it at final regression', async () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
     const phase = new ContentGenerationPhase({

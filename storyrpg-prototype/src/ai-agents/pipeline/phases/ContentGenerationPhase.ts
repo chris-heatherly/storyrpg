@@ -292,7 +292,11 @@ import {
 import { validateSemanticRealizationTasks } from '../semanticValidationCoordinator';
 import { inferNarrativeVerificationAuthority } from '../realizationVerificationAuthority';
 import { applySceneSemanticPatch } from '../sceneSemanticPatch';
-import type { NarrativeRealizationOwnerStage, NarrativeRealizationTask } from '../../../types/narrativeContract';
+import type {
+  NarrativeEvidenceAtom,
+  NarrativeRealizationOwnerStage,
+  NarrativeRealizationTask,
+} from '../../../types/narrativeContract';
 import { stableHash } from '../artifacts/store';
 import {
   appendDeferredRealizationRecord,
@@ -349,6 +353,28 @@ import {
 } from './sceneWriterInputCompaction';
 import { PipelineContext } from './index';
 
+export function ownerRealizationCraftInstruction(atom: NarrativeEvidenceAtom): string {
+  if (atom.polarity === 'forbidden') return '';
+  switch (atom.semanticRole) {
+    case 'relationship_change':
+      return ' Show an observable relationship turn on-page: one participant makes a personal bid, the other accepts or reciprocates it, and their behavior establishes a new footing. Politeness, a smile, generic welcome, or an unaccepted offer alone is not a relationship change.';
+    case 'introduction':
+      return ' Stage the named introducer actively identifying the participants to one another while they are present; a mention, arrival, or self-introduction by someone else is insufficient.';
+    case 'information_transfer':
+      return ' Stage the specified source participant communicating the information to its recipient on-page; a bare reference or a different speaker carrying the information is insufficient.';
+    case 'state_change':
+      return ' Show the prior state, the causal turn, and observable evidence of the resulting state rather than only naming the intended result.';
+    case 'decision':
+      return ' Show the participant making or committing to the decision, not merely considering options or receiving an invitation.';
+    case 'aftermath':
+      return ' Show a concrete consequence occurring after the triggering event; recollection or summary of the trigger alone is insufficient.';
+    case 'action':
+      return ' Stage the action through completion in the current scene rather than describing a plan, attempt, or prior summary.';
+    default:
+      return '';
+  }
+}
+
 function ownerRealizationRepairFeedback(
   finding: RealizationTaskGateFinding,
   tasks: NarrativeRealizationTask[] | undefined,
@@ -367,7 +393,7 @@ function ownerRealizationRepairFeedback(
         : atom.temporalSlot === 'owner_event' || atom.semanticRole === 'action'
           ? ' Dramatize the action while it happens; do not begin after it is complete or summarize it as prior activity.'
           : '';
-      return `${atom.polarity === 'forbidden' ? 'DO NOT COMMUNICATE' : 'MEANING TO REALIZE'}: ${atom.description}.${temporalInstruction}`;
+      return `${atom.polarity === 'forbidden' ? 'DO NOT COMMUNICATE' : 'MEANING TO REALIZE'}: ${atom.description}.${temporalInstruction}${ownerRealizationCraftInstruction(atom)}`;
     }
     return `${atom.polarity === 'forbidden' ? 'AVOID' : 'REQUIRE'} ${authority}: ${atom.acceptedPatterns.join(' / ')}`;
   });

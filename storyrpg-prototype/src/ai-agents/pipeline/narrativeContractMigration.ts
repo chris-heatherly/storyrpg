@@ -96,9 +96,16 @@ export function normalizePersistedRealizationTask(
         const { outcomeTier: _outcomeTier, requiredSurface: _requiredSurface, routePolicy: _routePolicy, ...shared } = task;
         return { ...shared, target: legacyTarget(task) };
       })();
+  const target = canonical.sourceKinds?.includes('transition')
+    && canonical.ownerStage === 'scene_writer'
+    && canonical.target.scope === 'owner'
+    && !canonical.target.surfaces.includes('transition_in')
+    ? { ...canonical.target, surfaces: ['transition_in' as const, ...canonical.target.surfaces] }
+    : canonical.target;
   const evidenceAtoms = canonical.evidenceAtoms.map(withNarrativeVerificationAuthority);
   const normalized = {
     ...canonical,
+    target,
     evidenceAtoms,
     enforcementMode: canonical.enforcementMode ?? (evidenceAtoms.every((atom) => atom.polarity === 'forbidden')
       ? 'contradiction_only' as const
@@ -106,6 +113,7 @@ export function normalizePersistedRealizationTask(
   };
   const satisfaction = satisfactionExpressionForTask(normalized);
   if (isCanonicalTask(task)
+    && target === canonical.target
     && canonical.enforcementMode === normalized.enforcementMode
     && canonical.satisfaction
     && evidenceAtoms.every((atom, index) => atom === canonical.evidenceAtoms[index])) {

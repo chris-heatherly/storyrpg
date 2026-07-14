@@ -48,6 +48,23 @@ describe('narrative contract migration', () => {
     expect(describeNarrativeEvidenceTarget(canonical.target)).toBe('terminal route=victory surfaces=terminal_storylet');
   });
 
+  it('adds the player-visible transition surface to persisted standard-scene transition tasks', () => {
+    const transitionTask: NarrativeRealizationTask = {
+      ...shared,
+      id: 'task:transition:streets',
+      contractId: 'transition:streets',
+      ownerStage: 'scene_writer',
+      repairHandler: 'scene_prose',
+      sourceKinds: ['transition'],
+      target: { scope: 'owner', surfaces: ['beat_text', 'dialogue'] },
+    };
+
+    expect(normalizePersistedRealizationTask(transitionTask).target).toEqual({
+      scope: 'owner',
+      surfaces: ['transition_in', 'beat_text', 'dialogue'],
+    });
+  });
+
   it('normalizes nested graph and episode projections in a persisted season scene plan', () => {
     const legacyTask = {
       ...shared,

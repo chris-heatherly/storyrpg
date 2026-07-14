@@ -72,7 +72,7 @@ export type NarrativeEvidenceSurfaceIndex = Record<NarrativeRealizationSurface, 
 
 function emptyEvidenceSurfaceIndex(): NarrativeEvidenceSurfaceIndex {
   return {
-    beat_text: [], dialogue: [], choice_text: [], choice_outcome: [], encounter_entry: [], encounter_setup: [], encounter_phase: [],
+    transition_in: [], beat_text: [], dialogue: [], choice_text: [], choice_outcome: [], encounter_entry: [], encounter_setup: [], encounter_phase: [],
     encounter_outcome: [], terminal_storylet: [], text_variant: [],
   };
 }
@@ -162,6 +162,8 @@ export function collectNarrativeEvidenceSurfaceIndex(input: {
 }): NarrativeEvidenceSurfaceIndex {
   const index = emptyEvidenceSurfaceIndex();
   const scene = recordOf(input.sceneContent);
+  pushUnknownText(index.transition_in, scene?.transitionIn);
+  pushUnknownText(index.transition_in, recordOf(scene?.timeline)?.transitionIn);
   collectIndexedBeats(scene?.beats, index, 'beat_text');
   collectIndexedChoiceTexts(input.choiceSet, index.choice_text);
   collectIndexedChoiceOutcomes(input.choiceSet, index.choice_outcome);

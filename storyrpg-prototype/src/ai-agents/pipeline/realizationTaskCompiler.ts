@@ -64,7 +64,9 @@ export function resolveTaskExecutionTarget(input: {
   const surfaces: NarrativeRealizationSurface[] = reachablePreferredSurfaces?.length
     ? reachablePreferredSurfaces
     : kind === 'transition' || kind === 'presence'
-      ? ['beat_text', 'dialogue']
+      ? kind === 'transition'
+        ? ['transition_in', 'beat_text', 'dialogue']
+        : ['beat_text', 'dialogue']
       : ['beat_text', 'dialogue', 'text_variant'];
   return {
     ownerStage: 'scene_writer',
@@ -527,7 +529,7 @@ function assertTaskFeasibility(
     encounter_architect: 1,
   };
   const allowedSurfaces: Record<NarrativeRealizationOwnerStage, Set<NarrativeRealizationSurface>> = {
-    scene_writer: new Set(['beat_text', 'dialogue', 'text_variant']),
+    scene_writer: new Set(['transition_in', 'beat_text', 'dialogue', 'text_variant']),
     choice_author: new Set(['choice_text', 'choice_outcome']),
     encounter_architect: new Set([
       'encounter_entry', 'encounter_setup', 'encounter_phase', 'encounter_outcome', 'terminal_storylet',

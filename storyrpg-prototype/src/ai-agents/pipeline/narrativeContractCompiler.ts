@@ -46,7 +46,7 @@ import {
   type SemanticContractEventSeed,
 } from './semanticContractIr';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v25';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v26';
 
 const MAX_BLOCKING_PREMISE_PROPOSITIONS_PER_SCENE = 12;
 

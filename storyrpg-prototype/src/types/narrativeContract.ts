@@ -38,6 +38,7 @@ export type NarrativeRealizationOwnerStage =
   | 'encounter_architect';
 
 export type NarrativeRealizationSurface =
+  | 'transition_in'
   | 'beat_text'
   | 'dialogue'
   | 'choice_text'

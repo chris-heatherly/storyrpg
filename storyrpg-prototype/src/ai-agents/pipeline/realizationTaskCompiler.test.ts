@@ -252,6 +252,30 @@ describe('compileNarrativeRealizationTasks', () => {
     });
   });
 
+  it('lets a standard-scene transition realize orientation in player-visible transition prose', () => {
+    const graph = {
+      events: [],
+      dependencies: [],
+      transitionContracts: [{
+        id: 'transition:apartment-to-streets', episodeNumber: 1, fromSceneId: 'apartment', toSceneId: 'streets',
+        fromLocation: 'Apartment', toLocation: 'Bucharest streets', bridgePolicy: 'orientation_only',
+        locationRequirement: { canonicalValue: 'Bucharest streets', acceptedAliases: ['Bucharest'], required: true },
+        requiredBridgeEvidence: ['Bucharest streets'], stateContracts: [], blocking: true,
+        sourceContractIds: ['scene:apartment', 'scene:streets'],
+      }],
+    } as unknown as NarrativeContractGraph;
+
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 'apartment', episodeNumber: 1, order: 0, kind: 'standard' },
+      { id: 'streets', episodeNumber: 1, order: 1, kind: 'standard' },
+    ] as any);
+
+    expect(tasks.find((task) => task.contractId === 'transition:apartment-to-streets')).toMatchObject({
+      ownerStage: 'scene_writer',
+      target: { scope: 'owner', surfaces: ['transition_in', 'beat_text', 'dialogue'] },
+    });
+  });
+
   it('writes one explicit verification authority on every blocking atom', () => {
     const graph = {
       events: [{

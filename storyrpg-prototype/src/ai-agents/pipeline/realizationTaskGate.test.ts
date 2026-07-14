@@ -643,4 +643,35 @@ describe('validateOwnerRealizationTasks', () => {
     });
     expect(wrongPlace[0]?.missingEvidenceAtoms).toEqual(['residence-location']);
   });
+
+  it('accepts transition orientation from player-visible transitionIn without borrowing unrelated beats', () => {
+    const task = {
+      id: 'task:transition:streets', contractId: 'transition:streets', episodeNumber: 1,
+      sourceKinds: ['transition' as const], ownerStage: 'scene_writer' as const,
+      repairHandler: 'scene_prose' as const, sceneId: 'streets',
+      evidenceAtoms: [{
+        id: 'streets-location', description: 'Orient at Bucharest streets', acceptedPatterns: ['Bucharest streets', 'Bucharest'],
+        kind: 'semantic' as const, matchStrategy: 'location_identity' as const,
+        semanticRole: 'location_entry' as const, required: true,
+      }],
+      target: { scope: 'owner' as const, surfaces: ['transition_in' as const, 'beat_text' as const, 'dialogue' as const] },
+      sourceContractIds: ['transition:streets'], blocking: true,
+    };
+
+    expect(validateOwnerRealizationTasks({
+      sceneId: 'streets', tasks: [task],
+      sceneContent: {
+        transitionIn: 'Out on the streets of Bucharest.',
+        beats: [{ text: 'The afternoon air smells of linden blossom and diesel.' }],
+      },
+    })).toEqual([]);
+
+    expect(validateOwnerRealizationTasks({
+      sceneId: 'streets', tasks: [task],
+      sceneContent: {
+        transitionIn: 'Across town, sometime later.',
+        beats: [{ text: 'The afternoon air smells of linden blossom and diesel.' }],
+      },
+    })[0]?.missingEvidenceAtoms).toEqual(['streets-location']);
+  });
 });

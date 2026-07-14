@@ -510,7 +510,14 @@ _(Update as work lands.)_
 | R0.10 | done (`da06e386`) | `partial-story.json` before single-episode final contract + on generate() abort |
 | R0.11 | done | Failed ledger stamps code/owner/repairTarget/gateConfigHash; `npm run validation:kill-table` |
 | R0.12 | done | Generator failure workspace surfaces typed failure fields + `99-pipeline-errors.json` path |
-| R1.* | pending | |
+| R1.1 | done | Bounded planned-scene repair via treatment-spine rebuild + EpisodeEventPlan recompile |
+| R1.2 | done | Owner-stage full SceneWriter regen + defer non-critical to final; critical still aborts |
+| R1.3 | done | Adoption by non-increasing task miss-count + single re-sample of new claim |
+| R1.4 | done | Extended fidelity judge confirm set; scene-local RelationshipArcLedger → same_scene_retry |
+| R1.5 | done | Resume loop-breaker on identical failure fingerprint without patches |
+| R1.6 | pending | Cross-run artifact reuse (deferred) |
+| R1.7 | pending | Planner jsonSchema + withTimeoutAbort (deferred) |
+| R1.8 | done | Compile-time semantic↔literal contradiction preflight |
 | R2.* | pending | |
 
 ---

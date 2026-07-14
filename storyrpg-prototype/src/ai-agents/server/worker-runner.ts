@@ -5,6 +5,7 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import type { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import { PipelineError } from '../pipeline/FullStoryPipeline';
+import { computeFailureFingerprint } from '../pipeline/failureFingerprint';
 import { ValidationError } from '../../types/validation';
 import { atomicWriteJson } from '../utils/atomicIo';
 import {
@@ -180,6 +181,16 @@ function buildFailurePayload(error: unknown): Record<string, unknown> {
       failureArtifactKey: typeof context.failureArtifactKey === 'string' ? context.failureArtifactKey : undefined,
       resumeFromStepId: typeof context.resumeFromStepId === 'string' ? context.resumeFromStepId : error.phase,
       resumePatchableInputs: Array.isArray(context.resumePatchableInputs) ? context.resumePatchableInputs : ['settings'],
+      failureFingerprint: typeof context.failureFingerprint === 'string'
+        ? context.failureFingerprint
+        : computeFailureFingerprint({
+            code: error.code,
+            ownerStage: error.ownerStage,
+            repairTarget: error.repairTarget,
+            issueCodes: error.issueCodes,
+            phase: error.phase,
+            message,
+          }),
       context,
     };
   }

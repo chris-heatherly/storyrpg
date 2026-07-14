@@ -33,6 +33,9 @@ const JUDGE_CONFIRMABLE_VALIDATORS = new Set([
   'RequiredBeatRealizationValidator',
   'SignatureDevicePresenceValidator',
   'ReferencedEventPresenceValidator',
+  'NarrativeContractValidator',
+  'TreatmentEventLedgerValidator',
+  'RelationshipArcLedgerValidator',
 ]);
 
 /** Max findings judged per contract evaluation (one batched LLM call). */

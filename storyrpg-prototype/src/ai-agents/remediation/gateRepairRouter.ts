@@ -950,6 +950,11 @@ export class GateRepairRouter {
       if (/\b(?:relationship choice|group-defining player choice|only permits|target(?:s|ed)?\s+\w+|before any player relationship choice|ledger-earned)\b/i.test(issueText)) {
         return directive('episode_replan', issue, 'Relationship arc ledger mismatch requires choice/relationship architecture, not prose-only repair.');
       }
+      // R1.4: scene-local ledger misses should not hit dead blueprint_rebalance
+      // executors at final contract — route to prose repair when a scene is known.
+      if (issue.sceneId) {
+        return directive('same_scene_retry', issue, 'Relationship arc ledger miss is localized to a scene; rewrite the owning surface.');
+      }
       return directive('blueprint_rebalance', issue, 'Relationship arc ledger issue requires relationship pacing or scene-plan correction.');
     }
 

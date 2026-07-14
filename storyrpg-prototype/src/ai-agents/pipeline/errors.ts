@@ -37,6 +37,7 @@ export type PipelineFailureCode =
   | 'character_presence_contract_failed'
   | 'output_boundary_invalid'
   | 'final_contract_drift'
+  | 'deterministic_resume_loop'
   | 'unknown';
 
 export type PipelineFailureOwnerStage = ValidationOwnerStage;

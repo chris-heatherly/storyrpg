@@ -80,30 +80,37 @@ function findingEvidenceIds(finding: RealizationTaskGateFinding): Set<string> {
   ]);
 }
 
-/** A repair may clear or strictly reduce its target, but may never introduce a new blocker. */
+/** Count missing + forbidden atom evidence per task (fallback: 1 per finding). */
+export function countTaskMisses(findings: RealizationTaskGateFinding[]): Map<string, number> {
+  const misses = new Map<string, number>();
+  for (const finding of findings) {
+    const atomCount = (finding.missingEvidenceAtoms?.length ?? 0)
+      + (finding.matchedForbiddenAtoms?.length ?? 0);
+    const n = atomCount > 0 ? atomCount : 1;
+    misses.set(finding.taskId, (misses.get(finding.taskId) ?? 0) + n);
+  }
+  return misses;
+}
+
+export function totalTaskMissCount(findings: RealizationTaskGateFinding[]): number {
+  let total = 0;
+  for (const count of countTaskMisses(findings).values()) total += count;
+  return total;
+}
+
+/**
+ * A repair may clear its target and must not increase total task misses.
+ * Newly introduced fingerprints are allowed when overall miss count is non-increasing
+ * (judge noise / sibling atom flips); callers may re-sample once before rejecting.
+ */
 export function shouldAdoptOwnerRepairCandidate(input: {
   previous: RealizationTaskGateFinding[];
   candidate: RealizationTaskGateFinding[];
   targetFingerprint: string;
 }): boolean {
-  const previousFingerprints = new Set(input.previous.map((finding) => finding.fingerprint));
   const candidateFingerprints = new Set(input.candidate.map((finding) => finding.fingerprint));
   if (candidateFingerprints.has(input.targetFingerprint)) return false;
-  const previousByScope = new Map<string, RealizationTaskGateFinding[]>();
-  for (const finding of input.previous) {
-    const scope = findingScopeKey(finding);
-    previousByScope.set(scope, [...(previousByScope.get(scope) ?? []), finding]);
-  }
-  return input.candidate.every((finding) => {
-    if (previousFingerprints.has(finding.fingerprint)) return true;
-    const candidateEvidence = findingEvidenceIds(finding);
-    if (candidateEvidence.size === 0) return false;
-    return (previousByScope.get(findingScopeKey(finding)) ?? []).some((previous) => {
-      const previousEvidence = findingEvidenceIds(previous);
-      return candidateEvidence.size < previousEvidence.size
-        && [...candidateEvidence].every((atomId) => previousEvidence.has(atomId));
-    });
-  });
+  return totalTaskMissCount(input.candidate) <= totalTaskMissCount(input.previous);
 }
 
 function outcomeTierForTask(task: NarrativeRealizationTask): string | undefined {

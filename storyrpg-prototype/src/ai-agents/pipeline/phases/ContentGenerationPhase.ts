@@ -2608,8 +2608,31 @@ export class ContentGenerationPhase {
               candidate: retryFindings,
               targetFingerprint: repairTarget.fingerprint,
             });
+            let finalAdopt = adoptCandidate;
+            let finalFindings = retryFindings;
+            // R1.3: if rejected solely due to a single newly appeared claim, re-sample once.
+            if (!adoptCandidate) {
+              const previousFingerprintsProbe = new Set(ownerTaskFindings.map((finding) => finding.fingerprint));
+              const introduced = retryFindings.filter((finding) => !previousFingerprintsProbe.has(finding.fingerprint));
+              if (introduced.length === 1) {
+                const resampled = (await this.validateNarrativeRealization({
+                  sceneId: sceneBlueprint.id,
+                  tasks: canonicalSceneWriterTasks,
+                  sceneContent: candidateSnapshot,
+                  mode: 'owner',
+                  currentStage: 'scene_writer',
+                  candidateHash,
+                })).findings.filter((finding) => finding.blocking);
+                finalFindings = resampled;
+                finalAdopt = shouldAdoptOwnerRepairCandidate({
+                  previous: ownerTaskFindings,
+                  candidate: resampled,
+                  targetFingerprint: repairTarget.fingerprint,
+                });
+              }
+            }
             const previousFingerprints = new Set(ownerTaskFindings.map((finding) => finding.fingerprint));
-            const candidateFingerprints = new Set(retryFindings.map((finding) => finding.fingerprint));
+            const candidateFingerprints = new Set(finalFindings.map((finding) => finding.fingerprint));
             const resolvedFingerprints = [...previousFingerprints].filter((fingerprint) => !candidateFingerprints.has(fingerprint));
             const introducedFingerprints = [...candidateFingerprints].filter((fingerprint) => !previousFingerprints.has(fingerprint));
             ownerRepairHistory.push({
@@ -2617,12 +2640,12 @@ export class ContentGenerationPhase {
               authoredAttempt: attempt,
               requestHash,
               capacityTier,
-              outcome: adoptCandidate ? 'candidate_adopted' : 'candidate_rejected',
+              outcome: finalAdopt ? 'candidate_adopted' : 'candidate_rejected',
               candidateHash,
               targetFingerprint: repairTarget.fingerprint,
               resolvedFingerprints,
               introducedFingerprints,
-              adopted: adoptCandidate,
+              adopted: finalAdopt,
             });
             capacityTier = 'standard';
             if (outputDirectory) {
@@ -2633,12 +2656,12 @@ export class ContentGenerationPhase {
                 attempt,
                 repairTarget,
                 previousFindings: ownerTaskFindings,
-                candidateFindings: retryFindings,
+                candidateFindings: finalFindings,
                 replayFindings,
                 replayVerified: true,
                 resolvedFingerprints,
                 introducedFingerprints,
-                adopted: adoptCandidate,
+                adopted: finalAdopt,
                 candidateHash,
                 patch: ownerTaskRetry.data,
                 changedBeatIds: appliedPatch.changedBeatIds,
@@ -2648,7 +2671,7 @@ export class ContentGenerationPhase {
                 realizationTasks: canonicalSceneWriterTasks,
               });
             }
-            if (adoptCandidate) {
+            if (finalAdopt) {
               Object.assign(sceneContent, candidateSnapshot);
               sceneContent.sceneId = sceneBlueprint.id;
               sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
@@ -2656,14 +2679,112 @@ export class ContentGenerationPhase {
               sceneContent.settingContext = sceneSettingContext;
               sceneContent.requiredBeats = sceneRealizationBlueprint.requiredBeats;
               sceneContent.signatureMoment = sceneRealizationBlueprint.signatureMoment;
-              ownerTaskFindings = prioritizeOwnerRepairFindings(retryFindings, canonicalSceneWriterTasks);
+              ownerTaskFindings = prioritizeOwnerRepairFindings(finalFindings, canonicalSceneWriterTasks);
               priorPatchFeedback = [];
             } else {
-              priorPatchFeedback = retryFindings.map((finding) =>
+              priorPatchFeedback = finalFindings.map((finding) =>
                 ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks));
             }
           }
           if (ownerTaskFindings.length > 0) {
+            // R1.2 step 2: one full SceneWriter regen with missing-atom feedback.
+            const escalateFeedback = ownerTaskFindings
+              .map((finding) => `- ${ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks)}`)
+              .join('\n');
+            context.emit({
+              type: 'regeneration_triggered',
+              phase: 'scenes',
+              message: `Scene ${sceneBlueprint.id} owner patches exhausted — escalating to one full SceneWriter regen with ${ownerTaskFindings.length} remaining finding(s).`,
+            });
+            const escalateRetry = await withTimeout(
+              this.deps.sceneWriter.execute({
+                ...sceneWriterInputForAuthoring,
+                storyContext: {
+                  ...sceneWriterInputForAuthoring.storyContext,
+                  userPrompt: `${sceneWriterInputForAuthoring.storyContext.userPrompt || ''}\n\nOWNER REALIZATION ESCALATION:\nPrevious semantic patches cleared some obligations but these remain missing. Rewrite the scene so EACH is dramatized on-page (fiction-first; do not paste validator wording):\n${escalateFeedback}`,
+                },
+              }),
+              PIPELINE_TIMEOUTS.llmAgent,
+              `SceneWriter.execute(${sceneBlueprint.id} owner-escalation-regen)`,
+            ).catch((err) => ({
+              success: false as const,
+              data: null as SceneContent | null,
+              error: err instanceof Error ? err.message : String(err),
+            }));
+            if (escalateRetry.success && escalateRetry.data) {
+              await this.deps.recordRemediationSafe({
+                rule: 'scene_full_regen',
+                scope: 'scene',
+                attempted: 1,
+                succeeded: false,
+                degraded: false,
+                blocked: false,
+                attempts: 1,
+                storyId: idSlugify(brief.story.title),
+                details: `Scene ${sceneBlueprint.id} owner-stage full regen after patch exhaustion`,
+              });
+              const escalateSnapshot = escalateRetry.data;
+              escalateSnapshot.sceneId = sceneBlueprint.id;
+              escalateSnapshot.sceneName = escalateSnapshot.sceneName || sceneBlueprint.name;
+              escalateSnapshot.locationId = sceneSettingContext.locationId;
+              escalateSnapshot.settingContext = sceneSettingContext;
+              escalateSnapshot.requiredBeats = sceneRealizationBlueprint.requiredBeats;
+              escalateSnapshot.signatureMoment = sceneRealizationBlueprint.signatureMoment;
+              const escalateFindings = (await this.validateNarrativeRealization({
+                sceneId: sceneBlueprint.id,
+                tasks: canonicalSceneWriterTasks,
+                sceneContent: escalateSnapshot,
+                mode: 'owner',
+                currentStage: 'scene_writer',
+                candidateHash: stableHash(escalateSnapshot),
+              })).findings.filter((finding) => finding.blocking);
+              const adoptedEscalate = shouldAdoptOwnerRepairCandidate({
+                previous: ownerTaskFindings,
+                candidate: escalateFindings,
+                targetFingerprint: ownerTaskFindings[0]?.fingerprint ?? '',
+              }) || escalateFindings.length === 0;
+              if (adoptedEscalate) {
+                Object.assign(sceneContent, escalateSnapshot);
+                ownerTaskFindings = prioritizeOwnerRepairFindings(escalateFindings, canonicalSceneWriterTasks);
+                await this.deps.recordRemediationSafe({
+                  rule: 'scene_full_regen',
+                  scope: 'scene',
+                  attempted: 1,
+                  succeeded: escalateFindings.length === 0,
+                  degraded: escalateFindings.length > 0,
+                  blocked: false,
+                  attempts: 1,
+                  storyId: idSlugify(brief.story.title),
+                  details: `Scene ${sceneBlueprint.id} owner-stage full regen adopted (${ownerTaskFindings.length} residual)`,
+                });
+              }
+            }
+
+            // R1.2 step 3/4: defer non-critical residuals to final-contract repair; abort critical.
+            if (ownerTaskFindings.length > 0) {
+              const isCriticalFinding = (finding: RealizationTaskGateFinding) => {
+                const task = canonicalSceneWriterTasks.find((candidate) => candidate.id === finding.taskId);
+                if (!task) return true;
+                if (task.canonicalEventId) return true;
+                if (task.repairHandler === 'premise_realization') return true;
+                const sources = (task.sourceKinds ?? []).map((kind) => String(kind).toLowerCase());
+                return sources.some((kind) => kind.includes('premise') || kind.includes('event'));
+              };
+              const critical = ownerTaskFindings.filter(isCriticalFinding);
+              const deferrable = ownerTaskFindings.filter((finding) => !isCriticalFinding(finding));
+              if (critical.length === 0 && deferrable.length > 0) {
+                context.emit({
+                  type: 'warning',
+                  phase: 'scenes',
+                  message: `Scene ${sceneBlueprint.id}: deferring ${deferrable.length} non-critical owner finding(s) to final-contract repair.`,
+                  data: { findings: deferrable },
+                });
+                (sceneContent as { deferredOwnerRealizationFindings?: RealizationTaskGateFinding[] }).deferredOwnerRealizationFindings = deferrable;
+                ownerTaskFindings = [];
+              }
+            }
+
+            if (ownerTaskFindings.length > 0) {
             if (outputDirectory) {
               const committedSnapshot = JSON.parse(JSON.stringify(sceneContent));
               await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-realization-blockers.json`, {
@@ -2691,6 +2812,7 @@ export class ContentGenerationPhase {
                   patchCallAttempts,
                   repairHistory: ownerRepairHistory,
                   lastPatchFailure,
+                  escalatedFullRegen: true,
                 },
                 failure: {
                   code: lastPatchFailure?.code === 'visible_output_starved'
@@ -2708,6 +2830,7 @@ export class ContentGenerationPhase {
                 },
               },
             );
+            }
           }
           const downstreamEventIds = new Set((sceneBlueprint.realizationTasks ?? [])
             .filter((task) => task.blocking && task.ownerStage !== 'scene_writer')

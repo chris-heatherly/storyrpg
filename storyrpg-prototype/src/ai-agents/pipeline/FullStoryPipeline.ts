@@ -112,7 +112,13 @@ import {
   PixarStakes, CinematicImageDescription, EncounterVisualContract
 } from '../../types';
 import { PipelineEvent, PipelineEventHandler } from './events';
+import {
+  computeFailureFingerprint,
+  shouldRefuseIdenticalResume,
+  type FailureFingerprintRecord,
+} from './failureFingerprint';
 import { commitEpisodeGenerationAfterLock, emitEpisodeGenerationStart, episodeFailureMetadataFromError, handleEpisodeGenerationFailure, type EpisodeGenerationResult } from './episodeGenerationEvents';
+
 import {
   type GenerationPlan,
   applyEventToPlan,
@@ -2571,7 +2577,44 @@ export class FullStoryPipeline {
     // Input validation
     this.validateBrief(brief);
     this.armRealizationPovContext(brief);
-    
+
+    // R1.5: refuse identical-failure resume loops without repair patches.
+    const priorFingerprint = (resumeCheckpoint?.outputs?.failure_fingerprint
+      ?? this.getResumeOutput<FailureFingerprintRecord>(resumeCheckpoint, 'failure_fingerprint')) as FailureFingerprintRecord | undefined;
+    const hasRepairPatches = Boolean(
+      resumeCheckpoint?.outputs?.payload_patch
+      || resumeCheckpoint?.outputs?.outputs_patch
+      || (Array.isArray((resumeCheckpoint as { resumeContext?: { changedInputs?: unknown[] } } | undefined)?.resumeContext?.changedInputs)
+        && ((resumeCheckpoint as { resumeContext?: { changedInputs?: unknown[] } }).resumeContext!.changedInputs!.length > 0)),
+    );
+    if (shouldRefuseIdenticalResume({ record: priorFingerprint, hasRepairPatches })) {
+      throw new PipelineError(
+        `[DeterministicResumeLoop] Refusing resume of identical failure fingerprint ${priorFingerprint!.fingerprint} without repair patches.`,
+        'resume',
+        {
+          context: {
+            failureKind: 'deterministic_resume_loop',
+            failureFingerprint: priorFingerprint!.fingerprint,
+            resumeCount: priorFingerprint!.resumeCount,
+          },
+          failure: {
+            code: 'deterministic_resume_loop',
+            ownerStage: 'packaging',
+            retryClass: 'none',
+            issueCodes: ['deterministic_resume_loop'],
+            repairTarget: priorFingerprint!.fingerprint,
+          },
+        },
+      );
+    }
+    if (priorFingerprint?.fingerprint && resumeCheckpoint?.outputs) {
+      resumeCheckpoint.outputs.failure_fingerprint = {
+        ...priorFingerprint,
+        resumeCount: (priorFingerprint.resumeCount ?? 0) + 1,
+        recordedAt: new Date().toISOString(),
+      } satisfies FailureFingerprintRecord;
+    }
+
     this.events = [];
     this.checkpoints = [];
     this.telemetry = new PipelineTelemetry();
@@ -6165,9 +6208,30 @@ export class FullStoryPipeline {
           // contract's blocking issues); ValidationError carries .issues (e.g.
           // the specific treatment-fidelity anchors that drifted).
           const failure = episodeFailureMetadataFromError(error);
+          const failureFingerprint = failure
+            ? computeFailureFingerprint({
+                code: failure.code,
+                ownerStage: failure.ownerStage,
+                repairTarget: failure.repairTarget,
+                issueCodes: failure.issueCodes,
+                phase: failure.phase,
+                message: errorMessage,
+              })
+            : computeFailureFingerprint({ phase: 'pipeline_abort', message: errorMessage });
+          this.addCheckpoint('failure_fingerprint', {
+            fingerprint: failureFingerprint,
+            resumeCount: 0,
+            recordedAt: new Date().toISOString(),
+          } satisfies FailureFingerprintRecord, false);
+          await saveEarlyDiagnostic(this._currentOutputDirectory, 'failure-fingerprint.json', {
+            fingerprint: failureFingerprint,
+            failure,
+            message: errorMessage,
+            recordedAt: new Date().toISOString(),
+          });
           const details: Record<string, unknown> | undefined = failure
-            ? { ...failure }
-            : error instanceof ValidationError && error.issues?.length ? { issues: error.issues } : undefined;
+            ? { ...failure, failureFingerprint }
+            : error instanceof ValidationError && error.issues?.length ? { issues: error.issues, failureFingerprint } : { failureFingerprint };
           await savePipelineErrorLog(this._currentOutputDirectory, [{
             timestamp: new Date().toISOString(),
             phase: 'pipeline_abort',
@@ -6206,7 +6270,28 @@ export class FullStoryPipeline {
         checkpoints: this.checkpoints,
         events: this.events,
         error: errorMessage,
-        failure: episodeFailureMetadataFromError(error),
+        failure: (() => {
+          const base = episodeFailureMetadataFromError(error);
+          if (!base) return undefined;
+          const fingerprint = computeFailureFingerprint({
+            code: base.code,
+            ownerStage: base.ownerStage,
+            repairTarget: base.repairTarget,
+            issueCodes: base.issueCodes,
+            phase: base.phase,
+            message: errorMessage,
+          });
+          return {
+            ...base,
+            context: {
+              ...(base.context ?? {}),
+              failureFingerprint: fingerprint,
+              failureKind: error instanceof PipelineError && error.code === 'deterministic_resume_loop'
+                ? 'deterministic_resume_loop'
+                : base.context?.failureKind,
+            },
+          };
+        })(),
         duration: Date.now() - startTime,
       };
     }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NarrativeContractGraph } from '../../types/narrativeContract';
-import { assertNoContradictoryLiteralEvidence, compileNarrativeRealizationTasks } from './realizationTaskCompiler';
+import { assertNoContradictoryLiteralEvidence, assertNoContradictorySemanticLiteralEvidence, compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 
 describe('compileNarrativeRealizationTasks', () => {
   it('compiles premise, route, and relationship obligations with owning stages', () => {
@@ -314,6 +314,34 @@ describe('compileNarrativeRealizationTasks', () => {
         { id: 'forbidden-name', description: 'Do not name Mika', acceptedPatterns: ['Mika'], kind: 'lexical', verificationAuthority: 'literal', required: true, polarity: 'forbidden' },
       ],
     }])).toThrow(/Contradictory literal evidence.*mika/i);
+  });
+
+  it('rejects required semantic stems that conflict with forbidden literal patterns', () => {
+    expect(() => assertNoContradictorySemanticLiteralEvidence([{
+      id: 'task:friendship', contractId: 'rel', episodeNumber: 1, sceneId: 'club',
+      ownerStage: 'scene_writer', repairHandler: 'scene_prose', sourceContractIds: ['treatment'], blocking: true,
+      target: { scope: 'owner', surfaces: ['beat_text'] },
+      evidenceAtoms: [
+        {
+          id: 'required-befriend',
+          description: 'You befriend Mika over drinks',
+          acceptedPatterns: ['befriend'],
+          kind: 'semantic',
+          verificationAuthority: 'semantic_judge',
+          required: true,
+          semanticCriteria: ['befriends Mika'],
+        },
+        {
+          id: 'forbidden-friend',
+          description: 'Do not say friend',
+          acceptedPatterns: ['friend'],
+          kind: 'lexical',
+          verificationAuthority: 'literal',
+          required: true,
+          polarity: 'forbidden',
+        },
+      ],
+    } as any])).toThrow(/Contradictory semantic\/literal evidence.*friend/i);
   });
 
   it('drops second-person-unrealizable pronoun atoms from premise tasks', () => {

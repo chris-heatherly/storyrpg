@@ -10,7 +10,12 @@ import { compileEventRealizationAtoms } from './eventAtomCompiler';
 
 describe('validateOwnerRealizationTasks', () => {
   it('adopts a repair only when its target fingerprint clears without new blockers', () => {
-    const finding = (fingerprint: string) => ({ fingerprint, taskId: fingerprint, code: 'OWNER_REALIZATION_MISSING' as const } as any);
+    const finding = (fingerprint: string, atomIds: string[] = ['x']) => ({
+      fingerprint,
+      taskId: fingerprint,
+      code: 'OWNER_REALIZATION_MISSING' as const,
+      missingEvidenceAtoms: atomIds,
+    } as any);
     expect(shouldAdoptOwnerRepairCandidate({
       previous: [finding('event'), finding('presence')],
       candidate: [finding('presence')],
@@ -21,14 +26,21 @@ describe('validateOwnerRealizationTasks', () => {
       candidate: [finding('event')],
       targetFingerprint: 'event',
     })).toBe(false);
+    // Same miss count after clearing the target is allowed (non-increasing).
     expect(shouldAdoptOwnerRepairCandidate({
       previous: [finding('event')],
       candidate: [finding('new-blocker')],
       targetFingerprint: 'event',
+    })).toBe(true);
+    // Total misses must not increase.
+    expect(shouldAdoptOwnerRepairCandidate({
+      previous: [finding('event', ['a'])],
+      candidate: [finding('a', ['a']), finding('b', ['b'])],
+      targetFingerprint: 'event',
     })).toBe(false);
   });
 
-  it('adopts strict evidence-atom subsets as monotonic partial progress', () => {
+  it('adopts when total task misses do not increase even if evidence atoms change', () => {
     const finding = (fingerprint: string, atomIds: string[]) => ({
       fingerprint,
       taskId: 'task:event:1',
@@ -45,6 +57,11 @@ describe('validateOwnerRealizationTasks', () => {
       previous: [finding('missing:a,b,c', ['a', 'b', 'c'])],
       candidate: [finding('missing:d', ['d'])],
       targetFingerprint: 'missing:a,b,c',
+    })).toBe(true);
+    expect(shouldAdoptOwnerRepairCandidate({
+      previous: [finding('missing:a', ['a'])],
+      candidate: [finding('missing:a,b,c', ['a', 'b', 'c'])],
+      targetFingerprint: 'missing:a',
     })).toBe(false);
   });
 

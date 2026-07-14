@@ -39,6 +39,7 @@ import { type GenerationPlan, setEpisodeScenes } from '../generationPlan';
 import { PipelineError, type PipelineFailureMetadata } from '../errors';
 import { applyEpisodeEventPlans, reprojectEpisodeEventPlan, validateCanonicalEpisodeBlueprintProjection } from '../narrativeContractCompiler';
 import { scenesForEpisode } from '../seasonScenePlanBuilder';
+import { attemptBoundedPlannedSceneRepair } from '../plannedScenePlanRepair';
 import { validateCanonicalEpisodeSceneOrder, validateEpisodeArchitectureContract, type ArchitectureConflict } from '../architectureContractPreflight';
 import { projectBlueprintOntoLockedEpisodePlan } from '../episodeArchitectureProjection';
 import { captureEpisodeContractSurface, diffEpisodeContractSurface } from '../episodeContractMutationGuard';
@@ -369,6 +370,29 @@ export class EpisodeArchitecturePhase {
           });
           continue;
         }
+        // R1.1: one bounded treatment-spine rebuild before giving up on plan gates.
+        if (attempt <= 2 && brief.seasonPlan) {
+          const repair = attemptBoundedPlannedSceneRepair({
+            seasonPlan: brief.seasonPlan,
+            episodeNumber: brief.episode.number,
+            reason: failure?.code || 'episode_plan_invalid',
+          });
+          if (repair.refreshed) {
+            const refreshed = scenesForEpisode(brief.seasonPlan.scenePlan!, brief.episode.number);
+            if (architectureInput.seasonPlanDirectives) {
+              architectureInput.seasonPlanDirectives.plannedScenes = refreshed;
+              architectureInput.seasonPlanDirectives.episodeEventPlan =
+                brief.seasonPlan.scenePlan?.episodeEventPlans?.[brief.episode.number];
+            }
+            context.emit({
+              type: 'regeneration_triggered',
+              phase: 'architecture',
+              message: repair.note,
+              data: { failure },
+            });
+            continue;
+          }
+        }
         context.emit({
           type: 'debug',
           phase: 'architecture',
@@ -379,6 +403,28 @@ export class EpisodeArchitecturePhase {
       }
       const deterministicPlannedDensityFailure = densityFailure && plannedSceneCount > 0;
       if (deterministicPlannedDensityFailure) {
+        if (attempt <= 2 && brief.seasonPlan) {
+          const repair = attemptBoundedPlannedSceneRepair({
+            seasonPlan: brief.seasonPlan,
+            episodeNumber: brief.episode.number,
+            reason: 'treatment_density_conflict',
+          });
+          if (repair.refreshed) {
+            const refreshed = scenesForEpisode(brief.seasonPlan.scenePlan!, brief.episode.number);
+            if (architectureInput.seasonPlanDirectives) {
+              architectureInput.seasonPlanDirectives.plannedScenes = refreshed;
+              architectureInput.seasonPlanDirectives.episodeEventPlan =
+                brief.seasonPlan.scenePlan?.episodeEventPlans?.[brief.episode.number];
+            }
+            context.emit({
+              type: 'regeneration_triggered',
+              phase: 'architecture',
+              message: repair.note,
+              data: { error: result.error },
+            });
+            continue;
+          }
+        }
         context.emit({
           type: 'debug',
           phase: 'architecture',

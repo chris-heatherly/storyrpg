@@ -10,6 +10,7 @@ import { stableHash } from './artifacts/store';
 import {
   appendDeferredRealizationRecord,
   buildDeferredRealizationRecord,
+  isCriticalOwnerRealizationFinding,
   type DeferredRealizationRecord,
 } from './deferredRealization';
 import { PipelineError } from './errors';
@@ -212,6 +213,36 @@ export async function finalizeSceneRealizationHandoff(input: {
     });
   }
   if (blockers.length === 0) return;
+
+  // Terminal policy (same split as every other owner-stage site): only a graph
+  // inconsistency or forbidden meaning on the page may end the run. Missing
+  // evidence defers to the episode contract, which re-judges with full context
+  // and routes repair_scene_prose / repair_choice / repair_encounter_route.
+  // This finalizer aborting without the split is what killed the first
+  // encounter-scene run (bite-me_2026-07-14T21-31-30: six route findings, all
+  // non-critical, retryClass repair_encounter_route in its own metadata).
+  const criticalBlockers = blockers.filter((finding) =>
+    isCriticalOwnerRealizationFinding(finding, sceneBlueprint.realizationTasks ?? []));
+  if (criticalBlockers.length === 0) {
+    const deferHash = stableHash({ sceneContent, choiceSet, encounter });
+    for (const finding of blockers) {
+      appendDeferredRealizationRecord(input.deferredRecords, buildDeferredRealizationRecord({
+        episodeNumber: input.episodeNumber,
+        sceneId: sceneBlueprint.id,
+        candidateHash: deferHash,
+        finding,
+        tasks: sceneBlueprint.realizationTasks ?? [],
+        reason: 'owner_repair_exhausted',
+      }));
+    }
+    input.emit({
+      type: 'warning',
+      phase: 'content',
+      message: `Scene ${sceneBlueprint.id}: deferring ${blockers.length} non-critical realization finding(s) from the handoff regression to episode-contract repair.`,
+      data: { findings: blockers },
+    });
+    return;
+  }
 
   const artifactRef = `episode-${input.episodeNumber}-scene-${sceneBlueprint.id}-realization-blockers.json`;
   if (input.outputDirectory) {

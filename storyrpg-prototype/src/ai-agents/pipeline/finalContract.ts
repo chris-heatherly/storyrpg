@@ -87,7 +87,7 @@ import type { PipelineEvent } from './events';
 import type { FullCreativeBrief } from './FullStoryPipeline';
 import type { SeasonScenePlan } from '../../types/scenePlan';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
-import { validateStorySemanticRealization } from './semanticValidationCoordinator';
+import { clearSemanticValidationCache, validateStorySemanticRealization } from './semanticValidationCoordinator';
 
 type FinalContractWarning = NonNullable<FinalStoryContractReport['warnings']>[number];
 
@@ -1066,53 +1066,55 @@ export class FinalContract {
       const semanticJudge = new SemanticRealizationJudge(
         this.deps.config.agents.qaRunner || this.deps.config.agents.storyArchitect,
       );
-      const semanticResults = await validateStorySemanticRealization({
+      const allRealizationTasks = input.brief.seasonPlan?.scenePlan?.narrativeContractGraph?.realizationTasks ?? [];
+      let semanticResults = await validateStorySemanticRealization({
         story,
-        tasks: input.brief.seasonPlan?.scenePlan?.narrativeContractGraph?.realizationTasks,
+        tasks: allRealizationTasks,
         judge: semanticJudge,
       });
-      const semanticFindings = semanticResults.flatMap((result) => result.findings);
-      const unavailableSemantic = semanticFindings.filter(
-        (finding) => finding.code === 'SEMANTIC_VALIDATION_UNAVAILABLE',
-      );
-      if (unavailableSemantic.length > 0) {
-        throw new PipelineError(
-          `[SemanticValidationUnavailable] Final regression could not reach the semantic judge for ${unavailableSemantic.length} task(s); no prose repair was attempted.`,
-          'validation',
-          {
-            agent: 'SemanticRealizationJudge',
-            context: { findings: unavailableSemantic, receipts: semanticResults.map((result) => result.receipt) },
-            failure: {
-              code: 'semantic_judge_unavailable',
-              ownerStage: 'final_contract',
-              retryClass: 'retry_provider',
-              issueCodes: ['SEMANTIC_VALIDATION_UNAVAILABLE'],
-              artifactRefs: [],
-              repairTarget: unavailableSemantic[0]?.taskId,
-            },
-          },
-        );
+      let semanticFindings = semanticResults.flatMap((result) => result.findings);
+      // Instrument-failure policy: a verdict about prose may block; the ABSENCE
+      // of a verdict may only retry, warn, and cap — never abort. Live proof:
+      // bite-me_2026-07-14T22-23-46 completed every scene and reached this gate
+      // with 5 repairable blockers, then died because ONE judge call truncated
+      // ("no prose repair was attempted"). Retry the affected tasks once with a
+      // cleared consensus cache (fresh samples), then fail open with receipts.
+      const isInstrumentFailure = (finding: { code: string }): boolean =>
+        finding.code === 'SEMANTIC_VALIDATION_UNAVAILABLE' || finding.code === 'SEMANTIC_VALIDATION_INCONCLUSIVE';
+      if (semanticFindings.some(isInstrumentFailure)) {
+        const retryTaskIds = new Set(semanticFindings.filter(isInstrumentFailure).map((finding) => finding.taskId));
+        this.deps.emit({
+          type: 'warning',
+          phase: input.phase,
+          message: `Final regression: retrying semantic validation for ${retryTaskIds.size} task(s) after judge instrument failure.`,
+        });
+        clearSemanticValidationCache();
+        const retryResults = await validateStorySemanticRealization({
+          story,
+          tasks: allRealizationTasks.filter((task) => retryTaskIds.has(task.id)),
+          judge: semanticJudge,
+        });
+        semanticResults = [...semanticResults, ...retryResults];
+        semanticFindings = [
+          ...semanticFindings.filter((finding) => !retryTaskIds.has(finding.taskId)),
+          ...retryResults.flatMap((result) => result.findings),
+        ];
       }
-      const inconclusiveSemantic = semanticFindings.filter(
-        (finding) => finding.code === 'SEMANTIC_VALIDATION_INCONCLUSIVE',
-      );
-      if (inconclusiveSemantic.length > 0) {
-        throw new PipelineError(
-          `[SemanticValidationInconclusive] Final regression could not obtain a stable semantic verdict for ${inconclusiveSemantic.length} task(s); no prose repair was attempted.`,
-          'validation',
-          {
-            agent: 'SemanticRealizationJudge',
-            context: { findings: inconclusiveSemantic, receipts: semanticResults.map((result) => result.receipt) },
-            failure: {
-              code: 'semantic_validation_inconclusive',
-              ownerStage: 'final_contract',
-              retryClass: 'none',
-              issueCodes: ['SEMANTIC_VALIDATION_INCONCLUSIVE'],
-              artifactRefs: [],
-              repairTarget: inconclusiveSemantic[0]?.taskId,
-            },
-          },
-        );
+      const residualInstrumentFailures = semanticFindings.filter(isInstrumentFailure);
+      if (residualInstrumentFailures.length > 0) {
+        // Fail open: demote to non-blocking so the standard issue loop records
+        // them as warnings with full metadata + receipts. Confirmed content
+        // misses in the same batch still block and still get their repair pass.
+        this.deps.emit({
+          type: 'warning',
+          phase: input.phase,
+          message: `Final regression: semantic judge remained unavailable/inconclusive for ${residualInstrumentFailures.length} task(s) after retry — shipping with warning receipts instead of aborting; confirmed findings proceed to repair.`,
+          data: { findings: residualInstrumentFailures },
+        });
+        for (const finding of residualInstrumentFailures) {
+          finding.blocking = false;
+          finding.message = `${finding.message} (instrument failure — failed open with receipt after one retry; no confirmed content verdict)`;
+        }
       }
       const realizationTaskById = new Map(
         (input.brief.seasonPlan?.scenePlan?.narrativeContractGraph?.realizationTasks ?? [])

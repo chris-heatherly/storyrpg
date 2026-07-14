@@ -1,6 +1,6 @@
 import type { NarrativeEvidenceExcerpt } from '../../types/narrativeContract';
 import type { AgentConfig } from '../config';
-import { AgentResponse, BaseAgent } from './BaseAgent';
+import { AgentResponse, BaseAgent, TruncatedLLMResponseError } from './BaseAgent';
 
 export const SEMANTIC_REALIZATION_JUDGE_POLICY_VERSION = 'semantic-realization-v4';
 
@@ -65,12 +65,15 @@ export interface SemanticRealizationJudgeLike {
   ): Promise<SemanticRealizationJudgeResponse>;
 }
 
-function semanticJudgeSchema(claimIds: string[], excerptLabels: string[]) {
+function semanticJudgeSchema(claimIds: string[], excerptLabels: string[], budgetScale = 1) {
   const claimCount = claimIds.length;
+  // 320/claim starved the judge into MAX_TOKENS "unavailability" (live:
+  // bite-me_2026-07-14T22-23-46 died at the final contract over a 640-token
+  // cap with 628 spent). A verdict is cheap; a discarded 24-minute run is not.
   return {
     name: 'semantic_realization_verdicts',
     description: 'Evidence-backed categorical verdicts for narrative propositions.',
-    maxOutputTokens: Math.min(2048, Math.max(640, 320 * claimCount)),
+    maxOutputTokens: Math.min(4096, Math.max(1024, 512 * claimCount)) * budgetScale,
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -83,7 +86,10 @@ function semanticJudgeSchema(claimIds: string[], excerptLabels: string[]) {
           items: {
             type: 'object',
             additionalProperties: false,
-            required: ['id', 'verdict', 'evidenceRefs', 'evidenceQuotes', 'missingCriteria', 'rationale'],
+            // evidenceQuotes deliberately NOT required: the coordinator derives
+            // quotes from the cited excerpt refs, so forcing the judge to echo
+            // up to 3x320 chars inside its output budget only invites truncation.
+            required: ['id', 'verdict', 'evidenceRefs', 'missingCriteria', 'rationale'],
             properties: {
               id: { type: 'string', enum: claimIds },
               verdict: {
@@ -141,6 +147,7 @@ export class SemanticRealizationJudge extends BaseAgent implements SemanticReali
   private async executePrompt(
     claims: SemanticRealizationClaim[],
     prompt: string,
+    budgetScale = 1,
   ): Promise<SemanticRealizationJudgeResponse> {
     try {
       const labelToId = this.excerptLabelMap(claims);
@@ -150,6 +157,7 @@ export class SemanticRealizationJudge extends BaseAgent implements SemanticReali
         { jsonSchema: semanticJudgeSchema(
           claims.map((claim) => claim.id),
           [...labelToId.keys()],
+          budgetScale,
         ) },
       );
       const parsed = this.parseJSON<SemanticRealizationJudgeOutput>(response);
@@ -159,11 +167,11 @@ export class SemanticRealizationJudge extends BaseAgent implements SemanticReali
         && claimIds.has(verdict.id)
         && ['fulfilled', 'partial', 'not_fulfilled', 'contradicted', 'uncertain'].includes(verdict.verdict)
         && Array.isArray(verdict.evidenceRefs)
-        && Array.isArray(verdict.evidenceQuotes)
         && Array.isArray(verdict.missingCriteria)
         && typeof verdict.rationale === 'string',
       ).map((verdict) => ({
         ...verdict,
+        evidenceQuotes: Array.isArray(verdict.evidenceQuotes) ? verdict.evidenceQuotes : [],
         evidenceRefs: verdict.evidenceRefs
           .map((ref) => labelToId.get(ref) ?? ref)
           .filter((ref, index, all) => all.indexOf(ref) === index),
@@ -179,6 +187,13 @@ export class SemanticRealizationJudge extends BaseAgent implements SemanticReali
       return { success: true, data: { verdicts }, rawResponse: response };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // Truncation is a budget problem, not a provider problem: retry once
+      // with a doubled cap (the adjust_call_budget ladder every authoring
+      // agent already has) before declaring the instrument unavailable.
+      if (budgetScale === 1 && (error instanceof TruncatedLLMResponseError || /truncat|max_tokens/i.test(message))) {
+        console.warn(`[SemanticRealizationJudge] truncated at base budget — retrying with doubled output cap: ${message}`);
+        return this.executePrompt(claims, prompt, 2);
+      }
       console.warn(`[SemanticRealizationJudge] judge call failed: ${message}`);
       const failureKind: SemanticRealizationJudgeFailureKind = /truncat|max_tokens|timeout|timed out|429|rate limit|503|502|network|fetch/i.test(message)
         ? 'provider_unavailable'

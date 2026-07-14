@@ -1,4 +1,5 @@
 import type { Story } from '../../types/story';
+import type { NarrativeRealizationTask } from '../../types/narrativeContract';
 import { contractRepairIssueFingerprint, type ContractRepairHandler, type ContractRepairReport } from './finalContractRepair';
 
 export interface EncounterRouteAuthor {
@@ -15,10 +16,34 @@ function routeIssues(issues: ContractRepairReport['blockingIssues']): ContractRe
   return issues.filter((issue) => issue.repairHandler === 'encounter_route' || issue.outcomeTier);
 }
 
+/**
+ * Translate opaque atom IDs into the authored meaning the re-author must put
+ * on the page. An LLM told to satisfy
+ * "event:ep1-u6:rescue:evidence:1:complicated" can only guess; told
+ * "action evidence for event:ep1-u6 on complicated: rescue / saved" it can
+ * write the line.
+ */
+function describeMissingEvidence(
+  issue: ContractRepairReport['blockingIssues'][number],
+  tasksById: Map<string, NarrativeRealizationTask> | undefined,
+): string[] {
+  const atomIds = issue.missingEvidenceAtoms ?? [];
+  if (atomIds.length === 0) return [issue.message ?? 'route realization'];
+  const task = issue.taskId ? tasksById?.get(issue.taskId) : undefined;
+  return atomIds.map((atomId) => {
+    const atom = task?.evidenceAtoms.find((candidate) => candidate.id === atomId);
+    if (!atom) return atomId;
+    const patterns = (atom.acceptedPatterns ?? []).filter(Boolean);
+    return `${atom.description}${patterns.length > 0 ? ` (accepted evidence: ${patterns.join(' / ')})` : ''}`;
+  });
+}
+
 export function buildEncounterRouteRepairHandler(options: {
   author: () => EncounterRouteAuthor | null;
   emit?: (message: string) => void;
   maxRoutesPerRound?: number;
+  /** Realization tasks keyed by id, for atom-ID → authored-meaning translation. */
+  tasksById?: () => Map<string, NarrativeRealizationTask> | undefined;
 }): ContractRepairHandler {
   return async ({ story, blockingIssues }) => {
     const issues = routeIssues(blockingIssues).filter((issue) => issue.sceneId && issue.outcomeTier);
@@ -38,7 +63,7 @@ export function buildEncounterRouteRepairHandler(options: {
       const count = await author.reauthorEncounterRoute({
         encounterTree: scene.encounter,
         outcomeTier: issue.outcomeTier!,
-        missingEvidence: issue.missingEvidenceAtoms ?? [issue.message ?? 'route realization'],
+        missingEvidence: describeMissingEvidence(issue, options.tasksById?.()),
         sourceText: issue.message,
         sceneName: scene.name,
       });

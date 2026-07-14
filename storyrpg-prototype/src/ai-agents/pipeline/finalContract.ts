@@ -1504,6 +1504,10 @@ export class FinalContract {
                   return null;
                 }
               },
+              tasksById: () => new Map(
+                (input.brief.seasonPlan?.scenePlan?.narrativeContractGraph?.realizationTasks ?? [])
+                  .map((task) => [task.id, task]),
+              ),
               emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
             })),
           );

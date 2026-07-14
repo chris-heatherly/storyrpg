@@ -185,7 +185,11 @@ and an all-outcome `ChoiceAuthor` resolution task linked by explicit task and
 atom prerequisites. `SceneWriter` receives the pressure and decision boundary;
 `ChoiceAuthor` authors one shared fiction-first resolution and the pipeline
 projects that authored passage into every option's success, partial, and failure
-outcome. No deterministic system invents the payoff. Generic group names are
+outcome. If that dedicated passage alone misses its canonical meaning, a bounded
+LLM repair rewrites only `sharedResolutionText`, removes its prior projection,
+and rematerializes the repaired prose while preserving valid option geometry,
+consequences, and tier-specific reactions. Branch regeneration and deterministic
+fallbacks cannot claim this repair class. No deterministic system invents the payoff. Generic group names are
 excluded from participant identity extraction. Equivalent repeated projections
 coalesce idempotently; scene-projected task and atom IDs include their owner
 scene, while conflicting ID reuse remains blocking. Task compilation also
@@ -235,7 +239,8 @@ The active content path no longer inserts deterministic required-moment prose.
 Repair candidates are immutable snapshots and are replay-validated;
 non-identical findings for the same snapshot fail with a typed
 `validator_snapshot_mismatch` error. A candidate is adopted only when it clears
-the targeted fingerprint without introducing another blocker. Unresolved SceneWriter-owned tasks abort
+the targeted fingerprint without introducing a newly failing task; atom-level
+fingerprints may move only within tasks that were already blocking. Unresolved SceneWriter-owned tasks abort
 before ChoiceAuthor, callback accounting, completion status, or checkpointing.
 Failed candidates and full semantic receipts are persisted before failure for
 deterministic replay. Typed failure code, owner stage, retry class, issue codes,

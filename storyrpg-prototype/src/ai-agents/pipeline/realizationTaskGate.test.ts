@@ -26,12 +26,12 @@ describe('validateOwnerRealizationTasks', () => {
       candidate: [finding('event')],
       targetFingerprint: 'event',
     })).toBe(false);
-    // Same miss count after clearing the target is allowed (non-increasing).
+    // Clearing one task may not introduce a blocker on a previously satisfied task.
     expect(shouldAdoptOwnerRepairCandidate({
       previous: [finding('event')],
       candidate: [finding('new-blocker')],
       targetFingerprint: 'event',
-    })).toBe(true);
+    })).toBe(false);
     // Total misses must not increase.
     expect(shouldAdoptOwnerRepairCandidate({
       previous: [finding('event', ['a'])],

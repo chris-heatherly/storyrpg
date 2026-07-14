@@ -416,7 +416,7 @@ function ownerRealizationRepairFeedback(
 export interface ContentGenerationPhaseDeps {
   // --- Agents ---
   sceneWriter: Pick<SceneWriter, 'execute' | 'executeSemanticPatch' | 'setContractLoadTemperature'>;
-  choiceAuthor: Pick<ChoiceAuthor, 'execute' | 'setEpisodeSkillTargets'>;
+  choiceAuthor: Pick<ChoiceAuthor, 'execute' | 'repairSharedResolution' | 'setEpisodeSkillTargets'>;
   encounterArchitect: Pick<EncounterArchitect, 'execute' | 'reauthorFallbackCostFields'>;
   semanticRealizationJudge: SemanticRealizationJudgeLike;
   getThreadPlanner: () => ThreadPlannerLike;
@@ -3149,6 +3149,85 @@ export class ContentGenerationPhase {
             let choiceProducerBlockers = choiceResult.success && choiceResult.data
               ? validateChoiceProducerOutput(sceneBlueprint.id, choiceResult.data)
               : [];
+            let focusedSharedResolutionAttempts = 0;
+            const isSharedResolutionFinding = (finding: RealizationTaskGateFinding): boolean => {
+              const task = sceneBlueprint.realizationTasks?.find((candidate) => candidate.id === finding.taskId);
+              return task?.ownerStage === 'choice_author' && task.target.scope === 'all_choice_outcomes';
+            };
+            const findingMissCount = (findings: RealizationTaskGateFinding[]): number => findings.reduce(
+              (total, finding) => total + Math.max(
+                1,
+                (finding.missingEvidenceAtoms?.length ?? 0) + (finding.matchedForbiddenAtoms?.length ?? 0),
+              ),
+              0,
+            );
+            const hasOnlySharedResolutionBlockers = (): boolean =>
+              choiceOwnerBlockers.length > 0
+              && choiceOwnerBlockers.every(isSharedResolutionFinding)
+              && choiceProducerBlockers.length === 0;
+            const tryFocusedSharedResolutionRepair = async (): Promise<void> => {
+              if (
+                focusedSharedResolutionAttempts >= 2
+                || !choiceResult.success
+                || !choiceResult.data
+                || !hasOnlySharedResolutionBlockers()
+              ) return;
+              focusedSharedResolutionAttempts += 1;
+              const feedback = choiceOwnerBlockers
+                .map((finding) => ownerRealizationRepairFeedback(finding, sceneBlueprint.realizationTasks))
+                .join('; ');
+              context.emit({
+                type: 'debug',
+                phase: 'choices',
+                message: `Repairing only ${sceneBlueprint.id} shared choice resolution (${focusedSharedResolutionAttempts}/2); preserving valid options, consequences, and outcome tiers.`,
+              });
+              let repaired;
+              try {
+                repaired = await withTimeout(
+                  this.deps.choiceAuthor.repairSharedResolution(choiceAuthorInput, choiceResult.data, feedback),
+                  PIPELINE_TIMEOUTS.llmAgent,
+                  `ChoiceAuthor.repairSharedResolution(${sceneBlueprint.id})`,
+                );
+              } catch (error) {
+                context.emit({
+                  type: 'warning',
+                  phase: 'choices',
+                  message: `Focused shared-resolution repair threw for ${sceneBlueprint.id}: ${error instanceof Error ? error.message : String(error)}.`,
+                });
+                return;
+              }
+              if (!repaired.success || !repaired.data) {
+                context.emit({
+                  type: 'warning',
+                  phase: 'choices',
+                  message: `Focused shared-resolution repair failed for ${sceneBlueprint.id}: ${repaired.error ?? 'no data'}.`,
+                });
+                return;
+              }
+              const repairedOwnerBlockers = (await choiceRealizationFindings(repaired.data)).filter((finding) => finding.blocking);
+              const repairedProducerBlockers = validateChoiceProducerOutput(sceneBlueprint.id, repaired.data);
+              const improved = repairedProducerBlockers.length === 0
+                && findingMissCount(repairedOwnerBlockers) < findingMissCount(choiceOwnerBlockers);
+              if (!improved) {
+                context.emit({
+                  type: 'warning',
+                  phase: 'choices',
+                  message: `Focused shared-resolution repair for ${sceneBlueprint.id} did not reduce canonical misses; retaining the prior valid choice geometry.`,
+                });
+                return;
+              }
+              choiceResult = repaired;
+              choiceOwnerBlockers = repairedOwnerBlockers;
+              choiceProducerBlockers = repairedProducerBlockers;
+              context.emit({
+                type: choiceOwnerBlockers.length === 0 ? 'debug' : 'warning',
+                phase: 'choices',
+                message: choiceOwnerBlockers.length === 0
+                  ? `Focused shared-resolution repair satisfied ${sceneBlueprint.id} without regenerating its choices.`
+                  : `Focused shared-resolution repair reduced ${sceneBlueprint.id} to ${findingMissCount(choiceOwnerBlockers)} remaining canonical miss(es).`,
+              });
+            };
+            await tryFocusedSharedResolutionRepair();
             while ((!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0) && choiceAuthorAttempt < maxChoiceAuthorAttempts) {
               choiceAuthorAttempt++;
               const realizationFeedback = choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0
@@ -3175,6 +3254,7 @@ export class ContentGenerationPhase {
               choiceProducerBlockers = choiceResult.success && choiceResult.data
                 ? validateChoiceProducerOutput(sceneBlueprint.id, choiceResult.data)
                 : [];
+              await tryFocusedSharedResolutionRepair();
             }
 
             // Per-target branch regeneration (preferred over a templated fallback): if the
@@ -3186,6 +3266,7 @@ export class ContentGenerationPhase {
             const branchRegenHints = branchTargetHintsByScene.get(sceneBlueprint.id);
             if (
               (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0)
+              && !hasOnlySharedResolutionBlockers()
               && new Set(sceneBlueprint.leadsTo ?? []).size > 1
               && branchRegenHints && branchRegenHints.length > 0
             ) {
@@ -3212,6 +3293,23 @@ export class ContentGenerationPhase {
             }
 
             if (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0) {
+              if (choiceResult.success && choiceResult.data && hasOnlySharedResolutionBlockers()) {
+                throw new PipelineError(
+                  `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} shared choice resolution did not satisfy its route-invariant contract after focused LLM repair.`,
+                  'choices',
+                  {
+                    agent: 'ChoiceAuthor',
+                    context: { sceneId: sceneBlueprint.id, findings: choiceOwnerBlockers },
+                    failure: {
+                      code: 'owner_realization_failed',
+                      ownerStage: 'choice_author',
+                      retryClass: 'repair_choice',
+                      issueCodes: Array.from(new Set(choiceOwnerBlockers.map((finding) => finding.code))),
+                      repairTarget: choiceOwnerBlockers[0]?.taskId,
+                    },
+                  },
+                );
+              }
               // ChoiceAuthor failed after retries AND per-target regeneration — only now
               // fall back to deterministic templated choices. The scene ships without
               // LLM-authored choices at this point.

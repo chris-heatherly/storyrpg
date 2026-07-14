@@ -11,6 +11,16 @@ interface ChoiceSetLike {
   choices?: ChoiceOutcomeLike[];
 }
 
+function cloneChoiceSet<T extends ChoiceSetLike>(choiceSet: T): T {
+  return {
+    ...choiceSet,
+    choices: choiceSet.choices?.map((choice) => ({
+      ...choice,
+      outcomeTexts: choice.outcomeTexts ? { ...choice.outcomeTexts } : undefined,
+    })),
+  } as T;
+}
+
 /**
  * Projects one LLM-authored route-invariant payoff into every playable choice
  * result. Deterministic code copies prose; it never invents or rewrites it.
@@ -31,4 +41,31 @@ export function materializeSharedChoiceResolution(choiceSet: ChoiceSetLike): num
     }
   }
   return materialized;
+}
+
+/**
+ * Replaces the previously materialized authored resolution without touching
+ * the option design or tier-specific prose. The next authored passage is then
+ * projected through the same runtime surfaces as the original.
+ */
+export function withReplacedSharedChoiceResolution<T extends ChoiceSetLike>(
+  choiceSet: T,
+  nextResolution: string,
+): T {
+  const candidate = cloneChoiceSet(choiceSet);
+  const previousResolution = candidate.sharedResolutionText?.trim();
+  if (previousResolution) {
+    const normalizedPrevious = previousResolution.toLowerCase();
+    for (const choice of candidate.choices ?? []) {
+      if (!choice.outcomeTexts) continue;
+      for (const tier of ['success', 'partial', 'failure'] as const) {
+        const existing = choice.outcomeTexts[tier]?.trim();
+        if (!existing || !existing.toLowerCase().endsWith(normalizedPrevious)) continue;
+        choice.outcomeTexts[tier] = existing.slice(0, -previousResolution.length).trimEnd();
+      }
+    }
+  }
+  candidate.sharedResolutionText = nextResolution.trim();
+  materializeSharedChoiceResolution(candidate);
+  return candidate;
 }

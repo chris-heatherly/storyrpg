@@ -99,9 +99,10 @@ export function totalTaskMissCount(findings: RealizationTaskGateFinding[]): numb
 }
 
 /**
- * A repair may clear its target and must not increase total task misses.
- * Newly introduced fingerprints are allowed when overall miss count is non-increasing
- * (judge noise / sibling atom flips); callers may re-sample once before rejecting.
+ * A repair may clear its target and must not increase total task misses. Atom
+ * fingerprints may move within a task because a rewrite can resolve one clause
+ * while exposing another, but a previously satisfied task may never become a
+ * new blocker.
  */
 export function shouldAdoptOwnerRepairCandidate(input: {
   previous: RealizationTaskGateFinding[];
@@ -110,6 +111,8 @@ export function shouldAdoptOwnerRepairCandidate(input: {
 }): boolean {
   const candidateFingerprints = new Set(input.candidate.map((finding) => finding.fingerprint));
   if (candidateFingerprints.has(input.targetFingerprint)) return false;
+  const previousTaskIds = new Set(input.previous.map((finding) => finding.taskId));
+  if (input.candidate.some((finding) => !previousTaskIds.has(finding.taskId))) return false;
   return totalTaskMissCount(input.candidate) <= totalTaskMissCount(input.previous);
 }
 

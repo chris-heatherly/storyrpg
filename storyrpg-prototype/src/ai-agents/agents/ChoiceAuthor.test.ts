@@ -119,6 +119,58 @@ describe('ChoiceAuthor.validateChoices', () => {
     expect(ordinary.required).not.toContain('sharedResolutionText');
   });
 
+  it('repairs only the shared route-invariant payoff and preserves authored choices', async () => {
+    const prompts: string[] = [];
+    BaseAgent.setLlmTransportOverride(async (request) => {
+      prompts.push(request.messages.map((message) => String(message.content)).join('\n'));
+      return JSON.stringify({
+        sharedResolutionText: 'Mika lets the test end in laughter; all three choose friendship and name it the Lantern Circle.',
+      });
+    });
+    const author = new ChoiceAuthor(config);
+    const choiceSet = makeChoiceSet({
+      sharedResolutionText: 'They name it the Lantern Circle.',
+      choices: [1, 2, 3].map((index) => ({
+        id: `c${index}`,
+        text: `Answer the test in way ${index}`,
+        choiceType: 'expression',
+        consequences: [],
+        outcomeTexts: {
+          success: `Success ${index}. They name it the Lantern Circle.`,
+          partial: `Partial ${index}. They name it the Lantern Circle.`,
+          failure: `Failure ${index}. They name it the Lantern Circle.`,
+        },
+      })),
+    });
+    const input = makeInput({
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'The Test',
+        realizationTasks: [{
+          id: 'task:event:alliance:choice-resolution',
+          ownerStage: 'choice_author',
+          target: { scope: 'all_choice_outcomes', surfaces: ['choice_outcome'] },
+          evidenceAtoms: [
+            { id: 'test', description: 'Alex undergoes the test.', semanticRole: 'action' },
+            { id: 'bond', description: 'The three become friends.', semanticRole: 'relationship_change' },
+            { id: 'name', description: 'They form the Lantern Circle.', semanticRole: 'action' },
+          ],
+        }],
+      },
+    });
+
+    const result = await author.repairSharedResolution(input, choiceSet, 'The passage names the group but omits the test and reciprocal friendship.');
+
+    expect(result.success).toBe(true);
+    expect(prompts[0]).toContain('Rewrite ONLY the shared post-choice resolution passage');
+    expect(prompts[0]).toContain('observable personal bid and reciprocal acceptance');
+    expect(result.data?.choices.map((choice) => choice.text)).toEqual(choiceSet.choices.map((choice) => choice.text));
+    expect(result.data?.choices[0].outcomeTexts?.success).toContain('Success 1.');
+    expect(result.data?.choices[0].outcomeTexts?.success).toContain('all three choose friendship');
+    expect(result.data?.choices[0].outcomeTexts?.success).not.toContain('They name it the Lantern Circle.');
+    BaseAgent.setLlmTransportOverride(null);
+  });
+
   it('uses a bounded but complete structured-output budget for compact Gemini retries', () => {
     const author: any = new ChoiceAuthor(config);
     const input = makeInput({

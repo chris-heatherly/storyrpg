@@ -56,7 +56,10 @@ import { buildStructuralContextSection } from '../prompts/storytellingPrinciples
 import { CHOICE_AUTHOR_RESIDUE_EXAMPLE } from '../prompts/examples/storyCraftExamples';
 import { DEFAULT_LIMITS } from '../utils/textEnforcer';
 import { buildChoiceSetJsonSchema } from '../schemas/choiceSetSchema';
-import { materializeSharedChoiceResolution } from '../pipeline/choiceSharedResolution';
+import {
+  materializeSharedChoiceResolution,
+  withReplacedSharedChoiceResolution,
+} from '../pipeline/choiceSharedResolution';
 import { normalizeChoiceStatCheck } from '../utils/statCheckNormalization';
 import {
   normalizeCanonicalConsequences,
@@ -895,6 +898,95 @@ Return JSON only.`;
     return (input.sceneBlueprint.realizationTasks ?? []).filter((task) =>
       task.ownerStage === 'choice_author' && task.target.scope === 'all_choice_outcomes',
     );
+  }
+
+  /**
+   * Repairs only the authored route-invariant payoff. This keeps valid option
+   * geometry, consequences, and tier-specific reactions intact instead of
+   * regenerating the entire ChoiceSet for one semantic miss.
+   */
+  public async repairSharedResolution(
+    input: ChoiceAuthorInput,
+    choiceSet: ChoiceSet,
+    feedback: string,
+  ): Promise<AgentResponse<ChoiceSet>> {
+    const tasks = this.choiceResolutionTasks(input);
+    if (tasks.length === 0) {
+      return { success: false, error: 'No canonical shared choice-resolution task is assigned to this scene.' };
+    }
+    const requirements = tasks.flatMap((task) => task.evidenceAtoms.map((atom) => {
+      const craft = atom.semanticRole === 'relationship_change'
+        ? 'Show an observable personal bid and reciprocal acceptance; a label or group name alone is insufficient.'
+        : atom.semanticRole === 'state_change'
+          ? 'Show the prior state, causal turn, and changed state.'
+          : atom.semanticRole === 'action'
+            ? 'Stage the named actor completing the action on-page.'
+            : 'Make the required meaning observable on-page.';
+      return `- ${atom.description}: ${craft}`;
+    }));
+    const blockedLabels = Array.from(new Set(
+      (input.sceneBlueprint.relationshipPacing ?? []).flatMap((contract) => contract.blockedLabels ?? []),
+    ));
+    const prompt = `Rewrite ONLY the shared post-choice resolution passage for this interactive-fiction choice set.
+
+The passage is shown after every option and every success/partial/failure result. It must preserve route invariance while completing every required meaning once. Write one or two concise, fiction-first sentences. Do not mention tasks, contracts, validation, choices, outcomes, stats, or mechanics.
+
+CURRENT PASSAGE:
+${choiceSet.sharedResolutionText ?? '(missing)'}
+
+VALIDATION FEEDBACK:
+${feedback}
+
+REQUIRED MEANINGS:
+${requirements.join('\n')}
+
+SCENE CONTEXT:
+- Protagonist: ${input.protagonistInfo.name}
+- Scene: ${input.sceneBlueprint.name}
+- Choice beat: ${input.beatText}
+${blockedLabels.length > 0 ? `- Relationship labels not yet earned: ${blockedLabels.join(', ')}` : ''}
+
+Return JSON only: {"sharedResolutionText":"..."}`;
+    try {
+      const rawResponse = await this.callLLM(
+        [{ role: 'user', content: prompt }],
+        2,
+        {
+          jsonSchema: {
+            name: 'choice_shared_resolution_repair',
+            description: 'A focused authored repair for one route-invariant choice payoff.',
+            maxOutputTokens: 512,
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['sharedResolutionText'],
+              properties: {
+                sharedResolutionText: { type: 'string', minLength: 20, maxLength: 600 },
+              },
+            },
+          },
+        },
+      );
+      const parsed = this.parseJSON<{ sharedResolutionText?: string }>(rawResponse);
+      const resolution = parsed.sharedResolutionText?.trim();
+      if (!resolution) {
+        return { success: false, error: 'Focused shared-resolution repair returned no prose.', rawResponse };
+      }
+      if (isUnsafeCallbackProse(resolution)) {
+        return { success: false, error: 'Focused shared-resolution repair returned authoring or system prose.', rawResponse };
+      }
+      const candidate = withReplacedSharedChoiceResolution(choiceSet, resolution);
+      const labelIssues = this.collectBlockedRelationshipLabelIssues(candidate, input);
+      if (labelIssues.length > 0) {
+        return { success: false, error: labelIssues.join('; '), rawResponse };
+      }
+      return { success: true, data: candidate, rawResponse };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   private buildChoiceResolutionTaskSection(input: ChoiceAuthorInput): string {

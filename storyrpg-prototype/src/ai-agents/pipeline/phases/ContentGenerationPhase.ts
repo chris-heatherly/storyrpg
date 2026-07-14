@@ -2543,7 +2543,6 @@ export class ContentGenerationPhase {
             lastPatchFailure = undefined;
             if (ownerTaskRetry.data.targetAtomIds.some((atomId) => !targetAtomIds.includes(atomId))) continue;
             const authoredAttempt = authoredRepairAttempts + 1;
-            authoredRepairAttempts += 1;
             let appliedPatch: ReturnType<typeof applySceneSemanticPatch>;
             try {
               appliedPatch = applySceneSemanticPatch(sceneContent, ownerTaskRetry.data);
@@ -2566,7 +2565,8 @@ export class ContentGenerationPhase {
               });
               continue;
             }
-            const attempt = authoredAttempt;
+            authoredRepairAttempts += 1;
+            const attempt = authoredRepairAttempts;
             const candidateSnapshot = appliedPatch.scene;
             const candidateHash = stableHash(candidateSnapshot);
             if (outputDirectory) {

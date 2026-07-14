@@ -574,7 +574,6 @@ async function applyActiveCogneeProjectDataset(memory: ReturnType<typeof resolve
 async function main() {
   const payloadPath = process.argv[2];
   if (!payloadPath) throw new Error('Missing payload path');
-  console.info(`[Worker] code revision ${resolveWorkerGitSha() ?? 'unknown'}`);
   const payloadRaw = await fs.readFile(payloadPath, 'utf8');
   const payload = JSON.parse(payloadRaw) as unknown;
   assertValidWorkerPayload(payload);
@@ -610,7 +609,7 @@ async function main() {
     process.title = payload.processTitle;
   }
 
-  emit('worker_start', { mode: payload.mode, friendlyName: payload.friendlyName, processTitle: payload.processTitle });
+  emit('worker_start', { mode: payload.mode, friendlyName: payload.friendlyName, processTitle: payload.processTitle, gitSha: resolveWorkerGitSha() ?? 'unknown' });
   emit('heartbeat', {
     boot: true,
     intervalMs: WORKER_HEARTBEAT_INTERVAL_MS,

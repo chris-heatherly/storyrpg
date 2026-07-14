@@ -15,6 +15,13 @@ let resolved = false;
 export function resolveWorkerGitSha(): string | undefined {
   if (resolved) return cachedSha;
   resolved = true;
+  // The proxy resolves the SHA at spawn time and passes it down — the worker's
+  // own git lookup is only a fallback for CLI runs outside the proxy.
+  const fromEnv = typeof process !== 'undefined' ? process.env?.STORYRPG_WORKER_GIT_SHA : undefined;
+  if (fromEnv && fromEnv.trim()) {
+    cachedSha = fromEnv.trim();
+    return cachedSha;
+  }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { execSync } = require('child_process') as typeof import('child_process');

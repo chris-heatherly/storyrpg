@@ -6,6 +6,7 @@ import {
   resetStoryLexiconFromEnv,
   resolveStoryLexiconFromEnv,
   setStoryLexicon,
+  withDeclaredContainerLocations,
 } from './storyLexicon';
 
 describe('storyLexicon (R2.4)', () => {
@@ -29,5 +30,15 @@ describe('storyLexicon (R2.4)', () => {
     expect(getStoryLexicon()).toBe(GENRE_NEUTRAL_LEXICON);
     resetStoryLexiconFromEnv({ STORYRPG_STORY_LEXICON: 'bite_me' });
     expect(getStoryLexicon()).toBe(BITE_ME_LEXICON);
+  });
+
+  it('derives a run-scoped container from the declared primary setting', () => {
+    const lexicon = withDeclaredContainerLocations(GENRE_NEUTRAL_LEXICON, [
+      'Lisbon, Portugal (including Alfama and the riverfront)',
+    ]);
+    expect(lexicon.containerCities).toContain('lisbon');
+    expect(lexicon.containerCities).not.toContain('portugal');
+    expect(lexicon.containerCities).not.toContain('alfama');
+    expect(GENRE_NEUTRAL_LEXICON.containerCities).not.toContain('lisbon');
   });
 });

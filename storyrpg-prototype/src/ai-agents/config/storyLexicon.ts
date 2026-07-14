@@ -89,6 +89,39 @@ export function setStoryLexicon(lexicon: StoryLexicon): void {
   activeLexicon = lexicon;
 }
 
+function normalizeDeclaredContainer(value: string): string {
+  return value
+    .split(/[,(;\n]/, 1)[0]
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/^(?:set in|the city of)\s+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Extend the run lexicon with the source analyzer's declared primary setting.
+ * The first location clause is the ambient container; parenthetical and comma
+ * qualifiers commonly enumerate countries, districts, or specific venues and
+ * must not be promoted to sibling containers.
+ */
+export function withDeclaredContainerLocations(
+  lexicon: StoryLexicon,
+  locations: ReadonlyArray<string | undefined>,
+): StoryLexicon {
+  const declared = locations
+    .map((location) => normalizeDeclaredContainer(location ?? ''))
+    .filter(Boolean);
+  if (declared.length === 0) return lexicon;
+  return {
+    ...lexicon,
+    containerCities: [...new Set([...lexicon.containerCities, ...declared])],
+  };
+}
+
 /** Re-read env (tests / worker boot). */
 export function resetStoryLexiconFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,

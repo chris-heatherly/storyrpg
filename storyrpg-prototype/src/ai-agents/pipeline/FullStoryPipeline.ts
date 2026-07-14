@@ -126,7 +126,11 @@ import {
   resolveFoundationCacheDir,
   writeFoundationArtifact,
 } from './foundationArtifactCache';
-import { resetStoryLexiconFromEnv } from '../config/storyLexicon';
+import {
+  resetStoryLexiconFromEnv,
+  setStoryLexicon,
+  withDeclaredContainerLocations,
+} from '../config/storyLexicon';
 import { enforceEpisodePlanCraftGates } from './episodePlanCraftGates';
 import { auditStoryVisualContractPersistence as auditStoryVisualContractPersistenceImpl } from './visualContractPersistenceAudit';
 import { commitEpisodeGenerationAfterLock, emitEpisodeGenerationStart, episodeFailureMetadataFromError, handleEpisodeGenerationFailure, type EpisodeGenerationResult } from './episodeGenerationEvents';
@@ -4933,11 +4937,14 @@ export class FullStoryPipeline {
   ): Promise<FullPipelineResult> {
     // Input validation
     this.validateBrief(baseBrief);
-    resetStoryLexiconFromEnv();
     this.armRealizationPovContext(baseBrief);
     BaseAgent.resetBillingQuotaState(); // WS1b: stale quota latch must not poison a resumed run
     const priorFingerprint = guardFailureResume(resumeCheckpoint);
     analysis = this.refreshAnalysisFromTreatmentDocument(analysis, baseBrief.rawDocument);
+    setStoryLexicon(withDeclaredContainerLocations(
+      resetStoryLexiconFromEnv(),
+      [analysis.setting.location],
+    ));
     baseBrief = this.refreshBriefSeasonPlanFromAnalysis(baseBrief, analysis);
     if (baseBrief.seasonPlan && isSceneFirstPlanningEnabled()) {
       baseBrief = {

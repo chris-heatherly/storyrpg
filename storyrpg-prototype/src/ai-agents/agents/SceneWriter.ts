@@ -1033,7 +1033,7 @@ ${CHOICE_DENSITY_REQUIREMENTS}
 
   async executeSemanticPatch(input: SceneSemanticPatchInput): Promise<AgentResponse<SceneSemanticPatch>> {
     const capacityTier = input.capacityTier ?? 'standard';
-    const maxOperations = Math.max(1, Math.min(4, input.maxOperations ?? 2));
+    const maxOperations = Math.max(1, Math.min(5, input.maxOperations ?? 2));
     const patchableBeats = semanticPatchWindow(input.scene, input.targetAtoms);
     const patchableBeatIds = new Set(patchableBeats.map((beat) => beat.id));
     const schema = {

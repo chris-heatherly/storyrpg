@@ -292,7 +292,7 @@ import {
 import { validateSemanticRealizationTasks } from '../semanticValidationCoordinator';
 import { inferNarrativeVerificationAuthority } from '../realizationVerificationAuthority';
 import type { NarrativeAtomVerdict } from '../realizationTaskSatisfaction';
-import { applySceneSemanticPatch } from '../sceneSemanticPatch';
+import { applySceneSemanticPatch, SemanticPatchOperationLimitError } from '../sceneSemanticPatch';
 import type {
   NarrativeEvidenceAtom,
   NarrativeRealizationOwnerStage,
@@ -2486,7 +2486,7 @@ export class ContentGenerationPhase {
             initialOwnerValidation.findings.filter((finding) => finding.blocking),
             canonicalSceneWriterTasks,
           );
-          let ownerAtomVerdicts = initialOwnerValidation.semanticReceipt.atomVerdicts;
+          let ownerAtomVerdicts = initialOwnerValidation.semanticReceipt.atomVerdicts ?? [];
           let authoredRepairAttempts = 0;
           let patchCallAttempts = 0;
           let capacityTier: 'standard' | 'expanded' = 'standard';
@@ -2495,17 +2495,22 @@ export class ContentGenerationPhase {
           let lastPatchFailure: AgentResponse<unknown>['failure'] | undefined;
           while (authoredRepairAttempts < 2 && patchCallAttempts < 4 && ownerTaskFindings.length > 0) {
             const repairTarget = ownerTaskFindings[0];
-            const targetTask = canonicalSceneWriterTasks.find((task) => task.id === repairTarget.taskId);
             const feedback = ownerTaskFindings
               .map((finding) => `- ${ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks)}`)
               .concat(priorPatchFeedback.map((line) => `- PRIOR PATCH FEEDBACK: ${line}`))
               .join('\n');
-            const targetAtomIds = [...new Set([
-              ...(repairTarget.missingEvidenceAtoms ?? []),
-              ...(repairTarget.matchedForbiddenAtoms ?? []),
-            ])];
+            // Union targeting: one patch call sees every remaining blocking miss
+            // (target task first) so sibling fixes are deliberate rather than
+            // accidental-then-discarded.
+            const targetAtomIds = [...new Set(ownerTaskFindings.flatMap((finding) => [
+              ...(finding.missingEvidenceAtoms ?? []),
+              ...(finding.matchedForbiddenAtoms ?? []),
+            ]))];
             const targetAtomIdSet = new Set(targetAtomIds);
-            const targetAtoms = targetTask?.evidenceAtoms.filter((atom) => targetAtomIdSet.has(atom.id)) ?? [];
+            const targetTaskIds = new Set(ownerTaskFindings.map((finding) => finding.taskId));
+            const targetAtoms = canonicalSceneWriterTasks
+              .filter((task) => targetTaskIds.has(task.id))
+              .flatMap((task) => task.evidenceAtoms.filter((atom) => targetAtomIdSet.has(atom.id)));
             const preserveAtoms = passedScenePreserveAtoms(
               canonicalSceneWriterTasks,
               ownerAtomVerdicts,
@@ -2523,6 +2528,17 @@ export class ContentGenerationPhase {
               capacityTier,
             });
             if (executedPatchRequestHashes.has(requestHash)) {
+              // Never re-issue a byte-identical request: mutate it (escalate
+              // capacity) once instead of ending the loop with budget unspent.
+              if (capacityTier === 'standard') {
+                capacityTier = 'expanded';
+                context.emit({
+                  type: 'debug',
+                  phase: 'scenes',
+                  message: `Scene ${sceneBlueprint.id} duplicate semantic patch request — escalating capacity tier instead of suppressing.`,
+                });
+                continue;
+              }
               lastPatchFailure = {
                 code: 'agent_call_failed',
                 retryClass: 'none',
@@ -2546,7 +2562,11 @@ export class ContentGenerationPhase {
               message: `Scene ${sceneBlueprint.id} is repairing canonical realization fingerprint ${repairTarget.fingerprint} (call ${patchCallAttempts}, authored ${authoredRepairAttempts + 1}/2, ${capacityTier})`,
               data: { repairTarget, findings: ownerTaskFindings, requestHash, capacityTier },
             });
-            const semanticPatchOperationLimit = capacityTier === 'expanded' ? 4 : 3;
+            // Capacity scales with the amount of missing work, not a constant:
+            // enough room for one edit per missing atom plus one connective edit.
+            const semanticPatchOperationLimit = capacityTier === 'expanded'
+              ? Math.min(5, Math.max(4, targetAtomIds.length + 1))
+              : Math.min(4, Math.max(3, targetAtomIds.length + 1));
             const ownerTaskRetry = await withTimeout(
               this.deps.sceneWriter.executeSemanticPatch({
                 baseSceneHash: stableHash(sceneContent),
@@ -2618,7 +2638,9 @@ export class ContentGenerationPhase {
                 error: message,
               });
               priorPatchFeedback = [message];
-              if (/operations/i.test(message) && capacityTier === 'standard') capacityTier = 'expanded';
+              const operationLimitHit = error instanceof SemanticPatchOperationLimitError
+                || /operations/i.test(message);
+              if (operationLimitHit && capacityTier === 'standard') capacityTier = 'expanded';
               context.emit({
                 type: 'warning', phase: 'scenes',
                 message: `Scene ${sceneBlueprint.id} rejected an invalid semantic patch: ${message}`,
@@ -2687,7 +2709,7 @@ export class ContentGenerationPhase {
             });
             let finalAdopt = adoptCandidate;
             let finalFindings = retryFindings;
-            let finalAtomVerdicts = retryValidation.semanticReceipt.atomVerdicts;
+            let finalAtomVerdicts = retryValidation.semanticReceipt.atomVerdicts ?? [];
             // R1.3: if rejected solely due to a single newly appeared claim, re-sample once.
             if (!adoptCandidate) {
               const previousFingerprintsProbe = new Set(ownerTaskFindings.map((finding) => finding.fingerprint));
@@ -2703,7 +2725,7 @@ export class ContentGenerationPhase {
                 });
                 const resampled = resampledValidation.findings.filter((finding) => finding.blocking);
                 finalFindings = resampled;
-                finalAtomVerdicts = resampledValidation.semanticReceipt.atomVerdicts;
+                finalAtomVerdicts = resampledValidation.semanticReceipt.atomVerdicts ?? [];
                 finalAdopt = shouldAdoptOwnerRepairCandidate({
                   previous: ownerTaskFindings,
                   candidate: resampled,
@@ -2727,7 +2749,8 @@ export class ContentGenerationPhase {
               introducedFingerprints,
               adopted: finalAdopt,
             });
-            capacityTier = 'standard';
+            // Capacity tier is monotonic within a scene's repair loop: once the
+            // work has proven too large for standard, do not shrink the budget.
             if (outputDirectory) {
               await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-owner-repair-attempt-${attempt}.json`, {
                 schemaVersion: 2,
@@ -2772,6 +2795,21 @@ export class ContentGenerationPhase {
             const escalateFeedback = ownerTaskFindings
               .map((finding) => `- ${ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks)}`)
               .join('\n');
+            // The most destructive tier gets the same preservation contract as
+            // patches: a regen must not lose meanings the draft already earned.
+            const escalatePreserveAtoms = passedScenePreserveAtoms(
+              canonicalSceneWriterTasks,
+              ownerAtomVerdicts,
+              new Set(ownerTaskFindings.flatMap((finding) => [
+                ...(finding.missingEvidenceAtoms ?? []),
+                ...(finding.matchedForbiddenAtoms ?? []),
+              ])),
+            );
+            const escalatePreserveGuidance = escalatePreserveAtoms.length > 0
+              ? `\n\nALREADY SATISFIED — the rewrite must keep equivalent on-page evidence for each of these meanings:\n${escalatePreserveAtoms
+                .map((atom) => `- ${atom.description}`)
+                .join('\n')}`
+              : '';
             context.emit({
               type: 'regeneration_triggered',
               phase: 'scenes',
@@ -2782,7 +2820,7 @@ export class ContentGenerationPhase {
                 ...sceneWriterInputForAuthoring,
                 storyContext: {
                   ...sceneWriterInputForAuthoring.storyContext,
-                  userPrompt: `${sceneWriterInputForAuthoring.storyContext.userPrompt || ''}\n\nOWNER REALIZATION ESCALATION:\nPrevious semantic patches cleared some obligations but these remain missing. Rewrite the scene so EACH is dramatized on-page (fiction-first; do not paste validator wording):\n${escalateFeedback}`,
+                  userPrompt: `${sceneWriterInputForAuthoring.storyContext.userPrompt || ''}\n\nOWNER REALIZATION ESCALATION:\nPrevious semantic patches cleared some obligations but these remain missing. Rewrite the scene so EACH is dramatized on-page (fiction-first; do not paste validator wording):\n${escalateFeedback}${escalatePreserveGuidance}`,
                 },
               }),
               PIPELINE_TIMEOUTS.llmAgent,

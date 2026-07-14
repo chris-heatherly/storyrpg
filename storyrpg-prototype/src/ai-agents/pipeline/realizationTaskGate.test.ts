@@ -40,6 +40,38 @@ describe('validateOwnerRealizationTasks', () => {
     })).toBe(false);
   });
 
+  it('adopts strict net progress even when the target fingerprint persists (bite-me 2026-07-14 s1-3)', () => {
+    // Live regression: patch call 2 in bite-me_2026-07-14T17-29-14 resolved the
+    // Stela named-introduction presence finding, introduced nothing, and was
+    // rejected because the targeted event fingerprint remained — the improved
+    // candidate was discarded and the loop re-fought the same fix until abort.
+    const eventFinding = {
+      fingerprint: 'SEMANTIC_REALIZATION_MISSING::task:event:ep1-u3:owner-event::s1-3::::event:ep1-u3:semantic:2,event:ep1-u3:semantic:3',
+      taskId: 'task:event:ep1-u3:owner-event',
+      sceneId: 's1-3',
+      code: 'SEMANTIC_REALIZATION_MISSING' as const,
+      missingEvidenceAtoms: ['event:ep1-u3:semantic:2', 'event:ep1-u3:semantic:3'],
+    } as any;
+    const presenceFinding = {
+      fingerprint: 'OWNER_REALIZATION_MISSING::task:presence:ep1:s1-3:char-stela-pavel:named-introduction::s1-3::::presence:ep1:s1-3:char-stela-pavel:name',
+      taskId: 'task:presence:ep1:s1-3:char-stela-pavel:named-introduction',
+      sceneId: 's1-3',
+      code: 'OWNER_REALIZATION_MISSING' as const,
+      missingEvidenceAtoms: ['presence:ep1:s1-3:char-stela-pavel:name'],
+    } as any;
+    expect(shouldAdoptOwnerRepairCandidate({
+      previous: [eventFinding, presenceFinding],
+      candidate: [eventFinding],
+      targetFingerprint: eventFinding.fingerprint,
+    })).toBe(true);
+    // No progress at all (target persists, equal misses) still rejects.
+    expect(shouldAdoptOwnerRepairCandidate({
+      previous: [eventFinding],
+      candidate: [eventFinding],
+      targetFingerprint: eventFinding.fingerprint,
+    })).toBe(false);
+  });
+
   it('adopts when total task misses do not increase even if evidence atoms change', () => {
     const finding = (fingerprint: string, atomIds: string[]) => ({
       fingerprint,

@@ -11,6 +11,16 @@ export interface AppliedSceneSemanticPatch {
   insertedBeatIds: string[];
 }
 
+/** Structured signal that the patch needed more edits than the current capacity tier allows. */
+export class SemanticPatchOperationLimitError extends Error {
+  readonly code = 'patch_operation_limit';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'SemanticPatchOperationLimitError';
+  }
+}
+
 function cloneScene(scene: SceneContent): SceneContent {
   return JSON.parse(JSON.stringify(scene)) as SceneContent;
 }
@@ -31,7 +41,9 @@ export function applySceneSemanticPatch(
   const baseHash = stableHash(scene);
   if (patch.baseSceneHash !== baseHash) throw new Error('Semantic patch base scene hash is stale.');
   if (!Array.isArray(patch.operations) || patch.operations.length < 1 || patch.operations.length > maxOperations) {
-    throw new Error(`Semantic patch must contain between one and ${maxOperations} operations.`);
+    throw new SemanticPatchOperationLimitError(
+      `Semantic patch must contain between one and ${maxOperations} operations.`,
+    );
   }
 
   const candidate = cloneScene(scene);

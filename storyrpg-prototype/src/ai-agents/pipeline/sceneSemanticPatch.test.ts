@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SceneContent, SceneSemanticPatch } from '../agents/SceneWriter';
 import { stableHash } from './artifacts/store';
-import { applySceneSemanticPatch } from './sceneSemanticPatch';
+import { applySceneSemanticPatch, SemanticPatchOperationLimitError } from './sceneSemanticPatch';
 
 function scene(): SceneContent {
   return {
@@ -74,5 +74,24 @@ describe('applySceneSemanticPatch', () => {
     const result = applySceneSemanticPatch(baseline, patch, 3);
     expect(result.changedBeatIds).toEqual(expect.arrayContaining(['b1', 'b2']));
     expect(result.insertedBeatIds).toHaveLength(1);
+  });
+
+  it('signals operation-limit violations with a structured error for capacity escalation', () => {
+    const baseline = scene();
+    const patch = {
+      baseSceneHash: stableHash(baseline), targetTaskId: 'task-1', targetAtomIds: ['atom-1'], claimedEvidence: [],
+      operations: [
+        { op: 'replace_beat_text' as const, beatId: 'b1', text: 'Stela gives Kylie her full name and offers a chair by the counter.' },
+        { op: 'replace_beat_text' as const, beatId: 'b2', text: 'Mika tests the newcomer with a question, then accepts her answer.' },
+        { op: 'insert_beat_after' as const, beatId: 'b2', text: 'Stela answers by telling Kylie where the Lantern Circle meets.' },
+      ],
+    };
+    try {
+      applySceneSemanticPatch(baseline, patch);
+      expect.unreachable('patch above the operation limit must throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SemanticPatchOperationLimitError);
+      expect((error as SemanticPatchOperationLimitError).code).toBe('patch_operation_limit');
+    }
   });
 });

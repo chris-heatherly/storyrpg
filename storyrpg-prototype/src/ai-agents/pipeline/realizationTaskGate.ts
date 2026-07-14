@@ -99,21 +99,26 @@ export function totalTaskMissCount(findings: RealizationTaskGateFinding[]): numb
 }
 
 /**
- * A repair may clear its target and must not increase total task misses. Atom
- * fingerprints may move within a task because a rewrite can resolve one clause
- * while exposing another, but a previously satisfied task may never become a
- * new blocker.
+ * Best-candidate hill-climb acceptance. A previously satisfied task may never
+ * become a new blocker; within that guard a candidate is adopted when it
+ * clears its target without raising total misses, OR when it makes strict net
+ * progress (fewer total misses) even if the target fingerprint persists —
+ * partial wins advance the baseline instead of being discarded and re-fought.
+ * Atom fingerprints may still move within a task because a rewrite can resolve
+ * one clause while exposing another.
  */
 export function shouldAdoptOwnerRepairCandidate(input: {
   previous: RealizationTaskGateFinding[];
   candidate: RealizationTaskGateFinding[];
   targetFingerprint: string;
 }): boolean {
-  const candidateFingerprints = new Set(input.candidate.map((finding) => finding.fingerprint));
-  if (candidateFingerprints.has(input.targetFingerprint)) return false;
   const previousTaskIds = new Set(input.previous.map((finding) => finding.taskId));
   if (input.candidate.some((finding) => !previousTaskIds.has(finding.taskId))) return false;
-  return totalTaskMissCount(input.candidate) <= totalTaskMissCount(input.previous);
+  const previousMisses = totalTaskMissCount(input.previous);
+  const candidateMisses = totalTaskMissCount(input.candidate);
+  const candidateFingerprints = new Set(input.candidate.map((finding) => finding.fingerprint));
+  if (!candidateFingerprints.has(input.targetFingerprint)) return candidateMisses <= previousMisses;
+  return candidateMisses < previousMisses;
 }
 
 function outcomeTierForTask(task: NarrativeRealizationTask): string | undefined {

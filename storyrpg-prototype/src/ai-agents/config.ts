@@ -290,9 +290,9 @@ export interface GenerationSettingsConfig {
    * choice regenerations and validator-driven repair passes) a single run may spend.
    * Prevents a pathological run from looping on repairs and burning unbounded
    * tokens/time. When the budget is exhausted, remediation seams DEGRADE GRACEFULLY
-   * (accept the current output) rather than block or throw. Defaults to a HIGH value
-   * (1000) so existing always-on scene/encounter/choice regeneration is never
-   * constrained — lower it (REMEDIATION_BUDGET_TOTAL) only to cap cost explicitly.
+   * (accept the current output) rather than block or throw. Default 48 (R0.9) so
+   * runaway repair loops cannot burn unbounded spend — raise via
+   * REMEDIATION_BUDGET_TOTAL if a run needs more headroom.
    */
   remediationBudgetTotal?: number;
   // Sequential mode preserves previous-episode summary dependency chain.
@@ -1365,17 +1365,21 @@ export function loadConfig(): PipelineConfig {
       allowLinearBottleneckEpisodes:
         env.EXPO_PUBLIC_ALLOW_LINEAR_BOTTLENECK_EPISODES === 'true' ||
         env.ALLOW_LINEAR_BOTTLENECK_EPISODES === 'true',
-      // C4: per-story token ceiling (0/unset = no ceiling).
-      tokenBudgetPerStory: Number.parseInt(
-        env.EXPO_PUBLIC_TOKEN_BUDGET_PER_STORY || env.TOKEN_BUDGET_PER_STORY || '0',
-        10,
-      ) || undefined,
-      // S3: total per-run remediation cap. HIGH default (1000) so existing always-on
-      // regeneration is never constrained; lower REMEDIATION_BUDGET_TOTAL to cap cost.
+      // C4 / R0.9: per-story token ceiling. Default 1.5M catches runaway loops
+      // (July success corpus ~330K avg) without clipping healthy runs. Set
+      // TOKEN_BUDGET_PER_STORY=0 to disable.
+      tokenBudgetPerStory: (() => {
+        const raw = env.EXPO_PUBLIC_TOKEN_BUDGET_PER_STORY || env.TOKEN_BUDGET_PER_STORY;
+        if (raw === '0') return undefined;
+        const parsed = Number.parseInt(raw || '1500000', 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : 1_500_000;
+      })(),
+      // S3 / R0.9: total per-run remediation cap. Default 48 is a realistic ceiling
+      // for owner-stage + final-contract repairs; raise REMEDIATION_BUDGET_TOTAL to relax.
       remediationBudgetTotal: Number.parseInt(
-        env.EXPO_PUBLIC_REMEDIATION_BUDGET_TOTAL || env.REMEDIATION_BUDGET_TOTAL || '1000',
+        env.EXPO_PUBLIC_REMEDIATION_BUDGET_TOTAL || env.REMEDIATION_BUDGET_TOTAL || '48',
         10,
-      ) || 1000,
+      ) || 48,
       // Season Canon: on by default (every sequential run seals canon + ledger +
       // snapshot and runs the advisory promise/canon gates). Set SEASON_CANON_ENABLED=0
       // to opt out. The gates stay advisory until seasonCanonBlocking is set.

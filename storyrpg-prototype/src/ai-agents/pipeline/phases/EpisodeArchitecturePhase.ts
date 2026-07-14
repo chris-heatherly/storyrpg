@@ -208,6 +208,11 @@ export class EpisodeArchitecturePhase {
     let architectureConflicts: ArchitectureConflict[] = [];
     const maxArchitectureAttempts = 3;
     const baseArchitectureUserPrompt = architectureInput.userPrompt || '';
+    // Treatment/elaborate path builds the blueprint deterministically from planned
+    // scenes — appending repair text to userPrompt cannot change the next attempt.
+    const elaborateMode = (brief.seasonPlan?.scenePlan?.scenes?.length ?? 0) > 0
+      && Boolean(architectureInput.seasonPlanDirectives?.plannedScenes?.length);
+    let previousConflictSignature: string | undefined;
     for (let attempt = 1; attempt <= maxArchitectureAttempts; attempt += 1) {
       result = await withTimeout(
         this.deps.storyArchitect.execute(architectureInput),
@@ -290,6 +295,31 @@ export class EpisodeArchitecturePhase {
         }
         if (architectureConflicts.length === 0) break;
         if (attempt >= maxArchitectureAttempts) break;
+        const conflictSignature = architectureConflicts
+          .map((conflict) => `${conflict.code}|${conflict.sceneId}|${conflict.message}`)
+          .sort()
+          .join('\n');
+        if (elaborateMode && previousConflictSignature === conflictSignature) {
+          context.emit({
+            type: 'debug',
+            phase: 'architecture',
+            message: `Skipping identical elaborate-mode architecture retry — planned blueprint is deterministic and userPrompt feedback is unread.`,
+            data: { conflicts: architectureConflicts, attempt },
+          });
+          break;
+        }
+        previousConflictSignature = conflictSignature;
+        if (elaborateMode) {
+          // One deterministic re-execute is enough to absorb non-LLM post-passes;
+          // further LLM-feedback retries cannot change the blueprint.
+          context.emit({
+            type: 'regeneration_triggered',
+            phase: 'architecture',
+            message: `Re-running deterministic elaborate architecture once for ${architectureConflicts.length} contract conflict(s) (${attempt}/${maxArchitectureAttempts}).`,
+            data: { conflicts: architectureConflicts },
+          });
+          continue;
+        }
         const conflictSummary = architectureConflicts
           .slice(0, 8)
           .map((conflict) => `${conflict.code} ${conflict.sceneId}: ${conflict.message}`)

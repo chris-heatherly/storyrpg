@@ -922,7 +922,12 @@ export class FinalContract {
     // gate (merged in place). Factored into a closure so the Wave-4 repair loop can
     // re-validate a repaired story with identical inputs.
     const plannedMomentSourcesForStrip = plannedMomentSourcesFromScenePlan(input.brief.seasonPlan?.scenePlan);
+    // Frozen QA/continuity reports cannot observe prose repairs. Apply them on the
+    // first validation pass only; subsequent repair revalidations must not
+    // re-block on the same stale object (R0.5 / July QA-freeze kills).
+    let validationPass = 0;
     const runValidation = async (story: Story): Promise<FinalStoryContractReport> => {
+      validationPass += 1;
       const identityRepairs = scrubPreRevealSceneIdentityReferences(
         story,
         input.brief.seasonPlan?.scenePlan?.narrativeContractGraph,
@@ -1023,8 +1028,8 @@ export class FinalContract {
         incrementalValidationResults: this.deps.allSceneValidationResults.length > 0
           ? this.deps.allSceneValidationResults
           : this.deps.sceneValidationResults,
-        qaReport: input.qaReport,
-        bestPracticesReport: input.bestPracticesReport,
+        qaReport: validationPass === 1 ? input.qaReport : undefined,
+        bestPracticesReport: validationPass === 1 ? input.bestPracticesReport : undefined,
         validSkills: Object.keys(story.initialState?.skills || {}),
         mode: this.deps.config.validation.mode,
         fidelityFindings: freshFidelity.fidelityFindings,

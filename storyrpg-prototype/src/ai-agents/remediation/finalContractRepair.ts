@@ -511,8 +511,9 @@ export async function runFinalContractRepair(opts: {
     const beforeIssueSet = new Set(allBeforeIssueKeys);
     const introducedCandidateKeys = candidateIssueKeys.filter((key) => !beforeIssueSet.has(key));
     if (opts.rejectIntroducedBlockingIssues && introducedCandidateKeys.length > 0) {
-      // A repair is transactional: do not commit a locally improved scene that
-      // creates a new blocking obligation elsewhere in the story.
+      // A repair is transactional for the offending round: revert, then continue
+      // attempting other repairable issues instead of aborting the entire loop
+      // (R0.6 — one bad rewrite must not starve sibling repairs).
       story = roundBefore;
       opts.onRoundSnapshot?.({
         schemaVersion: FINAL_CONTRACT_REPAIR_SNAPSHOT_VERSION,
@@ -534,7 +535,10 @@ export async function runFinalContractRepair(opts: {
         },
         passed: false,
       }, story, report);
-      break;
+      for (const key of introducedCandidateKeys) {
+        issueAttempts.set(key, opts.maxAttemptsPerIssue ?? 2);
+      }
+      continue;
     }
     report = candidateReport;
     records.push(...roundRecords);

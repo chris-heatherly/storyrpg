@@ -3446,6 +3446,12 @@ export class FullStoryPipeline {
         },
       });
 
+      // B2 / R0.10: snapshot before final gates so single-episode aborts still
+      // leave a diagnostic/resume artifact (multi-episode already snapshots later).
+      if (outputDirectory) {
+        await savePartialStory(outputDirectory, story);
+      }
+
       finalStoryContractReport = await this.enforceFinalStoryContract({
         story,
         brief,
@@ -4008,6 +4014,19 @@ export class FullStoryPipeline {
         this.emit({ type: 'error', message: `Pipeline failed: ${errorMessage}` });
         if (this.jobId) {
           await failJob(this.jobId, errorMessage);
+        }
+      }
+
+      // R0.10: never discard assembled work on abort — even if final gates never ran.
+      if (outputDirectory && story) {
+        try {
+          await savePartialStory(outputDirectory, story);
+        } catch (partialErr) {
+          this.emit({
+            type: 'warning',
+            phase: 'save',
+            message: `Failed to write partial-story.json on abort: ${partialErr instanceof Error ? partialErr.message : String(partialErr)}`,
+          });
         }
       }
 
@@ -9124,11 +9143,11 @@ export class FullStoryPipeline {
   /**
    * (Re)create the per-run remediation budget and zero the per-run counters.
    * Called at each run entry point alongside the other per-run state resets.
-   * The ceiling defaults HIGH (config.remediationBudgetTotal, default 1000) so
-   * existing always-on scene/encounter/choice regeneration is never constrained.
+   * The ceiling defaults to config.remediationBudgetTotal (default 48) so
+   * runaway owner-stage / final-contract repair loops cannot burn unbounded spend.
    */
   private resetRemediationBudget(): void {
-    this.remediationBudget = createRemediationBudget(this.config.generation?.remediationBudgetTotal ?? 1000);
+    this.remediationBudget = createRemediationBudget(this.config.generation?.remediationBudgetTotal ?? 48);
     this.runLedger().resetCounters();
   }
 

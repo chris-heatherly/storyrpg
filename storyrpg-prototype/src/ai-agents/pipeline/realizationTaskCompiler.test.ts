@@ -315,4 +315,36 @@ describe('compileNarrativeRealizationTasks', () => {
       ],
     }])).toThrow(/Contradictory literal evidence.*mika/i);
   });
+
+  it('drops second-person-unrealizable pronoun atoms from premise tasks', () => {
+    const graph = {
+      narrativeVoice: 'second_person',
+      premiseContracts: [{
+        id: 'premise:character-identity', episodeNumber: 1, fieldName: 'Name and pronouns', fieldKind: 'starting_identity',
+        sourceText: 'Kylie Marinescu, she/her.', evidencePatterns: ['Kylie Marinescu'],
+        evidenceAtoms: [
+          {
+            id: 'premise:character-identity:semantic:1', kind: 'behavior', canonicalFact: 'The character is named Kylie Marinescu.',
+            acceptedPatterns: ['Kylie Marinescu'], required: true, sourceText: 'Kylie Marinescu, she/her.',
+            verificationAuthority: 'literal', semanticCriteria: ['Character is identified as Kylie Marinescu'],
+          },
+          {
+            id: 'premise:character-identity:semantic:2', kind: 'behavior', canonicalFact: 'The character uses she/her pronouns.',
+            acceptedPatterns: ['she/her'], required: false, sourceText: 'Kylie Marinescu, she/her.',
+            verificationAuthority: 'semantic_judge', semanticCriteria: ['Character is referred to with she/her pronouns'],
+          },
+        ],
+        minimumEvidenceHits: 1, targetSceneIds: ['s1-1'], requiredSurface: ['beat_text'], sourceContractIds: ['treatment:identity'],
+        blocking: true, provenance: { source: 'treatment', confidence: 'authoritative' },
+      }],
+      events: [],
+      dependencies: [],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 's1-1', episodeNumber: 1, order: 0, kind: 'standard' },
+    ] as any);
+    const premise = tasks.find((task) => task.contractId === 'premise:character-identity');
+    expect(premise?.evidenceAtoms.map((atom) => atom.id)).toEqual(['premise:character-identity:semantic:1']);
+    expect(premise?.minimumEvidenceHits).toBe(1);
+  });
 });

@@ -502,7 +502,11 @@ function evaluateTaskGroup(
     }
   }
   if (task.minimumEvidenceHits != null && matchedPositiveAtoms.size < task.minimumEvidenceHits) {
-    missing.push(...positiveAtoms.filter((atom) => !matchedPositiveAtoms.has(atom.id)).map((atom) => atom.id));
+    const unmatched = positiveAtoms.filter((atom) => !matchedPositiveAtoms.has(atom.id));
+    const requiredUnmatched = unmatched.filter((atom) => atom.required !== false);
+    // Keep evaluateTaskGroup diagnostics aligned with evaluateTaskSatisfaction:
+    // optional atoms are candidates, not silent mandatory blockers.
+    missing.push(...(requiredUnmatched.length > 0 ? requiredUnmatched : unmatched).map((atom) => atom.id));
   }
   for (const group of task.evidenceGroups ?? []) {
     const groupAtoms = group.atomIds

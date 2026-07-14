@@ -105,6 +105,38 @@ function premiseAtoms(contract: NonNullable<NarrativeContractGraph['premiseContr
   }));
 }
 
+/** Second-person prose never stages "she/her" / "he/him" for the PC — those
+ * atoms are character-sheet metadata, not dramatizable evidence. */
+export function isSecondPersonUnrealizablePronounAtom(atom: {
+  description?: string;
+  acceptedPatterns?: string[];
+  semanticCriteria?: string[];
+  canonicalFact?: string;
+}): boolean {
+  // Do NOT consult sourceText: premise source lines often include the whole
+  // "Name, she/her." sheet row and would false-positive every sibling atom.
+  const text = [
+    atom.description,
+    atom.canonicalFact,
+    ...(atom.acceptedPatterns ?? []),
+    ...(atom.semanticCriteria ?? []),
+  ].join(' ');
+  if (!/\b(?:she\/her|he\/him|they\/them|uses?\s+\w+\/\w+\s+pronouns?|referred to with\s+\w+\/\w+\s+pronouns?)\b/i.test(text)) {
+    return false;
+  }
+  // Explicit you-form criteria remain realizable in second person.
+  return !/\b(?:you\/your|second[- ]person|addressed as you)\b/i.test(text);
+}
+
+function applySecondPersonPremiseFeasibility(
+  atoms: NarrativeEvidenceAtom[],
+  narrativeVoice: NarrativeContractGraph['narrativeVoice'] | undefined,
+): { atoms: NarrativeEvidenceAtom[]; droppedPronounAtoms: number } {
+  if (narrativeVoice !== 'second_person') return { atoms, droppedPronounAtoms: 0 };
+  const kept = atoms.filter((atom) => !isSecondPersonUnrealizablePronounAtom(atom));
+  return { atoms: kept, droppedPronounAtoms: atoms.length - kept.length };
+}
+
 function surfaceForEventRequirement(
   requirement: NarrativeEvidenceRequirement,
 ): NarrativeRealizationSurface[] {
@@ -624,15 +656,26 @@ export function compileNarrativeRealizationTasks(
   const tasks: NarrativeRealizationTask[] = [];
 
   for (const premise of graph.premiseContracts ?? []) {
-    const atoms = premiseAtoms(premise);
+    const feasibility = applySecondPersonPremiseFeasibility(premiseAtoms(premise), graph.narrativeVoice);
+    const atoms = feasibility.atoms;
+    if (atoms.length === 0) continue;
     const requiredAtoms = atoms.filter((atom) => atom.required && atom.polarity !== 'forbidden');
-    const splitAcrossOwners = premise.minimumEvidenceHits > 1
-      && requiredAtoms.length === premise.minimumEvidenceHits
+    // Only clamp the threshold when POV feasibility removed atoms; otherwise
+    // preserve compiler fail-closed behavior for unsatisfiable authored thresholds.
+    const threshold = feasibility.droppedPronounAtoms > 0
+      ? Math.min(
+        premise.minimumEvidenceHits,
+        Math.max(1, atoms.filter((atom) => atom.polarity !== 'forbidden').length),
+      )
+      : premise.minimumEvidenceHits;
+    const splitAcrossOwners = threshold > 1
+      && requiredAtoms.length === threshold
       && premise.targetSceneIds.length === requiredAtoms.length;
     const projections = splitAcrossOwners
       ? requiredAtoms.map((atom, index) => ({ sceneId: premise.targetSceneIds[index], atoms: [atom], minimumEvidenceHits: 1, suffix: `:part:${index + 1}` }))
-      : [{ sceneId: premise.targetSceneIds[0], atoms, minimumEvidenceHits: premise.minimumEvidenceHits, suffix: '' }];
+      : [{ sceneId: premise.targetSceneIds[0], atoms, minimumEvidenceHits: threshold, suffix: '' }];
     for (const projection of projections) {
+      if (!projection.sceneId && projection.atoms.length === 0) continue;
       const execution = resolveTaskExecutionTarget({
         scene: projection.sceneId ? sceneById.get(projection.sceneId) : undefined,
         episodeNumber: premise.episodeNumber,

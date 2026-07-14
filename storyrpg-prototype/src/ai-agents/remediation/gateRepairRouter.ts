@@ -784,7 +784,7 @@ export class GateRepairRouter {
       return directive('blueprint_rebalance', issue, 'Episode-list conformance is season architecture (split/merged/dropped/re-titled episodes), not prose.');
     }
 
-    if (validator === 'NarrativeContractValidator') {
+    if (validator === 'NarrativeContractValidator' || validator === 'SemanticRealizationJudge') {
       if (issue.repairHandler === 'encounter_route' || issue.outcomeTier) {
         return directive('same_scene_retry', issue, 'Encounter route realization is owned by the exact encounter outcome surface and requires a focused route rewrite.');
       }
@@ -797,8 +797,14 @@ export class GateRepairRouter {
       if (issue.repairHandler === 'premise_realization') {
         return directive('same_scene_retry', issue, 'Premise realization is owned by the opening scene and must be rewritten with its missing evidence atoms.');
       }
-      if (issue.repairHandler === 'scene_prose') {
+      if (issue.repairHandler === 'scene_prose' || issue.repairHandler === 'scene_semantic_patch') {
         return directive('same_scene_retry', issue, 'Canonical realization drift is owned by the exact scene-prose target carried by the task.');
+      }
+      if (validator === 'SemanticRealizationJudge' && issue.sceneId) {
+        // Renamed owner of meaning-aware regression findings. Without this
+        // branch they fell to diagnostic_stop after the Jul 11–13 rename
+        // (same bug class as the Jul 3 outcome-stub starvation).
+        return directive('same_scene_retry', issue, 'Semantic realization miss is localized to the owning scene surface and must be rewritten with its missing evidence atoms.');
       }
       if (/episode topology|planned scenes|generic pressure/i.test(issueText)) {
         return directive('episode_replan', issue, 'Canonical authored topology is invalid; rebuild the episode scene plan before prose generation.');
@@ -819,6 +825,17 @@ export class GateRepairRouter {
         return directive('same_scene_retry', issue, 'Canonical identity or authored payoff is localized to the owning scene and must be rewritten without changing topology.');
       }
       return directive('episode_replan', issue, 'Canonical narrative contract has no safe scene-local repair target.');
+    }
+
+    if (validator === 'QARunner') {
+      // Aggregate QA findings previously had no router rule and fell to
+      // diagnostic_stop, starving sibling repairs. Continuity errors are owned
+      // by ContinuityChecker (routed above). Scene-localized craft can retry;
+      // unlocalized aggregates defer instead of killing the repair loop.
+      if (issue.sceneId) {
+        return directive('same_scene_retry', issue, 'QA critical finding is localized to a scene and can be re-authored in place.');
+      }
+      return directive('partial_scope_defer', issue, 'Aggregate QA report has no scene-local repair target; do not starve other repairable findings.');
     }
 
     if (

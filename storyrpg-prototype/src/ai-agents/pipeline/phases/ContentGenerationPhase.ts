@@ -2497,6 +2497,17 @@ export class ContentGenerationPhase {
                 error: ownerTaskRetry.error,
                 failure: ownerTaskRetry.failure,
               });
+              await this.deps.recordRemediationSafe({
+                rule: 'scene_semantic_patch',
+                scope: 'scene',
+                attempted: 1,
+                succeeded: false,
+                degraded: false,
+                blocked: false,
+                attempts: patchCallAttempts,
+                storyId: idSlugify(brief.story.title),
+                details: `Scene ${sceneBlueprint.id} semantic patch failed: ${ownerTaskRetry.error || 'call failed'} (${repairTarget.fingerprint})`,
+              });
               if (ownerTaskRetry.failure?.retryClass === 'adjust_call_budget' && capacityTier === 'standard') {
                 capacityTier = 'expanded';
                 continue;

@@ -52,6 +52,7 @@ interface BlockingClassCase {
     sceneId?: string;
     beatId?: string;
     episodeNumber?: number;
+    repairHandler?: string;
   };
 }
 
@@ -134,6 +135,29 @@ const BLOCKING_CLASSES: BlockingClassCase[] = [
       message: 'Beat beat-s1-2-03b narrates live action in past tense.',
       sceneId: 's1-2',
       beatId: 'beat-s1-2-03b',
+      episodeNumber: 1,
+    },
+  },
+  {
+    name: 'semantic realization miss from renamed SemanticRealizationJudge',
+    issue: {
+      validator: 'SemanticRealizationJudge',
+      type: 'semantic_realization_violation',
+      severity: 'error',
+      message: 'Canonical realization validation confirms that task task:premise:wound is missing: premise:wound:semantic:2.',
+      sceneId: 's1-1',
+      episodeNumber: 1,
+      repairHandler: 'premise_realization',
+    },
+  },
+  {
+    name: 'scene-localized QA critical finding',
+    issue: {
+      validator: 'QARunner',
+      type: 'qa_blocker_present',
+      severity: 'error',
+      message: 'QA report did not pass: voice collapse in opening scene',
+      sceneId: 's1-1',
       episodeNumber: 1,
     },
   },

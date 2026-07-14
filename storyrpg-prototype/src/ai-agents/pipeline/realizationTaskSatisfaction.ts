@@ -92,6 +92,12 @@ export function evaluateTaskSatisfaction(
     else if (outcome !== 'pass') unresolved.push(atomId);
   };
 
+  const atomRequired = (atomId: string): boolean => {
+    const atom = task.evidenceAtoms.find((candidate) => candidate.id === atomId);
+    // Missing atoms default to required so unknown ids stay visible in diagnostics.
+    return atom?.required !== false;
+  };
+
   for (const atomId of expression.allOfAtomIds) classify(atomId);
   for (const group of expression.anyOfGroups) {
     const passed = group.atomIds.filter((atomId) => byAtomId.get(atomId) === 'pass').length;
@@ -99,7 +105,12 @@ export function evaluateTaskSatisfaction(
     const candidates = group.atomIds.filter((atomId) => byAtomId.get(atomId) !== 'pass');
     const possible = candidates.filter((atomId) => byAtomId.get(atomId) !== 'miss').length;
     if (passed + possible < group.minimumHits) {
-      missing.push(...candidates.filter((atomId) => byAtomId.get(atomId) === 'miss'));
+      const missed = candidates.filter((atomId) => byAtomId.get(atomId) === 'miss');
+      const requiredMissed = missed.filter(atomRequired);
+      // Optional atoms may help satisfy a threshold but must never become blockers
+      // when the shortfall is already explained by required misses (Bite Me
+      // pronoun atom / mixed-authority kill class).
+      missing.push(...(requiredMissed.length > 0 ? requiredMissed : missed));
       continue;
     }
     for (const atomId of candidates.filter((atomId) => byAtomId.get(atomId) !== 'miss')) classify(atomId);

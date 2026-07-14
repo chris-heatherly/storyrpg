@@ -4974,7 +4974,11 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
   private validatePreparedBlueprintForPlannedScenes(
     blueprint: EpisodeBlueprint,
     input: StoryArchitectInput,
-  ): { success: true; warnings?: string[] } | { success: false; error: string } {
+  ): { success: true; warnings?: string[] } | {
+    success: false;
+    error: string;
+    metadata?: { failure?: PipelineFailureMetadata };
+  } {
     const warnings: string[] = [];
     const addWarnings = (items: string[]) => {
       for (const item of items) {
@@ -5041,6 +5045,15 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
         return {
           success: false,
           error: `[EpisodeSpineContract] Authored-lite ESC drift after elaborate — architect must not change scene order/spineUnitId:\n${spineResult.issues.map((issue) => `[EpisodeSpineContract] ${issue.message}`).join('\n')}`,
+          metadata: {
+            failure: {
+              code: 'episode_plan_invalid',
+              ownerStage: 'episode_plan',
+              retryClass: 'recompile_episode_plan',
+              issueCodes: ['ESC_DRIFT'],
+              repairTarget: 'scene-plan',
+            },
+          },
         };
       }
       // Extra hard-fail: projected spineUnitId order must match ESC unit order.
@@ -5056,6 +5069,15 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
           error:
             `[EpisodeSpineContract] Authored-lite spineUnitId order drifted after elaborate. ` +
             `expected=${expectedOrder.join(',')} actual=${projectedInEscOrder.join(',')}`,
+          metadata: {
+            failure: {
+              code: 'episode_plan_invalid',
+              ownerStage: 'episode_plan',
+              retryClass: 'recompile_episode_plan',
+              issueCodes: ['ESC_SPINE_ORDER_DRIFT'],
+              repairTarget: 'scene-plan',
+            },
+          },
         };
       }
     }
@@ -5381,6 +5403,7 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
         return {
           success: false,
           error: plannedValidation.error,
+          metadata: plannedValidation.metadata,
         };
       }
       const plannedHygieneIssues = this.collectBlueprintHygieneIssues(blueprint);

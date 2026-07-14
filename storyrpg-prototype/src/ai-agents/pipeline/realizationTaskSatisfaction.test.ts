@@ -61,4 +61,35 @@ describe('realization task satisfaction', () => {
       verdict('literal', 'pass'), verdict('semantic-a', 'unavailable'), verdict('semantic-b', 'miss'),
     ])).toMatchObject({ status: 'unavailable', unavailableAtomIds: ['semantic-a'] });
   });
+
+  it('does not promote an optional miss into a blocker when required evidence already explains the shortfall', () => {
+    // Live Bite Me shape: minimumEvidenceHits=1, required name + optional she/her.
+    const biteMe = task({
+      id: 'task:premise:canonical-identity',
+      minimumEvidenceHits: 1,
+      evidenceAtoms: [
+        {
+          id: 'name', description: 'Named Kylie Marinescu', acceptedPatterns: ['Kylie Marinescu'],
+          kind: 'semantic', verificationAuthority: 'literal', required: true,
+        },
+        {
+          id: 'pronouns', description: 'Uses she/her pronouns', acceptedPatterns: ['she/her'],
+          kind: 'semantic', verificationAuthority: 'semantic_judge', required: false,
+        },
+      ],
+    });
+    const namePass = evaluateTaskSatisfaction(biteMe, [
+      { taskId: biteMe.id, atomId: 'name', groupKey: 'owner:1', authority: 'literal', outcome: 'pass' },
+      { taskId: biteMe.id, atomId: 'pronouns', groupKey: 'owner:1', authority: 'semantic_judge', outcome: 'miss' },
+    ]);
+    expect(namePass).toMatchObject({ status: 'satisfied', missingAtomIds: [] });
+
+    const bothMiss = evaluateTaskSatisfaction(biteMe, [
+      { taskId: biteMe.id, atomId: 'name', groupKey: 'owner:1', authority: 'literal', outcome: 'miss' },
+      { taskId: biteMe.id, atomId: 'pronouns', groupKey: 'owner:1', authority: 'semantic_judge', outcome: 'miss' },
+    ]);
+    expect(bothMiss.status).toBe('missing');
+    expect(bothMiss.missingAtomIds).toEqual(['name']);
+    expect(bothMiss.missingAtomIds).not.toContain('pronouns');
+  });
 });

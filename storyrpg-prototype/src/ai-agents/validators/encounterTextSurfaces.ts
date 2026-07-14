@@ -395,6 +395,19 @@ export function collectRouteEvidenceSurfaceIndex(input: {
   index.encounter_outcome = [];
   index.terminal_storylet = [];
   const encounter = recordOf(input.encounter);
+  // Beats-based encounters (the flat/storylet model) carry their route-specific
+  // prose in beats[].choices[].outcomes.<tier>, not in phases/outcomes maps.
+  // Index that text as encounter_phase, or route tasks validate against empty
+  // surfaces and fail every tier regardless of what the reader actually sees
+  // (bite-me_2026-07-14T21-31-30: rescue evidence on-page, six tiers reported
+  // missing). collectBeatTextForRoute is the same tier-filtered collector the
+  // older encounter validators already use — one implementation, not a copy.
+  const encounterBeats = (encounter?.beats as unknown[] | undefined) ?? [];
+  if (encounterBeats.length > 0) {
+    const routeBeatTexts: string[] = [];
+    for (const beat of encounterBeats) collectBeatTextForRoute(routeBeatTexts, beat, input.outcomeTier);
+    index.encounter_phase = [...index.encounter_phase, ...routeBeatTexts];
+  }
   const outcomes = recordOf(encounter?.outcomes) ?? {};
   const storylets = recordOf(encounter?.storylets) ?? {};
   const seenOutcomes = new Set<unknown>();

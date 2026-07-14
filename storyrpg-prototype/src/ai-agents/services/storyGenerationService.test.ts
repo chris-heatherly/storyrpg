@@ -91,7 +91,12 @@ vi.mock('../agents/SeasonPlannerAgent', () => ({
   },
 }));
 
-const { runImageGenerationBatch, runStoryAnalysis, runStoryGeneration } = await import('./storyGenerationService');
+const {
+  assertAnalysisGenerationReady,
+  runImageGenerationBatch,
+  runStoryAnalysis,
+  runStoryGeneration,
+} = await import('./storyGenerationService');
 
 describe('storyGenerationService', () => {
   beforeEach(() => {
@@ -157,6 +162,12 @@ describe('storyGenerationService', () => {
     });
 
     expect(order).toEqual(['analyze', 'checkpoint', 'plan']);
+  });
+
+  it('rejects analysis completion when no valid season plan was produced', () => {
+    expect(() => assertAnalysisGenerationReady({
+      seasonPlanError: '[SemanticContractIRGate] structured output truncated',
+    })).toThrow('[SemanticContractIRGate] structured output truncated');
   });
 
   it('runs multi-episode generation and forwards pipeline job events', async () => {

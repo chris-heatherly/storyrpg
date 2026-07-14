@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { NarrativeContractGraph } from '../../types/narrativeContract';
 import type { SeasonScenePlan } from '../../types/scenePlan';
 import { SemanticContractCompilerAgent } from './SemanticContractCompilerAgent';
+import { TruncatedLLMResponseError } from './BaseAgent';
 
 function scenePlan(): SeasonScenePlan {
   const sourceText = 'Kylie rescues Iulia in the park, then writes about the attack at home.';
@@ -111,6 +112,11 @@ describe('SemanticContractCompilerAgent', () => {
     ]);
     const options = call.mock.calls[0]?.[2] as { jsonSchema?: { name?: string } } | undefined;
     expect(options?.jsonSchema?.name).toBe('authored_event_semantic_contracts');
+    expect(options?.jsonSchema?.outputBudget).toMatchObject({
+      visibleTokens: 3072,
+      reasoningProfile: 'minimal',
+      safetyTokens: 512,
+    });
   });
 
   it('compiles authored premises into complete propositions instead of vocabulary atoms', async () => {
@@ -179,6 +185,84 @@ describe('SemanticContractCompilerAgent', () => {
     });
     expect(result.data?.premises?.[0].propositions.some((proposition) => proposition.proposition === 'herself')).toBe(false);
     expect(call).toHaveBeenCalledTimes(2);
+    const premiseOptions = call.mock.calls[1]?.[2] as { jsonSchema?: { name?: string; outputBudget?: unknown } } | undefined;
+    expect(premiseOptions?.jsonSchema?.name).toBe('authored_premise_semantic_contracts');
+    expect(premiseOptions?.jsonSchema?.outputBudget).toMatchObject({
+      visibleTokens: 3072,
+      reasoningProfile: 'minimal',
+      safetyTokens: 512,
+    });
+  });
+
+  it('splits a truncated premise batch without dropping any authored premise', async () => {
+    const plan = scenePlan();
+    plan.narrativeContractGraph!.events = [];
+    plan.narrativeContractGraph!.premiseContracts = [
+      {
+        id: 'premise:kylie-observer',
+        episodeNumber: 1,
+        fieldName: 'Starting identity',
+        fieldKind: 'starting_identity',
+        sourceText: 'Kylie watches the room before she acts.',
+        evidencePatterns: ['watches the room'],
+        minimumEvidenceHits: 1,
+        targetSceneIds: ['scene-1'],
+        requiredSurface: ['beat_text'],
+        sourceContractIds: ['treatment:kylie'],
+        blocking: true,
+        provenance: { source: 'treatment', confidence: 'authoritative' },
+      },
+      {
+        id: 'premise:kylie-wound',
+        episodeNumber: 1,
+        fieldName: 'Origin pressure',
+        fieldKind: 'origin_pressure',
+        sourceText: 'Her cancelled engagement left Kylie publicly humiliated.',
+        evidencePatterns: ['cancelled engagement'],
+        minimumEvidenceHits: 1,
+        targetSceneIds: ['scene-1'],
+        requiredSurface: ['beat_text'],
+        sourceContractIds: ['treatment:kylie'],
+        blocking: true,
+        provenance: { source: 'treatment', confidence: 'authoritative' },
+      },
+    ];
+    const agent = new SemanticContractCompilerAgent({
+      provider: 'gemini', model: 'gemini-test', apiKey: 'test', maxTokens: 32768, temperature: 0,
+    });
+    const call = vi.fn(async (messages: Array<{ content: string }>) => {
+      const prompt = messages[0].content;
+      if (prompt.includes('premise:kylie-observer') && prompt.includes('premise:kylie-wound')) {
+        throw new TruncatedLLMResponseError('Truncated LLM response from Gemini: finishReason=MAX_TOKENS', 'gemini', 'MAX_TOKENS', 5472);
+      }
+      const observer = prompt.includes('premise:kylie-observer');
+      return JSON.stringify({ premises: [{
+        premiseId: observer ? 'premise:kylie-observer' : 'premise:kylie-wound',
+        minimumEvidenceHits: 1,
+        propositions: [{
+          propositionId: 'p1',
+          sourceSpan: observer ? 'Kylie watches the room before she acts.' : 'Her cancelled engagement left Kylie publicly humiliated.',
+          proposition: observer
+            ? 'Kylie observes the room before taking action.'
+            : 'Kylie remains publicly humiliated by her cancelled engagement.',
+          semanticCriteria: observer
+            ? ['Kylie observes before acting']
+            : ['Her cancelled engagement causes public humiliation'],
+          verificationAuthority: 'semantic_judge',
+          required: true,
+        }],
+      }] });
+    });
+    (agent as any).callLLM = call;
+
+    const result = await agent.execute(plan);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.premises?.map((premise) => premise.premiseId)).toEqual([
+      'premise:kylie-observer',
+      'premise:kylie-wound',
+    ]);
+    expect(call).toHaveBeenCalledTimes(3);
   });
 
   it('retries the same bounded batch when source provenance is invalid', async () => {

@@ -54,6 +54,15 @@ export interface StoryAnalysisResponse {
   seasonPlanError?: string;
 }
 
+/** Analysis-mode workers may only complete once the Generator can start a run. */
+export function assertAnalysisGenerationReady(
+  result: Pick<StoryAnalysisResponse, 'seasonPlan' | 'seasonPlanError'>,
+): asserts result is Pick<StoryAnalysisResponse, 'seasonPlan' | 'seasonPlanError'> & { seasonPlan: SeasonPlan } {
+  if (!result.seasonPlan) {
+    throw new Error(result.seasonPlanError || 'Source analysis completed without a valid season plan.');
+  }
+}
+
 export interface StoryGenerationRequest extends PipelineHookOptions {
   config?: PipelineConfig;
   brief: FullCreativeBrief;

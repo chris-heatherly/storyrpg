@@ -5,7 +5,7 @@ import type {
   NarrativeContractGraph,
 } from '../../types/narrativeContract';
 import type { SeasonScenePlan } from '../../types/scenePlan';
-import { AgentResponse, BaseAgent } from './BaseAgent';
+import { AgentResponse, BaseAgent, TruncatedLLMResponseError } from './BaseAgent';
 import {
   SEMANTIC_CONTRACT_IR_POLICY_VERSION,
   collectKnownSemanticLocations,
@@ -71,10 +71,18 @@ const SEMANTIC_ROLES: AuthoredEventSemanticRole[] = [
 ];
 
 function semanticContractSchema(eventCount: number) {
+  const visibleTokens = Math.min(12288, Math.max(3072, eventCount * 1500));
   return {
     name: 'authored_event_semantic_contracts',
     description: 'Source-grounded semantic propositions for authored narrative events.',
-    maxOutputTokens: Math.min(6144, Math.max(1400, eventCount * 850)),
+    maxOutputTokens: visibleTokens,
+    // Gemini 3 counts hidden thinking inside maxOutputTokens. Reserving it here
+    // keeps the JSON payload from being starved on dense source batches.
+    outputBudget: {
+      visibleTokens,
+      reasoningProfile: 'minimal' as const,
+      safetyTokens: 512,
+    },
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -126,10 +134,18 @@ function semanticContractSchema(eventCount: number) {
 }
 
 function premiseContractSchema(premiseCount: number) {
+  const visibleTokens = Math.min(9216, Math.max(3072, premiseCount * 1200));
   return {
     name: 'authored_premise_semantic_contracts',
     description: 'Source-grounded, independently judgeable propositions for authored character premises.',
-    maxOutputTokens: Math.min(4096, Math.max(1200, premiseCount * 650)),
+    maxOutputTokens: visibleTokens,
+    // Premise IR carries source spans and judge criteria, so it needs explicit
+    // visible headroom rather than inheriting Gemini's thinking-only default.
+    outputBudget: {
+      visibleTokens,
+      reasoningProfile: 'minimal' as const,
+      safetyTokens: 512,
+    },
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -202,82 +218,11 @@ export class SemanticContractCompilerAgent extends BaseAgent {
 
     try {
       for (let offset = 0; offset < seeds.length; offset += 6) {
-        const batch = seeds.slice(offset, offset + 6);
-        let batchEvents: AuthoredEventSemanticIR['events'] | undefined;
-        let correctionIssues: string[] = [];
-        for (let structuredAttempt = 1; structuredAttempt <= 2 && !batchEvents; structuredAttempt += 1) {
-          const messages = [{ role: 'user' as const, content: this.buildPrompt(batch, knownLocations) }];
-          if (correctionIssues.length > 0) {
-            messages.push({
-              role: 'user',
-              content: `Your previous semantic IR was structurally invalid. Correct only these issues and return the complete batch again:\n- ${correctionIssues.join('\n- ')}`,
-            });
-          }
-          const { data } = await this.callLLMForJson<RawSemanticBatch>(messages, {
-            jsonSchema: semanticContractSchema(batch.length),
-          });
-          let normalized: AuthoredEventSemanticIR['events'];
-          try {
-            normalized = this.normalizeBatch(batch, data);
-          } catch (error) {
-            correctionIssues = [error instanceof Error ? error.message : String(error)];
-            continue;
-          }
-          const candidate: AuthoredEventSemanticIR = {
-            version: 1,
-            policyVersion: SEMANTIC_CONTRACT_IR_POLICY_VERSION,
-            provider: this.config.provider,
-            model: this.config.model,
-            sourceHash: semanticContractSourceHash(batch),
-            events: normalized,
-          };
-          const validation = validateAuthoredEventSemanticIR(candidate, batch, knownLocations);
-          if (validation.passed) batchEvents = normalized;
-          else correctionIssues = validation.issues;
-        }
-        if (!batchEvents) throw new Error(`Semantic contract batch failed bounded structured correction: ${correctionIssues.join(' | ')}`);
-        compiledEvents.push(...batchEvents);
+        compiledEvents.push(...await this.compileEventBatch(seeds.slice(offset, offset + 6), knownLocations));
       }
 
       for (let offset = 0; offset < premiseSeeds.length; offset += 6) {
-        const batch = premiseSeeds.slice(offset, offset + 6);
-        let batchPremises: NonNullable<AuthoredEventSemanticIR['premises']> | undefined;
-        let correctionIssues: string[] = [];
-        for (let structuredAttempt = 1; structuredAttempt <= 2 && !batchPremises; structuredAttempt += 1) {
-          const messages = [{ role: 'user' as const, content: this.buildPremisePrompt(batch) }];
-          if (correctionIssues.length > 0) {
-            messages.push({
-              role: 'user',
-              content: `Your previous premise IR was structurally invalid. Correct only these issues and return the complete batch again:\n- ${correctionIssues.join('\n- ')}`,
-            });
-          }
-          const { data } = await this.callLLMForJson<RawPremiseBatch>(messages, {
-            jsonSchema: premiseContractSchema(batch.length),
-          });
-          try {
-            batchPremises = this.normalizePremiseBatch(batch, data);
-          } catch (error) {
-            correctionIssues = [error instanceof Error ? error.message : String(error)];
-            continue;
-          }
-          const candidate: AuthoredEventSemanticIR = {
-            version: 1,
-            policyVersion: SEMANTIC_CONTRACT_IR_POLICY_VERSION,
-            provider: this.config.provider,
-            model: this.config.model,
-            sourceHash: semanticContractSourceHash([]),
-            events: [],
-            premiseSourceHash: semanticContractPremiseSourceHash(batch),
-            premises: batchPremises,
-          };
-          const validation = validateAuthoredEventSemanticIR(candidate, [], [], batch);
-          if (!validation.passed) {
-            correctionIssues = validation.issues;
-            batchPremises = undefined;
-          }
-        }
-        if (!batchPremises) throw new Error(`Premise semantic contract batch failed bounded structured correction: ${correctionIssues.join(' | ')}`);
-        compiledPremises.push(...batchPremises);
+        compiledPremises.push(...await this.compilePremiseBatch(premiseSeeds.slice(offset, offset + 6)));
       }
 
       const ir: AuthoredEventSemanticIR = {
@@ -301,6 +246,112 @@ export class SemanticContractCompilerAgent extends BaseAgent {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  private async compileEventBatch(
+    batch: SemanticContractEventSeed[],
+    knownLocations: string[],
+  ): Promise<AuthoredEventSemanticIR['events']> {
+    let batchEvents: AuthoredEventSemanticIR['events'] | undefined;
+    let correctionIssues: string[] = [];
+    try {
+      for (let structuredAttempt = 1; structuredAttempt <= 2 && !batchEvents; structuredAttempt += 1) {
+        const messages = [{ role: 'user' as const, content: this.buildPrompt(batch, knownLocations) }];
+        if (correctionIssues.length > 0) {
+          messages.push({
+            role: 'user',
+            content: `Your previous semantic IR was structurally invalid. Correct only these issues and return the complete batch again:\n- ${correctionIssues.join('\n- ')}`,
+          });
+        }
+        const { data } = await this.callLLMForJson<RawSemanticBatch>(messages, {
+          jsonSchema: semanticContractSchema(batch.length),
+        });
+        let normalized: AuthoredEventSemanticIR['events'];
+        try {
+          normalized = this.normalizeBatch(batch, data);
+        } catch (error) {
+          correctionIssues = [error instanceof Error ? error.message : String(error)];
+          continue;
+        }
+        const candidate: AuthoredEventSemanticIR = {
+          version: 1,
+          policyVersion: SEMANTIC_CONTRACT_IR_POLICY_VERSION,
+          provider: this.config.provider,
+          model: this.config.model,
+          sourceHash: semanticContractSourceHash(batch),
+          events: normalized,
+        };
+        const validation = validateAuthoredEventSemanticIR(candidate, batch, knownLocations);
+        if (validation.passed) batchEvents = normalized;
+        else correctionIssues = validation.issues;
+      }
+    } catch (error) {
+      if (error instanceof TruncatedLLMResponseError && batch.length > 1) {
+        const midpoint = Math.ceil(batch.length / 2);
+        console.warn(`[Semantic Contract Compiler] Batch of ${batch.length} events truncated; recompiling two complete sub-batches.`);
+        return [
+          ...await this.compileEventBatch(batch.slice(0, midpoint), knownLocations),
+          ...await this.compileEventBatch(batch.slice(midpoint), knownLocations),
+        ];
+      }
+      throw error;
+    }
+    if (!batchEvents) throw new Error(`Semantic contract batch failed bounded structured correction: ${correctionIssues.join(' | ')}`);
+    return batchEvents;
+  }
+
+  private async compilePremiseBatch(
+    batch: SemanticContractPremiseSeed[],
+  ): Promise<NonNullable<AuthoredEventSemanticIR['premises']>> {
+    let batchPremises: NonNullable<AuthoredEventSemanticIR['premises']> | undefined;
+    let correctionIssues: string[] = [];
+    try {
+      for (let structuredAttempt = 1; structuredAttempt <= 2 && !batchPremises; structuredAttempt += 1) {
+        const messages = [{ role: 'user' as const, content: this.buildPremisePrompt(batch) }];
+        if (correctionIssues.length > 0) {
+          messages.push({
+            role: 'user',
+            content: `Your previous premise IR was structurally invalid. Correct only these issues and return the complete batch again:\n- ${correctionIssues.join('\n- ')}`,
+          });
+        }
+        const { data } = await this.callLLMForJson<RawPremiseBatch>(messages, {
+          jsonSchema: premiseContractSchema(batch.length),
+        });
+        try {
+          batchPremises = this.normalizePremiseBatch(batch, data);
+        } catch (error) {
+          correctionIssues = [error instanceof Error ? error.message : String(error)];
+          continue;
+        }
+        const candidate: AuthoredEventSemanticIR = {
+          version: 1,
+          policyVersion: SEMANTIC_CONTRACT_IR_POLICY_VERSION,
+          provider: this.config.provider,
+          model: this.config.model,
+          sourceHash: semanticContractSourceHash([]),
+          events: [],
+          premiseSourceHash: semanticContractPremiseSourceHash(batch),
+          premises: batchPremises,
+        };
+        const validation = validateAuthoredEventSemanticIR(candidate, [], [], batch);
+        if (!validation.passed) {
+          correctionIssues = validation.issues;
+          batchPremises = undefined;
+        }
+      }
+    } catch (error) {
+      if (error instanceof TruncatedLLMResponseError && batch.length > 1) {
+        const midpoint = Math.ceil(batch.length / 2);
+        console.warn(`[Semantic Contract Compiler] Batch of ${batch.length} premises truncated; recompiling two complete sub-batches.`);
+        return [
+          ...await this.compilePremiseBatch(batch.slice(0, midpoint)),
+          ...await this.compilePremiseBatch(batch.slice(midpoint)),
+        ];
+      }
+      throw error;
+    }
+    if (!batchPremises) throw new Error(`Premise semantic contract batch failed bounded structured correction: ${correctionIssues.join(' | ')}`);
+    return batchPremises;
   }
 
   private normalizeBatch(

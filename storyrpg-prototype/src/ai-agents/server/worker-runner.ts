@@ -14,7 +14,12 @@ import {
   StoryValidationError,
   type StoryPackage,
 } from '../codec/storyCodec';
-import { runImageGenerationBatch, runStoryAnalysis, runStoryGeneration } from '../services/storyGenerationService';
+import {
+  assertAnalysisGenerationReady,
+  runImageGenerationBatch,
+  runStoryAnalysis,
+  runStoryGeneration,
+} from '../services/storyGenerationService';
 import { WorkerPayload, assertValidWorkerPayload, assertWorkerJobConfigHash } from './workerPayload';
 import { resolveMemoryConfig } from '../config';
 import { resolveWorkerGitSha } from '../utils/buildInfo';
@@ -277,6 +282,11 @@ async function runAnalysis(payload: WorkerPayload) {
       ? { success: true, data: result.seasonPlan }
       : { success: false, error: result.seasonPlanError },
   });
+
+  // Analysis mode is the Generator UX's admission step. Returning a completed
+  // worker without a canonical season plan strands the user in a review state
+  // that can never enter episode generation.
+  assertAnalysisGenerationReady(result);
 
   const output = {
     success: true,

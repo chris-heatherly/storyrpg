@@ -97,12 +97,87 @@ describe('semanticValidationCoordinator', () => {
       judge,
     });
 
-    expect(judge.calls).toBe(2);
+    expect(judge.calls).toBe(3);
     expect(result.findings[0]).toMatchObject({
       code: 'SEMANTIC_REALIZATION_MISSING',
       missingEvidenceAtoms: ['atom:formation'],
     });
-    expect(result.receipt.semanticVerdicts?.[0]?.sampleCount).toBe(2);
+    expect(result.receipt.semanticVerdicts?.[0]?.sampleCount).toBe(3);
+  });
+
+  it('requires focused adjudication before trusting correlated negative samples', async () => {
+    let executeCalls = 0;
+    let adjudicationCalls = 0;
+    const judge: SemanticRealizationJudgeLike = {
+      identity: () => ({ policyVersion: 'test-v2', provider: 'test', model: 'test-judge' }),
+      execute: async (claims) => {
+        executeCalls += 1;
+        return { success: true, data: { verdicts: claims.map((claim) => verdict(claim, 'contradicted', 'A, this is B.')) } };
+      },
+      adjudicate: async (claim) => {
+        adjudicationCalls += 1;
+        return { success: true, data: { verdicts: [verdict(claim, 'fulfilled', 'A, this is B.')] } };
+      },
+    };
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1',
+      tasks: [task({
+        evidenceAtoms: [{
+          id: 'atom:introduction',
+          description: 'The host introduces B to A.',
+          acceptedPatterns: ['introduces B to A'],
+          kind: 'semantic',
+          verificationAuthority: 'semantic_judge',
+          semanticRole: 'introduction',
+          required: true,
+        }],
+      })],
+      sceneContent: { beats: [{ text: 'The host gestures. "A, this is B."' }] },
+      judge,
+    });
+
+    expect(executeCalls).toBe(2);
+    expect(adjudicationCalls).toBe(1);
+    expect(result.findings).toEqual([]);
+    expect(result.receipt.semanticVerdicts?.[0]).toMatchObject({
+      disposition: 'confirmed',
+      verdict: 'fulfilled',
+      sampleCount: 3,
+    });
+  });
+
+  it('does not convert unavailable negative adjudication into a content miss', async () => {
+    const judge: SemanticRealizationJudgeLike = {
+      identity: () => ({ policyVersion: 'test-v2', provider: 'test', model: 'test-judge' }),
+      execute: async (claims) => ({
+        success: true,
+        data: { verdicts: claims.map((claim) => verdict(claim, 'not_fulfilled')) },
+      }),
+      adjudicate: async () => ({
+        success: false,
+        error: 'provider timeout',
+        failureKind: 'provider_unavailable',
+      }),
+    };
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1',
+      tasks: [task()],
+      sceneContent: { beats: [{ text: 'Everyone leaves separately.' }] },
+      judge,
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      code: 'SEMANTIC_VALIDATION_UNAVAILABLE',
+      missingEvidenceAtoms: ['atom:formation'],
+    });
+    expect(result.receipt.semanticVerdicts?.[0]).toMatchObject({
+      disposition: 'inconclusive',
+      sampleCount: 3,
+      executionStatus: 'provider_unavailable',
+    });
   });
 
   it('derives evidence quotes from valid addressable citations', async () => {

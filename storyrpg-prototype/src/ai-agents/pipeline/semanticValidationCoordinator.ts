@@ -142,6 +142,35 @@ function majorityConsensus(
   samples: ClaimSample[],
 ): ClaimConsensus {
   const outcomes = samples.map((sample) => outcomeForSample(sample, atom));
+  const adjudicatedOutcome = outcomes.at(-1);
+  if (samples.length >= 3 && (adjudicatedOutcome === 'pass' || adjudicatedOutcome === 'content_miss')) {
+    const adjudicated = samples.at(-1)!;
+    return {
+      claim,
+      outcome: adjudicatedOutcome,
+      verdict: adjudicated.verdict.verdict,
+      verdictRecord: adjudicated.verdict,
+      responseHashes: samples.map((sample) => sample.responseHash),
+      sampleCount: samples.length,
+      executionStatus: 'decided',
+      samples,
+    };
+  }
+  if (samples.length >= 3) {
+    const adjudicated = samples.at(-1)!;
+    return {
+      claim,
+      outcome: adjudicatedOutcome === 'judge_unavailable' ? 'judge_unavailable' : 'inconclusive',
+      verdict: 'uncertain',
+      verdictRecord: adjudicated.verdict,
+      responseHashes: samples.map((sample) => sample.responseHash),
+      sampleCount: samples.length,
+      executionStatus: adjudicated.executionStatus === 'decided'
+        ? 'inconclusive'
+        : adjudicated.executionStatus,
+      samples,
+    };
+  }
   for (const outcome of ['pass', 'content_miss'] as const) {
     if (outcomes.filter((candidate) => candidate === outcome).length < 2) continue;
     const winningIndex = outcomes.findIndex((candidate) => candidate === outcome);
@@ -151,20 +180,6 @@ function majorityConsensus(
       outcome,
       verdict: winning.verdict.verdict,
       verdictRecord: winning.verdict,
-      responseHashes: samples.map((sample) => sample.responseHash),
-      sampleCount: samples.length,
-      executionStatus: 'decided',
-      samples,
-    };
-  }
-  const adjudicatedOutcome = outcomes.at(-1);
-  if (samples.length >= 3 && (adjudicatedOutcome === 'pass' || adjudicatedOutcome === 'content_miss')) {
-    const adjudicated = samples.at(-1)!;
-    return {
-      claim,
-      outcome: adjudicatedOutcome,
-      verdict: adjudicated.verdict.verdict,
-      verdictRecord: adjudicated.verdict,
       responseHashes: samples.map((sample) => sample.responseHash),
       sampleCount: samples.length,
       executionStatus: 'decided',
@@ -263,7 +278,11 @@ async function evaluateClaims(
     const outcomes = samples.get(claim.id)!.map((sample) => outcomeForSample(sample, atom));
     return outcomes.length < 2
       || outcomes[0] !== outcomes[1]
-      || outcomes.some((outcome) => outcome === 'inconclusive');
+      || outcomes.some((outcome) => outcome === 'inconclusive')
+      // Two temperature-zero samples can repeat the same correlated reading.
+      // Confirm every negative content verdict with the claim-focused prompt
+      // before spending an authored repair attempt.
+      || outcomes.every((outcome) => outcome === 'content_miss');
   });
   for (const claim of needsThird) {
     const priorSamples = samples.get(claim.id)!;

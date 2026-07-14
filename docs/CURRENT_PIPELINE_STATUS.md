@@ -165,10 +165,11 @@ task's owner surface and route, returns a categorical verdict with excerpt IDs,
 and deterministic code derives diagnostic quotes from those cited spans. Judge
 calls use focused micro-batches of at most three claims; a failed batch splits
 to individual claims so one malformed verdict cannot erase unrelated decisions.
-A negative verdict requires a second sample. Disagreement or persistent
-uncertainty invokes a focused claim-level adjudication pass; a categorical
-adjudication resolves prior indecision, while unresolved disagreement produces
-`semantic_validation_inconclusive`. Task thresholds are evaluated before
+A negative verdict requires a second sample. Disagreement, persistent
+uncertainty, or two correlated negative samples invokes a focused claim-level
+adjudication pass. Its categorical verdict is decisive; an unavailable or
+uncertain adjudication remains an infrastructure or inconclusive outcome rather
+than being converted into a content miss. Task thresholds are evaluated before
 uncertainty is promoted, so an unused uncertain alternative cannot block a
 contract whose required evidence count is already satisfied. Provider unavailability,
 malformed structured output, and judge-policy errors produce typed validation

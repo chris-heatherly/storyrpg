@@ -199,6 +199,18 @@ const GENERIC_LOCATION_TERMS = new Set([
   'home', 'hotel', 'house', 'park', 'restaurant', 'road', 'room', 'square', 'station', 'street',
 ]);
 
+const LOCATION_TYPE_ALIASES: Record<string, string[]> = {
+  book: ['bookshop'],
+  books: ['bookshop'],
+  bookstore: ['bookshop'],
+  nightclub: ['club'],
+  pub: ['bar'],
+  avenue: ['street'],
+  boulevard: ['street'],
+  residence: ['home', 'house'],
+  estate: ['house'],
+};
+
 function locationIdentityMatches(pattern: string, text: string): boolean {
   const patternTerms = normalize(pattern).split(' ').filter(Boolean);
   const textTerms = new Set(normalize(text).split(' ').filter(Boolean));
@@ -229,11 +241,11 @@ function contextualLocationIdentityMatches(input: {
   if (!canonicalLocations.some((location) => normalize(location) === normalize(input.pattern))) return false;
   const requiredTypes = normalize(input.pattern)
     .split(' ')
-    .filter((term) => GENERIC_LOCATION_TERMS.has(term));
-  if (requiredTypes.length === 0) return false;
+    .flatMap((term) => GENERIC_LOCATION_TERMS.has(term) ? [term] : (LOCATION_TYPE_ALIASES[term] ?? []));
   const normalizedText = normalize(input.text);
+  if (requiredTypes.length === 0) return false;
   return requiredTypes.some((term) => new RegExp(
-    `(?:\\b(?:at|back|enter|inside|into|reach|return|within)\\b.{0,48}\\b${term}\\b|\\b(?:her|his|my|our|the|their|your)\\s+(?:\\w+\\s+){0,4}${term}\\b)`,
+    `(?:\\b(?:at|back|enter|inside|into|reach|return|within)\\b.{0,48}\\b${term}\\b|\\b${term}\\b.{0,48}\\b(?:arriv(?:e|es|ed|ing)|enter(?:s|ed|ing)?|inside|step(?:s|ped|ping)?)\\b|\\b(?:her|his|my|our|the|their|your)\\s+(?:\\w+\\s+){0,4}${term}\\b)`,
   ).test(normalizedText));
 }
 

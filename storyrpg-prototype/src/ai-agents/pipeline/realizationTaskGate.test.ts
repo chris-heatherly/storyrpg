@@ -674,4 +674,37 @@ describe('validateOwnerRealizationTasks', () => {
       },
     })[0]?.missingEvidenceAtoms).toEqual(['streets-location']);
   });
+
+  it('grounds a proper-name venue through canonical setting identity and an entering place-type cue', () => {
+    const task = {
+      id: 'task:transition:bookshop', contractId: 'transition:bookshop', episodeNumber: 1,
+      sourceKinds: ['transition' as const], ownerStage: 'scene_writer' as const,
+      repairHandler: 'scene_prose' as const, sceneId: 'bookshop',
+      evidenceAtoms: [{
+        id: 'bookshop-location', description: 'Orient at Lumina Books', acceptedPatterns: ['Lumina Books'],
+        kind: 'semantic' as const, matchStrategy: 'location_identity' as const,
+        semanticRole: 'location_entry' as const, required: true,
+      }],
+      target: { scope: 'owner' as const, surfaces: ['transition_in' as const, 'beat_text' as const] },
+      sourceContractIds: ['transition:bookshop'], blocking: true,
+    };
+
+    expect(validateOwnerRealizationTasks({
+      sceneId: 'bookshop', tasks: [task],
+      sceneContent: {
+        transitionIn: 'Drawn by the warm light spilling from a bookshop window, you step inside.',
+        settingContext: { locationName: 'Lumina Books' },
+        beats: [{ text: 'The scent of old paper and dried herbs pulls you from the street.' }],
+      },
+    })).toEqual([]);
+
+    expect(validateOwnerRealizationTasks({
+      sceneId: 'bookshop', tasks: [task],
+      sceneContent: {
+        transitionIn: 'You step inside a nightclub.',
+        settingContext: { locationName: 'Astra Club' },
+        beats: [{ text: 'Bass rattles the glass.' }],
+      },
+    })[0]?.missingEvidenceAtoms).toEqual(['bookshop-location']);
+  });
 });

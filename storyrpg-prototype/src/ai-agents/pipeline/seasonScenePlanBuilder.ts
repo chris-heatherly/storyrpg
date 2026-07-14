@@ -90,6 +90,11 @@ import {
 import type { EpisodeSpineContract, EpisodeSpineUnit } from '../../types/episodeSpine';
 import { EpisodeSpineContractValidator } from '../validators/EpisodeSpineContractValidator';
 import { compileAndApplyNarrativeContracts, NARRATIVE_CONTRACT_COMPILER_VERSION } from './narrativeContractCompiler';
+import {
+  semanticContractEventSeeds,
+  semanticContractPremiseSeeds,
+  validateAuthoredEventSemanticIR,
+} from './semanticContractIr';
 
 export const MIN_SCENES_PER_EPISODE = 3;
 const MAX_SCENES_PER_EPISODE = 8;
@@ -2941,7 +2946,8 @@ export function rebuildTreatmentSeasonScenePlan(plan: SeasonPlan): SeasonPlan {
           // stable. Reusing the old scene skeleton would merely wrap stale
           // derived contracts in a new graph version. Rebuild deterministically
           // from the unchanged source plan instead.
-          return rebuildTreatmentSeasonScenePlan({ ...plan, scenePlan: undefined });
+          const rebuilt = rebuildTreatmentSeasonScenePlan({ ...plan, scenePlan: undefined });
+          return reapplyCompatibleSemanticEventIr(rebuilt, existing.semanticEventIr);
         }
       return migrateLegacySeasonNarrativeContracts(plan);
     }
@@ -2956,6 +2962,36 @@ export function rebuildTreatmentSeasonScenePlan(plan: SeasonPlan): SeasonPlan {
     ...plan,
     episodes,
     scenePlan,
+  };
+}
+
+/** Preserve interpretive semantic contracts across deterministic compiler
+ * revisions only when they still match every rebuilt authored source seed. */
+function reapplyCompatibleSemanticEventIr(
+  rebuilt: SeasonPlan,
+  semanticEventIr: SeasonScenePlan['semanticEventIr'],
+): SeasonPlan {
+  const scenePlan = rebuilt.scenePlan;
+  const graph = scenePlan?.narrativeContractGraph;
+  if (!semanticEventIr || !scenePlan || !graph) return rebuilt;
+  const validation = validateAuthoredEventSemanticIR(
+    semanticEventIr,
+    semanticContractEventSeeds(graph),
+    graph.knownLocationNames ?? [],
+    semanticContractPremiseSeeds(graph),
+  );
+  if (!validation.passed) return rebuilt;
+
+  const compiled = compileAndApplyNarrativeContracts(rebuilt, { ...scenePlan, semanticEventIr });
+  attachSceneConstructionProfiles(compiled.scenes);
+  syncGenericSceneTitlesFromAuthoredBeats(compiled.scenes);
+  return {
+    ...rebuilt,
+    scenePlan: compiled,
+    episodes: (rebuilt.episodes ?? []).map((episode) => ({
+      ...episode,
+      plannedScenes: scenesForEpisode(compiled, episode.episodeNumber),
+    })),
   };
 }
 

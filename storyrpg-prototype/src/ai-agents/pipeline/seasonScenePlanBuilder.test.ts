@@ -17,6 +17,13 @@ import type { SeasonPlan, SeasonEpisode } from '../../types/seasonPlan';
 import type { PlannedScene } from '../../types/scenePlan';
 import type { EpisodeSpineContract } from '../../types/episodeSpine';
 import type { StoryCircleBeat } from '../../types/sourceAnalysis';
+import {
+  SEMANTIC_CONTRACT_IR_POLICY_VERSION,
+  semanticContractEventSeeds,
+  semanticContractPremiseSeeds,
+  semanticContractPremiseSourceHash,
+  semanticContractSourceHash,
+} from './semanticContractIr';
 
 describe('inferAuthoredLocationFromText', () => {
   it('keeps an authored city exploration on the streets instead of inheriting the next interior', () => {
@@ -1526,6 +1533,44 @@ describe('projectSpineOntoScenes', () => {
     });
     const sourcePlan = plan([ep]);
     const scenePlan = buildSeasonScenePlan(sourcePlan);
+    const eventSeeds = semanticContractEventSeeds(scenePlan.narrativeContractGraph!);
+    const premiseSeeds = semanticContractPremiseSeeds(scenePlan.narrativeContractGraph!);
+    scenePlan.semanticEventIr = {
+      version: 1,
+      policyVersion: SEMANTIC_CONTRACT_IR_POLICY_VERSION,
+      provider: 'gemini',
+      model: 'gemini-test',
+      sourceHash: semanticContractSourceHash(eventSeeds),
+      premiseSourceHash: semanticContractPremiseSourceHash(premiseSeeds),
+      events: eventSeeds.map((event) => ({
+        ...event,
+        propositions: event.sources.map((source, index) => ({
+          id: `${event.eventId}:semantic:${index + 1}`,
+          sourceId: source.id,
+          sourceSpan: source.text,
+          proposition: source.text,
+          semanticRole: 'action' as const,
+          participantIds: [],
+          semanticCriteria: ['The authored action occurs on-page.'],
+          prerequisitePropositionIds: [],
+          referencedLocations: [],
+          required: true,
+        })),
+      })),
+      premises: premiseSeeds.map((premise) => ({
+        premiseId: premise.premiseId,
+        sourceText: premise.sourceText,
+        minimumEvidenceHits: 1,
+        propositions: [{
+          id: `${premise.premiseId}:semantic:1`,
+          sourceSpan: premise.sourceText,
+          proposition: premise.sourceText,
+          semanticCriteria: ['The authored premise is established on-page.'],
+          verificationAuthority: 'semantic_judge' as const,
+          required: true,
+        }],
+      })),
+    };
     const cached = JSON.parse(JSON.stringify({
       ...sourcePlan,
       scenePlan,
@@ -1552,6 +1597,8 @@ describe('projectSpineOntoScenes', () => {
     expect(migratedBond.behavioralIntents).toEqual([expect.objectContaining({
       kind: 'behavioral_intent', intentKind: 'social_test',
     })]);
+    expect(migrated.scenePlan?.semanticEventIr).toEqual(scenePlan.semanticEventIr);
+    expect(migrated.scenePlan?.narrativeContractGraph?.semanticEventIr).toEqual(scenePlan.semanticEventIr);
   });
 
   it('floors authored-lite scenes to ESC standard units so meet/threshold are not orphaned (Bite Me ep3)', () => {

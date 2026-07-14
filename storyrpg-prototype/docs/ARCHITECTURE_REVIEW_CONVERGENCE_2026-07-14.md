@@ -143,6 +143,28 @@ only behavioral change is which side wins a tie that today is resolved as
 "discard everything": keep the best imperfect candidate and let a
 better-equipped later pass finish the job.
 
+## IV-b. Surface sweep results (2026-07-14, evening — executed)
+
+The s1-4 failure (job worker-1784057692085, 12:34–12:46 PDT) ran code
+predating all five review fixes; it exercised only the 12:31 capacity commit
+(which cleared s1-3 for the first time) and died at the shared-resolution
+abort — the sibling of the fallback site section IV-D fixed. Every remaining
+owner-stage terminal site was then audited:
+
+| Site (ContentGenerationPhase) | Class | Action |
+|---|---|---|
+| Shared-resolution-only blockers (was :3374) | missing meaning on a valid choice set; own metadata names repair_choice | **CONVERTED** — commits the set, defers non-critical residue (584885f1) |
+| ChoiceCommitBlocker (was :3486) | same class at commit time | **CONVERTED** — critical/structural still throws; meaning misses defer + write `choice-realization-blockers` diagnostic (replay-harness compatible) |
+| OwnerStageValidatorSnapshotMismatch :2688 | replay determinism invariant | KEEP — inconclusive/unavailable consensus is now cached by full claim identity (d498869f), so replay is deterministic for identical candidates |
+| Encounter preflights :4428–4457 | second-line invariants | KEEP — plan-time mirrors already exist in StoryArchitect (:3367–3400: binding, stakes, skills, beat plan ≥3); scene-time reachable only via blueprint mutation |
+| Encounter template collapse :5206 | reader-safety (deterministic filler) | KEEP default; sanctioned lever exists: `GATE_ENCOUNTER_TEMPLATE_ABORT=0` defers to the final contract's template-collapse repair |
+| ProducerPhaseBlocker :5272 | structural (malformed producer output) | KEEP — writes `producer-blockers.json`; resume is unit-scoped |
+| Encounter quarantine :5320 / missing content :5369 | structural | KEEP — escalated retry pass + unit-scoped resume already built in |
+
+Net: after 584885f1, no owner-stage site aborts a run over non-critical
+missing meaning. Remaining aborts are structural, forbidden-content, or
+determinism invariants — the taxonomy section IV-B prescribes.
+
 ## V. Sequencing
 
 1. Build the offline harness (C) against the s1-3 blockers fixture from

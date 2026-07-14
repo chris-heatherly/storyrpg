@@ -3411,18 +3411,73 @@ export class ContentGenerationPhase {
                   ? this.deps.buildDeterministicChoiceSet(sceneBlueprint, choicePointBeat)
                   : undefined);
               if (fallbackChoiceSet) {
-                const preparedFallback = prepareChoiceCandidate(fallbackChoiceSet, choicePointBeat);
-                const fallbackValidation = await validateChoiceCandidate(preparedFallback);
+                let preparedFallback = prepareChoiceCandidate(fallbackChoiceSet, choicePointBeat);
+                let fallbackValidation = await validateChoiceCandidate(preparedFallback);
                 if (fallbackValidation.ownerBlockers.length > 0 || fallbackValidation.producerBlockers.length > 0) {
+                  // A templated fallback can never author missing meaning, so a
+                  // contract-bearing choice point gets one last ChoiceAuthor
+                  // re-author fed the fallback's exact contract findings before
+                  // any terminal decision.
+                  const choiceTasks = sceneBlueprint.realizationTasks ?? [];
+                  const contractFeedback = fallbackValidation.ownerBlockers
+                    .map((finding) => ownerRealizationRepairFeedback(finding, choiceTasks))
+                    .concat(fallbackValidation.producerBlockers.map((finding) => `${finding.fieldPath}: ${finding.message}`))
+                    .join('; ');
+                  context.emit({ type: 'regeneration_triggered', phase: 'choices', message: `Scene ${sceneBlueprint.id}: templated fallback cannot satisfy the assigned choice contract — running one contract-fed ChoiceAuthor re-author.` });
+                  const contractRetry = await authorChoices(
+                    {
+                      ...choiceAuthorInput,
+                      storyContext: {
+                        ...choiceAuthorInput.storyContext,
+                        userPrompt: `${choiceAuthorInput.storyContext.userPrompt || ''}\n\nFINAL CONTRACT-FED RETRY: earlier attempts and the templated fallback failed this scene's assigned choice contract. Author real choices that satisfy EACH of the following, without copying contract wording into reader-facing text: ${contractFeedback}`,
+                      },
+                    },
+                    `ChoiceAuthor.execute(${sceneBlueprint.id} contract-fed-final)`,
+                  );
+                  if (contractRetry.success && contractRetry.data && (contractRetry.data.choices?.length ?? 0) > 0) {
+                    const preparedRetry = prepareChoiceCandidate(contractRetry.data, choicePointBeat);
+                    const retryValidation = await validateChoiceCandidate(preparedRetry);
+                    const retryUsable = retryValidation.producerBlockers.length === 0
+                      && retryValidation.ownerBlockers.every((finding) => !isCriticalOwnerRealizationFinding(finding, choiceTasks));
+                    if (retryUsable && (retryValidation.ownerBlockers.length + retryValidation.producerBlockers.length)
+                      <= (fallbackValidation.ownerBlockers.length + fallbackValidation.producerBlockers.length)) {
+                      preparedFallback = preparedRetry;
+                      fallbackValidation = retryValidation;
+                    }
+                  }
+                }
+                const residualCritical = [
+                  ...fallbackValidation.producerBlockers,
+                  ...fallbackValidation.ownerBlockers.filter((finding) =>
+                    isCriticalOwnerRealizationFinding(finding, sceneBlueprint.realizationTasks ?? [])),
+                ];
+                if (residualCritical.length > 0) {
                   throw new PipelineError(
                     `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} deterministic choice fallback cannot satisfy its assigned choice contract.`,
                     'content_generation',
                     { agent: 'ChoiceAuthor', context: { sceneId: sceneBlueprint.id, findings: [...fallbackValidation.ownerBlockers, ...fallbackValidation.producerBlockers] } },
                   );
                 }
+                if (fallbackValidation.ownerBlockers.length > 0) {
+                  // Non-critical missing meaning on the adopted choice set defers
+                  // to the episode-level semantic contract's repair_choice route
+                  // instead of discarding the run.
+                  const candidateHash = stableHash(preparedFallback);
+                  for (const finding of fallbackValidation.ownerBlockers) {
+                    appendDeferredRealizationRecord(deferredRealizationRecords, buildDeferredRealizationRecord({
+                      episodeNumber: densityEpisodeNumber,
+                      sceneId: sceneBlueprint.id,
+                      candidateHash,
+                      finding,
+                      tasks: sceneBlueprint.realizationTasks ?? [],
+                      reason: 'owner_repair_exhausted',
+                    }));
+                  }
+                  context.emit({ type: 'warning', phase: 'choices', message: `Scene ${sceneBlueprint.id}: deferring ${fallbackValidation.ownerBlockers.length} choice-contract finding(s) to episode-contract repair.`, data: { findings: fallbackValidation.ownerBlockers } });
+                }
                 choiceSets.push(preparedFallback);
                 refreshEpisodePlantsForChoiceSet(preparedFallback);
-                context.emit({ type: 'warning', phase: 'choices', message: `Inserted deterministic fallback choice set for ${sceneBlueprint.id} (${preparedFallback.choices.length} choice(s)) and planted its on-page contracts after ChoiceAuthor failed.` });
+                context.emit({ type: 'warning', phase: 'choices', message: `Inserted ${fallbackValidation.ownerBlockers.length > 0 ? 'best-available' : 'deterministic fallback'} choice set for ${sceneBlueprint.id} (${preparedFallback.choices.length} choice(s)) and planted its on-page contracts after ChoiceAuthor failed.` });
               }
             } else {
             const preparedChoiceSet = prepareChoiceCandidate(choiceResult.data, choicePointBeat);

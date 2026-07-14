@@ -3369,8 +3369,17 @@ export class ContentGenerationPhase {
               }
             }
 
-            if (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0) {
-              if (choiceResult.success && choiceResult.data && hasOnlySharedResolutionBlockers()) {
+            // Shared-resolution residue on an otherwise-valid choice set is
+            // missing MEANING, not broken structure: the options, consequences,
+            // and outcome tiers all passed. Its own failure metadata names
+            // repair_choice — the route the episode contract executes — so a
+            // non-critical residue flows into the normal commit path below and
+            // defers there instead of discarding the run (killed s1-4 in
+            // bite-me_2026-07-14T17-29-14 after cross-atom repair progress).
+            if (choiceResult.success && choiceResult.data && hasOnlySharedResolutionBlockers()) {
+              const sharedResolutionCritical = choiceOwnerBlockers.filter((finding) =>
+                isCriticalOwnerRealizationFinding(finding, sceneBlueprint.realizationTasks ?? []));
+              if (sharedResolutionCritical.length > 0) {
                 throw new PipelineError(
                   `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} shared choice resolution did not satisfy its route-invariant contract after focused LLM repair.`,
                   'choices',
@@ -3387,6 +3396,16 @@ export class ContentGenerationPhase {
                   },
                 );
               }
+              context.emit({
+                type: 'warning',
+                phase: 'choices',
+                message: `Scene ${sceneBlueprint.id}: ${choiceOwnerBlockers.length} shared-resolution meaning miss(es) remain after focused repair — committing the valid choice set and deferring to episode-contract repair.`,
+                data: { findings: choiceOwnerBlockers },
+              });
+              choiceOwnerBlockers = [];
+            }
+
+            if (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0) {
               // ChoiceAuthor failed after retries AND per-target regeneration — only now
               // fall back to deterministic templated choices. The scene ships without
               // LLM-authored choices at this point.
@@ -3482,12 +3501,48 @@ export class ContentGenerationPhase {
             } else {
             const preparedChoiceSet = prepareChoiceCandidate(choiceResult.data, choicePointBeat);
             const preparedValidation = await validateChoiceCandidate(preparedChoiceSet);
-            if (preparedValidation.ownerBlockers.length > 0 || preparedValidation.producerBlockers.length > 0) {
+            // Structural damage (producer findings) or forbidden/unknown-task
+            // residue still blocks the commit; non-critical missing meaning on
+            // the prepared set defers to the episode contract's repair_choice
+            // route with a replayable diagnostic.
+            const preparedCritical = preparedValidation.ownerBlockers.filter((finding) =>
+              isCriticalOwnerRealizationFinding(finding, sceneBlueprint.realizationTasks ?? []));
+            if (preparedCritical.length > 0 || preparedValidation.producerBlockers.length > 0) {
               throw new PipelineError(
                 `[ChoiceCommitBlocker] ${sceneBlueprint.id} failed its choice contract after deterministic projections were applied.`,
                 'choices',
                 { agent: 'ChoiceAuthor', context: { sceneId: sceneBlueprint.id, findings: [...preparedValidation.ownerBlockers, ...preparedValidation.producerBlockers] } },
               );
+            }
+            if (preparedValidation.ownerBlockers.length > 0) {
+              const candidateHash = stableHash(preparedChoiceSet);
+              if (outputDirectory) {
+                await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-choice-realization-blockers.json`, {
+                  schemaVersion: 1,
+                  episodeNumber: densityEpisodeNumber,
+                  sceneId: sceneBlueprint.id,
+                  candidateHash,
+                  findings: preparedValidation.ownerBlockers,
+                  realizationTasks: sceneBlueprint.realizationTasks ?? [],
+                  candidate: preparedChoiceSet,
+                });
+              }
+              for (const finding of preparedValidation.ownerBlockers) {
+                appendDeferredRealizationRecord(deferredRealizationRecords, buildDeferredRealizationRecord({
+                  episodeNumber: densityEpisodeNumber,
+                  sceneId: sceneBlueprint.id,
+                  candidateHash,
+                  finding,
+                  tasks: sceneBlueprint.realizationTasks ?? [],
+                  reason: 'owner_repair_exhausted',
+                }));
+              }
+              context.emit({
+                type: 'warning',
+                phase: 'choices',
+                message: `Scene ${sceneBlueprint.id}: committing choices with ${preparedValidation.ownerBlockers.length} deferred meaning miss(es) for episode-contract repair.`,
+                data: { findings: preparedValidation.ownerBlockers },
+              });
             }
             choiceResult.data = preparedChoiceSet;
             const choiceAdvisories = (await choiceRealizationFindings(choiceResult.data)).filter((finding) => !finding.blocking);

@@ -2811,6 +2811,65 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
             <Text style={styles.failureValue}>{String(failure.failureStepId || 'unknown')}</Text>
             <Text style={styles.failureLabel}>KIND</Text>
             <Text style={styles.failureValue}>{String(failure.failureKind || 'unknown')}</Text>
+            {(() => {
+              const ctx = (failure.context && typeof failure.context === 'object')
+                ? failure.context as Record<string, unknown>
+                : {};
+              const failureCode = failure.failureCode ?? ctx.failureCode;
+              const failureOwnerStage = failure.failureOwnerStage ?? ctx.failureOwnerStage;
+              const retryClass = failure.retryClass ?? ctx.retryClass;
+              const repairTarget = failure.repairTarget ?? ctx.repairTarget;
+              const artifactRefs = Array.isArray(ctx.artifactRefs)
+                ? ctx.artifactRefs.map(String)
+                : typeof failure.failureArtifactKey === 'string'
+                  ? [failure.failureArtifactKey]
+                  : [];
+              const errorsPath = outputDirectory
+                ? `${String(outputDirectory).replace(/\/?$/, '/')}99-pipeline-errors.json`
+                : null;
+              return (
+                <>
+                  {failureCode != null && String(failureCode).length > 0 && (
+                    <>
+                      <Text style={styles.failureLabel}>FAILURE CODE</Text>
+                      <Text style={styles.failureValue}>{String(failureCode)}</Text>
+                    </>
+                  )}
+                  {failureOwnerStage != null && String(failureOwnerStage).length > 0 && (
+                    <>
+                      <Text style={styles.failureLabel}>OWNER STAGE</Text>
+                      <Text style={styles.failureValue}>{String(failureOwnerStage)}</Text>
+                    </>
+                  )}
+                  {retryClass != null && String(retryClass).length > 0 && (
+                    <>
+                      <Text style={styles.failureLabel}>RETRY CLASS</Text>
+                      <Text style={styles.failureValue}>{String(retryClass)}</Text>
+                    </>
+                  )}
+                  {repairTarget != null && String(repairTarget).length > 0 && (
+                    <>
+                      <Text style={styles.failureLabel}>REPAIR TARGET</Text>
+                      <Text style={styles.failureValue}>{String(repairTarget)}</Text>
+                    </>
+                  )}
+                  {artifactRefs.length > 0 && (
+                    <>
+                      <Text style={styles.failureLabel}>ARTIFACTS</Text>
+                      {artifactRefs.slice(0, 6).map((ref) => (
+                        <Text key={ref} style={styles.failureMessage}>{ref}</Text>
+                      ))}
+                    </>
+                  )}
+                  {errorsPath && (
+                    <>
+                      <Text style={styles.failureLabel}>ERROR LOG</Text>
+                      <Text style={styles.failureMessage}>{errorsPath}</Text>
+                    </>
+                  )}
+                </>
+              );
+            })()}
             <Text style={styles.failureLabel}>BLOCKED ACTION</Text>
             <Text style={styles.failureValue}>{blockedAction}</Text>
             <Text style={styles.failureLabel}>ERROR</Text>

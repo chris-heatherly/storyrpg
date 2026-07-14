@@ -48,14 +48,24 @@ describe('StoryArchitect authored-mode preflight', () => {
     }
   });
 
-  it('does not blindly re-sample a lossy truncated invent-mode blueprint', async () => {
-    const transport = vi.fn(async () => '{"episodeId":"ep1","scenes":[');
+  it('retries once with a compact contract after a truncated invent-mode blueprint', async () => {
+    const transport = vi.fn()
+      .mockResolvedValueOnce('{"episodeId":"ep1","scenes":[')
+      .mockResolvedValueOnce('{"episodeId":"ep1","scenes":[');
     BaseAgent.setLlmTransportOverride(transport);
     try {
       const result = await new StoryArchitect(config).execute(makeInput({ sourceKind: 'invent' }));
       expect(result.success).toBe(false);
-      expect(result.error).toMatch(/rejecting lossy parse/i);
-      expect(transport).toHaveBeenCalledTimes(1);
+      expect(transport).toHaveBeenCalledTimes(2);
+      const secondUser = transport.mock.calls[1][0].messages.find((m: { role: string }) => m.role === 'user')?.content ?? '';
+      expect(secondUser).toMatch(/COMPACT TRUNCATION RETRY/);
+      expect(result.metadata?.failure).toMatchObject({
+        code: 'structured_output_truncated',
+        retryClass: 'adjust_call_budget',
+      });
+      expect(StoryArchitect.classifyBlueprintFailure(
+        'Truncated LLM response from Story Architect: JSON repair dropped or synthesized content; rejecting lossy parse.',
+      )).toMatchObject({ isTruncationError: true, retryable: true });
     } finally {
       BaseAgent.setLlmTransportOverride(null);
     }
@@ -2690,6 +2700,16 @@ describe('StoryArchitect.classifyBlueprintFailure (validator tiering, B1)', () =
     expect(c.isParseError).toBe(true);
     expect(c.hasHard).toBe(true);
     expect(c.advisoryOnly).toBe(false);
+  });
+
+  it('classifies truncation / lossy-parse as retryable adjust-budget failures', () => {
+    const c = StoryArchitect.classifyBlueprintFailure(
+      'Truncated LLM response from Story Architect: JSON repair dropped or synthesized content; rejecting lossy parse.',
+    );
+    expect(c.isTruncationError).toBe(true);
+    expect(c.isParseError).toBe(true);
+    expect(c.retryable).toBe(true);
+    expect(c.hasHard).toBe(true);
   });
 
   it('mixed hard+advisory is NOT advisoryOnly (hard wins, still blocks)', () => {

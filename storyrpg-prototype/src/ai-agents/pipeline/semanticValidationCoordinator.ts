@@ -293,9 +293,16 @@ async function evaluateClaims(
           samples: claimSamples,
         } satisfies ClaimConsensus
       : majorityConsensus(claim, atom, claimSamples);
-    if (consensus.outcome === 'pass' || consensus.outcome === 'content_miss') {
+    if (consensus.outcome === 'pass'
+      || consensus.outcome === 'content_miss'
+      || consensus.outcome === 'inconclusive'
+      || consensus.outcome === 'judge_unavailable') {
       semanticConsensusCache.set(cacheKeys.get(claim.id)!, consensus);
-      semanticEvidenceReceiptCache.set(evidenceCacheKeys.get(claim.id)!, consensus);
+      // Evidence-receipt reuse stays pass-only (reusableEvidenceConsensus); infra
+      // outcomes are cached by full claim identity so snapshot replay stays stable.
+      if (consensus.outcome === 'pass' || consensus.outcome === 'content_miss') {
+        semanticEvidenceReceiptCache.set(evidenceCacheKeys.get(claim.id)!, consensus);
+      }
     }
     resolved.set(claim.id, consensus);
   }

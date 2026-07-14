@@ -589,7 +589,7 @@ export class ContentGenerationPhase {
           failure: {
             code: 'semantic_validation_inconclusive',
             ownerStage: input.currentStage ?? 'scene_content',
-            retryClass: 'repair_final_contract',
+            retryClass: 'none',
             issueCodes: ['SEMANTIC_VALIDATION_INCONCLUSIVE'],
             artifactRefs: receiptRef ? [receiptRef] : [],
             repairTarget: inconclusive[0]?.taskId ?? input.sceneId,
@@ -597,7 +597,17 @@ export class ContentGenerationPhase {
         },
       );
     }
-    return { findings: combinedFindings, semanticReceipt: semantic.receipt };
+    if (inconclusive.length > 0 && (input.mode ?? 'owner') === 'owner') {
+      console.warn(
+        `[SemanticValidation] ${input.sceneId}: ${inconclusive.length} inconclusive judge finding(s) deferred to final regression (no authored repair debit).`,
+      );
+    }
+    // Owner-stage returns content findings only — inconclusive/unavailable are infra.
+    const contentFindings = semantic.findings.filter((finding) =>
+      finding.code !== 'SEMANTIC_VALIDATION_INCONCLUSIVE'
+      && finding.code !== 'SEMANTIC_VALIDATION_UNAVAILABLE',
+    );
+    return { findings: contentFindings, semanticReceipt: semantic.receipt };
   }
 
   private async memoryContextFor(

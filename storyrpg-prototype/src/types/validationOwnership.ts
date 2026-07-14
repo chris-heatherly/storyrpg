@@ -21,6 +21,7 @@ export type ValidationOwnerStage =
 export type ValidationRetryClass =
   | 'retry_provider'
   | 'retry_structured_output'
+  | 'adjust_call_budget'
   | 'recompile_episode_plan'
   | 'repair_scene_prose'
   | 'repair_choice'

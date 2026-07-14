@@ -498,18 +498,18 @@ _(Update as work lands.)_
 
 | ID | Status | Commit / notes |
 |---|---|---|
-| R0.1 | done (uncommitted) | Optional atoms never pad threshold misses; Bite Me fixture test; builds on cdf25022 mixed-authority fix |
-| R0.2 | done (uncommitted) | Second-person pronoun atoms stripped at task compile (`isSecondPersonUnrealizablePronounAtom`) |
-| R0.3 | done (uncommitted) | `SemanticRealizationJudge` + `QARunner` router rules + coverage tests |
-| R0.4 | done (uncommitted) | ESC failure metadata; skip identical elaborate-mode architecture retries |
-| R0.5 | done (uncommitted) | Frozen QA/best-practices applied on first final-contract validation pass only |
-| R0.6 | done (uncommitted) | Introduced-fingerprint rounds revert and continue (no full loop break) |
-| R0.7 | pending | |
-| R0.8 | pending | |
-| R0.9 | done (uncommitted) | Default token ceiling 1.5M; remediation budget default 48; semantic-patch failures recorded |
-| R0.10 | done (uncommitted) | `partial-story.json` before single-episode final contract + on generate() abort |
-| R0.11 | pending | |
-| R0.12 | pending | |
+| R0.1 | done (`da06e386`) | Optional atoms never pad threshold misses; Bite Me fixture test; builds on cdf25022 mixed-authority fix |
+| R0.2 | done (`da06e386`) | Second-person pronoun atoms stripped at task compile (`isSecondPersonUnrealizablePronounAtom`) |
+| R0.3 | done (`da06e386`) | `SemanticRealizationJudge` + `QARunner` router rules + coverage tests |
+| R0.4 | done (`da06e386`) | ESC failure metadata; skip identical elaborate-mode architecture retries |
+| R0.5 | done (`da06e386`) | Frozen QA/best-practices applied on first final-contract validation pass only |
+| R0.6 | done (`da06e386`) | Introduced-fingerprint rounds revert and continue (no full loop break) |
+| R0.7 | done | StoryArchitect compact truncation ladder + `adjust_call_budget` metadata |
+| R0.8 | done | Judge temp 0; E1/E2 excerpt labels; cache infra outcomes; owner skips authored repair on inconclusive |
+| R0.9 | done (`da06e386`) | Default token ceiling 1.5M; remediation budget default 48; semantic-patch failures recorded |
+| R0.10 | done (`da06e386`) | `partial-story.json` before single-episode final contract + on generate() abort |
+| R0.11 | done | Failed ledger stamps code/owner/repairTarget/gateConfigHash; `npm run validation:kill-table` |
+| R0.12 | done | Generator failure workspace surfaces typed failure fields + `99-pipeline-errors.json` path |
 | R1.* | pending | |
 | R2.* | pending | |
 

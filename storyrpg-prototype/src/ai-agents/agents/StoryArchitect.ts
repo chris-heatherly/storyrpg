@@ -414,6 +414,8 @@ export interface StoryArchitectInput {
 interface StoryArchitectRetryState {
   contractAttempts: number;
   formatAttempts: number;
+  /** Compact truncation retries consumed (max 1). Distinct from formatAttempts. */
+  truncationAttempts: number;
 }
 
 type PlannedEncounterDirective = NonNullable<NonNullable<StoryArchitectInput['seasonPlanDirectives']>['plannedEncounters']>[number];
@@ -5275,11 +5277,16 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
   ): Promise<AgentResponse<EpisodeBlueprint>> {
     const maxRetries = 2;
     const maxFormatRetries = 1;
+    const maxTruncationRetries = 1;
     const retryState: StoryArchitectRetryState = typeof retry === 'number'
-      ? { contractAttempts: retry, formatAttempts: 0 }
-      : retry;
+      ? { contractAttempts: retry, formatAttempts: 0, truncationAttempts: 0 }
+      : {
+          contractAttempts: retry.contractAttempts,
+          formatAttempts: retry.formatAttempts,
+          truncationAttempts: retry.truncationAttempts ?? 0,
+        };
     const retryCount = retryState.contractAttempts;
-    const totalAttempts = retryState.contractAttempts + retryState.formatAttempts;
+    const totalAttempts = retryState.contractAttempts + retryState.formatAttempts + retryState.truncationAttempts;
 
     // Scene-first (elaborate) mode: when the season plan provides this episode's
     // scenes, build the blueprint from them deterministically and route through
@@ -5450,7 +5457,7 @@ Return ONLY a JSON object: {"centralTurn": "…"}. No prose outside the JSON.`;
 
     console.log(
       `[StoryArchitect] Building episode blueprint...${totalAttempts > 0
-        ? ` (contract retries ${retryState.contractAttempts}/${maxRetries}, format retries ${retryState.formatAttempts}/${maxFormatRetries})`
+        ? ` (contract retries ${retryState.contractAttempts}/${maxRetries}, format retries ${retryState.formatAttempts}/${maxFormatRetries}, truncation retries ${retryState.truncationAttempts}/${maxTruncationRetries})`
         : ''}`,
     );
 
@@ -5480,8 +5487,40 @@ REQUIREMENTS:
         this.lastStructuralFeedback = [];
       }
 
-      const rawResponse = await this.callLLM(messages);
-      const response = rawResponse;
+      const isCompactTruncationRetry = retryState.truncationAttempts > 0;
+      if (isCompactTruncationRetry) {
+        messages[0].content = this.buildCompactTruncationRetryPrompt(messages[0].content);
+      }
+
+      let response: string;
+      const previousMaxTokens = this.config.maxTokens;
+      try {
+        if (isCompactTruncationRetry && typeof previousMaxTokens === 'number' && previousMaxTokens > 0) {
+          // Optional budget bump on the compact attempt only — same request shape is
+          // what BaseAgent refuses to blindly re-sample after MAX_TOKENS.
+          this.config.maxTokens = Math.min(Math.ceil(previousMaxTokens * 1.5), previousMaxTokens + 8192);
+        }
+        response = await this.callLLM(messages);
+      } catch (llmError) {
+        if (
+          llmError instanceof TruncatedLLMResponseError
+          && retryState.truncationAttempts < maxTruncationRetries
+        ) {
+          console.warn(
+            `[StoryArchitect] first response hit ${llmError.finishReason || 'token limit'} — retrying once with a compact blueprint contract.`,
+          );
+          this.lastStructuralFeedback = [
+            'Previous response hit the provider output token limit before a complete blueprint JSON object was returned. Emit a COMPLETE but COMPACT blueprint.',
+          ];
+          return this.execute(input, {
+            ...retryState,
+            truncationAttempts: retryState.truncationAttempts + 1,
+          });
+        }
+        throw llmError;
+      } finally {
+        this.config.maxTokens = previousMaxTokens;
+      }
 
       console.log(`[StoryArchitect] Received response (${response.length} chars)`);
 
@@ -5491,6 +5530,21 @@ REQUIREMENTS:
         parsedBlueprint = blueprint;
       } catch (parseError) {
         console.error(`[StoryArchitect] JSON parse failed. Raw response (first 500 chars):`, response.substring(0, 500));
+        if (
+          parseError instanceof TruncatedLLMResponseError
+          && retryState.truncationAttempts < maxTruncationRetries
+        ) {
+          console.warn(
+            `[StoryArchitect] lossy/truncated blueprint JSON — retrying once with a compact blueprint contract.`,
+          );
+          this.lastStructuralFeedback = [
+            'Previous response was truncated or required lossy JSON repair. Emit a COMPLETE but COMPACT blueprint as one strictly-valid JSON object.',
+          ];
+          return this.execute(input, {
+            ...retryState,
+            truncationAttempts: retryState.truncationAttempts + 1,
+          });
+        }
         if (parseError instanceof TruncatedLLMResponseError) throw parseError;
         if (retryState.formatAttempts < maxFormatRetries) {
           this.lastStructuralFeedback = [
@@ -5912,11 +5966,22 @@ REQUIREMENTS:
 
       const cls = StoryArchitect.classifyBlueprintFailure(errorMsg);
 
-      const retryBudgetAvailable = cls.isParseError
-        ? retryState.formatAttempts < maxFormatRetries
-        : retryState.contractAttempts < maxRetries;
+      const retryBudgetAvailable = cls.isTruncationError
+        ? retryState.truncationAttempts < maxTruncationRetries
+        : cls.isParseError
+          ? retryState.formatAttempts < maxFormatRetries
+          : retryState.contractAttempts < maxRetries;
       if (cls.retryable && retryBudgetAvailable) {
         console.log(`[StoryArchitect] Retrying due to blueprint issue: ${errorMsg.slice(0, 120)}`);
+        if (cls.isTruncationError) {
+          this.lastStructuralFeedback = [
+            'Previous response hit the provider output token limit or required lossy JSON repair. Emit a COMPLETE but COMPACT blueprint.',
+          ];
+          return this.execute(input, {
+            ...retryState,
+            truncationAttempts: retryState.truncationAttempts + 1,
+          });
+        }
         this.lastStructuralFeedback = cls.isParseError
           ? [
               'Previous response was not parseable strict JSON. Return one plain JSON object only: no markdown, no comments, no trailing commas, no DynamoDB typed wrappers like {"S":"value"} or {"L":[...]}.',
@@ -5950,6 +6015,15 @@ REQUIREMENTS:
       return {
         success: false,
         error: errorMsg,
+        metadata: cls.isTruncationError
+          ? this.failureMetadata({
+              code: 'structured_output_truncated',
+              ownerStage: 'episode_plan',
+              retryClass: 'adjust_call_budget',
+              issueCodes: ['story_architect_truncated'],
+              repairTarget: 'episode-blueprint',
+            })
+          : undefined,
       };
     }
   }
@@ -5978,6 +6052,7 @@ REQUIREMENTS:
     advisoryOnly: boolean;
     retryable: boolean;
     isParseError: boolean;
+    isTruncationError: boolean;
   } {
     const advisoryTags = ['[TreatmentFidelity]', '[DramaticStructure]', '[ThemePressure]', '[SceneTurnContract]', '[EpisodePressure]'];
     // ESC lockdown: for authored_lite + ESC, TreatmentFidelity choice/turn gaps are hard.
@@ -6011,9 +6086,11 @@ REQUIREMENTS:
                                hardText.includes('EpisodeStoryCircleValidator');
     const isDuplicateEventError = hardText.includes('appears to restage the same high-pressure event');
     const isBlueprintHygieneError = hardText.includes('[BlueprintContractHygiene]');
+    const isTruncationError = /Truncated LLM response|rejecting lossy parse|MAX_TOKENS|finishReason=MAX_TOKENS/i.test(hardText);
     const isParseError = hardText.includes('Failed to parse JSON response') ||
                          hardText.includes('Expected double-quoted property name') ||
-                         hardText.includes('Unexpected token');
+                         hardText.includes('Unexpected token') ||
+                         isTruncationError;
 
     const hasHard = isChoiceDensityError || isEncounterPlanningError || isStructuralError || isDuplicateEventError || isBlueprintHygieneError || isParseError;
 
@@ -6023,7 +6100,18 @@ REQUIREMENTS:
       advisoryOnly: hasAdvisory && !hasHard,
       retryable: hasHard || hasAdvisory,
       isParseError,
+      isTruncationError,
     };
+  }
+
+  /** Compact-output directive for the single truncation recovery attempt. */
+  private buildCompactTruncationRetryPrompt(basePrompt: string): string {
+    return `${basePrompt}\n\n` +
+      `COMPACT TRUNCATION RETRY: previous response hit the provider output token limit or required lossy JSON repair.\n` +
+      `Re-emit the COMPLETE episode blueprint as ONE strictly-valid JSON object.\n` +
+      `Hard output caps: one sentence per scalar description; choicePoint descriptions ≤ 1 sentence; ` +
+      `encounterBeatPlan max 3 beats; arrays keep required coverage but drop decorative extras; ` +
+      `no markdown, no commentary, no trailing commas. Return only JSON.`;
   }
 
   private unwrapDynamoTypedJson(value: unknown): unknown {

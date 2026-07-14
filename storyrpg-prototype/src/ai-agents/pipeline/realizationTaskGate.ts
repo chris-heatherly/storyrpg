@@ -54,7 +54,13 @@ export function prioritizeOwnerRepairFindings(
   tasks: NarrativeRealizationTask[],
 ): RealizationTaskGateFinding[] {
   const taskById = new Map(tasks.map((task) => [task.id, task]));
-  return [...findings].sort((left, right) => {
+  // Infra judge outcomes are never authored-content repair targets — retry the
+  // judge / defer to final regression instead of spending scene-prose budget.
+  const contentFindings = findings.filter((finding) =>
+    finding.code !== 'SEMANTIC_VALIDATION_INCONCLUSIVE'
+    && finding.code !== 'SEMANTIC_VALIDATION_UNAVAILABLE',
+  );
+  return [...contentFindings].sort((left, right) => {
     const leftTask = taskById.get(left.taskId);
     const rightTask = taskById.get(right.taskId);
     const leftPriority = leftTask?.canonicalEventId ? 0 : left.code === 'OWNER_FORBIDDEN_EVIDENCE_PRESENT' ? 1 : 2;

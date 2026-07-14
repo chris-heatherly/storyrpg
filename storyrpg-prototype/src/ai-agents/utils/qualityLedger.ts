@@ -69,6 +69,18 @@ export interface QualityLedgerEntry {
   blocked?: boolean;
   /** Coarse failure category for cross-run triage, e.g. the PipelineError `phase`. */
   failureKind?: string;
+  /** Typed PipelineFailureCode when available. */
+  failureCode?: string;
+  /** Owner stage that owns the blocking defect. */
+  failureOwnerStage?: string;
+  /** Repair class / router hint. */
+  retryClass?: string;
+  /** Concrete repair target id (scene, task, plan…). */
+  repairTarget?: string;
+  /** Top blocking validator / agent id. */
+  topBlockingValidator?: string;
+  /** Fingerprint of resolved GATE_DEFAULTS + env overrides at fail time. */
+  gateConfigHash?: string;
   /** The validator/agent that produced the blocking failure, when known. */
   validatorId?: string;
   /** S3: total remediation attempts (scene/encounter/choice regen, autofix) this run. */

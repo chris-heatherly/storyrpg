@@ -677,6 +677,29 @@ export function isGateEnabled(flag: string): boolean {
   return GATE_DEFAULTS[flag] ?? false;
 }
 
+/**
+ * Stable fingerprint of resolved gate defaults + env overrides. Stamp failed-run
+ * ledger rows so kill-rate analysis can attribute regressions to config flips.
+ */
+export function resolveGateConfigHash(): string {
+  const flags = Object.keys(GATE_DEFAULTS).sort();
+  const resolved: Record<string, boolean | 'env:1' | 'env:0'> = {};
+  for (const flag of flags) {
+    const env = process.env[flag];
+    if (env === '1') resolved[flag] = 'env:1';
+    else if (env === '0') resolved[flag] = 'env:0';
+    else resolved[flag] = GATE_DEFAULTS[flag] === true;
+  }
+  // FNV-1a 32-bit — no crypto dependency, stable across node/browser shims.
+  const payload = JSON.stringify(resolved);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < payload.length; i += 1) {
+    hash ^= payload.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `gate-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
 /** Predicate form for helpers that take `(flag) => boolean` (planGatePolicy, applyCraftAutofix). */
 export const gateEnabledPredicate = (flag: string): boolean => isGateEnabled(flag);
 

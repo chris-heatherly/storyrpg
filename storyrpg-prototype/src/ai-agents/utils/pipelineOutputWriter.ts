@@ -956,6 +956,12 @@ export async function appendFailedRunLedger(
   details?: {
     blocked?: boolean;
     failureKind?: string;
+    failureCode?: string;
+    failureOwnerStage?: string;
+    retryClass?: string;
+    repairTarget?: string;
+    topBlockingValidator?: string;
+    gateConfigHash?: string;
     validatorId?: string;
     durationMs?: number;
     llmLedger?: LlmLedger | null;
@@ -982,6 +988,12 @@ export async function appendFailedRunLedger(
       errorCount,
       blocked: details?.blocked,
       failureKind: details?.failureKind,
+      failureCode: details?.failureCode,
+      failureOwnerStage: details?.failureOwnerStage,
+      retryClass: details?.retryClass,
+      repairTarget: details?.repairTarget,
+      topBlockingValidator: details?.topBlockingValidator,
+      gateConfigHash: details?.gateConfigHash,
       validatorId: details?.validatorId,
       durationMs: details?.durationMs,
       llmCalls: details?.llmLedger?.totals.calls,

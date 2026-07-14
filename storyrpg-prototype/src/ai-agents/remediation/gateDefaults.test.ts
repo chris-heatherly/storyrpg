@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { GATE_DEFAULTS, isGateEnabled, gateEnabledPredicate, isShadowLoggingEnabled } from './gateDefaults';
+import { GATE_DEFAULTS, isGateEnabled, gateEnabledPredicate, isShadowLoggingEnabled, resolveGateConfigHash } from './gateDefaults';
 
 // Save/restore the exact env keys we mutate so tests don't leak state.
 const TOUCHED = [
@@ -76,5 +76,15 @@ describe('isGateEnabled', () => {
     expect(isShadowLoggingEnabled()).toBe(false);
     process.env.STORYRPG_GATE_SHADOW = '1';
     expect(isShadowLoggingEnabled()).toBe(true);
+  });
+});
+
+describe('resolveGateConfigHash', () => {
+  it('returns a stable gate-* fingerprint that flips when an override changes', () => {
+    const baseline = resolveGateConfigHash();
+    expect(baseline).toMatch(/^gate-[0-9a-f]{8}$/);
+    expect(resolveGateConfigHash()).toBe(baseline);
+    process.env.GATE_NPC_DEPTH = '0';
+    expect(resolveGateConfigHash()).not.toBe(baseline);
   });
 });

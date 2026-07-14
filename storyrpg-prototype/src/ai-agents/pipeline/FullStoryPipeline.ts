@@ -344,7 +344,7 @@ import { stabilizeByHysteresis } from '../remediation/judgeStabilizer';
 import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
 import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { buildGateShadowRecord, buildValidatorPromotionRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
-import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
+import { isGateEnabled, isShadowLoggingEnabled, resolveGateConfigHash } from '../remediation/gateDefaults';
 import { setRealizationPovContext } from '../remediation/realizationEvaluator';
 import { repairAndRevalidatePropIntroduction } from '../remediation/repairs/propIntroductionRepair';
 import {
@@ -5740,7 +5740,16 @@ export class FullStoryPipeline {
             }))
           );
           // F4: early-return path — record the failed run in the quality ledger.
+          const earlyFail = episodeResults.find((r) => !r.success)?.failure;
           await appendFailedRunLedger(outputDirectory, episodeResults.filter(r => !r.success).length, {
+            blocked: true,
+            failureKind: earlyFail?.phase ?? 'episode_generation',
+            failureCode: earlyFail?.code,
+            failureOwnerStage: earlyFail?.ownerStage,
+            retryClass: earlyFail?.retryClass,
+            repairTarget: earlyFail?.repairTarget,
+            topBlockingValidator: earlyFail?.issueCodes?.[0],
+            gateConfigHash: resolveGateConfigHash(),
             durationMs: Date.now() - startTime,
             llmLedger: this.telemetry.getLlmLedger(),
             remediationSummary: this.getRemediationSummary(),
@@ -5804,7 +5813,16 @@ export class FullStoryPipeline {
           );
           // F4: this episode-failure path returns early (never reaches the
           // terminal catch), so record the failed run in the quality ledger here.
+          const epFail = failedEpisodeResults.find((result) => result.failure)?.failure;
           await appendFailedRunLedger(outputDirectory, failedEpisodeResults.length, {
+            blocked: true,
+            failureKind: epFail?.phase ?? 'episode_generation',
+            failureCode: epFail?.code,
+            failureOwnerStage: epFail?.ownerStage,
+            retryClass: epFail?.retryClass,
+            repairTarget: epFail?.repairTarget,
+            topBlockingValidator: epFail?.issueCodes?.[0],
+            gateConfigHash: resolveGateConfigHash(),
             durationMs: Date.now() - startTime,
             llmLedger: this.telemetry.getLlmLedger(),
             remediationSummary: this.getRemediationSummary(),
@@ -6166,6 +6184,14 @@ export class FullStoryPipeline {
           await appendFailedRunLedger(this._currentOutputDirectory, 1, {
             blocked: true,
             failureKind: error instanceof PipelineError ? error.phase : (error instanceof Error ? error.name : 'unknown'),
+            failureCode: error instanceof PipelineError ? error.code : undefined,
+            failureOwnerStage: error instanceof PipelineError ? error.ownerStage : undefined,
+            retryClass: error instanceof PipelineError ? error.retryClass : undefined,
+            repairTarget: error instanceof PipelineError ? error.repairTarget : undefined,
+            topBlockingValidator: error instanceof PipelineError
+              ? (error.agent || error.issueCodes[0])
+              : undefined,
+            gateConfigHash: resolveGateConfigHash(),
             validatorId: error instanceof PipelineError ? error.agent : undefined,
             durationMs: Date.now() - startTime,
             llmLedger: this.telemetry.getLlmLedger(),

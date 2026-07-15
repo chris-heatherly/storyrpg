@@ -79,6 +79,33 @@ describe('selectSceneProseRepairs', () => {
     expect(groups.get('s2-1')).toHaveLength(2);
   });
 
+  it('accepts judge-confirmed scene_prose realization misses and refuses choice_reauthor (23-29-29 starvation)', () => {
+    // bite-me_2026-07-14T23-29-29: s1-1/s1-3 SemanticRealizationJudge findings
+    // were routed same_scene_retry but this handler's allowlist predated the
+    // validator name, so the scenes were never rewritten across two rounds.
+    const groups = selectSceneProseRepairs([
+      {
+        type: 'semantic_realization_violation',
+        severity: 'error',
+        message: 'missing: event:ep1-u1:semantic:1. Missing meaning(s): Kylie arrives in Bucharest with her luggage and an address.',
+        validator: 'SemanticRealizationJudge',
+        repairHandler: 'scene_prose',
+        sceneId: 's1-1',
+        episodeNumber: 1,
+      },
+      {
+        type: 'semantic_realization_violation',
+        severity: 'error',
+        message: 'choice resolution missing',
+        validator: 'SemanticRealizationJudge',
+        repairHandler: 'choice_reauthor',
+        sceneId: 's1-4',
+        episodeNumber: 1,
+      },
+    ] as never);
+    expect([...groups.keys()]).toEqual(['s1-1']);
+  });
+
   it('does not route planning-register prose leaks to SceneCritic prose repair', () => {
     const groups = selectSceneProseRepairs([
       {

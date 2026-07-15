@@ -20,7 +20,12 @@ const issue = (validator: string, message: string, sceneId = 's1-1', episodeNumb
 });
 
 describe('GateRepairRouter', () => {
-  it('does not misroute canonical choice realization drift into scene-prose repair', () => {
+  it('routes canonical choice realization drift to the choice-resolution handler', () => {
+    // Repairable since bite-me_2026-07-14T23-29-29 (the last unroutable class:
+    // withheld as diagnostic_stop through all three repair rounds). The
+    // non-misroute guarantee moved to the handlers: the scene-prose handler
+    // refuses choice_reauthor issues; the dedicated choice-resolution handler
+    // claims them.
     const router = new GateRepairRouter();
     const route = router.routeIssue({
       ...issue('NarrativeContractValidator', 'Canonical owner realization drift.', 's1-2'),
@@ -28,8 +33,8 @@ describe('GateRepairRouter', () => {
       taskId: 'task:choice',
     });
 
-    expect(route.kind).toBe('diagnostic_stop');
-    expect(route.reason).toContain('ChoiceAuthor');
+    expect(route.kind).toBe('same_scene_retry');
+    expect(route.reason).toContain('choice-resolution handler');
   });
 
   it('routes a missing simple detail to same-scene retry', () => {

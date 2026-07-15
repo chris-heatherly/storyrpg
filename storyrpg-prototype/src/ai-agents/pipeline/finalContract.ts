@@ -47,6 +47,7 @@ import { buildSceneClusterRepairHandler, buildSceneProseRepairHandler } from '..
 import { requiredMomentFromMessage } from '../remediation/realizationScoring';
 import { missingRequiredMoments, type SceneContractSource } from '../remediation/sceneRealizationGuard';
 import { buildOutcomeTextRepairHandler } from '../remediation/outcomeTextRepairHandler';
+import { buildChoiceResolutionRepairHandler } from '../remediation/choiceResolutionRepairHandler';
 import { buildEncounterCostRepairHandler } from '../remediation/encounterCostRepairHandler';
 import { buildEncounterMetadataRepairHandler } from '../remediation/encounterMetadataRepairHandler';
 import { buildEncounterRouteRepairHandler } from '../remediation/encounterRouteRepairHandler';
@@ -1147,11 +1148,19 @@ export class FinalContract {
       }
       for (const finding of semanticFindings) {
         const task = realizationTaskById.get(finding.taskId);
+        // Repairers get the authored meaning, not opaque atom IDs: every
+        // downstream prompt (scene-prose notes, choice payoff, encounter
+        // route) is built from this message.
+        const missingMeaningDetail = (finding.missingEvidenceAtoms ?? [])
+          .map((atomId) => task?.evidenceAtoms.find((atom) => atom.id === atomId)?.description)
+          .filter((description): description is string => Boolean(description));
         const issue = {
           type: 'semantic_realization_violation' as const,
           severity: finding.blocking ? 'error' as const : 'warning' as const,
           disposition: 'confirmed' as const,
-          message: finding.message,
+          message: missingMeaningDetail.length > 0
+            ? `${finding.message} Missing meaning(s): ${missingMeaningDetail.join('; ')}.`
+            : finding.message,
           validator: 'SemanticRealizationJudge',
           episodeNumber: task?.episodeNumber,
           sceneId: finding.sceneId,
@@ -1461,6 +1470,27 @@ export class FinalContract {
                 return null;
               }
             },
+            emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
+          })),
+        );
+        // Executor for choice_reauthor findings (previously the last routed
+        // class with no handler — withheld as diagnostic_stop through every
+        // round of bite-me_2026-07-14T23-29-29): re-authors the route-invariant
+        // shared payoff from the task's missing meanings.
+        handlers.push(
+          guardLlmHandler(buildChoiceResolutionRepairHandler({
+            author: () => {
+              try {
+                return new ChoiceAuthor(this.deps.config.agents.choiceAuthor);
+              } catch (err) {
+                console.warn(`[Pipeline] Choice-resolution contract repair: ChoiceAuthor unavailable — ${err instanceof Error ? err.message : String(err)}`);
+                return null;
+              }
+            },
+            tasksById: () => new Map(
+              (input.brief.seasonPlan?.scenePlan?.narrativeContractGraph?.realizationTasks ?? [])
+                .map((task) => [task.id, task]),
+            ),
             emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
           })),
         );

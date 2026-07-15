@@ -120,8 +120,23 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
  * player at all (bite-me 2026-07-05T23-54-17 s1-1 establishing shot).
  */
 function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
-  if (issue.validator === 'NarrativeContractValidator' && issue.repairHandler === 'choice_reauthor') return false;
+  // Choice-realization drift belongs to the dedicated choice-resolution
+  // handler regardless of which validator reported it — scene-prose rewrites
+  // cannot satisfy a choice-surface contract.
+  if (issue.repairHandler === 'choice_reauthor' || issue.repairHandler === 'encounter_route') return false;
   if (issue.validator && SCENE_PROSE_REPAIRABLE_VALIDATORS.has(issue.validator)) return true;
+  // Judge-confirmed realization misses whose owner surface is scene prose.
+  // Router/handler consistency — third home of the Jul-11 rename regression:
+  // the router routed these same_scene_retry, but this allowlist predated the
+  // validator name, so bite-me_2026-07-14T23-29-29 starved s1-1/s1-3 for two
+  // rounds while rewriting the encounter scene twice.
+  if (
+    issue.validator === 'SemanticRealizationJudge'
+    && (issue.repairHandler === 'scene_prose'
+      || issue.repairHandler === 'premise_realization'
+      || issue.repairHandler === 'scene_semantic_patch'
+      || !issue.repairHandler)
+  ) return true;
   if (issue.validator === 'RouteContinuityValidator' && issue.type === 'unsafe_fallback_prose') return true;
   // Encounter template collapse / malformed prose live in encounter phase/
   // storylet beats, which this handler already flattens and rewrites

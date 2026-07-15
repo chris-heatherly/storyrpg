@@ -22,11 +22,44 @@ export interface EncounterMetadataRepairOptions {
 
 type RepairIssue = ContractRepairReport['blockingIssues'][number];
 
+// Nested description surfaces leak planning prose too: run 23-29-29 carried a
+// pasted treatment sentence in encounter.phases[0].description, which the
+// exact-match filter below could never reach — the issue survived every round.
+const DESCRIPTION_FIELD_PATH = /^encounter\.(description|phases\[\d+\]\.description|storylets\.[A-Za-z0-9_-]+\.description)$/;
+
 function descriptionIssues(issues: RepairIssue[]): RepairIssue[] {
   return issues.filter((issue) =>
     issue.type === 'unsafe_fallback_prose'
     && issue.sceneId
-    && issue.fieldPath === 'encounter.description');
+    && typeof issue.fieldPath === 'string'
+    && DESCRIPTION_FIELD_PATH.test(issue.fieldPath));
+}
+
+/** Resolve a matched description fieldPath to a get/set pair on the encounter. */
+function resolveDescriptionField(
+  encounter: Record<string, unknown>,
+  fieldPath: string,
+): { get: () => string | undefined; set: (value: string) => void } | undefined {
+  if (fieldPath === 'encounter.description') {
+    return typeof encounter.description === 'string'
+      ? { get: () => encounter.description as string, set: (value) => { encounter.description = value; } }
+      : undefined;
+  }
+  const phaseMatch = fieldPath.match(/^encounter\.phases\[(\d+)\]\.description$/);
+  if (phaseMatch) {
+    const phase = (encounter.phases as Array<Record<string, unknown>> | undefined)?.[Number(phaseMatch[1])];
+    return phase && typeof phase.description === 'string'
+      ? { get: () => phase.description as string, set: (value) => { phase.description = value; } }
+      : undefined;
+  }
+  const storyletMatch = fieldPath.match(/^encounter\.storylets\.([A-Za-z0-9_-]+)\.description$/);
+  if (storyletMatch) {
+    const storylet = (encounter.storylets as Record<string, Record<string, unknown>> | undefined)?.[storyletMatch[1]];
+    return storylet && typeof storylet.description === 'string'
+      ? { get: () => storylet.description as string, set: (value) => { storylet.description = value; } }
+      : undefined;
+  }
+  return undefined;
 }
 
 /** LLM re-author for the exact shippable encounter metadata field. */
@@ -40,23 +73,24 @@ export function buildEncounterMetadataRepairHandler(
     const author = options.author();
     if (!author) return { story, changed: false };
 
-    const selectedSceneIds = Array.from(new Set(issues.map((issue) => issue.sceneId!)))
-      .slice(0, options.maxScenesPerRound ?? 4);
+    const selected = issues.slice(0, options.maxScenesPerRound ?? 4);
     const attemptedIssueKeys: string[] = [];
     let changed = 0;
 
-    for (const sceneId of selectedSceneIds) {
+    for (const issue of selected) {
+      attemptedIssueKeys.push(contractRepairIssueFingerprint(issue));
       const scene = story.episodes
         .flatMap((episode) => episode.scenes ?? [])
-        .find((candidate) => candidate.id === sceneId);
+        .find((candidate) => candidate.id === issue.sceneId);
       const encounter = scene?.encounter as unknown as Record<string, unknown> | undefined;
-      if (!scene || !encounter || typeof encounter.description !== 'string') continue;
-
-      for (const issue of issues.filter((candidate) => candidate.sceneId === sceneId)) {
-        attemptedIssueKeys.push(contractRepairIssueFingerprint(issue));
+      if (!scene || !encounter) continue;
+      const field = resolveDescriptionField(encounter, issue.fieldPath!);
+      if (!field) {
+        options.emit?.(`Encounter metadata repair could not resolve ${issue.fieldPath} on ${issue.sceneId}.`);
+        continue;
       }
 
-      const currentDescription = encounter.description.trim();
+      const currentDescription = (field.get() ?? '').trim();
       const firstEncounterSetup = ((encounter.phases as Array<{
         beats?: Array<{ setupText?: string }>;
       }> | undefined)?.[0]?.beats?.[0]?.setupText ?? '').trim();
@@ -66,7 +100,7 @@ export function buildEncounterMetadataRepairHandler(
         sceneProse: firstEncounterSetup || scene.beats?.[0]?.text,
       });
       if (!next || next === currentDescription) continue;
-      encounter.description = next;
+      field.set(next);
       changed += 1;
     }
 
@@ -79,11 +113,11 @@ export function buildEncounterMetadataRepairHandler(
       record: {
         rule: 'final_contract_encounter_description',
         scope: 'encounter',
-        attempted: selectedSceneIds.length,
-        succeeded: changed === selectedSceneIds.length,
-        degraded: changed < selectedSceneIds.length,
+        attempted: selected.length,
+        succeeded: changed === selected.length,
+        degraded: changed < selected.length,
         blocked: false,
-        attempts: selectedSceneIds.length,
+        attempts: selected.length,
         details: `Re-authored ${changed} encounter.description field(s) by exact validator path`,
       },
     };

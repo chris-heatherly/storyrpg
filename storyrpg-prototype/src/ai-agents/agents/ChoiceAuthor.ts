@@ -1079,6 +1079,46 @@ ${tasks.flatMap((task) => task.evidenceAtoms.map((atom) => `- ${atom.description
    * when the new text is non-empty and not itself a stub. Never throws into the loop —
    * a parse/transport failure surfaces as an empty result so the stub simply remains.
    */
+  /**
+   * Final-contract twin of repairSharedResolution: re-author the
+   * route-invariant payoff from minimal context (the full ChoiceAuthorInput is
+   * gone by final-contract time). Returns the passage only; the caller
+   * projects it into every outcome tier, so deterministic code copies prose
+   * but never writes it.
+   */
+  async reauthorSharedResolutionText(ctx: {
+    currentPassage?: string;
+    requiredMeanings: string[];
+    sceneName?: string;
+    protagonistName?: string;
+    feedback?: string;
+  }): Promise<string | undefined> {
+    const prompt = `Rewrite ONLY the shared post-choice resolution passage for one interactive-fiction choice set.
+
+The passage is appended after every option's outcome, so it must hold true on every route. Write one or two concise, fiction-first, second-person sentences. Do not mention tasks, contracts, validation, choices, outcomes, stats, or mechanics.
+
+CURRENT PASSAGE:
+${ctx.currentPassage?.trim() || '(missing)'}
+
+REQUIRED MEANINGS (each must be observably dramatized in the passage):
+${ctx.requiredMeanings.map((meaning) => `- ${meaning}`).join('\n')}
+${ctx.feedback ? `\nVALIDATION FEEDBACK:\n${ctx.feedback}\n` : ''}
+SCENE: ${ctx.sceneName || 'the current scene'}
+PROTAGONIST: ${ctx.protagonistName || 'the protagonist'}
+
+Return ONLY a JSON object: {"sharedResolutionText":"..."}. No prose outside the JSON.`;
+    try {
+      const raw = await this.callLLM([{ role: 'user', content: prompt }], 2);
+      const parsed = this.parseJSON<{ sharedResolutionText?: unknown }>(raw);
+      const value = parsed?.sharedResolutionText;
+      if (typeof value === 'string' && value.trim().length >= 12) return value.trim();
+      return undefined;
+    } catch (err) {
+      console.warn(`[ChoiceAuthor] reauthorSharedResolutionText failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
   async reauthorOutcomeTexts(ctx: {
     choiceText: string;
     stakes?: { want?: string; cost?: string; identity?: string };

@@ -789,7 +789,12 @@ export class GateRepairRouter {
         return directive('same_scene_retry', issue, 'Encounter route realization is owned by the exact encounter outcome surface and requires a focused route rewrite.');
       }
       if (issue.repairHandler === 'choice_reauthor') {
-        return directive('diagnostic_stop', issue, 'Choice realization is owned and retried by ChoiceAuthor before checkpointing; the final regression net must not rewrite unrelated scene prose if a later mutation reintroduces drift.');
+        // Repairable: the dedicated choice-resolution handler re-authors the
+        // route-invariant payoff; the scene-prose handler still refuses this
+        // class, so choice drift cannot leak into unrelated prose rewrites.
+        // (Previously diagnostic_stop — the only unroutable blocker left in
+        // bite-me_2026-07-14T23-29-29, withheld across all three rounds.)
+        return directive('same_scene_retry', issue, 'Choice realization is owned by the choice surface; the choice-resolution handler re-authors the shared payoff with its missing meanings.');
       }
       if (issue.repairHandler === 'relationship_pacing') {
         return directive('same_scene_retry', issue, 'Relationship pacing is scene-local; rewrite the exact offending surface at the currently earned stage.');

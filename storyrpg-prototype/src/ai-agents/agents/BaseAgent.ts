@@ -251,9 +251,21 @@ export function resolveStructuredCallBudget(input: {
     : configured;
   const available = Math.min(configured, totalCeiling);
   if (available < requiredTotal) {
-    throw new Error(
-      `Structured output budget for ${schema.name} is infeasible: ${visibleTokens} visible + ${reasoningTokens} reasoning + ${safetyTokens} safety requires ${requiredTotal}, but the available cap is ${available}.`,
-    );
+    // A misdeclared budget is a CONFIG bug and must cost a warning, not a
+    // dead call path: the encounter-description re-author declared a 512
+    // ceiling under a 2048-token minimal-reasoning reservation and was
+    // rejected as infeasible on every attempt across three resumes — the
+    // smallest repair call in the pipeline could never run. Fail open:
+    // 1) if the provider cap allows the full requirement, treat the schema
+    //    ceiling as advisory and lift to the requirement;
+    // 2) otherwise shrink the reasoning reservation to whatever fits.
+    if (configured >= requiredTotal) {
+      console.warn(`[StructuredBudget] ${schema.name}: declared ceiling ${totalCeiling} is below the required ${requiredTotal} (visible ${visibleTokens} + reasoning ${reasoningTokens} + safety ${safetyTokens}) — lifting to the requirement. Fix the schema's outputBudget.`);
+      return { maxOutputTokens: requiredTotal, visibleTokens, reasoningTokens, safetyTokens };
+    }
+    const fittedReasoning = Math.max(0, configured - visibleTokens - safetyTokens);
+    console.warn(`[StructuredBudget] ${schema.name}: provider cap ${configured} cannot fit the required ${requiredTotal} — shrinking reasoning reservation ${reasoningTokens} → ${fittedReasoning}.`);
+    return { maxOutputTokens: configured, visibleTokens, reasoningTokens: fittedReasoning, safetyTokens };
   }
   return { maxOutputTokens: requiredTotal, visibleTokens, reasoningTokens, safetyTokens };
 }

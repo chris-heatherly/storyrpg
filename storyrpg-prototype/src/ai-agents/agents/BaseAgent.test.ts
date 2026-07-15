@@ -1,3 +1,4 @@
+import { resolveStructuredCallBudget } from './BaseAgent';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentResponse, BaseAgent, TruncatedLLMResponseError, type StructuredJsonSchema, type AgentMessage } from './BaseAgent';
 import type { AgentConfig } from '../config';
@@ -708,5 +709,45 @@ describe('BaseAgent provider truncation guards', () => {
     await expect(
       new TestAgent({ provider: 'gemini', model: 'gemini-2.5-pro' }).callPlain([{ role: 'user', content: 'go' }]),
     ).rejects.toThrow(TruncatedLLMResponseError);
+  });
+});
+
+
+describe('resolveStructuredCallBudget fail-open (infeasible declarations)', () => {
+  it('lifts an infeasible schema ceiling to the requirement when the provider cap allows', () => {
+    const resolved = resolveStructuredCallBudget({
+      configured: 8192,
+      schema: {
+        name: 'tiny_reauthor',
+        schema: { type: 'object' },
+        maxOutputTokens: 256,
+        outputBudget: { visibleTokens: 256, reasoningProfile: 'minimal', safetyTokens: 64, totalCeiling: 512 },
+      } as never,
+      defaultCap: 8192,
+      provider: 'gemini',
+      model: 'gemini-3.1-pro-preview',
+    });
+    // The 512 ceiling is advisory once infeasible: the call RUNS with the full
+    // requirement instead of being rejected on every attempt (the encounter
+    // description re-author was dead across three resumes this way).
+    expect(resolved.maxOutputTokens).toBeGreaterThanOrEqual(resolved.visibleTokens + resolved.safetyTokens);
+    expect(resolved.visibleTokens).toBe(256);
+  });
+
+  it('shrinks the reasoning reservation when the provider cap itself cannot fit', () => {
+    const resolved = resolveStructuredCallBudget({
+      configured: 1024,
+      schema: {
+        name: 'tiny_reauthor',
+        schema: { type: 'object' },
+        maxOutputTokens: 256,
+        outputBudget: { visibleTokens: 256, reasoningProfile: 'minimal', safetyTokens: 64 },
+      } as never,
+      defaultCap: 1024,
+      provider: 'gemini',
+      model: 'gemini-3.1-pro-preview',
+    });
+    expect(resolved.maxOutputTokens).toBe(1024);
+    expect(resolved.reasoningTokens).toBe(1024 - 256 - 64);
   });
 });

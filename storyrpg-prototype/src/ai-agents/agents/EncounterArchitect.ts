@@ -3956,7 +3956,10 @@ Realized scene prose (your only source): ${input.sceneProse || input.sceneName |
         visibleTokens: 256,
         reasoningProfile: 'minimal' as const,
         safetyTokens: 64,
-        totalCeiling: 512,
+        // No totalCeiling: the minimal-reasoning reservation alone exceeds any
+        // small ceiling (512 made this call permanently infeasible — three
+        // resumes of silent repair failure). The resolver computes the true
+        // requirement bounded by the provider cap.
       },
       schema: {
         type: 'object',

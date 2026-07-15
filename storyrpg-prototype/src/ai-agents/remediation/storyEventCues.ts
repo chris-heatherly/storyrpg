@@ -272,6 +272,36 @@ export function detectRealizedStoryEventCues(value: string | undefined): Set<Sto
     if (escortToDwelling || dwellingArrival) cues.add('walkHome');
   }
 
+  if (!cues.has('blogAftermath')) {
+    // The assignment detector suppresses blogAftermath when writing-register
+    // tokens appear ANYWHERE in the scene unless a literal "goes viral"
+    // clause exists. But the OWNING scene legitimately carries both: the
+    // duplicate-event repair reframes the owned writing event as memory
+    // ("the 4 a.m. fever…", "the 'Publish' button"), and the aftermath is
+    // dramatized as dialogue + counts ("Viral, baby!", readership breaking a
+    // thousand) rather than the planning phrase (bite-me 2026-07-15T20-44-49:
+    // repairing the restage finding manufactured this exact false miss and
+    // deadlocked the two validators). Enforcement judges per SENTENCE: spike
+    // evidence counts when its own sentence is neither hedged-future nor
+    // writing-register.
+    const sentences = (value ?? '').split(/(?<=[.!?])\s+|\n+/);
+    const realizedAftermath = sentences.some((sentence) => {
+      const s = normalizeEventCueText(sentence);
+      if (!s) return false;
+      // Simple-past "went viral" is recap by definition in this codebase —
+      // live narration is present-tense (tense-drift enforced) — and backstory
+      // references it ("The post went viral." about the pre-story breakup
+      // post, s1-1). It never counts as staging the aftermath.
+      const spikeEvidence = /\b(?:readership|dashboard)\b/.test(s)
+        || (/\bviral\b/.test(s) && !/\bwent\s+viral\b/.test(s))
+        || /\b\d[\d,]*\s+(?:reads?|views?|shares?)\b/.test(s);
+      if (!spikeEvidence) return false;
+      if (/\b(?:could|might|may|has to|need(?:s)? to|going to|will)\s+(?:go\s+)?viral\b/.test(s)) return false;
+      return !/\b(?:[234]\s*a\s*m|draft|cursor|blank page|publish button|write|writing|writes?|publishes|published)\b/.test(s);
+    });
+    if (realizedAftermath) cues.add('blogAftermath');
+  }
+
   return cues;
 }
 

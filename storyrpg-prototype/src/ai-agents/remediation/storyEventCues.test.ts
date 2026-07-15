@@ -197,4 +197,29 @@ describe('detectRealizedStoryEventCues', () => {
     const prose = 'At the threshold of the club, your hands shake while a stranger mentions danger.';
     expect(detectRealizedStoryEventCues(prose).has('walkHome')).toBe(false);
   });
+
+  it('accepts a dramatized viral spike alongside writing-register memory framing (bite-me 2026-07-15 s1-blog-aftermath)', () => {
+    // The duplicate-event repair reframes the owned writing event as memory,
+    // adding writing tokens to the OWNING aftermath scene; the spike itself is
+    // dialogue + counts, never the planning phrase "goes viral".
+    const prose = [
+      "The apartment is steeped in dusk, a world away from the 4 a.m. fever that saw you turn the night into words. Your first post.",
+      'The readership number jumps past one hundred. Then five hundred. Then it breaks a thousand.',
+      '"Viral, baby! You\'re the talk of the town!"',
+      "The 'Publish' button clicks, a sound of defiance.",
+    ].join(' ');
+    expect(detectRealizedStoryEventCues(prose).has('blogAftermath')).toBe(true);
+    // Ownership assignment stays conservative: the strict detector must NOT fire here.
+    expect(detectPrimaryStoryEventCues(prose).has('blogAftermath')).toBe(false);
+  });
+
+  it('does not treat a pure writing scene as realized blog aftermath', () => {
+    const prose = 'At 4 a.m. the cursor blinks on a blank page. You write, delete, and write again before the publish button tempts you.';
+    expect(detectRealizedStoryEventCues(prose).has('blogAftermath')).toBe(false);
+  });
+
+  it('does not treat hedged-future viral talk as realized blog aftermath', () => {
+    const prose = 'Mika grins: this post could go viral, and the readership might explode by morning.';
+    expect(detectRealizedStoryEventCues(prose).has('blogAftermath')).toBe(false);
+  });
 });

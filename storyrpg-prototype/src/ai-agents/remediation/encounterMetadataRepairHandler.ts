@@ -1,5 +1,9 @@
 import type { Story } from '../../types/story';
 import {
+  ENCOUNTER_DESCRIPTION_FIELD_PATH,
+  resolveEncounterDescriptionField,
+} from '../utils/readerFacingDescriptionFields';
+import {
   contractRepairIssueFingerprint,
   type ContractRepairHandler,
   type ContractRepairReport,
@@ -23,43 +27,17 @@ export interface EncounterMetadataRepairOptions {
 type RepairIssue = ContractRepairReport['blockingIssues'][number];
 
 // Nested description surfaces leak planning prose too: run 23-29-29 carried a
-// pasted treatment sentence in encounter.phases[0].description, which the
-// exact-match filter below could never reach — the issue survived every round.
-const DESCRIPTION_FIELD_PATH = /^encounter\.(description|phases\[\d+\]\.description|storylets\.[A-Za-z0-9_-]+\.description)$/;
+// pasted treatment sentence in encounter.phases[0].description, which an
+// exact-match filter could never reach — the issue survived every round.
+// Field enumeration/resolution lives in the shared reader-facing module so
+// this handler, the producer sanitation pass, and the validator cannot drift.
 
 function descriptionIssues(issues: RepairIssue[]): RepairIssue[] {
   return issues.filter((issue) =>
     issue.type === 'unsafe_fallback_prose'
     && issue.sceneId
     && typeof issue.fieldPath === 'string'
-    && DESCRIPTION_FIELD_PATH.test(issue.fieldPath));
-}
-
-/** Resolve a matched description fieldPath to a get/set pair on the encounter. */
-function resolveDescriptionField(
-  encounter: Record<string, unknown>,
-  fieldPath: string,
-): { get: () => string | undefined; set: (value: string) => void } | undefined {
-  if (fieldPath === 'encounter.description') {
-    return typeof encounter.description === 'string'
-      ? { get: () => encounter.description as string, set: (value) => { encounter.description = value; } }
-      : undefined;
-  }
-  const phaseMatch = fieldPath.match(/^encounter\.phases\[(\d+)\]\.description$/);
-  if (phaseMatch) {
-    const phase = (encounter.phases as Array<Record<string, unknown>> | undefined)?.[Number(phaseMatch[1])];
-    return phase && typeof phase.description === 'string'
-      ? { get: () => phase.description as string, set: (value) => { phase.description = value; } }
-      : undefined;
-  }
-  const storyletMatch = fieldPath.match(/^encounter\.storylets\.([A-Za-z0-9_-]+)\.description$/);
-  if (storyletMatch) {
-    const storylet = (encounter.storylets as Record<string, Record<string, unknown>> | undefined)?.[storyletMatch[1]];
-    return storylet && typeof storylet.description === 'string'
-      ? { get: () => storylet.description as string, set: (value) => { storylet.description = value; } }
-      : undefined;
-  }
-  return undefined;
+    && ENCOUNTER_DESCRIPTION_FIELD_PATH.test(issue.fieldPath));
 }
 
 /** LLM re-author for the exact shippable encounter metadata field. */
@@ -87,7 +65,7 @@ export function buildEncounterMetadataRepairHandler(
         .find((candidate) => candidate.id === issue.sceneId);
       const encounter = scene?.encounter as unknown as Record<string, unknown> | undefined;
       if (!scene || !encounter) continue;
-      const field = resolveDescriptionField(encounter, issue.fieldPath!);
+      const field = resolveEncounterDescriptionField(encounter, issue.fieldPath!);
       if (!field) {
         options.emit?.(`Encounter metadata repair could not resolve ${issue.fieldPath} on ${issue.sceneId}.`);
         continue;

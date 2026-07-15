@@ -8,6 +8,7 @@ import type {
   NarrativeEventContract,
 } from '../../types/narrativeContract';
 import { stableHash } from './artifacts/store';
+import { entityTokens, matchesEntityAuthority } from '../utils/entityIdentity';
 
 export const SEMANTIC_CONTRACT_IR_POLICY_VERSION = 'semantic-contract-ir-v2';
 
@@ -52,34 +53,10 @@ function unique<T>(values: T[]): T[] {
   return [...new Set(values)];
 }
 
-// Words that carry no place identity — dropped before authority comparison so
-// "the apartment in Lipscani" and "Lipscani apartment" compare equal.
-const LOCATION_STOP_TOKENS = new Set([
-  'the', 'a', 'an', 'in', 'at', 'of', 'on', 'near', 'inside', 'outside',
-  'her', 'his', 'their', 'your', 's',
-]);
-
-/** Normalized content tokens of a free-text location reference. */
-export function semanticLocationTokens(value: unknown): Set<string> {
-  return new Set(
-    clean(value)
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/['’]/g, ' ')
-      .replace(/[^a-z0-9]+/g, ' ')
-      .split(' ')
-      .filter((token) => token && !LOCATION_STOP_TOKENS.has(token)),
-  );
-}
-
-function isTokenSubset(candidate: Set<string>, container: Set<string>): boolean {
-  if (candidate.size === 0 || candidate.size > container.size) return false;
-  for (const token of candidate) {
-    if (!container.has(token)) return false;
-  }
-  return true;
-}
+// Shared cross-artifact entity identity (Systemic Guards W2.2): two LLM
+// outputs never agree on exact strings — see utils/entityIdentity.ts for the
+// standing rule. Re-exported here for existing callers.
+export { entityTokens as semanticLocationTokens } from '../utils/entityIdentity';
 
 export function collectKnownSemanticLocations(
   ...locationGroups: Array<ReadonlyArray<string | undefined>>
@@ -168,7 +145,7 @@ export function validateAuthoredEventSemanticIR(
   const expectedById = new Map(expectedEvents.map((event) => [event.eventId, event]));
   const actualIds = new Set<string>();
   const knownLocationTokenSets = knownLocations
-    .map((location) => semanticLocationTokens(location))
+    .map((location) => entityTokens(location))
     .filter((tokens) => tokens.size > 0);
   // Tolerant authority matching: the IR compiler and the season planner are
   // separate LLM outputs, so exact string equality between them is a plan
@@ -177,12 +154,8 @@ export function validateAuthoredEventSemanticIR(
   // (worker-1784082660976). A reference is KNOWN when its content tokens are
   // a subset or superset of any authority entry: qualifiers and sublocations
   // of known places pass; genuinely invented places still fail.
-  const isKnownLocation = (location: string): boolean => {
-    const tokens = semanticLocationTokens(location);
-    if (tokens.size === 0) return true;
-    return knownLocationTokenSets.some((known) =>
-      isTokenSubset(tokens, known) || isTokenSubset(known, tokens));
-  };
+  const isKnownLocation = (location: string): boolean =>
+    matchesEntityAuthority(location, knownLocationTokenSets);
 
   for (const event of ir.events ?? []) {
     if (actualIds.has(event.eventId)) {

@@ -38,6 +38,10 @@ import { describe, expect, it } from 'vitest';
 import { GateRepairRouter, type RepairDirectiveKind } from './gateRepairRouter';
 import { GATE_REGISTRY, type GateSpec } from './gateRegistry';
 import { buildEncounterMetadataRepairHandler } from './encounterMetadataRepairHandler';
+import { buildEncounterRouteRepairHandler } from './encounterRouteRepairHandler';
+import { buildChoiceResolutionRepairHandler } from './choiceResolutionRepairHandler';
+import { selectSceneProseRepairs } from './sceneProseRepairHandler';
+import { VALIDATOR_REGISTRY } from '../validators/validatorRegistry';
 import { validateEncounterProducerOutput } from '../pipeline/producerBlockerChecks';
 import type { Story } from '../../types/story';
 
@@ -753,5 +757,100 @@ describe('executable field-owning repair coverage', () => {
     expect(result.changed).toBe(true);
     const encounter = story.episodes[0].scenes[0].encounter;
     expect(validateEncounterProducerOutput('s1-1', encounter)).toHaveLength(0);
+  });
+});
+
+
+/**
+ * CLOSURE SWEEP (Systemic Guards Plan W2.1): every blocking final-stage
+ * validator in validatorRegistry must be represented in this file's routing
+ * tables — BLOCKING_CLASSES, DIAGNOSTIC_STOP_ALLOWLIST,
+ * ENFORCED_BEFORE_FINAL_REPAIR — or carry a written exemption below. Adding or
+ * RENAMING a blocking validator without completing its routing row is the
+ * exact defect class behind three production abort waves (outcome-stub
+ * 2026-07-03, SemanticRealizationJudge rename 2026-07-14, prose-handler
+ * allowlist starvation 2026-07-14). This sweep turns the next instance into a
+ * red build instead of a dead run.
+ */
+const CLOSURE_SWEEP_EXEMPTIONS: Record<string, string> = {
+  NarrativeContractValidator: 'Routed via the repairHandler-keyed rules shared with SemanticRealizationJudge (gateRepairRouter ~787); its classes are exercised through the judge cases above under the shared branch.',
+  PromiseLedgerValidators: 'Composite promise-ledger arm enforced through Season Canon promise checks; representative issues predate the closure sweep — add routed cases when next touched.',
+  CanonConsistencyValidator: 'Canon drift is enforced before the final repair loop (canon seal path); add a pre-final row or routed case when next touched.',
+  MechanicsLeakageValidator: 'Design-note/mechanics leaks are handled by the deterministic strip + rewrite path (2026-06-14 remediation); add a routed case when next touched.',
+  MechanicalStorytellingValidator: 'Witness-id integrity class predating the closure sweep; add a routed case when next touched.',
+  SceneGraphBranchValidator: 'Branch fan-out is a structural invariant (GATE_BRANCH_FANOUT) enforced at generation time, before final repair.',
+  DuplicateEstablishingBeatValidator: 'Held FP-prone and default-off since the Group A promotion review (2026-06-11); no default-ON blocking surface today.',
+  TreatmentSeedOnPageValidator: 'Seed projection is repaired by applyOnPageContracts on both ChoiceAuthor paths (2026-06-13); add a routed case when next touched.',
+};
+
+describe('blocking-validator closure sweep', () => {
+  it('every blocking final-stage validator is routed, allowlisted, pre-final-enforced, or exempt with rationale', () => {
+    const normalized = (name: string): string => name.replace(/\s*\(.*\)$/, '').trim();
+    const coveredNames = new Set<string>([
+      ...BLOCKING_CLASSES.map((c) => c.issue.validator),
+      ...Object.values(DIAGNOSTIC_STOP_ALLOWLIST).map((entry) => entry.issue.validator),
+      ...Object.values(FINAL_GATE_ROUTES).flat().map((entry) => entry.issue.validator),
+    ]);
+    const preFinal = new Set(Object.keys(ENFORCED_BEFORE_FINAL_REPAIR).map(normalized));
+    const missing = VALIDATOR_REGISTRY
+      .filter((entry) => entry.tier === 'blocking' && entry.stage === 'final')
+      .map((entry) => normalized(entry.validator))
+      .filter((name) => !coveredNames.has(name) && !preFinal.has(name) && !(name in CLOSURE_SWEEP_EXEMPTIONS));
+    expect(missing, `Blocking final-stage validator(s) with no routing row: ${missing.join(', ')} — add a BLOCKING_CLASSES case with its repair route (or a written exemption).`).toEqual([]);
+  });
+});
+
+/**
+ * EXECUTABLE-CLAIM CHECK: routing metadata alone is not enough — the
+ * SemanticRealizationJudge starvation had healthy-looking routes while the
+ * prose handler's own allowlist silently dropped the class. For each class
+ * that starved in production, assert the concrete claim logic accepts it.
+ */
+describe('handler claims for production-starved classes', () => {
+  it('scene-prose selection claims judge-confirmed scene_prose misses', () => {
+    const groups = selectSceneProseRepairs([
+      {
+        type: 'semantic_realization_violation',
+        severity: 'error',
+        message: 'missing: event:ep1-u1:semantic:1. Missing meaning(s): Kylie arrives with her luggage.',
+        validator: 'SemanticRealizationJudge',
+        repairHandler: 'scene_prose',
+        sceneId: 's1-1',
+        episodeNumber: 1,
+      },
+    ] as never);
+    expect([...groups.keys()]).toEqual(['s1-1']);
+  });
+
+  it('choice-resolution handler claims choice_reauthor findings', async () => {
+    const handler = buildChoiceResolutionRepairHandler({
+      author: () => ({ reauthorSharedResolutionText: async () => undefined }),
+    });
+    const story = { episodes: [{ number: 1, scenes: [{ id: 's1-4', name: 'Test', beats: [{ id: 'b1', choices: [{ id: 'c1', text: 'x', outcomeTexts: { success: 'A result lands here.' } }] }] }] }] } as never;
+    const result = await handler({
+      story,
+      blockingIssues: [{
+        type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+        sceneId: 's1-4', repairHandler: 'choice_reauthor', taskId: 'task:x',
+        message: 'missing shared resolution',
+      }],
+    } as never);
+    expect(result.attemptedIssueKeys?.length).toBe(1);
+  });
+
+  it('encounter-route handler claims outcome-tier findings', async () => {
+    const handler = buildEncounterRouteRepairHandler({
+      author: () => ({ reauthorEncounterRoute: async () => 0 }),
+    });
+    const story = { episodes: [{ number: 1, scenes: [{ id: 'enc-1', encounter: { storylets: { victory: { beats: [] } } } }] }] } as never;
+    const result = await handler({
+      story,
+      blockingIssues: [{
+        type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+        sceneId: 'enc-1', repairHandler: 'encounter_route', outcomeTier: 'victory', taskId: 'task:y',
+        message: 'missing route evidence',
+      }],
+    } as never);
+    expect(result.attemptedIssueKeys?.length).toBe(1);
   });
 });

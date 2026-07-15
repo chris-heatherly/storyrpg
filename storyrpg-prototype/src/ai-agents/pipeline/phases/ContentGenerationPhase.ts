@@ -23,6 +23,7 @@ import { GrowthCurveEntry, buildGrowthTemplates } from '../../../engine/growthCo
 import { ThreadLedger } from '../../../types/narrativeThread';
 import type { ValidatorExecutionRecord } from '../../../types/validation';
 import { isPlanningRegisterText } from '../../constants/planningRegisterText';
+import { enumerateEncounterDescriptionFields } from '../../utils/readerFacingDescriptionFields';
 import { AgentResponse } from '../../agents/BaseAgent';
 import type { SemanticRealizationJudgeLike } from '../../agents/SemanticRealizationJudge';
 import { BranchAnalysis, ReconvergencePoint } from '../../agents/BranchManager';
@@ -5024,34 +5025,8 @@ export class ContentGenerationPhase {
               {
                 const encounterForSanitation = encounters.get(sceneBlueprint.id) as unknown as Record<string, unknown> | undefined;
                 if (encounterForSanitation) {
-                  const descriptionFields: Array<{ path: string; get: () => string | undefined; set: (value: string) => void }> = [];
-                  if (typeof encounterForSanitation.description === 'string') {
-                    descriptionFields.push({
-                      path: 'encounter.description',
-                      get: () => encounterForSanitation.description as string,
-                      set: (value) => { encounterForSanitation.description = value; },
-                    });
-                  }
+                  const descriptionFields = enumerateEncounterDescriptionFields(encounterForSanitation);
                   const encPhases = (encounterForSanitation.phases as Array<Record<string, unknown>> | undefined) ?? [];
-                  encPhases.forEach((phase, index) => {
-                    if (phase && typeof phase.description === 'string') {
-                      descriptionFields.push({
-                        path: `encounter.phases[${index}].description`,
-                        get: () => phase.description as string,
-                        set: (value) => { phase.description = value; },
-                      });
-                    }
-                  });
-                  const encStorylets = (encounterForSanitation.storylets as Record<string, Record<string, unknown>> | undefined) ?? {};
-                  for (const [storyletKey, storylet] of Object.entries(encStorylets)) {
-                    if (storylet && typeof storylet.description === 'string') {
-                      descriptionFields.push({
-                        path: `encounter.storylets.${storyletKey}.description`,
-                        get: () => storylet.description as string,
-                        set: (value) => { storylet.description = value; },
-                      });
-                    }
-                  }
                   const firstSetupText = (encPhases[0]?.beats as Array<{ setupText?: string }> | undefined)?.[0]?.setupText
                     ?? (encounterForSanitation.beats as Array<{ setupText?: string; text?: string }> | undefined)?.[0]?.setupText;
                   let sanitized = 0;

@@ -24,6 +24,8 @@ export interface SceneCriticInput {
   directorNotes?: string;
   /** Optional minimum review threshold — beats the caller considers weak. */
   flaggedBeatIds?: string[];
+  /** Flagged semantic omissions that may extend, but never replace, accepted text. */
+  appendOnlyBeatIds?: string[];
 }
 
 export interface SceneCritique {
@@ -125,7 +127,8 @@ will merge them back in, leaving untouched beats as-is. Return ONLY JSON.
     const beatsDump = input.scene.beats
       .map(b => {
         const flagged = input.flaggedBeatIds?.includes(b.id) ? ' [FLAGGED]' : '';
-        return `### Beat ${b.id}${flagged}\n- speaker: ${b.speaker || '(narrator)'}\n- mood: ${b.speakerMood || '(neutral)'}\n- plotPointType: ${b.plotPointType || 'none'}\n- text: ${b.text}`;
+        const appendOnly = input.appendOnlyBeatIds?.includes(b.id) ? ' [APPEND ONLY]' : '';
+        return `### Beat ${b.id}${flagged}${appendOnly}\n- speaker: ${b.speaker || '(narrator)'}\n- mood: ${b.speakerMood || '(neutral)'}\n- plotPointType: ${b.plotPointType || 'none'}\n- text: ${b.text}`;
       })
       .join('\n\n');
 
@@ -141,13 +144,30 @@ will merge them back in, leaving untouched beats as-is. Return ONLY JSON.
 
     const directorNotes = input.directorNotes ? `\n## Director Notes\n${input.directorNotes}\n` : '';
 
-    return `# Scene: ${input.scene.sceneId}\n\n${beatsDump}\n${voiceBlock}${directorNotes}\nApply the Scene Critic rewrite per the REQUIRED JSON STRUCTURE above. Return ONLY JSON.`;
+    const appendOnlyBlock = input.appendOnlyBeatIds?.length
+      ? '\n## Append-Only Safety\nFor every beat marked [APPEND ONLY], copy its existing text verbatim as the beginning of the returned text, then append only the minimum new sentence or sentences needed to realize the missing meaning. Do not delete, replace, reorder, paraphrase, or weaken any existing word in that beat. A response that does not preserve the exact existing prefix will be rejected.\n'
+      : '';
+
+    return `# Scene: ${input.scene.sceneId}\n\n${beatsDump}\n${voiceBlock}${directorNotes}${appendOnlyBlock}\nApply the Scene Critic rewrite per the REQUIRED JSON STRUCTURE above. Return ONLY JSON.`;
   }
 
   private normalize(critique: SceneCritique, input: SceneCriticInput): SceneCritique {
-    const validIds = new Set(input.scene.beats.map(b => b.id));
+    const validIds = new Set(
+      input.flaggedBeatIds?.length
+        ? input.flaggedBeatIds
+        : input.scene.beats.map(b => b.id),
+    );
+    const appendOnlyIds = new Set(input.appendOnlyBeatIds ?? []);
+    const originalTextById = new Map(input.scene.beats.map((beat) => [beat.id, beat.text ?? '']));
     const rewrittenBeats = Array.isArray(critique.rewrittenBeats)
-      ? critique.rewrittenBeats.filter(b => b && typeof b.id === 'string' && validIds.has(b.id))
+      ? critique.rewrittenBeats.filter((b) => {
+          if (!b || typeof b.id !== 'string' || !validIds.has(b.id)) return false;
+          if (!appendOnlyIds.has(b.id)) return true;
+          const original = originalTextById.get(b.id) ?? '';
+          return typeof b.text === 'string'
+            && b.text.startsWith(original)
+            && b.text.trim().length > original.trim().length;
+        })
       : [];
     return {
       sceneId: critique.sceneId || input.scene.sceneId,

@@ -84,6 +84,51 @@ describe('execute() refuses the template fallback (no-boilerplate mandate)', () 
   });
 });
 
+describe('focused encounter description repair', () => {
+  it('uses a compact structured contract instead of the full architect system prompt', async () => {
+    const architect = new EncounterArchitect(config) as any;
+    const call = vi.fn(async () => JSON.stringify({
+      description: 'As you cross Cismigiu Gardens, a heavy hand closes over your shoulder in the fog.',
+    }));
+    architect.callLLM = call;
+
+    const description = await architect.reauthorEncounterDescription({
+      currentDescription: 'Walking home through Cismigiu, she is attacked and rescued by a stranger.',
+      sourceSynopsis: 'Walking home through Cismigiu, she is attacked and rescued by a stranger.',
+      sceneName: 'Cismigiu at Midnight',
+      sceneProse: 'You cross Cismigiu Gardens as footsteps close behind you.',
+    });
+
+    expect(description).toContain('you cross Cismigiu Gardens');
+    expect(call).toHaveBeenCalledOnce();
+    expect(call.mock.calls[0][0][0]).toEqual(expect.objectContaining({
+      role: 'system',
+      content: expect.not.stringContaining('Core Storytelling'),
+    }));
+    expect(call.mock.calls[0][2]?.jsonSchema).toMatchObject({
+      name: 'encounter_description_reauthor',
+      maxOutputTokens: 256,
+    });
+  });
+
+  it('retries a well-formed field that is not second person', async () => {
+    const architect = new EncounterArchitect(config) as any;
+    const call = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({ description: 'Kylie crosses the garden while footsteps close behind her.' }))
+      .mockResolvedValueOnce(JSON.stringify({ description: 'You cross the garden while footsteps close behind you.' }));
+    architect.callLLM = call;
+
+    const description = await architect.reauthorEncounterDescription({
+      currentDescription: 'Kylie crosses the garden.',
+      sceneProse: 'You cross the garden.',
+    });
+
+    expect(description).toBe('You cross the garden while footsteps close behind you.');
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(call.mock.calls[1][0].at(-1)?.content).toContain('not written in second person');
+  });
+});
+
 // buildDeterministicFallback is NOT called in production anymore (no-boilerplate
 // mandate 2026-06-11) — it is retained only as the TEMPLATE_SIGNATURES reference
 // corpus. These tests keep it structurally valid so the signature sync test
@@ -871,6 +916,35 @@ describe('Phase prompt builders', () => {
       beats: [{ text: 'The stranger rescues you, pulls you clear, and walks you to the apartment door before he vanishes.' }],
     });
     expect(() => (architect as any).validatePhase4StoryletSlot(realized, 'victory', taskedInput)).not.toThrow();
+  });
+
+  it('propagates authored route spine and route-specific retry feedback into phased storylets', () => {
+    const rescueInput: EncounterArchitectInput = {
+      ...input,
+      encounterSpineProfile: 'staged_rescue',
+      requiredBeats: [{
+        id: 'rescue-turn',
+        tier: 'authored',
+        mustDepict: 'A rough figure attacks the protagonist and the charcoal-suited stranger rescues them.',
+      }],
+      storyContext: {
+        ...input.storyContext,
+        userPrompt: 'Keep the scene tense.\n\nPREVIOUS ATTEMPT FAILED: scene turn [partialVictory] (outcome path: partialVictory) omitted the attack before the rescue.\nAddress the failure and return complete JSON.',
+      },
+    };
+    const brief = { npcDynamics: [], knockOnEffects: [], briefText: '' };
+
+    const partialPrompt = (architect as any).buildPhase4StoryletPrompt(rescueInput, brief, 'partialVictory');
+    const defeatPrompt = (architect as any).buildPhase4StoryletPrompt(rescueInput, brief, 'defeat');
+
+    expect(partialPrompt).toContain('AUTHORED ROUTE SPINE');
+    expect(partialPrompt).toContain('A rough figure attacks the protagonist');
+    expect(partialPrompt).toContain('COMPLETE staged-rescue chain');
+    expect(partialPrompt).toContain('post-rescue handoff or departure');
+    expect(partialPrompt).toContain('Do not truncate the route after the rescue');
+    expect(partialPrompt).toContain('PRIOR ATTEMPT FEEDBACK FOR THIS ROUTE');
+    expect(defeatPrompt).toContain('AUTHORED ROUTE SPINE');
+    expect(defeatPrompt).not.toContain('PRIOR ATTEMPT FEEDBACK FOR THIS ROUTE');
   });
 });
 

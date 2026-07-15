@@ -75,6 +75,9 @@ export function buildEncounterMetadataRepairHandler(
 
     const selected = issues.slice(0, options.maxScenesPerRound ?? 4);
     const attemptedIssueKeys: string[] = [];
+    const authoredBySceneSource = new Map<string, string | undefined>();
+    const changedSceneIds = new Set<string>();
+    const changedFieldPaths: string[] = [];
     let changed = 0;
 
     for (const issue of selected) {
@@ -94,14 +97,24 @@ export function buildEncounterMetadataRepairHandler(
       const firstEncounterSetup = ((encounter.phases as Array<{
         beats?: Array<{ setupText?: string }>;
       }> | undefined)?.[0]?.beats?.[0]?.setupText ?? '').trim();
-      const next = await author.reauthorEncounterDescription({
-        currentDescription,
-        sceneName: scene.name,
-        sceneProse: firstEncounterSetup || scene.beats?.[0]?.text,
-      });
+      const authoringKey = `${issue.sceneId}\u0000${currentDescription}`;
+      let next = authoredBySceneSource.get(authoringKey);
+      if (!authoredBySceneSource.has(authoringKey)) {
+        next = await author.reauthorEncounterDescription({
+          currentDescription,
+          sourceSynopsis: typeof encounter.sourceSynopsis === 'string'
+            ? encounter.sourceSynopsis
+            : currentDescription,
+          sceneName: scene.name,
+          sceneProse: firstEncounterSetup || scene.beats?.[0]?.text,
+        });
+        authoredBySceneSource.set(authoringKey, next);
+      }
       if (!next || next === currentDescription) continue;
       field.set(next);
       changed += 1;
+      changedSceneIds.add(issue.sceneId!);
+      changedFieldPaths.push(`scene:${issue.sceneId}.${issue.fieldPath}`);
     }
 
     if (changed === 0) return { story, changed: false, attemptedIssueKeys };
@@ -110,6 +123,8 @@ export function buildEncounterMetadataRepairHandler(
       story,
       changed: true,
       attemptedIssueKeys,
+      changedFieldPaths,
+      atomicScopes: [...changedSceneIds].map((sceneId) => ({ kind: 'scene' as const, sceneId })),
       record: {
         rule: 'final_contract_encounter_description',
         scope: 'encounter',

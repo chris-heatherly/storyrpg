@@ -3932,12 +3932,13 @@ RULES:
     sceneName?: string;
     sceneProse?: string;
   }): Promise<string | undefined> {
-    const prompt = `Re-author one playable encounter description.
-Return ONLY JSON: {"description":"..."}
+    const prompt = `Re-author one playable encounter description as reader-facing interactive-fiction prose.
 
 Requirements:
 - One concrete second-person sentence, 40 words maximum.
 - Describe the immediate in-world pressure the reader faces.
+- Preserve immediate source facts already true at encounter entry, especially the named location, present action, threat, and participants.
+- Do not summarize or spoil later outcomes unless they are already present in the realized scene prose.
 - Do not mention treatments, plans, beats, metadata, protagonists, players, stats, dice, or system mechanics.
 - Do not copy the source wording verbatim.
 
@@ -3945,11 +3946,43 @@ Scene: ${input.sceneName || 'Encounter'}
 Current unsafe description: ${input.currentDescription || 'none'}
 Author-only source context: ${input.sourceSynopsis || 'none'}
 Realized scene prose: ${input.sceneProse || 'none'}`;
+    const jsonSchema = {
+      name: 'encounter_description_reauthor',
+      description: 'One compact reader-facing encounter description.',
+      maxOutputTokens: 256,
+      outputBudget: {
+        visibleTokens: 256,
+        reasoningProfile: 'minimal' as const,
+        safetyTokens: 64,
+        totalCeiling: 512,
+      },
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['description'],
+        properties: {
+          description: { type: 'string', minLength: 20, maxLength: 320 },
+        },
+      },
+    };
     try {
-      const raw = await this.callLLM([{ role: 'user', content: prompt }], 1);
-      const parsed = this.parseJSON<{ description?: unknown }>(raw);
-      const description = typeof parsed?.description === 'string' ? parsed.description.replace(/\s+/g, ' ').trim() : '';
-      return description || undefined;
+      const messages = [{
+        role: 'system' as const,
+        content: 'You re-author one short interactive-fiction field. Return only the requested JSON object.',
+      }, { role: 'user' as const, content: prompt }];
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const { data } = await this.callLLMForJson<{ description?: unknown }>(messages, { jsonSchema });
+        const description = typeof data?.description === 'string'
+          ? data.description.replace(/\s+/g, ' ').trim()
+          : '';
+        const wordCount = description.split(/\s+/).filter(Boolean).length;
+        if (description && wordCount <= 40 && /\b(?:you|your|yours)\b/i.test(description)) return description;
+        messages.push({
+          role: 'user',
+          content: `The prior field was invalid (${wordCount > 40 ? `${wordCount} words` : 'not written in second person'}). Return one corrected second-person sentence of 40 words or fewer in the same JSON schema.`,
+        });
+      }
+      return undefined;
     } catch (err) {
       console.warn(`[EncounterArchitect] reauthorEncounterDescription failed (field unchanged): ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
@@ -5965,6 +5998,55 @@ ${tasks.map((task) => `- ${task.id}: ${task.evidenceAtoms.filter((atom) => atom.
 `;
   }
 
+  private buildPhase4AuthoredRouteSection(
+    input: EncounterArchitectInput,
+    slot: Phase4StoryletSlot,
+  ): string {
+    const sourceTurns = [
+      input.centralConflict,
+      input.signatureMoment,
+      ...(input.requiredBeats ?? [])
+        .filter((beat) => beat.tier !== 'connective' && beat.tier !== 'seed')
+        .map((beat) => beat.mustDepict),
+    ]
+      .map((text) => typeof text === 'string' ? text.trim() : '')
+      .filter(Boolean);
+    const lines: string[] = [];
+    if (sourceTurns.length > 0) {
+      lines.push(
+        '## AUTHORED ROUTE SPINE',
+        'These are source-owned encounter actions, not optional mood. Preserve the parts required by this route as live, on-page action; generic danger, relief, or aftermath wording is insufficient.',
+        ...sourceTurns.map((turn) => `- ${turn}`),
+      );
+    }
+    if (input.encounterSpineProfile === 'staged_rescue' && (slot === 'victory' || slot === 'partialVictory')) {
+      lines.push(
+        '- ROUTE REQUIREMENT: this route must explicitly show the COMPLETE staged-rescue chain owned by the source turn: the approach/location context, the triggering attack or threat, the rescuer intervening, and every source-owned post-rescue handoff or departure (for example escort to safety, reaching a door/threshold, refusal to enter, or vanishing). Do not truncate the route after the rescue. The rescue cannot be replaced by escape, vague "danger," or an aftermath that begins after the intervention.',
+      );
+    }
+
+    const userPrompt = input.storyContext.userPrompt ?? '';
+    const failureMarker = userPrompt.lastIndexOf('PREVIOUS ATTEMPT FAILED:');
+    if (failureMarker >= 0) {
+      const feedback = userPrompt.slice(failureMarker, failureMarker + 2600).trim();
+      const routeAliases = this.phase4OutcomeTiers(slot).map((tier) => tier.toLowerCase());
+      const namedRoutes = [
+        ...Array.from(feedback.matchAll(/(?:outcome path|route|storylet)\s*:\s*([a-z]+)/gi), (match) => match[1].toLowerCase()),
+        ...Array.from(feedback.matchAll(/\[(victory|partialVictory|complicated|defeat|failure|escape)\]/gi), (match) => match[1].toLowerCase()),
+      ];
+      const namesSpecificRoute = namedRoutes.length > 0;
+      const targetsThisRoute = namedRoutes.some((route) => routeAliases.includes(route));
+      if (!namesSpecificRoute || targetsThisRoute) {
+        lines.push(
+          '## PRIOR ATTEMPT FEEDBACK FOR THIS ROUTE',
+          feedback,
+          'Correct this failure in this storylet draft. Do not assume the shared setup or a sibling route will supply the missing action.',
+        );
+      }
+    }
+    return lines.length > 0 ? `\n${lines.join('\n')}\n` : '';
+  }
+
   private expectedPhase4BeatCount(slot: Phase4StoryletSlot): number {
     switch (slot) {
       case 'victory': return 1;
@@ -6122,6 +6204,7 @@ ${this.formatEncounterStoryCircleTarget(input)}
 ${relationshipSection}
 ${safetyBoundary}
 ${this.buildPhase4RealizationTaskSection(input, slot)}
+${this.buildPhase4AuthoredRouteSection(input, slot)}
 
 ## TASK
 Generate ONLY the authored prose draft for the "${slot}" aftermath.

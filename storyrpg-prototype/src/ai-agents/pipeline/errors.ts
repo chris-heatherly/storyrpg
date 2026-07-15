@@ -30,6 +30,8 @@ export type PipelineFailureCode =
   | 'scene_cap_exceeded'
   | 'prose_realization_failed'
   | 'owner_realization_failed'
+  | 'encounter_owner_repair_exhausted'
+  | 'encounter_producer_blocker'
   | 'owner_stage_not_executed'
   | 'owner_stage_coverage_mismatch'
   | 'validator_snapshot_mismatch'

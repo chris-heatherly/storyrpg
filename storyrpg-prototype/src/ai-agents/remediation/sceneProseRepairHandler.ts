@@ -29,6 +29,7 @@
  */
 
 import type { Scene as StoryScene } from '../../types';
+import type { RelationshipPacingContract } from '../../types/scenePlan';
 import type { Story } from '../../types/story';
 import type { SceneCritic } from '../agents/SceneCritic';
 import type { SceneContent } from '../agents/SceneWriter';
@@ -137,7 +138,16 @@ function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
       || issue.repairHandler === 'scene_semantic_patch'
       || !issue.repairHandler)
   ) return true;
-  if (issue.validator === 'RouteContinuityValidator' && issue.type === 'unsafe_fallback_prose') return true;
+  if (issue.validator === 'RouteContinuityValidator' && issue.type === 'unsafe_fallback_prose') {
+    const path = issue.fieldPath ?? '';
+    // These are projections or focused encounter fields owned by the outcome,
+    // cost, and metadata repair handlers. Rewriting every encounter beat cannot
+    // change them and can destroy unrelated realized moments before rollback.
+    if (/^readerFacing\[/.test(path)) return false;
+    if (/^encounter\.(?:description|phases\[\d+\]\.description)$/.test(path)) return false;
+    if (/\.outcomes\.[^.]+\.(?:narrativeText|visualContract\.|cost\.)/.test(path)) return false;
+    return true;
+  }
   // Encounter template collapse / malformed prose live in encounter phase/
   // storylet beats, which this handler already flattens and rewrites
   // (gatherEncounterProseBeats). Cost/stakes fields are covered by the
@@ -255,7 +265,11 @@ export function selectSceneProseRepairs(
  * the notes say so explicitly. (bite-me-g13 14-36-20: the critic dramatized
  * one anchor of a two-anchor signature and the scene kept failing.)
  */
-export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], sceneProseText?: string): string {
+export function buildSceneRepairDirectorNotes(
+  issues: RepairableIssue[],
+  sceneProseText?: string,
+  relationshipPacing?: RepairableStoryScene['relationshipPacing'],
+): string {
   const lines: string[] = [
     'The final-story contract flagged this scene. Fix EVERY issue below by rewriting the scene\'s beat prose — dramatize each named moment ON-PAGE with concrete action, dialogue, and sensory detail. Do not summarize, allude to, or skip the staged moment.',
   ];
@@ -299,6 +313,26 @@ export function buildSceneRepairDirectorNotes(issues: RepairableIssue[], scenePr
         'in-world second-person prose that depicts THIS scene\'s concrete outcome (who, what, where, cost). ' +
         'Do not reuse or lightly reword the template sentence.',
       );
+      continue;
+    }
+    if (issue.validator === 'SemanticRealizationJudge') {
+      for (const meaning of missingMeaningsForRepair(issue)) {
+        lines.push(
+          `  SEMANTIC REALIZATION TARGET: ${meaning}`,
+          '  NON-NEGOTIABLE: preserve the complete proposition, not merely its mood or one nearby fact. Make every named participant, action or relationship change, causal link, negation, timing constraint, and qualifier in the target unmistakable through on-page action, dialogue, thought, or consequence.',
+        );
+        if (/\b(?:befriend(?:s|ed|ing)?|become(?:s)? friends?|friendship|ally|allies|reconcile(?:s|d)?|forgive(?:s|n)?|earn(?:s|ed)? trust)\b/i.test(meaning)) {
+          const blockedLabels = Array.from(new Set(
+            (relationshipPacing ?? []).flatMap((contract) => contract.blockedLabels ?? []),
+          ));
+          const blocksFriendLabel = blockedLabels.some((label) => /\bfriends?\b/i.test(label));
+          lines.push(
+            blocksFriendLabel
+              ? `  RELATIONSHIP TRANSITION: warmth, attention, chemistry, or a one-sided invitation alone is not enough. Show a concrete reciprocal action that performs the requested transition, such as both characters exchanging contact details, making and accepting a specific future plan, or offering and accepting help. The active pacing contract forbids settled labels (${blockedLabels.filter((label) => /\bfriends?\b/i.test(label)).join(', ')}), so establish the bond through unmistakable mutual behavior without declaring an already-settled friendship.`
+              : '  RELATIONSHIP TRANSITION: warmth, attention, chemistry, an alliance, or an invitation alone is not enough. Show a reciprocal choice or commitment that visibly changes the relationship, such as accepting future contact, exchanging a way to reconnect, making and accepting a concrete plan, offering and accepting help, or explicitly recognizing the new bond. Lexically ground the requested state with its natural relationship word (for example friend/friendship, ally/alliance, trust, reconciliation, or forgiveness); do not substitute a different relationship state.',
+          );
+        }
+      }
       continue;
     }
     if (issue.validator === 'RelationshipArcLedgerValidator') {
@@ -429,6 +463,7 @@ interface RepairableStoryScene {
   beats?: RepairableTextCarrier[];
   startingBeatId?: string;
   requiredBeats?: Array<{ tier?: string; mustDepict?: string }>;
+  relationshipPacing?: RelationshipPacingContract[];
   signatureMoment?: string;
   encounter?: {
     phases?: Array<{ beats?: EncounterProseBeat[] }>;
@@ -481,6 +516,79 @@ function gatherEncounterProseBeats(scene: RepairableStoryScene): Array<{ id?: st
 function repairableBeatsFor(scene: RepairableStoryScene): Array<{ id?: string; text?: string }> {
   if (scene.beats?.length) return scene.beats;
   return gatherEncounterProseBeats(scene);
+}
+
+function missingMeaningsForRepair(issue: RepairableIssue): string[] {
+  const message = issue.message ?? '';
+  // The canonical judge deliberately labels this field "Missing meaning(s)".
+  // Accept that literal spelling as well as the singular/plural variants. A
+  // mismatch here used to fall back to the first scene beat, repeatedly asking
+  // Gemini to repair an unrelated doorway/establishing beat.
+  const semantic = /Missing meaning(?:s|\(s\))?\s*:\s*(.+?)(?:\.\s*$|$)/i.exec(message)?.[1]?.trim();
+  if (semantic) {
+    return semantic
+      .split(/\s*;\s*/)
+      .map((meaning) => meaning.trim())
+      .filter(Boolean);
+  }
+  const required = requiredMomentFromMessage(message);
+  return required ? [required] : [];
+}
+
+function flaggedBeatIdsForRepair(
+  scene: RepairableStoryScene,
+  issues: RepairableIssue[],
+  protagonistName?: string,
+): string[] {
+  const beats = repairableBeatsFor(scene).filter((beat): beat is { id: string; text?: string } => Boolean(beat.id));
+  if (beats.length === 0) return [];
+  const validIds = new Set(beats.map((beat) => beat.id));
+  const selected = new Set(
+    issues.map((issue) => issue.beatId).filter((id): id is string => Boolean(id && validIds.has(id))),
+  );
+  for (const issue of issues) {
+    if (issue.beatId && validIds.has(issue.beatId)) continue;
+    for (const meaning of missingMeaningsForRepair(issue)) {
+      const stopwords = stopwordsForRealization(issue.validator);
+      const meaningTokens = new Set(contentTokensForRealization(meaning, stopwords));
+      const protagonistTokens = new Set(contentTokensForRealization(protagonistName ?? '', stopwords));
+      const meaningNamesProtagonist = [...protagonistTokens].some((token) => meaningTokens.has(token));
+      let best = beats[0];
+      let bestScore = -1;
+      for (const beat of beats) {
+        const beatTokens = new Set(contentTokensForRealization(beat.text ?? '', stopwords));
+        let score = [...meaningTokens].filter((token) => beatTokens.has(token)).length;
+        if (meaningNamesProtagonist && /\b(?:you|your|yours|yourself)\b/i.test(beat.text ?? '')) score += 1;
+        if (score > bestScore) {
+          best = beat;
+          bestScore = score;
+        }
+      }
+      selected.add(best.id);
+    }
+  }
+  if (selected.size === 0) selected.add(beats[0].id);
+  return Array.from(selected);
+}
+
+function semanticAppendOnlyBeatIds(
+  scene: RepairableStoryScene,
+  issues: RepairableIssue[],
+  protagonistName?: string,
+): string[] {
+  const semanticMissing = issues.filter((issue) =>
+    issue.validator === 'SemanticRealizationJudge'
+    && (!issue.issueCode || issue.issueCode === 'SEMANTIC_REALIZATION_MISSING')
+  );
+  if (semanticMissing.length === 0) return [];
+  const destructiveIssues = issues.filter((issue) => !semanticMissing.includes(issue));
+  const destructiveIds = new Set(
+    destructiveIssues.length > 0
+      ? flaggedBeatIdsForRepair(scene, destructiveIssues, protagonistName)
+      : [],
+  );
+  return flaggedBeatIdsForRepair(scene, semanticMissing, protagonistName)
+    .filter((beatId) => !destructiveIds.has(beatId));
 }
 
 /** Number of empty beat scaffolds seeded into a beat-less flagged scene. */
@@ -1057,6 +1165,8 @@ export interface SceneProseRepairOptions {
   emit?: (message: string) => void;
   /** Scenes repaired per round cap (default 4). */
   maxScenesPerRound?: number;
+  /** Named protagonist represented by you/your in second-person scene prose. */
+  protagonistName?: string;
   /**
    * Optional repair router hook. When provided, same-scene prose repair only
    * receives findings classified as `same_scene_retry`.
@@ -1168,6 +1278,7 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
     let totalMerged = 0;
     let criticCalls = 0;
     const repairedScenes: string[] = [];
+    const atomicScopes: NonNullable<Awaited<ReturnType<ContractRepairHandler>>['atomicScopes']> = [];
     const clearedScenes: string[] = [];
     // Fingerprints of the CURRENT round's issues this handler actually worked
     // on — reported so the loop charges per-issue budget only for attempted
@@ -1205,7 +1316,6 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
         continue;
       }
       attemptedScenes.add(sceneId);
-      for (const issue of currentIssues) attemptedIssueKeys.add(contractRepairIssueFingerprint(issue));
       // Encounter scenes carry prose in encounter.phases/storylets, not
       // scene.beats — merge the rewrite back to the surface it came from.
       const isEncounterScene = !scene.beats?.length;
@@ -1231,10 +1341,17 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
           const retryNotes = lostRequiredMomentsForRetry.length > 0
             ? `\n\nPREVIOUS REWRITE WAS REJECTED because it deleted these already-realized required moments. This retry must keep them explicitly on-page while adding the missing repair:\n- ${lostRequiredMomentsForRetry.join('\n- ')}`
             : '';
+          const flaggedBeatIds = flaggedBeatIdsForRepair(scene, issues, opts.protagonistName);
+          const appendOnlyBeatIds = semanticAppendOnlyBeatIds(scene, issues, opts.protagonistName);
+          const responseContract = appendOnlyBeatIds.length > 0
+            ? `\n\nSEMANTIC APPEND CONTRACT: return one rewrittenBeats entry for EVERY required beat id (${appendOnlyBeatIds.join(', ')}). Return no unflagged beat ids. Preserve each existing beat text verbatim as the prefix and append only the new realization.`
+            : '\n\nREWRITE CONTRACT: return only flagged beat ids; every unflagged beat is immutable.';
           const critique = await withTimeout(
             critic.execute({
               scene: adaptSceneForCritic(scene, beats),
-              directorNotes: `${buildSceneRepairDirectorNotes(issues, sceneProseForScoring(scene))}${plannedNotes}${preservationNotes}${retryNotes}`,
+              flaggedBeatIds,
+              appendOnlyBeatIds,
+              directorNotes: `${buildSceneRepairDirectorNotes(issues, sceneProseForScoring(scene), scene.relationshipPacing)}\n\nSURGICAL EDIT: rewrite only the beat or beats marked [FLAGGED]. The revised text must be a semantic superset of the existing beat: preserve every existing character fact, event, relationship state, place, time, and qualifier while adding the missing realization. Every unflagged beat is locked and must not be returned in rewrittenBeats.${responseContract}${plannedNotes}${preservationNotes}${retryNotes}`,
             }),
             PIPELINE_TIMEOUTS.llmAgent,
             `SceneCritic.contractRepair(${sceneId}#${attempt})`,
@@ -1245,6 +1362,27 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
           if (!critique) break;
           criticCalls += 1;
           if (critique.success && critique.data) {
+            const flaggedIdSet = new Set(flaggedBeatIds);
+            const returnedIds = new Set<string>(
+              critique.data.rewrittenBeats.map((beat) => String(beat.id || '')).filter(Boolean),
+            );
+            const unexpectedIds = appendOnlyBeatIds.length > 0
+              ? [...returnedIds].filter((id) => !flaggedIdSet.has(id))
+              : [];
+            const missingAppendIds = appendOnlyBeatIds.filter((id) => !returnedIds.has(id));
+            if (unexpectedIds.length > 0 || missingAppendIds.length > 0) {
+              opts.emit?.(
+                `Scene-prose contract repair: rejected structured response for ${sceneId}; `
+                + `${unexpectedIds.length > 0 ? `unflagged beat id(s): ${unexpectedIds.join(', ')}` : ''}`
+                + `${unexpectedIds.length > 0 && missingAppendIds.length > 0 ? '; ' : ''}`
+                + `${missingAppendIds.length > 0 ? `missing required beat id(s): ${missingAppendIds.join(', ')}` : ''}.`,
+              );
+              lostRequiredMomentsForRetry = [
+                ...lostRequiredMomentsForRetry,
+                `Return exactly the required flagged beat ids: ${flaggedBeatIds.join(', ')}`,
+              ];
+              continue;
+            }
             // Surface rewrites that matched NO beat (drifted ids) — otherwise the
             // repair looks like it ran while the gate keeps failing, with no signal.
             const warnUnmatched = (ids: string[]) => opts.emit?.(
@@ -1277,6 +1415,8 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
                 sceneMerged += merged;
               }
             }
+          } else {
+            opts.emit?.(`Scene-prose contract repair: SceneCritic returned no usable structured rewrite for ${sceneId}; retrying within the bounded scene attempt.`);
           }
           predictedClear = allMomentsDepicted(scene, issues, plannedSource);
           if (!predictedClear && attempt === 1) {
@@ -1309,6 +1449,7 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
             if (proseHygieneIssuesCleared(scene, issues)) {
               totalMerged += sceneMerged;
               repairedScenes.push(sceneId);
+              for (const issue of currentIssues) attemptedIssueKeys.add(contractRepairIssueFingerprint(issue));
               opts.emit?.(
                 `Scene-prose contract repair: kept ${sceneId} rewrite because prose-hygiene findings cleared even though the authored checklist is still incomplete.`,
               );
@@ -1322,6 +1463,8 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
           }
           totalMerged += sceneMerged;
           repairedScenes.push(sceneId);
+          for (const issue of currentIssues) attemptedIssueKeys.add(contractRepairIssueFingerprint(issue));
+          atomicScopes.push({ kind: 'scene', sceneId, episodeNumber: issues[0]?.episodeNumber });
           if (predictedClear) clearedScenes.push(sceneId);
           opts.emit?.(
             `Scene-prose contract repair: rewrote ${sceneMerged} beat(s) in ${sceneId} for ${issues.length} blocking finding(s)` +
@@ -1349,6 +1492,7 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
       story,
       changed: true,
       attemptedIssueKeys: Array.from(attemptedIssueKeys),
+      atomicScopes,
       record: {
         rule: 'final_contract_scene_prose',
         scope: 'scene',

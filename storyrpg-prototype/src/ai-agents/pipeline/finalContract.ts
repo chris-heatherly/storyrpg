@@ -1435,6 +1435,7 @@ export class FinalContract {
             allowRequiredBeatFallback,
             plannedMomentSources,
             requirePredictedClear: true,
+            protagonistName: input.brief.protagonist?.name,
             clusterAttemptedCenters,
           })),
         );
@@ -1525,7 +1526,13 @@ export class FinalContract {
             emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
           })),
         );
-        if (report.blockingIssues.some((issue) => issue.repairHandler === 'encounter_route' || issue.outcomeTier)) {
+        if (report.blockingIssues.some((issue) =>
+          issue.repairHandler === 'encounter_route'
+          || issue.outcomeTier
+          || (issue.type === 'unsafe_fallback_prose' && /\.outcomes\.[A-Za-z0-9_-]+(?:\.|$)/.test(
+            (issue as ContractRepairReport['blockingIssues'][number]).fieldPath ?? '',
+          ))
+        )) {
           handlers.push(
             guardLlmHandler(buildEncounterRouteRepairHandler({
               author: () => {

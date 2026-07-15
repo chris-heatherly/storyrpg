@@ -2837,7 +2837,7 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
   // Story Circle / cold-open arrival can land as two hard beats on the opening
   // scene after season contract attach; drain before construction profiles fire.
   drainDuplicateAuthoredBeats(scenes);
-  const worldTreatmentContracts = assignWorldTreatmentContractsToScenes(plan, scenes);
+  let worldTreatmentContracts = assignWorldTreatmentContractsToScenes(plan, scenes);
   const stakesArchitectureContracts = assignStakesArchitectureContractsToScenes(plan, scenes);
   const branchConsequenceContracts = assignBranchConsequenceContractsToScenes(plan, scenes);
   const endingRealizationContracts = assignEndingRealizationContractsToScenes({
@@ -2858,14 +2858,17 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
   // pressure projection. Rebuild by stable contract id so pressure cannot keep
   // stale pre-milestone caps or blocked labels.
   applyMechanicPressureContracts(scenes);
-  attachSceneConstructionProfiles(scenes);
 
   const spineValidator = new EpisodeSpineContractValidator();
   for (const ep of episodes) {
     const episodeSpine = seasonSpine.episodeSpines[ep.episodeNumber];
     if (!episodeSpine || !isAuthoredLiteEpisode(ep)) continue;
-    splitStackedSpatialScenes(ep, scenes.filter((scene) => scene.episodeNumber === ep.episodeNumber), inferAuthoredLocationFromText);
-    const epScenes = scenes.filter((scene) => scene.episodeNumber === ep.episodeNumber);
+    const firstSceneIndex = scenes.findIndex((scene) => scene.episodeNumber === ep.episodeNumber);
+    const episodeSceneCount = scenes.filter((scene) => scene.episodeNumber === ep.episodeNumber).length;
+    const epScenes = scenes.slice(firstSceneIndex, firstSceneIndex + episodeSceneCount);
+    splitStackedSpatialScenes(ep, epScenes, inferAuthoredLocationFromText);
+    scenes.splice(firstSceneIndex, episodeSceneCount, ...epScenes);
+    byEpisode[ep.episodeNumber] = epScenes.map((scene) => scene.id);
     const spineResult = spineValidator.validate({ spine: episodeSpine, scenes: epScenes });
     if (!spineResult.valid) {
       const blockers = spineResult.issues
@@ -2875,6 +2878,11 @@ export function buildSeasonScenePlan(plan: SeasonPlan): SeasonScenePlan {
       throw new Error(`Episode ${ep.episodeNumber} spine contract failed: ${blockers}`);
     }
   }
+  // The final spatial pass can repin a scene to the location named by its hard
+  // authored beat. Recompute world ownership after that pass so location
+  // identity contracts and construction profiles share the same scene truth.
+  worldTreatmentContracts = assignWorldTreatmentContractsToScenes(plan, scenes);
+  attachSceneConstructionProfiles(scenes);
   const compiled = compileAndApplyNarrativeContracts(plan, {
     scenes,
     byEpisode,

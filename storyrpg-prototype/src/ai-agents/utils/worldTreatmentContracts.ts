@@ -393,6 +393,22 @@ export function assignWorldTreatmentContractsToScenes(
   scenes: PlannedScene[],
 ): WorldTreatmentRealizationContract[] {
   const contracts = buildWorldTreatmentContractsForPlan(plan);
+  const contractIds = new Set(contracts.map((contract) => contract.id));
+
+  // Scene locations can be normalized after the first plan projection. Make
+  // reassignment transactional and idempotent so a contract cannot remain on
+  // the scene that used to own its location while its canonical target points
+  // somewhere else.
+  for (const scene of scenes) {
+    scene.worldTreatmentContracts = (scene.worldTreatmentContracts ?? [])
+      .filter((contract) => !contractIds.has(contract.id));
+    scene.mechanicPressure = (scene.mechanicPressure ?? [])
+      .filter((pressure) => !(
+        pressure.mechanicRef?.infoId
+        && contractIds.has(pressure.mechanicRef.infoId)
+      ));
+  }
+
   for (const contract of contracts) {
     const targets = bestScenesForContract(contract, scenes);
     contract.targetSceneIds = targets.map((scene) => scene.id);

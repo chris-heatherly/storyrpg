@@ -515,13 +515,20 @@ function isTreatmentSourced(
  * never be confirmed or repaired.
  */
 const LOCATION_SCENE_RE = /:ep(\d+):([^:]+)/;
-const LOCATION_SCENE_ONLY_RE = /^(?:worldTreatment|stakesArchitecture|arcPressure|failureModeAudit|branchConsequence|endingRealization):(?:[^:]+:)?([^:]+)/;
 function locationSceneRef(location?: string): { episodeNumber?: number; sceneId?: string } {
   const m = location ? LOCATION_SCENE_RE.exec(location) : null;
   if (!m) {
-    const sceneOnly = location ? LOCATION_SCENE_ONLY_RE.exec(location) : null;
-    if (!sceneOnly || /^(?:season|episode|unknown|location)$/i.test(sceneOnly[1])) return {};
-    return { sceneId: sceneOnly[1] };
+    const parts = location?.split(':') ?? [];
+    const sceneId = parts[0] === 'worldTreatment' || parts[0] === 'stakesArchitecture'
+      ? parts[1]
+      : parts[0] === 'arcPressure'
+        || parts[0] === 'failureModeAudit'
+        || parts[0] === 'branchConsequence'
+        || parts[0] === 'endingRealization'
+        ? parts[2]
+        : undefined;
+    if (!sceneId || /^(?:season|episode|unknown|location)$/i.test(sceneId)) return {};
+    return { sceneId };
   }
   return { episodeNumber: Number(m[1]), sceneId: m[2] };
 }

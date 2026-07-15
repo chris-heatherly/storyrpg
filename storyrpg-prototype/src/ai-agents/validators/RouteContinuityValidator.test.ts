@@ -229,6 +229,57 @@ describe('RouteContinuityValidator', () => {
     expect(result.issues.map((issue) => issue.type)).not.toContain('route_chronology_violation');
   });
 
+  it('does not restage writing when a dedicated aftermath scene refers to the completed post while showing viral reach', () => {
+    const writingEvent = {
+      key: 'event:writing',
+      cue: 'lateNightWriting' as const,
+      text: 'At 4am she turns the night into the first post under a codename.',
+      sourceContractIds: ['writing-turn'],
+    };
+    const story = makeStory([
+      {
+        id: 'writing-owner',
+        name: 'Writing Owner',
+        startingBeatId: 'writing-beat',
+        sceneEventOwnership: {
+          id: 'writing-owner-events', sceneId: 'writing-owner',
+          ownedEvents: [writingEvent], incomingContext: [], outgoingResidue: [],
+          forbiddenRestageEvents: [], sourceContractIds: ['writing-turn'], diagnostics: [], promptGuidance: [],
+        },
+        beats: [{
+          id: 'writing-beat',
+          text: 'At 4am, you write the first post under the codename Mr. Midnight and press publish.',
+          nextSceneId: 'blog-aftermath',
+          choices: [],
+        }],
+        leadsTo: ['blog-aftermath'],
+      },
+      {
+        id: 'blog-aftermath',
+        name: 'Blog Aftermath',
+        startingBeatId: 'aftermath-beat',
+        sceneEventOwnership: {
+          id: 'blog-aftermath-events', sceneId: 'blog-aftermath',
+          ownedEvents: [{
+            key: 'event:aftermath', cue: 'blogAftermath' as const,
+            text: 'By evening the post has gone viral.', sourceContractIds: ['aftermath-turn'],
+          }],
+          incomingContext: [writingEvent], outgoingResidue: [], forbiddenRestageEvents: [writingEvent],
+          sourceContractIds: ['aftermath-turn'], diagnostics: [], promptGuidance: [],
+        },
+        beats: [{
+          id: 'aftermath-beat',
+          text: 'Mika refreshes the page on your laptop. The count leaps into the thousands. "You did not just write a post. You started a fire. It has gone viral."',
+          choices: [],
+        }],
+      },
+    ] as Scene[]);
+
+    const result = new RouteContinuityValidator().validate({ story });
+
+    expect(result.issues.filter((issue) => issue.type === 'route_duplicate_event')).toEqual([]);
+  });
+
   it('blocks generic fallback language before it can score as polished prose', () => {
     const story = makeStory([{
       id: 'cold-open',

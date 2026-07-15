@@ -338,7 +338,11 @@ export function semanticAtomsForEvent(
     sourceText: contract.sources.find((source) => source.id === proposition.sourceId)?.text ?? contract.sourceText,
     kind: 'semantic',
     verificationAuthority: 'semantic_judge',
-    semanticCriteria: proposition.semanticCriteria,
+    // The proposition is the canonical, source-grounded requirement. Compiler
+    // criteria are useful drafting notes, but an LLM paraphrase can accidentally
+    // strengthen aspect or completion state (for example, "befriends" into
+    // "are friends"). Never let that secondary text redefine the gate.
+    semanticCriteria: [proposition.proposition],
     semanticRole: proposition.semanticRole,
     participantIds: proposition.participantIds,
     prerequisiteAtomIds: proposition.prerequisitePropositionIds,

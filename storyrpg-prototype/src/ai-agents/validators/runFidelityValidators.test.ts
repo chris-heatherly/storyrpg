@@ -167,6 +167,57 @@ describe('runFidelityValidators (GAP-D dispatch)', () => {
     expect(result.treatmentSourced).toBe(true);
   });
 
+  it('decodes a world-treatment repair location to the owning scene rather than the contract id', () => {
+    for (const flag of ALL_FLAGS) process.env[flag] = '0';
+    process.env.GATE_TREATMENT_FIELD_UTILIZATION = '1';
+    const contract = {
+      id: 'world-lumina-location-identity',
+      source: 'treatment',
+      fieldName: 'Key location',
+      sourceText: "Lumina Books on Lipscani, Stela's bookshop.",
+      contractKind: 'location_identity',
+      requiredRealization: ['world_bible', 'location_introduction', 'final_prose'],
+      targetEpisodeNumbers: [1],
+      targetSceneIds: ['s1-2'],
+      locationId: 'loc-lumina-books',
+      locationName: 'Lumina Books',
+      blockingLevel: 'structural',
+    } as const;
+    const finalStory = {
+      episodes: [{
+        number: 1,
+        scenes: [{ id: 's1-3', name: 'A Quiet Shop', beats: [{ id: 'b1', text: 'You enter without reading the sign.' }] }],
+      }],
+    } as unknown as Story;
+    const seasonPlan = {
+      totalEpisodes: 1,
+      episodes: [{ episodeNumber: 1 }],
+      worldTreatmentContracts: [contract],
+      scenePlan: {
+        scenes: [
+          { id: 's1-2', episodeNumber: 1, order: 1, title: 'Bucharest Streets', locations: ['Bucharest streets'], worldTreatmentContracts: [contract] },
+          { id: 's1-3', episodeNumber: 1, order: 2, title: 'Lumina Books', locations: ['Lumina Books'] },
+        ],
+        byEpisode: { 1: ['s1-2', 's1-3'] },
+        setupPayoffEdges: [],
+        worldTreatmentContracts: [contract],
+      },
+    } as unknown as SeasonPlan;
+    const sourceAnalysis = {
+      sourceFormat: 'story_treatment',
+      episodeBreakdown: [{ episodeNumber: 1 }],
+      worldTreatmentContracts: [contract],
+    } as unknown as SourceMaterialAnalysis;
+
+    const result = runFidelityValidators({ story: finalStory, seasonPlan, sourceAnalysis });
+    const finding = result.fidelityFindings.find((candidate) =>
+      candidate.validator === 'TreatmentFieldUtilizationValidator'
+      && candidate.message.includes('World/location treatment field')
+    );
+
+    expect(finding?.sceneId).toBe('s1-3');
+  });
+
   it('hard-blocks the info-ledger schedule by default on treatment runs', () => {
     const result = runFidelityValidators({ story, seasonPlan: ledgerSeasonPlan(), sourceAnalysis: treatmentAnalysis() });
     const info = result.fidelityFindings.filter((f) => f.validator === 'InformationLedgerScheduleValidator');

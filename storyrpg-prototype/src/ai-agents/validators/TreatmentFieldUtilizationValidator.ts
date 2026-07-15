@@ -526,8 +526,14 @@ function worldContractTargets(
   plan: SeasonPlan | undefined,
   contract: WorldTreatmentRealizationContract,
 ): PlannedScene[] {
-  const targetIds = new Set(contract.targetSceneIds);
   const scenes = plan?.scenePlan?.scenes ?? [];
+  const locationTargets = scenes.filter((scene) => locationMatches(contract, [
+    scene.title,
+    ...(scene.locations ?? []),
+  ].filter(Boolean).join(' ')));
+  if (locationTargets.length > 0) return locationTargets;
+
+  const targetIds = new Set(contract.targetSceneIds);
   for (const scene of scenes) {
     if ((scene.worldTreatmentContracts ?? []).some((field) => field.id === contract.id)) {
       targetIds.add(scene.id);
@@ -537,8 +543,8 @@ function worldContractTargets(
 }
 
 function worldIssueLocation(contract: WorldTreatmentRealizationContract, plan?: SeasonPlan): string {
-  const sceneId = contract.targetSceneIds[0]
-    ?? worldContractTargets(plan, contract)[0]?.id
+  const sceneId = worldContractTargets(plan, contract)[0]?.id
+    ?? contract.targetSceneIds[0]
     ?? (contract.locationId ? `location:${contract.locationId}` : 'season');
   return `worldTreatment:${sceneId}:${contract.id}`;
 }
@@ -605,20 +611,23 @@ function hasWorldStructuredPlanUse(plan: SeasonPlan | undefined, contract: World
 }
 
 function worldFinalText(input: TreatmentFieldUtilizationInput, contract: WorldTreatmentRealizationContract): string {
-  const targetIds = new Set(contract.targetSceneIds);
-  for (const scene of input.seasonPlan?.scenePlan?.scenes ?? []) {
-    if ((scene.worldTreatmentContracts ?? []).some((field) => field.id === contract.id)) {
-      targetIds.add(scene.id);
-    }
-  }
+  const resolvedTargets = worldContractTargets(input.seasonPlan, contract);
+  const targetIds = new Set(
+    resolvedTargets.length > 0
+      ? resolvedTargets.map((scene) => scene.id)
+      : contract.targetSceneIds,
+  );
   const sceneParts: string[] = [];
   for (const episode of input.story?.episodes ?? []) {
     for (const scene of episode.scenes ?? []) {
-      if (targetIds.size === 0 || targetIds.has(scene.id)) {
+      const text = [
+        scene.name,
+        scene.timeline?.location,
+        ...(scene.beats ?? []).map(beatText),
+      ].filter(Boolean).join(' ');
+      if (targetIds.size === 0 || targetIds.has(scene.id) || locationMatches(contract, text)) {
         sceneParts.push([
-          scene.name,
-          scene.timeline?.location,
-          ...(scene.beats ?? []).map(beatText),
+          text,
         ].filter(Boolean).join(' '));
       }
     }

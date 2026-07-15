@@ -253,6 +253,7 @@ export class SemanticContractCompilerAgent extends BaseAgent {
     knownLocations: string[],
   ): Promise<AuthoredEventSemanticIR['events']> {
     let batchEvents: AuthoredEventSemanticIR['events'] | undefined;
+    let previousRawBatch: RawSemanticBatch | undefined;
     let correctionIssues: string[] = [];
     try {
       for (let structuredAttempt = 1; structuredAttempt <= 2 && !batchEvents; structuredAttempt += 1) {
@@ -260,12 +261,13 @@ export class SemanticContractCompilerAgent extends BaseAgent {
         if (correctionIssues.length > 0) {
           messages.push({
             role: 'user',
-            content: `Your previous semantic IR was structurally invalid. Correct only these issues and return the complete batch again:\n- ${correctionIssues.join('\n- ')}`,
+            content: `Your previous semantic IR was structurally invalid. Correct only these issues and return the complete batch again:\n- ${correctionIssues.join('\n- ')}\n\nPrevious invalid batch:\n${JSON.stringify(previousRawBatch, null, 2)}`,
           });
         }
         const { data } = await this.callLLMForJson<RawSemanticBatch>(messages, {
           jsonSchema: semanticContractSchema(batch.length),
         });
+        previousRawBatch = data;
         let normalized: AuthoredEventSemanticIR['events'];
         try {
           normalized = this.normalizeBatch(batch, data);
@@ -295,6 +297,14 @@ export class SemanticContractCompilerAgent extends BaseAgent {
         ];
       }
       throw error;
+    }
+    if (!batchEvents && batch.length > 1) {
+      const midpoint = Math.ceil(batch.length / 2);
+      console.warn(`[Semantic Contract Compiler] Batch of ${batch.length} events remained semantically invalid; recompiling focused sub-batches.`);
+      return [
+        ...await this.compileEventBatch(batch.slice(0, midpoint), knownLocations),
+        ...await this.compileEventBatch(batch.slice(midpoint), knownLocations),
+      ];
     }
     if (!batchEvents) throw new Error(`Semantic contract batch failed bounded structured correction: ${correctionIssues.join(' | ')}`);
     return batchEvents;
@@ -432,7 +442,8 @@ Rules:
 - sourceSpan must be copied EXACTLY from one supplied source segment and sourceId must name that segment.
 - Do not add facts, people, actions, locations, motives, outcomes, or chronology absent from the sources.
 - proposition is a concise factual meaning, not required wording.
-- semanticCriteria are concise meaning conditions a semantic judge can evaluate; do not provide keyword lists or stylistic advice.
+- semanticCriteria are concise evidence guidance for the proposition; they must be entailed by the proposition and may never strengthen its completion state, relationship stage, causality, certainty, or outcome. For example, "befriends" must not become "are friends," an invitation must not become acceptance, and an attempt must not become success.
+- The proposition is the canonical requirement. Criteria may clarify who acts or what must be understood, but they may not replace the source predicate with a stronger result state.
 - ONE completed meaning per proposition. If a source clause chains several actions with "and" / "then" / "after" (e.g. "After testing her, the three become friends and form the club"), emit one proposition per action — a judge must be able to pass or fail each independently. Never bundle an introduction, a relationship change, and a location reference into one proposition.
 - Propositions follow the source's causal/temporal order. An action the source describes as happening FIRST ("after testing Kylie...") must be an earlier proposition, and a later action may list it in prerequisitePropositionIds — never the reverse.
 - participantIds name only participants explicitly present in or unambiguously referred to by the cited span. Pronouns may remain pronouns.

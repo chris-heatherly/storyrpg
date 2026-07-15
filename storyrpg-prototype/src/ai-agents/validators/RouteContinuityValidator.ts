@@ -170,7 +170,11 @@ const CUE_WINDOW_PATTERNS: Partial<Record<RouteCue, RegExp>> = {
   objectHandoff: /\b(?:hands?|offers?|gives?|slides?|passes?|key\s*card|card|object)\b/i,
   socialMeet: /\b(?:meets?|introduces?|table|booth|friends?|group|club)\b/i,
   threatEncounter: /\b(?:attack(?:s|ed|ing)?|threat|danger|rescue(?:s|d)?|save(?:s|d)?|lunges?|chases?|grabs?)\b/i,
-  lateNightWriting: /\b(?:writes?|typing|draft|post|blog|late\s+night|notebook|laptop)\b/i,
+  // Keep this aligned with the actual action/object cue detector. Generic
+  // props such as a laptop or notebook do not stage writing by themselves;
+  // including them here made a viral-metrics window fail the recap test when
+  // another sentence merely referred to the already-written post.
+  lateNightWriting: /\b(?:writes?|typing|draft|post|blog|late\s+night)\b/i,
   blogAftermath: PUBLIC_BLOG_AFTERMATH_MARKERS,
   // walkHome has no keyword window: recap analysis reuses walkHomeWindowFires
   // so it inspects exactly the sentences that fired the cue (a loose "home"

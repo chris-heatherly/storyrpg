@@ -383,7 +383,10 @@ function buildTaskClaims(input: {
         taskId: input.task.id,
         atomId: atom.id,
         proposition: atom.description,
-        criteria: atom.semanticCriteria?.length ? [...atom.semanticCriteria] : [atom.description],
+        // Atom descriptions are projected from canonical semantic propositions.
+        // Treat them as the sole judge criterion so legacy checkpoint criteria
+        // cannot strengthen or otherwise drift from the authored proposition.
+        criteria: [atom.description],
         polarity: atom.polarity === 'forbidden' ? 'forbidden' : 'required',
         participantIds: [...(atom.participantIds ?? atom.subjectIds ?? [])],
         prerequisiteAtomIds: [...(atom.prerequisiteAtomIds ?? [])],

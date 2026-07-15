@@ -72,6 +72,22 @@ describe('treatment obligation canonical report', () => {
     expect(report.findings[0].contract).toBe('treatment_encounter_anchor_realization');
   });
 
+  it('keeps a world location truth-place miss on the scene-prose contract', () => {
+    const report = buildTreatmentObligationCanonicalReport({
+      treatmentSourced: true,
+      fidelityFindings: [finding({
+        sceneId: 's1-3',
+        message: "World/location treatment field \"Key location\" was planned but not realized in reader-facing story pressure: \"Lumina Books, Stela's bookshop, truth-place, and warding hub.\".",
+      })],
+    });
+
+    expect(report.findings[0]).toMatchObject({
+      contract: 'treatment_obligation_realization',
+      targetSurface: 'scene-prose',
+      sceneId: 's1-3',
+    });
+  });
+
   it('keeps plan-time assignment failures separate from final on-page realization failures', () => {
     const report = buildTreatmentObligationCanonicalReport({
       treatmentSourced: true,

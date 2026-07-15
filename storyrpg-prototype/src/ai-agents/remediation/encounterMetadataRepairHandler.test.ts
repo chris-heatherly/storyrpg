@@ -87,4 +87,27 @@ describe('encounter metadata field-owned repair', () => {
     expect(result.changed).toBe(false);
     expect(reauthorEncounterDescription).not.toHaveBeenCalled();
   });
+
+  it('reuses one focused authoring result across duplicate description surfaces', async () => {
+    const story = storyWithEncounterDescription('You face this pressure: the shadow attacks.');
+    (story.episodes[0].scenes[0].encounter as any).phases[0].description = 'You face this pressure: the shadow attacks.';
+    const issues = new RouteContinuityValidator().validate({ story }).issues
+      .filter((issue) => issue.type === 'unsafe_fallback_prose');
+    const reauthorEncounterDescription = vi.fn(async () =>
+      'A shadow cuts off your moonlit path while the locked garden gate rattles behind you.');
+    const handler = buildEncounterMetadataRepairHandler({
+      author: () => ({ reauthorEncounterDescription }),
+    });
+
+    const result = await handler({ story, blockingIssues: issues });
+
+    expect(result.changed).toBe(true);
+    expect(reauthorEncounterDescription).toHaveBeenCalledOnce();
+    expect((story.episodes[0].scenes[0].encounter as any).description)
+      .toBe('A shadow cuts off your moonlit path while the locked garden gate rattles behind you.');
+    expect((story.episodes[0].scenes[0].encounter as any).phases[0].description)
+      .toBe('A shadow cuts off your moonlit path while the locked garden gate rattles behind you.');
+    expect(result.atomicScopes).toEqual([{ kind: 'scene', sceneId: 'enc-scene' }]);
+    expect(new RouteContinuityValidator().validate({ story }).issues).toHaveLength(0);
+  });
 });

@@ -265,6 +265,10 @@ function classifyTreatmentFieldUtilization(message: string): Pick<TreatmentOblig
     return { contract: 'treatment_season_promise_realization', repairRoute: 'scene-regen', targetSurface: 'season-promise' };
   }
 
+  if (/World\/location treatment field/i.test(message)) {
+    return { contract: 'treatment_obligation_realization', repairRoute: 'scene-regen', targetSurface: 'scene-prose' };
+  }
+
   if (/\b(?:protagonist|character|want|need|lie|wound|truth|identity)\b/i.test(message)) {
     return { contract: 'treatment_character_realization', repairRoute: 'scene-regen', targetSurface: 'character-arc' };
   }

@@ -5309,18 +5309,22 @@ export class ContentGenerationPhase {
       const completedScene = sceneContents.find((sc) => sc.sceneId === sceneBlueprint.id);
       const completedChoice = completedScene ? findChoiceSetForScene(choiceSets, completedScene) : undefined;
       const completedEncounter = encounters.get(sceneBlueprint.id);
-      await finalizeSceneRealizationHandoff({
-        sceneBlueprint,
-        sceneContent: completedScene,
-        choiceSet: completedChoice,
-        encounter: completedEncounter,
-        episodeNumber: densityEpisodeNumber,
-        outputDirectory,
-        deferredRecords: deferredRealizationRecords,
-        executionRecords: validationExecutionRecords,
-        emit: context.emit,
-        validate: (request) => this.validateNarrativeRealization(request),
-      });
+      const quarantinePending = !completedEncounter
+        && quarantinedEncounters.some((unit) => unit.sceneId === sceneBlueprint.id);
+      if (!quarantinePending) {
+        await finalizeSceneRealizationHandoff({
+          sceneBlueprint,
+          sceneContent: completedScene,
+          choiceSet: completedChoice,
+          encounter: completedEncounter,
+          episodeNumber: densityEpisodeNumber,
+          outputDirectory,
+          deferredRecords: deferredRealizationRecords,
+          executionRecords: validationExecutionRecords,
+          emit: context.emit,
+          validate: (request) => this.validateNarrativeRealization(request),
+        });
+      }
       const producerBlockers: ProducerBlockerFinding[] = [
         ...(completedScene ? validateSceneProducerOutput(sceneBlueprint.id, completedScene) : []),
         ...(completedChoice ? validateChoiceProducerOutput(sceneBlueprint.id, completedChoice) : []),
@@ -5365,7 +5369,7 @@ export class ContentGenerationPhase {
           await this.deps.saveResumeUnit(outputDirectory, encounterUnitId, encounterCheckpointPath, completedEncounter);
         }
       }
-      finalizedScenes.add(sceneBlueprint.id);
+      if (!quarantinePending) finalizedScenes.add(sceneBlueprint.id);
     }
 
     // === QUARANTINE RETRY PASS (P2) ===
@@ -5402,8 +5406,63 @@ export class ContentGenerationPhase {
               recoveredUnits: quarantinedEncounters.length - unrecovered.length,
               failureKind: 'content',
             },
+            failure: {
+              code: 'encounter_owner_repair_exhausted',
+              ownerStage: 'encounter_architect',
+              retryClass: 'repair_encounter_route',
+              issueCodes: ['ENCOUNTER_AUTHORED_ROUTE_UNDER_REALIZED'],
+              artifactRefs: [],
+              repairTarget: unrecovered[0]?.sceneId,
+            },
           }
         );
+      }
+      for (const unit of quarantinedEncounters) {
+        const sceneBlueprint = blueprint.scenes.find((scene) => scene.id === unit.sceneId);
+        const recoveredEncounter = encounters.get(unit.sceneId);
+        if (!sceneBlueprint || !recoveredEncounter) continue;
+        const completedScene = sceneContents.find((scene) => scene.sceneId === unit.sceneId);
+        const completedChoice = completedScene ? findChoiceSetForScene(choiceSets, completedScene) : undefined;
+        await finalizeSceneRealizationHandoff({
+          sceneBlueprint,
+          sceneContent: completedScene,
+          choiceSet: completedChoice,
+          encounter: recoveredEncounter,
+          episodeNumber: densityEpisodeNumber,
+          outputDirectory,
+          deferredRecords: deferredRealizationRecords,
+          executionRecords: validationExecutionRecords,
+          emit: context.emit,
+          validate: (request) => this.validateNarrativeRealization(request),
+        });
+        const encounterProducerBlockers = validateEncounterProducerOutput(unit.sceneId, recoveredEncounter);
+        if (encounterProducerBlockers.length > 0) {
+          throw new PipelineError(
+            `[ProducerPhaseBlocker] ${unit.sceneId} failed encounter owner-phase validation after quarantine recovery.`,
+            'encounters',
+            {
+              agent: 'EncounterArchitect',
+              context: { sceneId: unit.sceneId, findings: encounterProducerBlockers, retryBudget: 1 },
+              failure: {
+                code: 'encounter_producer_blocker',
+                ownerStage: 'encounter_architect',
+                retryClass: 'repair_encounter_route',
+                issueCodes: encounterProducerBlockers.map((finding) => finding.type),
+                artifactRefs: [],
+                repairTarget: unit.sceneId,
+              },
+            },
+          );
+        }
+        if (outputDirectory && episodeNumber) {
+          await this.deps.saveResumeUnit(
+            outputDirectory,
+            `encounter:episode-${episodeNumber}:${unit.sceneId}`,
+            this.deps.episodeCheckpointFile(episodeNumber, 'encounter', unit.sceneId),
+            recoveredEncounter,
+          );
+        }
+        finalizedScenes.add(unit.sceneId);
       }
     }
 

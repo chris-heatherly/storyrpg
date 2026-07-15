@@ -96,6 +96,16 @@ export interface ContractRepairResult {
   attemptedIssueKeys?: string[];
   /** Exact story paths the handler owns and changed, when known. */
   changedFieldPaths?: string[];
+  /**
+   * Independently validatable mutation units. When a batched handler changes
+   * several scenes, the repair loop can commit safe siblings even if one scene
+   * introduces a blocker. Omitting this preserves whole-handler transactions.
+   */
+  atomicScopes?: Array<{
+    kind: 'scene';
+    sceneId: string;
+    episodeNumber?: number;
+  }>;
 }
 
 export const FINAL_CONTRACT_REPAIR_SNAPSHOT_VERSION = 1;
@@ -171,7 +181,21 @@ function stableIssueMessage(issue: ContractRepairIssue): string {
 }
 
 export function contractRepairIssueFingerprint(issue: ContractRepairIssue): string {
-  if (issue.realizationFingerprint) return `realization::${issue.realizationFingerprint}`;
+  if (issue.realizationFingerprint) {
+    const canonicalRealizationTarget = [
+      issue.issueCode ?? '',
+      issue.taskId ?? '',
+      issue.contractId ?? '',
+      issue.eventId ?? '',
+      issue.sceneId ?? '',
+      issue.outcomeTier ?? '',
+      issue.fieldPath ?? '',
+    ];
+    if (canonicalRealizationTarget.some(Boolean)) {
+      return ['realization', ...canonicalRealizationTarget].join('::');
+    }
+    return `realization::${issue.realizationFingerprint}`;
+  }
   const message = issue.message ?? '';
   const moment = extractQuotedMoment(message) ?? message;
   return [
@@ -192,6 +216,36 @@ export function contractRepairIssueFingerprint(issue: ContractRepairIssue): stri
   ].join('::');
 }
 
+function introducedBlockingIssueKeys(
+  beforeIssues: ContractRepairIssue[],
+  afterIssues: ContractRepairIssue[],
+): string[] {
+  const beforeFamilies = new Set(beforeIssues.map(contractRepairIssueFingerprint));
+  const introduced = new Set(
+    afterIssues
+      .map(contractRepairIssueFingerprint)
+      .filter((key) => !beforeFamilies.has(key)),
+  );
+  const beforeAtomsByFamily = new Map<string, Set<string>>();
+  for (const issue of beforeIssues) {
+    const atoms = [...(issue.missingEvidenceAtoms ?? []), ...(issue.matchedForbiddenAtoms ?? [])];
+    if (atoms.length === 0) continue;
+    const family = contractRepairIssueFingerprint(issue);
+    const known = beforeAtomsByFamily.get(family) ?? new Set<string>();
+    atoms.forEach((atom) => known.add(atom));
+    beforeAtomsByFamily.set(family, known);
+  }
+  for (const issue of afterIssues) {
+    const family = contractRepairIssueFingerprint(issue);
+    const beforeAtoms = beforeAtomsByFamily.get(family);
+    if (!beforeAtoms) continue;
+    for (const atom of [...(issue.missingEvidenceAtoms ?? []), ...(issue.matchedForbiddenAtoms ?? [])]) {
+      if (!beforeAtoms.has(atom)) introduced.add(`realization-atom::${family}::${atom}`);
+    }
+  }
+  return Array.from(introduced);
+}
+
 export function finalContractRepairInputHash(value: unknown): string {
   const text = JSON.stringify(value);
   let hash = 2166136261;
@@ -204,6 +258,43 @@ export function finalContractRepairInputHash(value: unknown): string {
 
 function cloneForRepairEvidence<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function restoreStoryInPlace(target: Story, source: Story): void {
+  const targetRecord = target as unknown as Record<string, unknown>;
+  const sourceRecord = cloneForRepairEvidence(source) as unknown as Record<string, unknown>;
+  for (const key of Object.keys(targetRecord)) {
+    if (!(key in sourceRecord)) delete targetRecord[key];
+  }
+  Object.assign(targetRecord, sourceRecord);
+}
+
+function findSceneForAtomicScope(
+  story: Story,
+  scope: NonNullable<ContractRepairResult['atomicScopes']>[number],
+): Record<string, unknown> | undefined {
+  for (const episode of story.episodes ?? []) {
+    if (scope.episodeNumber !== undefined && episode.number !== scope.episodeNumber) continue;
+    const scene = episode.scenes?.find((candidate) => candidate.id === scope.sceneId);
+    if (scene) return scene as unknown as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function applyAtomicScope(
+  target: Story,
+  source: Story,
+  scope: NonNullable<ContractRepairResult['atomicScopes']>[number],
+): boolean {
+  const targetScene = findSceneForAtomicScope(target, scope);
+  const sourceScene = findSceneForAtomicScope(source, scope);
+  if (!targetScene || !sourceScene) return false;
+  const sourceClone = cloneForRepairEvidence(sourceScene);
+  for (const key of Object.keys(targetScene)) {
+    if (!(key in sourceClone)) delete targetScene[key];
+  }
+  Object.assign(targetScene, sourceClone);
+  return true;
 }
 
 function collectChangedFieldPaths(
@@ -463,7 +554,8 @@ export async function runFinalContractRepair(opts: {
 
     const roundInputHash = finalContractRepairInputHash(story);
     const roundBefore = cloneForRepairEvidence(story);
-    const allBeforeIssueKeys = report.blockingIssues.map(contractRepairIssueFingerprint);
+    const allBeforeIssues = [...report.blockingIssues];
+    const allBeforeIssueKeys = allBeforeIssues.map(contractRepairIssueFingerprint);
     const beforeIssueKeys = round.issues.map(contractRepairIssueFingerprint);
     let roundChanged = false;
     const roundRecords: Array<Omit<RemediationLedgerRecord, 'timestamp'>> = [];
@@ -471,50 +563,117 @@ export async function runFinalContractRepair(opts: {
     const attemptedThisRound = new Set<string>();
     const handlerReportedPaths = new Set<string>();
     const handlerAttempts: ContractRepairRoundSnapshot['handlerAttempts'] = [];
+    const rejectedIntroducedKeys = new Set<string>();
     for (let handlerIndex = 0; handlerIndex < opts.handlers.length; handlerIndex += 1) {
       const handler = opts.handlers[handlerIndex];
       const handlerBefore = cloneForRepairEvidence(story);
-      const result = await handler({ story, blockingIssues: round.issues });
+      const activeRoundKeys = new Set(round.keys);
+      const activeIssueKeys = new Set<string>();
+      const activeIssues = report.blockingIssues.filter((issue) => {
+        const key = contractRepairIssueFingerprint(issue);
+        if (!activeRoundKeys.has(key)) return false;
+        if ((opts.dedupeIssueFingerprints ?? false) && activeIssueKeys.has(key)) return false;
+        activeIssueKeys.add(key);
+        return true;
+      });
+      const result = await handler({ story, blockingIssues: activeIssues });
       if (result.attemptedIssueKeys) {
         anyHandlerReportedAttempts = true;
         for (const key of result.attemptedIssueKeys) attemptedThisRound.add(key);
       }
-      for (const path of result.changedFieldPaths ?? []) handlerReportedPaths.add(path);
-      const handlerObservedPaths = result.changed
-        ? collectChangedFieldPaths(handlerBefore, result.story)
+      if (result.changed && result.story !== story) restoreStoryInPlace(story, result.story);
+      let acceptedChange = result.changed;
+      let acceptedWholeCandidate = result.changed;
+      if (result.changed) {
+        if (opts.rejectIntroducedBlockingIssues) {
+          const beforeHandlerIssues = [...report.blockingIssues];
+          const candidateReport = await opts.revalidate(story);
+          const introduced = introducedBlockingIssueKeys(beforeHandlerIssues, candidateReport.blockingIssues);
+          if (introduced.length > 0) {
+            introduced.forEach((key) => rejectedIntroducedKeys.add(key));
+            const handlerCandidate = cloneForRepairEvidence(story);
+            restoreStoryInPlace(story, handlerBefore);
+            acceptedChange = false;
+            acceptedWholeCandidate = false;
+            for (const scope of result.atomicScopes ?? []) {
+              const scopeBefore = cloneForRepairEvidence(story);
+              if (!applyAtomicScope(story, handlerCandidate, scope)) continue;
+              const scopedReport = await opts.revalidate(story);
+              const scopedIntroduced = introducedBlockingIssueKeys(report.blockingIssues, scopedReport.blockingIssues);
+              if (scopedIntroduced.length > 0) {
+                restoreStoryInPlace(story, scopeBefore);
+                scopedIntroduced.forEach((key) => rejectedIntroducedKeys.add(key));
+                continue;
+              }
+              report = scopedReport;
+              acceptedChange = true;
+            }
+          } else {
+            report = candidateReport;
+          }
+        }
+        if (acceptedChange) {
+          roundChanged = true;
+          if (result.record) roundRecords.push(result.record);
+        }
+      }
+      const handlerObservedPaths = acceptedChange
+        ? collectChangedFieldPaths(handlerBefore, story)
         : [];
       const handlerChangedPaths = Array.from(new Set([
-        ...(result.changedFieldPaths ?? []),
+        ...(acceptedWholeCandidate ? (result.changedFieldPaths ?? []) : []),
         ...handlerObservedPaths,
       ])).sort();
-      if (opts.requireMutationEvidence && result.changed && handlerChangedPaths.length === 0) {
+      if (opts.requireMutationEvidence && acceptedChange && handlerChangedPaths.length === 0) {
         throw new Error(`Final contract repair handler ${handler.name || `handler-${handlerIndex + 1}`} claimed success without changing validator-visible story evidence.`);
       }
+      for (const path of handlerChangedPaths) handlerReportedPaths.add(path);
       handlerAttempts.push({
         handler: handler.name || `handler-${handlerIndex + 1}`,
         attemptedIssueKeys: result.attemptedIssueKeys ?? [],
         changedFieldPaths: handlerChangedPaths,
         claimedChanged: result.changed,
       });
-      if (result.changed) {
-        roundChanged = true;
-        story = result.story;
-        if (result.record) roundRecords.push(result.record);
-      }
     }
 
-    if (!roundChanged) break; // fixpoint: nothing left any handler can fix
+    if (!roundChanged) {
+      if (rejectedIntroducedKeys.size > 0) {
+        await opts.onRoundSnapshot?.({
+          schemaVersion: FINAL_CONTRACT_REPAIR_SNAPSHOT_VERSION,
+          validatorVersion: FINAL_CONTRACT_VALIDATOR_VERSION,
+          round: attempts,
+          inputHash: roundInputHash,
+          beforeIssueKeys,
+          afterIssueKeys: report.blockingIssues.map(contractRepairIssueFingerprint),
+          attemptedIssueKeys: Array.from(attemptedThisRound),
+          changedFieldPaths: [],
+          handlerAttempts,
+          clearedIssueKeys: [],
+          introducedIssueKeys: Array.from(rejectedIntroducedKeys),
+          revalidationDelta: {
+            beforeBlocking: beforeIssueKeys.length,
+            afterBlocking: report.blockingIssues.length,
+            cleared: 0,
+            introduced: rejectedIntroducedKeys.size,
+          },
+          passed: report.passed,
+        }, story, report);
+      }
+      break; // fixpoint: nothing left any handler can safely commit
+    }
     // Revalidate before charging issue fingerprints. A handler only consumes
     // budget after the canonical validators have observed its candidate.
-    const candidateReport = await opts.revalidate(story);
+    const candidateReport = opts.rejectIntroducedBlockingIssues
+      ? report
+      : await opts.revalidate(story);
     const candidateIssueKeys = candidateReport.blockingIssues.map(contractRepairIssueFingerprint);
     const beforeIssueSet = new Set(allBeforeIssueKeys);
-    const introducedCandidateKeys = candidateIssueKeys.filter((key) => !beforeIssueSet.has(key));
+    const introducedCandidateKeys = introducedBlockingIssueKeys(allBeforeIssues, candidateReport.blockingIssues);
     if (opts.rejectIntroducedBlockingIssues && introducedCandidateKeys.length > 0) {
       // A repair is transactional for the offending round: revert, then continue
       // attempting other repairable issues instead of aborting the entire loop
       // (R0.6 — one bad rewrite must not starve sibling repairs).
-      story = roundBefore;
+      restoreStoryInPlace(story, roundBefore);
       opts.onRoundSnapshot?.({
         schemaVersion: FINAL_CONTRACT_REPAIR_SNAPSHOT_VERSION,
         validatorVersion: FINAL_CONTRACT_VALIDATOR_VERSION,
@@ -526,7 +685,7 @@ export async function runFinalContractRepair(opts: {
         changedFieldPaths: [],
         handlerAttempts,
         clearedIssueKeys: [],
-        introducedIssueKeys: introducedCandidateKeys,
+        introducedIssueKeys: Array.from(new Set([...introducedCandidateKeys, ...rejectedIntroducedKeys])),
         revalidationDelta: {
           beforeBlocking: beforeIssueKeys.length,
           afterBlocking: beforeIssueKeys.length,
@@ -571,7 +730,10 @@ export async function runFinalContractRepair(opts: {
       changedFieldPaths,
       handlerAttempts,
       clearedIssueKeys: beforeIssueKeys.filter((key) => !afterIssueSet.has(key)),
-      introducedIssueKeys: afterIssueKeys.filter((key) => !beforeIssueSet.has(key)),
+      introducedIssueKeys: Array.from(new Set([
+        ...afterIssueKeys.filter((key) => !beforeIssueSet.has(key)),
+        ...rejectedIntroducedKeys,
+      ])),
       revalidationDelta: {
         beforeBlocking: beforeIssueKeys.length,
         afterBlocking: afterIssueKeys.length,

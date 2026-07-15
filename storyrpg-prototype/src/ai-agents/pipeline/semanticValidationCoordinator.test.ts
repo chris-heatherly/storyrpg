@@ -89,6 +89,39 @@ describe('semanticValidationCoordinator', () => {
     });
   });
 
+  it('judges the canonical proposition instead of stronger legacy criteria', async () => {
+    const seenClaims: SemanticRealizationClaim[] = [];
+    const judge = new FakeJudge((claim) => {
+      seenClaims.push(claim);
+      return verdict(claim, 'fulfilled', 'offers you the spare key');
+    });
+    const canonicalTask = task({
+      evidenceAtoms: [{
+        id: 'atom:befriends',
+        description: 'The shopkeeper befriends the traveler.',
+        acceptedPatterns: ['befriends the traveler'],
+        kind: 'semantic',
+        verificationAuthority: 'semantic_judge',
+        semanticRole: 'relationship_change',
+        semanticCriteria: ['The shopkeeper and traveler are established close friends.'],
+        required: true,
+      }],
+    });
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1',
+      tasks: [canonicalTask],
+      sceneContent: { beats: [{ text: 'The shopkeeper offers you the spare key and asks you to come back tomorrow.' }] },
+      judge,
+    });
+
+    expect(result.findings).toEqual([]);
+    expect(seenClaims[0]).toMatchObject({
+      proposition: 'The shopkeeper befriends the traveler.',
+      criteria: ['The shopkeeper befriends the traveler.'],
+    });
+  });
+
   it('requires two negative samples before confirming a missing meaning', async () => {
     const judge = new FakeJudge((claim) => verdict(claim, 'not_fulfilled'));
     const result = await validateSemanticRealizationTasks({

@@ -12,8 +12,16 @@ export interface EncounterRouteAuthor {
   }): Promise<number>;
 }
 
+function outcomeTierFromFieldPath(fieldPath: string | undefined): string | undefined {
+  return /\.outcomes\.([A-Za-z0-9_-]+)(?:\.|$)/.exec(fieldPath ?? '')?.[1];
+}
+
 function routeIssues(issues: ContractRepairReport['blockingIssues']): ContractRepairReport['blockingIssues'] {
-  return issues.filter((issue) => issue.repairHandler === 'encounter_route' || issue.outcomeTier);
+  return issues.filter((issue) =>
+    issue.repairHandler === 'encounter_route'
+    || issue.outcomeTier
+    || (issue.type === 'unsafe_fallback_prose' && outcomeTierFromFieldPath(issue.fieldPath))
+  );
 }
 
 /**
@@ -46,7 +54,9 @@ export function buildEncounterRouteRepairHandler(options: {
   tasksById?: () => Map<string, NarrativeRealizationTask> | undefined;
 }): ContractRepairHandler {
   return async ({ story, blockingIssues }) => {
-    const issues = routeIssues(blockingIssues).filter((issue) => issue.sceneId && issue.outcomeTier);
+    const issues = routeIssues(blockingIssues)
+      .map((issue) => ({ ...issue, outcomeTier: issue.outcomeTier ?? outcomeTierFromFieldPath(issue.fieldPath) }))
+      .filter((issue) => issue.sceneId && issue.outcomeTier);
     if (issues.length === 0) return { story, changed: false };
     const author = options.author();
     if (!author) return { story, changed: false };

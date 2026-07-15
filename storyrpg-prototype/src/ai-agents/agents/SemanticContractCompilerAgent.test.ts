@@ -297,5 +297,108 @@ describe('SemanticContractCompilerAgent', () => {
     expect(result.success).toBe(true);
     expect(call).toHaveBeenCalledTimes(2);
     expect(call.mock.calls[1]?.[0]?.[1]?.content).toContain('source span is not an exact substring');
+    expect(call.mock.calls[1]?.[0]?.[1]?.content).toContain('"sourceSpan": "invented rescue wording"');
+  });
+
+  it('isolates a persistently invalid multi-event batch before failing the season', async () => {
+    const plan = scenePlan();
+    plan.narrativeContractGraph!.events.push({
+      id: 'event:ep1:post',
+      episodeNumber: 1,
+      sourceOrder: 2,
+      sourceContractIds: ['ep1:post'],
+      sourceText: 'Kylie opens her laptop, then posts the story.',
+      realizationMode: 'depiction',
+      ownershipPolicy: 'exactly_one_scene',
+      prerequisiteEventIds: ['event:ep1:rescue'],
+      targetSceneIds: ['scene-1'],
+      targetSpineUnitIds: [],
+      ownerSceneId: 'scene-1',
+      realizationAtoms: [{
+        id: 'bootstrap:2',
+        description: 'Kylie opens her laptop, then posts the story.',
+        acceptedPatterns: ['Kylie opens her laptop, then posts the story.'],
+        sourceText: 'Kylie opens her laptop, then posts the story.',
+        kind: 'semantic',
+        required: true,
+      }],
+      provenance: { source: 'treatment_contract', confidence: 'authoritative' },
+    });
+    const agent = new SemanticContractCompilerAgent({
+      provider: 'gemini', model: 'gemini-test', apiKey: 'test', maxTokens: 4096, temperature: 0,
+    });
+    const rescueEvent = {
+      eventId: 'event:ep1:rescue',
+      propositions: [{
+        propositionId: 'p1', sourceId: 'event:ep1:rescue:source:1',
+        sourceSpan: 'Kylie rescues Iulia in the park',
+        proposition: 'Kylie rescues Iulia in the park.', semanticRole: 'action',
+        participantIds: ['Kylie', 'Iulia'], semanticCriteria: ['Kylie rescues Iulia'],
+        prerequisitePropositionIds: [], referencedLocations: [], required: true,
+      }, {
+        propositionId: 'p2', sourceId: 'event:ep1:rescue:source:1',
+        sourceSpan: 'then writes about the attack at home',
+        proposition: 'Kylie later writes about the attack at home.', semanticRole: 'aftermath',
+        participantIds: ['Kylie'], semanticCriteria: ['Kylie writes after the rescue'],
+        prerequisitePropositionIds: ['p1'], referencedLocations: [], required: true,
+      }],
+    };
+    const invertedRescueEvent = {
+      ...rescueEvent,
+      propositions: [
+        { ...rescueEvent.propositions[1], propositionId: 'p1', prerequisitePropositionIds: [] },
+        { ...rescueEvent.propositions[0], propositionId: 'p2', prerequisitePropositionIds: ['p1'] },
+      ],
+    };
+    const postEvent = {
+      eventId: 'event:ep1:post',
+      propositions: [{
+        propositionId: 'p1', sourceId: 'event:ep1:post:source:1',
+        sourceSpan: 'Kylie opens her laptop, then posts the story.',
+        proposition: 'Kylie opens her laptop and posts the story.', semanticRole: 'action',
+        participantIds: ['Kylie'], semanticCriteria: ['Kylie posts the story'],
+        prerequisitePropositionIds: [], referencedLocations: [], required: true,
+      }],
+    };
+    const call = vi.fn(async (messages: Array<{ content: string }>) => {
+      const prompt = messages[0].content;
+      const hasRescue = prompt.includes('event:ep1:rescue');
+      const hasPost = prompt.includes('event:ep1:post');
+      if (hasRescue && hasPost) return JSON.stringify({ events: [invertedRescueEvent, postEvent] });
+      return JSON.stringify({ events: [hasRescue ? rescueEvent : postEvent] });
+    });
+    (agent as any).callLLM = call;
+
+    const result = await agent.execute(plan);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.events.map((event) => event.eventId).sort()).toEqual([
+      'event:ep1:post',
+      'event:ep1:rescue',
+    ]);
+    expect(call).toHaveBeenCalledTimes(4);
+  });
+
+  it('still fails closed after bounded correction of one invalid event', async () => {
+    const agent = new SemanticContractCompilerAgent({
+      provider: 'gemini', model: 'gemini-test', apiKey: 'test', maxTokens: 4096, temperature: 0,
+    });
+    const call = vi.fn(async () => JSON.stringify({ events: [{
+      eventId: 'event:ep1:rescue',
+      propositions: [{
+        propositionId: 'p1', sourceId: 'event:ep1:rescue:source:1',
+        sourceSpan: 'invented rescue wording',
+        proposition: 'Kylie rescues Iulia.', semanticRole: 'action',
+        participantIds: ['Kylie', 'Iulia'], semanticCriteria: ['Kylie rescues Iulia'],
+        prerequisitePropositionIds: [], referencedLocations: [], required: true,
+      }],
+    }] }));
+    (agent as any).callLLM = call;
+
+    const result = await agent.execute(scenePlan());
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Semantic contract batch failed bounded structured correction');
+    expect(call).toHaveBeenCalledTimes(2);
   });
 });

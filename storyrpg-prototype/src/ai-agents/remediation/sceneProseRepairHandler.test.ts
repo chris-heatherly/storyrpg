@@ -121,6 +121,26 @@ describe('selectSceneProseRepairs', () => {
     expect([...groups.keys()]).toEqual([]);
   });
 
+  it('leaves exact encounter outcome and metadata fields to their owning handlers', () => {
+    const groups = selectSceneProseRepairs([
+      {
+        type: 'unsafe_fallback_prose', severity: 'error', validator: 'RouteContinuityValidator',
+        sceneId: 'treatment-enc-1-1', fieldPath: 'encounter.description', message: 'unsafe description',
+      },
+      {
+        type: 'unsafe_fallback_prose', severity: 'error', validator: 'RouteContinuityValidator',
+        sceneId: 'treatment-enc-1-1',
+        fieldPath: 'encounter.phases[0].beats[7].choices[0].outcomes.complicated.narrativeText',
+        message: 'unsafe outcome',
+      },
+      {
+        type: 'unsafe_fallback_prose', severity: 'error', validator: 'RouteContinuityValidator',
+        sceneId: 'treatment-enc-1-1', fieldPath: 'readerFacing[94]', message: 'projected duplicate',
+      },
+    ] as never);
+    expect([...groups.keys()]).toEqual([]);
+  });
+
   it('caps the number of scenes per round but keeps extra findings for capped scenes', () => {
     const groups = selectSceneProseRepairs(
       [requiredBeatIssue('a'), requiredBeatIssue('b'), requiredBeatIssue('c'), requiredBeatIssue('a')],
@@ -174,6 +194,158 @@ describe('buildSceneProseRepairHandler', () => {
     expect(callArg.directorNotes).toContain('strategy argument');
     expect((story as any).episodes[1].scenes[0].beats[0].text).toContain('strategy argument over the route');
     expect(result.record).toMatchObject({ rule: 'final_contract_scene_prose', scope: 'scene', succeeded: true });
+  });
+
+  it('marks only the closest beat for a semantic realization repair', async () => {
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's1-4',
+          rewrittenBeats: [{ id: 'b1', text: 'Kylie arrives in Bucharest and walks home through the park.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const story = makeStory();
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never });
+    await handler({
+      story,
+      blockingIssues: [{
+        type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+        repairHandler: 'scene_prose', sceneId: 's1-4', episodeNumber: 1,
+        message: 'Canonical realization is missing. Missing meaning(s): Kylie arrives in Bucharest.',
+      }] as never,
+    });
+    expect(critic.execute.mock.calls[0][0].flaggedBeatIds).toEqual(['b1']);
+    expect(critic.execute.mock.calls[0][0].directorNotes).toContain('Every unflagged beat is locked');
+  });
+
+  it('parses the canonical meaning(s) label and targets the beat closest to that proposition', async () => {
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's1-3',
+          rewrittenBeats: [{ id: 'b2', text: 'Stela offers her number, and you save it before agreeing to meet tomorrow as friends.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const story = makeStory();
+    (story as any).episodes[0].scenes.push({
+      id: 's1-3',
+      name: 'Bookshop',
+      beats: [
+        { id: 'b1', text: 'The shop bell settles behind you.' },
+        { id: 'b2', text: 'Stela smiles and asks what brought you to Bucharest.' },
+      ],
+    });
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never, protagonistName: 'Kylie' });
+
+    await handler({
+      story,
+      blockingIssues: [{
+        type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+        repairHandler: 'scene_prose', sceneId: 's1-3', episodeNumber: 1,
+        message: 'Canonical realization is missing. Missing meaning(s): Stela befriends Kylie..',
+      }] as never,
+    });
+
+    expect(critic.execute.mock.calls[0][0].flaggedBeatIds).toEqual(['b2']);
+    expect(critic.execute.mock.calls[0][0].directorNotes).toContain('SEMANTIC REALIZATION TARGET: Stela befriends Kylie.');
+    expect(critic.execute.mock.calls[0][0].directorNotes).toContain('RELATIONSHIP TRANSITION');
+    expect(critic.execute.mock.calls[0][0].directorNotes).toContain('friend/friendship');
+    expect(critic.execute.mock.calls[0][0].directorNotes).toContain('semantic superset');
+    expect(critic.execute.mock.calls[0][0].appendOnlyBeatIds).toEqual(['b2']);
+  });
+
+  it('targets the closest beat for each missing semantic meaning', async () => {
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's1-3',
+          rewrittenBeats: [
+            { id: 'b2', text: 'Stela offers her number, and you both agree to meet tomorrow as friends.' },
+            { id: 'b3', text: 'Stela invites you into the secret nightlife of Valescu Club tonight.' },
+          ],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const story = makeStory();
+    (story as any).episodes[0].scenes.push({
+      id: 's1-3', name: 'Bookshop', beats: [
+        { id: 'b1', text: 'The shop bell settles behind you.' },
+        { id: 'b2', text: 'Stela smiles and asks what brought you to Bucharest.' },
+        { id: 'b3', text: 'Stela asks whether you have heard of Valescu Club.' },
+      ],
+    });
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never, protagonistName: 'Kylie' });
+    await handler({
+      story,
+      blockingIssues: [{
+        type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+        repairHandler: 'scene_prose', sceneId: 's1-3', episodeNumber: 1,
+        message: 'Canonical realization is missing. Missing meaning(s): Stela befriends Kylie.; Stela introduces Kylie to the secret nightlife world of Valescu Club..',
+      }] as never,
+    });
+    expect(critic.execute.mock.calls[0][0].flaggedBeatIds).toEqual(['b2', 'b3']);
+    expect(critic.execute.mock.calls[0][0].appendOnlyBeatIds).toEqual(['b2', 'b3']);
+  });
+
+  it('honors pacing labels while asking for behavioral semantic realization', async () => {
+    const notes = buildSceneRepairDirectorNotes([{
+      validator: 'SemanticRealizationJudge',
+      message: 'Missing meaning(s): Rowan befriends the protagonist.',
+    }], '', [{ blockedLabels: ['friend', 'best friend'] }] as never);
+    expect(notes).toContain('concrete reciprocal action');
+    expect(notes).toContain('forbids settled labels');
+    expect(notes).not.toContain('Lexically ground the requested state');
+  });
+
+  it('rejects an unflagged semantic rewrite and retries with the required beat id', async () => {
+    const critic = {
+      execute: vi.fn()
+        .mockResolvedValueOnce({
+          success: true,
+          data: { sceneId: 's1-3', rewrittenBeats: [{ id: 'b1', text: 'Unrelated doorway prose.' }], critiqueNotes: [], overallCommentary: '' },
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          data: { sceneId: 's1-3', rewrittenBeats: [{ id: 'b2', text: 'Stela offers her number; you save it, and both of you agree to meet for coffee tomorrow.' }], critiqueNotes: [], overallCommentary: '' },
+        }),
+    };
+    const story = makeStory();
+    (story as any).episodes[0].scenes.push({
+      id: 's1-3', name: 'Bookshop', beats: [
+        { id: 'b1', text: 'The door closes behind you.' },
+        { id: 'b2', text: 'Stela smiles and asks what brought you here.' },
+      ],
+    });
+    const emitted: string[] = [];
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      protagonistName: 'Kylie',
+      emit: (message) => emitted.push(message),
+    });
+    const result = await handler({
+      story,
+      blockingIssues: [{
+        type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+        repairHandler: 'scene_prose', sceneId: 's1-3', episodeNumber: 1,
+        message: 'Canonical realization is missing. Missing meaning(s): Stela befriends Kylie..',
+      }] as never,
+    });
+    expect(critic.execute).toHaveBeenCalledTimes(2);
+    expect(emitted.join(' ')).toContain('unflagged beat id(s): b1');
+    expect((story as any).episodes[0].scenes.at(-1).beats[0].text).toBe('The door closes behind you.');
+    expect((story as any).episodes[0].scenes.at(-1).beats[1].text).toContain('agree to meet for coffee');
+    expect(result.attemptedIssueKeys).toHaveLength(1);
   });
 
   it('restores a rewrite and reports no progress when the authored moment still will not clear', async () => {

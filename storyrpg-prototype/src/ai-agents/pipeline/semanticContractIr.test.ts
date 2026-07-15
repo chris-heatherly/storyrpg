@@ -107,6 +107,17 @@ describe('semantic contract IR', () => {
     expect(atoms.flatMap((atom) => atom.acceptedPatterns)).not.toContain('malformed heuristic alternative');
   });
 
+  it('keeps the canonical proposition authoritative over stronger auxiliary criteria', () => {
+    const contract = ir();
+    contract.events[0].propositions[0].proposition = 'The shopkeeper befriends the traveler.';
+    contract.events[0].propositions[0].semanticCriteria = ['The shopkeeper and traveler are established close friends.'];
+
+    const atoms = semanticAtomsForEvent({ id: eventId, sourceText }, contract);
+
+    expect(atoms[0].description).toBe('The shopkeeper befriends the traveler.');
+    expect(atoms[0].semanticCriteria).toEqual(['The shopkeeper befriends the traveler.']);
+  });
+
   it('rejects contextless premise fragments and accepts source-grounded claims', () => {
     const canonicalGraph = graph();
     canonicalGraph.premiseContracts = [{

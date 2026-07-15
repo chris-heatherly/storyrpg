@@ -38,6 +38,61 @@ describe('runFinalContractRepair', () => {
     })).toBe('realization::OWNER_REALIZATION_MISSING::task:route::s1-4::victory::departure');
   });
 
+  it('treats a reduced semantic atom set as progress within one repair family', async () => {
+    const localStory = { id: 'semantic-progress', title: 'Semantic Progress', marker: 'before' } as unknown as Story;
+    const issueFor = (atoms: string[]) => ({
+      validator: 'SemanticRealizationJudge',
+      issueCode: 'SEMANTIC_REALIZATION_MISSING',
+      sceneId: 's1-3',
+      taskId: 'task:event:ep1-u3:owner-event',
+      severity: 'error',
+      message: `Missing: ${atoms.join(', ')}`,
+      missingEvidenceAtoms: atoms,
+      realizationFingerprint: `SEMANTIC_REALIZATION_MISSING::task:event:ep1-u3:owner-event::s1-3::${atoms.join(',')}`,
+    });
+    const initial: ContractRepairReport = { passed: false, blockingIssues: [issueFor(['semantic:3', 'semantic:4'])] };
+    const partial: ContractRepairReport = { passed: false, blockingIssues: [issueFor(['semantic:3'])] };
+    const out = await runFinalContractRepair({
+      story: localStory,
+      initialReport: initial,
+      handlers: [({ story: candidate }) => {
+        (candidate as any).marker = 'partially-repaired';
+        return { story: candidate, changed: true };
+      }],
+      revalidate: async () => partial,
+      maxAttempts: 1,
+      rejectIntroducedBlockingIssues: true,
+      requireMutationEvidence: true,
+    });
+    expect((localStory as any).marker).toBe('partially-repaired');
+    expect(out.report.blockingIssues[0]?.missingEvidenceAtoms).toEqual(['semantic:3']);
+  });
+
+  it('rejects a new missing semantic atom within an existing repair family', async () => {
+    const localStory = { id: 'semantic-regression', title: 'Semantic Regression', marker: 'before' } as unknown as Story;
+    const issueFor = (atoms: string[]) => ({
+      validator: 'SemanticRealizationJudge', issueCode: 'SEMANTIC_REALIZATION_MISSING',
+      sceneId: 's1-3', taskId: 'task:event:ep1-u3:owner-event', severity: 'error',
+      missingEvidenceAtoms: atoms,
+      realizationFingerprint: `SEMANTIC_REALIZATION_MISSING::task:event:ep1-u3:owner-event::s1-3::${atoms.join(',')}`,
+    });
+    const initial: ContractRepairReport = { passed: false, blockingIssues: [issueFor(['semantic:3'])] };
+    const regressed: ContractRepairReport = { passed: false, blockingIssues: [issueFor(['semantic:3', 'semantic:4'])] };
+    const out = await runFinalContractRepair({
+      story: localStory,
+      initialReport: initial,
+      handlers: [({ story: candidate }) => {
+        (candidate as any).marker = 'regressed';
+        return { story: candidate, changed: true };
+      }],
+      revalidate: async () => regressed,
+      maxAttempts: 1,
+      rejectIntroducedBlockingIssues: true,
+    });
+    expect((localStory as any).marker).toBe('before');
+    expect(out.report).toEqual(initial);
+  });
+
   it('no-ops when the report already passes', async () => {
     const out = await runFinalContractRepair({
       story,
@@ -275,7 +330,7 @@ describe('runFinalContractRepair', () => {
   });
 
   it('rejects a repair candidate that introduces a new blocking fingerprint', async () => {
-    const localStory = { id: 'transactional', title: 'Transactional' } as unknown as Story;
+    const localStory = { id: 'transactional', title: 'Transactional', marker: 'original' } as unknown as Story;
     const introduced: ContractRepairReport = {
       passed: false,
       blockingIssues: [{ validator: 'NewValidator', sceneId: 's1-2', message: 'new blocker' }],
@@ -283,7 +338,10 @@ describe('runFinalContractRepair', () => {
     const out = await runFinalContractRepair({
       story: localStory,
       initialReport: fail,
-      handlers: [({ story: candidate }) => ({ story: { ...candidate }, changed: true })],
+      handlers: [({ story: candidate }) => {
+        (candidate as any).marker = 'rejected';
+        return { story: candidate, changed: true };
+      }],
       revalidate: async () => introduced,
       maxAttempts: 1,
       rejectIntroducedBlockingIssues: true,
@@ -291,6 +349,95 @@ describe('runFinalContractRepair', () => {
     expect(out.passed).toBe(false);
     expect(out.report.blockingIssues).toEqual(fail.blockingIssues);
     expect(out.records).toHaveLength(0);
+    expect((localStory as any).marker).toBe('original');
+    expect(out.story).toBe(localStory);
+  });
+
+  it('rejects only the offending handler and commits a safe sibling repair', async () => {
+    const localStory = {
+      id: 'handler-transactions',
+      title: 'Handler Transactions',
+      marker: 'original',
+      repaired: false,
+    } as unknown as Story;
+    const introduced: ContractRepairReport = {
+      passed: false,
+      blockingIssues: [
+        ...fail.blockingIssues,
+        { validator: 'NewValidator', sceneId: 's1-2', message: 'new blocker' },
+      ],
+    };
+    const out = await runFinalContractRepair({
+      story: localStory,
+      initialReport: fail,
+      handlers: [
+        ({ story: candidate }) => {
+          (candidate as any).marker = 'lossy rewrite';
+          return { story: candidate, changed: true };
+        },
+        ({ story: candidate }) => {
+          (candidate as any).repaired = true;
+          return { story: candidate, changed: true };
+        },
+      ],
+      revalidate: async (candidate) => {
+        if ((candidate as any).marker === 'lossy rewrite') return introduced;
+        return (candidate as any).repaired ? pass : fail;
+      },
+      maxAttempts: 1,
+      rejectIntroducedBlockingIssues: true,
+      requireMutationEvidence: true,
+    });
+    expect(out.passed).toBe(true);
+    expect(out.story).toBe(localStory);
+    expect((localStory as any).marker).toBe('original');
+    expect((localStory as any).repaired).toBe(true);
+  });
+
+  it('commits safe scene scopes when a batched sibling rewrite introduces a blocker', async () => {
+    const localStory = {
+      id: 'scene-transactions', title: 'Scene Transactions',
+      episodes: [{ id: 'ep1', number: 1, scenes: [
+        { id: 's1', beats: [{ id: 'b1', text: 'missing' }] },
+        { id: 's2', beats: [{ id: 'b2', text: 'original' }] },
+      ] }],
+    } as unknown as Story;
+    const issue1 = { validator: 'SemanticRealizationJudge', sceneId: 's1', message: 'first missing' };
+    const issue2 = { validator: 'SemanticRealizationJudge', sceneId: 's2', message: 'second missing' };
+    const initial: ContractRepairReport = { passed: false, blockingIssues: [issue1, issue2] };
+
+    const out = await runFinalContractRepair({
+      story: localStory,
+      initialReport: initial,
+      handlers: [({ story: candidate }) => {
+        (candidate.episodes[0].scenes[0].beats[0] as any).text = 'fixed';
+        (candidate.episodes[0].scenes[1].beats[0] as any).text = 'lossy';
+        return {
+          story: candidate,
+          changed: true,
+          atomicScopes: [
+            { kind: 'scene', sceneId: 's1', episodeNumber: 1 },
+            { kind: 'scene', sceneId: 's2', episodeNumber: 1 },
+          ],
+        };
+      }],
+      revalidate: async (candidate) => {
+        const first = candidate.episodes[0].scenes[0].beats[0].text;
+        const second = candidate.episodes[0].scenes[1].beats[0].text;
+        const blockingIssues = [] as ContractRepairReport['blockingIssues'];
+        if (first !== 'fixed') blockingIssues.push(issue1);
+        if (second === 'lossy') blockingIssues.push({ validator: 'NewValidator', sceneId: 's2', message: 'new blocker' });
+        else blockingIssues.push(issue2);
+        return { passed: blockingIssues.length === 0, blockingIssues };
+      },
+      maxAttempts: 1,
+      rejectIntroducedBlockingIssues: true,
+      requireMutationEvidence: true,
+    });
+
+    expect(localStory.episodes[0].scenes[0].beats[0].text).toBe('fixed');
+    expect(localStory.episodes[0].scenes[1].beats[0].text).toBe('original');
+    expect(out.report.blockingIssues).toEqual([issue2]);
   });
 
   it('stops early when canSpend denies another round', async () => {

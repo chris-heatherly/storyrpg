@@ -10,7 +10,10 @@ import { buildArcPressureContracts } from '../utils/arcPressureContracts';
 import { buildBranchConsequenceContracts } from '../utils/branchConsequenceContracts';
 import { buildEndingRealizationContracts } from '../utils/endingRealizationContracts';
 import { buildTreatmentFieldContractsForGuidance } from '../utils/treatmentFieldContracts';
-import { buildWorldTreatmentContracts } from '../utils/worldTreatmentContracts';
+import {
+  assignWorldTreatmentContractsToScenes,
+  buildWorldTreatmentContracts,
+} from '../utils/worldTreatmentContracts';
 import { TreatmentFieldUtilizationValidator } from './TreatmentFieldUtilizationValidator';
 
 const guidance: TreatmentEpisodeGuidance = {
@@ -544,6 +547,83 @@ describe('TreatmentFieldUtilizationValidator', () => {
     expect(plan.scenePlan.scenes.some((scene) =>
       (scene.mechanicPressure ?? []).some((pressure) => pressure.id.includes('location-choice-pressure'))
     )).toBe(true);
+  });
+
+  it('rebinds a stale location contract after authored scene locations change', () => {
+    const contract = {
+      ...worldContracts().find((candidate) => candidate.contractKind === 'location_identity')!,
+      targetSceneIds: ['s1-1'],
+    };
+    const staleScene = {
+      id: 's1-1',
+      episodeNumber: 1,
+      title: 'The Courtyard',
+      order: 1,
+      locations: ['Courtyard'],
+      worldTreatmentContracts: [contract],
+    } as never;
+    const locationScene = {
+      id: 's1-2',
+      episodeNumber: 1,
+      title: 'The Archive',
+      order: 2,
+      locations: [contract.locationName!],
+    } as never;
+    const plan = {
+      totalEpisodes: 2,
+      locationIntroductions: [],
+      worldTreatmentContracts: [contract],
+    } as unknown as SeasonPlan;
+
+    assignWorldTreatmentContractsToScenes(plan, [staleScene, locationScene]);
+
+    expect(contract.targetSceneIds).toEqual(['s1-2']);
+    expect(staleScene.worldTreatmentContracts).toEqual([]);
+    expect(locationScene.worldTreatmentContracts?.map((item) => item.id)).toEqual([contract.id]);
+  });
+
+  it('resolves a stale world target through the canonical location scene at final validation', () => {
+    const contract = {
+      ...worldContracts().find((candidate) => candidate.contractKind === 'location_identity')!,
+      id: 'world-lumina-location-identity',
+      locationId: 'loc-lumina-books',
+      locationName: 'Lumina Books',
+      sourceText: "Lumina Books on Lipscani, Stela's bookshop, truth-place, warding hub, and 2am sanctuary.",
+      targetSceneIds: ['s1-2'],
+    };
+    const plan = {
+      ...plannedSeasonPlan({}),
+      worldTreatmentContracts: [contract],
+      scenePlan: {
+        scenes: [
+          { id: 's1-2', episodeNumber: 1, title: 'Bucharest Streets', order: 1, locations: ['Bucharest streets'], worldTreatmentContracts: [contract] },
+          { id: 's1-3', episodeNumber: 1, title: 'Lumina Books', order: 2, locations: ['Lumina Books'] },
+        ],
+        byEpisode: { 1: ['s1-2', 's1-3'] },
+        setupPayoffEdges: [],
+        worldTreatmentContracts: [contract],
+      },
+    } as unknown as SeasonPlan;
+
+    const result = new TreatmentFieldUtilizationValidator().validate({
+      sourceAnalysis: { ...analysis({}), worldTreatmentContracts: [contract] } as SourceMaterialAnalysis,
+      seasonPlan: plan,
+      story: finalStoryForScene('s1-3', "You step into Lumina Books, Stela's bookshop on Lipscani."),
+      treatmentSourced: true,
+      phase: 'final',
+    });
+
+    expect(result.issues.filter((issue) => issue.message.includes('World/location treatment field'))).toEqual([]);
+
+    const missing = new TreatmentFieldUtilizationValidator().validate({
+      sourceAnalysis: { ...analysis({}), worldTreatmentContracts: [contract] } as SourceMaterialAnalysis,
+      seasonPlan: plan,
+      story: finalStoryForScene('s1-3', 'You enter a quiet shop.'),
+      treatmentSourced: true,
+      phase: 'final',
+    });
+    expect(missing.issues.find((issue) => issue.message.includes('World/location treatment field'))?.location)
+      .toBe(`worldTreatment:s1-3:${contract.id}`);
   });
 
   it('fails plan-time validation when a load-bearing world rule is unassigned', () => {

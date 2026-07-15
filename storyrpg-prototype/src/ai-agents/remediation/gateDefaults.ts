@@ -78,6 +78,16 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // rescue a failing one. Reversible via env=0.
   GATE_FINAL_CONTRACT_REPAIR: true,
 
+  // Repair carry-forward across resumes (docs/REPAIR_CARRYFORWARD_PLAN_2026-07-15.md).
+  // When ON, a still-failing contract persists its repaired candidate under
+  // checkpoints/, and the next enforcement of the same phase (typically after a
+  // resume) starts from that candidate instead of re-repairing the frozen
+  // watermarks — repairs accumulate across resumes instead of resetting.
+  // Fail-open by construction: a missing/stale/mismatched candidate degrades to
+  // the watermark start, validation always re-runs in full, and no new abort
+  // class exists. Reversible via env=0.
+  GATE_REPAIR_CARRYFORWARD: true,
+
   // Scene-shape architecture gates. These were kept default-off while planned
   // scenes could bypass the architecture validator path and emit generic scene
   // containers. Planned-scene blueprints now receive deterministic dramatic

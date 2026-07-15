@@ -143,6 +143,9 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_SCENE_CRITIC_ON_FLAG', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_CHOICE_OUTCOME_TIER_REAUTHOR', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_FINAL_CONTRACT_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
+  // Carry the still-failing contract's repaired candidate across resumes so
+  // repair rounds accumulate instead of resetting (fail-open; see gateDefaults).
+  { id: 'GATE_REPAIR_CARRYFORWARD', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FINAL_CONTRACT_SCENE_REGEN', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FINAL_CONTRACT_OUTCOME_REGEN', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FIDELITY_JUDGE_CONFIRM', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },

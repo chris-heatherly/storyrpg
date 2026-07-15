@@ -43,6 +43,13 @@ import {
   type ContractRepairRoundSnapshot,
 } from '../remediation/finalContractRepair';
 import { GateRepairRouter } from '../remediation/gateRepairRouter';
+import {
+  buildRepairCandidate,
+  isDeterministicReFailure,
+  type FinalContractCarryForwardContext,
+  type FinalContractRepairCandidate,
+} from '../remediation/finalContractCarryForward';
+import { resolveWorkerGitSha } from '../utils/buildInfo';
 import { buildSceneClusterRepairHandler, buildSceneProseRepairHandler } from '../remediation/sceneProseRepairHandler';
 import { requiredMomentFromMessage } from '../remediation/realizationScoring';
 import { missingRequiredMoments, type SceneContractSource } from '../remediation/sceneRealizationGuard';
@@ -822,6 +829,8 @@ export interface FinalContractDeps {
     story: Story,
     report: ContractRepairReport,
   ) => Promise<void>;
+  /** Persist the still-failing repaired candidate so the next enforcement (after a resume) starts from it. */
+  saveRepairCandidate?: (candidate: FinalContractRepairCandidate, story: Story) => Promise<void>;
   disambiguateProtagonistPronouns: (story: Story, brief: FullCreativeBrief) => Promise<void>;
   authorEncounterOutcomeVariants: (story: Story) => Promise<void>;
   relationshipDimensionsForNpc: (
@@ -855,6 +864,8 @@ export class FinalContract {
     phase: string;
     validationScope?: FidelityValidationScope;
     deferredRealizationRecords?: DeferredRealizationRecord[];
+    /** Set by the pipeline wrapper when repair carry-forward is active for this enforcement. */
+    carryForward?: FinalContractCarryForwardContext;
   }): Promise<FinalStoryContractReport | undefined> {
     if (!this.deps.config.validation?.enabled || this.deps.config.validation?.mode === 'disabled') {
       return undefined;
@@ -1698,6 +1709,42 @@ export class FinalContract {
     });
 
     if (!report.passed) {
+      // Repair carry-forward: persist the in-place-repaired candidate BEFORE the
+      // throw so the next enforcement of this phase (after a resume) starts from
+      // it instead of re-repairing the frozen watermarks. Best-effort — a save
+      // failure degrades to today's behavior and never masks the contract failure.
+      let deterministicReFailure = false;
+      if (input.carryForward && isGateEnabled('GATE_REPAIR_CARRYFORWARD')) {
+        try {
+          const candidate = buildRepairCandidate({
+            story: input.story,
+            report: report as ContractRepairReport,
+            phase: input.phase,
+            context: input.carryForward,
+            workerGitSha: resolveWorkerGitSha(),
+          });
+          if (candidate) {
+            deterministicReFailure = isDeterministicReFailure(candidate, input.carryForward.consumed);
+            if (deterministicReFailure) {
+              this.deps.emit({
+                type: 'warning',
+                phase: input.phase,
+                message: `Deterministic re-failure: this enforcement consumed the carried repair candidate and ended exactly where it started (${candidate.remainingBlockingFingerprints.length} identical blocker(s), no accepted repairs). Another resume with the same code cannot progress — it needs a code/gate change or a fresh run.`,
+                data: { remainingBlockingFingerprints: candidate.remainingBlockingFingerprints.slice(0, 20) },
+              } as any);
+            } else {
+              this.deps.emit({
+                type: 'checkpoint',
+                phase: input.phase,
+                message: `Carrying repaired candidate forward for the next enforcement (enforcement ${candidate.enforcementCount}: ${candidate.resolvedLastEnforcement.length} blocker(s) resolved vs the prior candidate, ${candidate.remainingBlockingFingerprints.length} remaining).`,
+              } as any);
+            }
+            await this.deps.saveRepairCandidate?.(candidate, input.story);
+          }
+        } catch (carryError) {
+          console.warn(`[Pipeline] Repair carry-forward persistence failed (non-fatal): ${carryError instanceof Error ? carryError.message : String(carryError)}`);
+        }
+      }
       await this.deps.writeValidatorMemory?.({
         validator: 'FinalStoryContractValidator',
         lifecycle: 'final-contract',
@@ -1744,6 +1791,7 @@ export class FinalContract {
             failureKind: 'final_story_contract',
             blockingIssues: report.blockingIssues.slice(0, 10),
             metrics: report.metrics,
+            deterministicReFailure,
           },
         }
       );

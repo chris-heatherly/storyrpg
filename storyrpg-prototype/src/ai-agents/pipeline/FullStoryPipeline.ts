@@ -267,6 +267,8 @@ import {
   saveLlmLedgerSidecar,
   saveFinalStoryContractFailure,
   saveFinalContractRepairRound,
+  saveFinalContractRepairCandidate,
+  loadFinalContractRepairCandidateSync,
   savePartialStory,
   appendFailedRunLedger,
   saveEarlyDiagnostic,
@@ -365,6 +367,11 @@ import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } 
 import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { buildGateShadowRecord, buildValidatorPromotionRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
 import { isGateEnabled, resolveGateConfigHash } from '../remediation/gateDefaults';
+import {
+  applyCandidateEpisodes,
+  carryForwardStoryHash,
+  type FinalContractCarryForwardContext,
+} from '../remediation/finalContractCarryForward';
 import { setRealizationPovContext } from '../remediation/realizationEvaluator';
 import {
   ComprehensiveValidationReport,
@@ -1337,9 +1344,11 @@ export class FullStoryPipeline {
     const requestedEpisodes = new Set(input.requestedEpisodeNumbers ?? []);
     const deferredRealizationRecords = (input.deferredRealizationRecords ?? this.deferredRealizationRecords)
       .filter((record) => requestedEpisodes.size === 0 || requestedEpisodes.has(record.episodeNumber));
+    const carryForward = this.prepareRepairCarryForward(input.story, input.phase);
     const report = await this.finalContract().enforceFinalStoryContract({
       ...input,
       deferredRealizationRecords,
+      carryForward,
     });
     if (report) {
       report.memoryEvidence = [
@@ -1364,6 +1373,57 @@ export class FullStoryPipeline {
       });
     }
     return report;
+  }
+
+  /**
+   * Repair carry-forward (docs/REPAIR_CARRYFORWARD_PLAN_2026-07-15.md): if a
+   * prior still-failing enforcement of this phase persisted its repaired
+   * candidate AND that candidate descends from exactly this pre-repair content
+   * (base hash match), substitute the candidate's episodes as the contract
+   * input so repairs accumulate across resumes. Every mismatch degrades to the
+   * plain watermark start; validation always re-runs in full either way.
+   */
+  private prepareRepairCarryForward(story: Story, phase: string): FinalContractCarryForwardContext | undefined {
+    if (!isGateEnabled('GATE_REPAIR_CARRYFORWARD')) return undefined;
+    const rawOutputDirectory = this._currentOutputDirectory || story.outputDir;
+    if (!rawOutputDirectory) return undefined;
+    const baseStoryHash = carryForwardStoryHash(story);
+    let candidate: ReturnType<typeof loadFinalContractRepairCandidateSync> = null;
+    try {
+      candidate = loadFinalContractRepairCandidateSync(rawOutputDirectory, phase);
+    } catch (loadError) {
+      console.warn(`[Pipeline] Repair carry-forward load failed (starting from watermarks): ${loadError instanceof Error ? loadError.message : String(loadError)}`);
+    }
+    if (!candidate) return { baseStoryHash };
+    if (candidate.baseStoryHash !== baseStoryHash) {
+      this.emit({
+        type: 'debug',
+        phase,
+        message: `Discarding stale repair candidate for ${phase}: the assembled content changed since it was derived (base ${candidate.baseStoryHash} vs ${baseStoryHash}). Starting from watermarks.`,
+      });
+      return { baseStoryHash };
+    }
+    applyCandidateEpisodes(story, candidate);
+    this.emit({
+      type: 'checkpoint',
+      phase,
+      message: `Resuming ${phase} from the carried repair candidate (enforcement ${candidate.enforcementCount}, ${candidate.remainingBlockingFingerprints.length} blocker(s) remaining at its last failure). Validation re-runs in full.`,
+      data: {
+        enforcementCount: candidate.enforcementCount,
+        remainingBlockingFingerprints: candidate.remainingBlockingFingerprints.slice(0, 20),
+        savedAt: candidate.savedAt,
+        workerGitSha: candidate.workerGitSha,
+      },
+    });
+    return {
+      baseStoryHash,
+      consumed: {
+        candidateStoryHash: candidate.candidateStoryHash,
+        remainingBlockingFingerprints: candidate.remainingBlockingFingerprints,
+        enforcementCount: candidate.enforcementCount,
+        fingerprintEnforcementsSeen: candidate.fingerprintEnforcementsSeen,
+      },
+    };
   }
 
   private enforceEpisodeIncrementalContractWithTimeout(
@@ -8544,6 +8604,11 @@ export class FullStoryPipeline {
           const rawOutputDirectory = this._currentOutputDirectory || story.outputDir;
           if (!rawOutputDirectory) return;
           await saveFinalContractRepairRound(rawOutputDirectory, snapshot, story, report);
+        },
+        saveRepairCandidate: async (candidate, story) => {
+          const rawOutputDirectory = this._currentOutputDirectory || story.outputDir;
+          if (!rawOutputDirectory) return;
+          await saveFinalContractRepairCandidate(rawOutputDirectory, candidate);
         },
         disambiguateProtagonistPronouns: this.disambiguateProtagonistPronouns.bind(this),
         authorEncounterOutcomeVariants: this.authorEncounterOutcomeVariants.bind(this),

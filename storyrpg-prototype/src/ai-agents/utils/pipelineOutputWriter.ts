@@ -24,6 +24,7 @@ import type {
   ContractRepairRoundSnapshot,
 } from '../remediation/finalContractRepair';
 import { buildFinalContractRepairReplayArtifact } from '../remediation/finalContractRepairReplay';
+import { parseRepairCandidate, type FinalContractRepairCandidate } from '../remediation/finalContractCarryForward';
 import type { QualityCouncilReport } from '../quality-council/types';
 import type { LlmLedger } from './pipelineTelemetry';
 import type { BranchShadowDiff } from './branchShadowDiff';
@@ -1119,6 +1120,53 @@ export async function saveFinalContractRepairRound(
       error instanceof Error ? error.message : String(error),
     );
   }
+}
+
+/**
+ * Relative path (within the run directory) of the carried repair candidate
+ * for an enforcement phase. Lives under checkpoints/ so it survives resumes
+ * alongside the watermark artifacts it complements.
+ */
+export function finalContractRepairCandidateFilename(phase: string): string {
+  const slug = (phase || 'final_story_contract').replace(/[^a-z0-9_-]+/gi, '_');
+  return `checkpoints/final-repair-candidate-${slug}.json`;
+}
+
+/**
+ * Persist the still-failing repair candidate so the NEXT enforcement of this
+ * phase (typically after a resume) starts from the repaired text instead of
+ * re-repairing the frozen watermarks. Best-effort: a failed write degrades to
+ * the pre-carry-forward behavior and must never mask the contract failure.
+ */
+export async function saveFinalContractRepairCandidate(
+  outputDir: string,
+  candidate: FinalContractRepairCandidate,
+): Promise<void> {
+  if (!outputDir || !candidate) return;
+  try {
+    const normalized = outputDir.replace(/\/?$/, '/');
+    await ensureDirectory(`${normalized}checkpoints/`);
+    await writeJsonFile(normalized + finalContractRepairCandidateFilename(candidate.phase), candidate);
+    console.info(
+      `[OutputWriter] Wrote carry-forward repair candidate for ${candidate.phase} `
+      + `(enforcement ${candidate.enforcementCount}, ${candidate.remainingBlockingFingerprints.length} remaining blocker(s))`,
+    );
+  } catch (e) {
+    console.warn('[OutputWriter] Failed to write carry-forward repair candidate (non-fatal):', e instanceof Error ? e.message : String(e));
+  }
+}
+
+/** Load + validate the carried repair candidate for a phase; anything unexpected degrades to null. */
+export function loadFinalContractRepairCandidateSync(
+  outputDir: string,
+  phase: string,
+): FinalContractRepairCandidate | null {
+  if (!outputDir) return null;
+  const raw = loadEarlyDiagnosticSync<unknown>(
+    outputDir.replace(/\/?$/, '/'),
+    finalContractRepairCandidateFilename(phase),
+  );
+  return parseRepairCandidate(raw, phase);
 }
 
 async function supersedeFailureArtifactsOnSuccessfulPackage(outputDir: string): Promise<void> {

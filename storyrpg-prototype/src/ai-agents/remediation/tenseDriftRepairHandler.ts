@@ -4,7 +4,7 @@ import { hasPastEventMarker, pastTenseLiveActionMatches } from '../utils/proseTe
 
 type MutableRecord = Record<string, unknown>;
 
-function isTenseDriftIssue(issue: Parameters<ContractRepairHandler>[0]['blockingIssues'][number]): boolean {
+export function isTenseDriftIssue(issue: Parameters<ContractRepairHandler>[0]['blockingIssues'][number]): boolean {
   return issue.validator === 'NarrativeFailureModeValidator'
     && issue.type === 'prose_style_violation'
     && /\btense drift\b/i.test(issue.message ?? '')

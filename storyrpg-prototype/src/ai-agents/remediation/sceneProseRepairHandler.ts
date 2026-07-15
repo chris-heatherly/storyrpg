@@ -120,7 +120,7 @@ const SCENE_PROSE_REPAIRABLE_VALIDATORS = new Set([
  * deterministic pronoun coercion to work with when the beat never mentions the
  * player at all (bite-me 2026-07-05T23-54-17 s1-1 establishing shot).
  */
-function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
+export function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
   // Choice-realization drift belongs to the dedicated choice-resolution
   // handler regardless of which validator reported it — scene-prose rewrites
   // cannot satisfy a choice-surface contract.
@@ -138,6 +138,27 @@ function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
       || issue.repairHandler === 'scene_semantic_patch'
       || !issue.repairHandler)
   ) return true;
+  // A duplicate-event RESTAGE names the exact later scene and the fix is a
+  // prose rewrite of that scene as aftermath/consequence — the router has said
+  // so since 2026-07-05, but neither prose handler admitted the pair, so the
+  // directive was a dead end (bite-me 2026-07-15T20-44-49: the sole remaining
+  // blocker went unattempted through an entire enforcement). Admitted here for
+  // the same-scene fallback after cluster repair has had its attempt.
+  if (issue.validator === 'RouteContinuityValidator' && issue.type === 'route_duplicate_event' && issue.sceneId) {
+    return true;
+  }
+  // Prose-style violations route same_scene_retry with the stated intent
+  // "deterministic tense repair plus a same-scene rewrite clears it" — the
+  // tense handler claims only messages containing "tense drift", so the
+  // same-scene rewrite half must be admitted here or every other prose-style
+  // shape (repetitive motif, non-prefixed tense findings) is a dead end.
+  if (issue.validator === 'NarrativeFailureModeValidator' && issue.type === 'prose_style_violation' && issue.sceneId) {
+    return true;
+  }
+  // Scene-localized QA critical findings route same_scene_retry ("can be
+  // re-authored in place") but no handler admitted the validator — the same
+  // routed-but-unclaimed dead end as the restage class above.
+  if (issue.validator === 'QARunner' && issue.sceneId) return true;
   if (issue.validator === 'RouteContinuityValidator' && issue.type === 'unsafe_fallback_prose') {
     const path = issue.fieldPath ?? '';
     // These are projections or focused encounter fields owned by the outcome,
@@ -180,6 +201,25 @@ const SCENE_CLUSTER_REPAIRABLE_VALIDATORS = new Set([
   'InformationLedgerScheduleValidator',
   'StoryCircleAnchorConformanceValidator',
 ]);
+
+/**
+ * Cluster-rewrite admission. Validator-level membership covers classes whose
+ * every finding is cluster-repairable; (validator, type) pairs cover
+ * validators that are architecture-class EXCEPT one localized shape — the
+ * restage finding, whose own suggestion is a prose rewrite of the flagged
+ * scene ("rewrite the later scene as consequence, memory, public reaction…").
+ * The router still has the final word: the handler only acts when routeIssue
+ * returns scene_cluster_rewrite.
+ */
+export function isSceneClusterRepairableIssue(issue: RepairableIssue): boolean {
+  if (!issue.sceneId || !issue.validator) return false;
+  if (SCENE_CLUSTER_REPAIRABLE_VALIDATORS.has(issue.validator)) return true;
+  if (issue.validator === 'RouteContinuityValidator' && issue.type === 'route_duplicate_event') return true;
+  // Scene-targeted authored failure-mode mitigations route scene_cluster_rewrite
+  // ("dramatize it with the scene cluster") but the validator was never in the
+  // cluster set — routed-but-unclaimed dead end.
+  return issue.validator === 'NarrativeFailureModeValidator' && issue.type === 'narrative_failure_mode_violation';
+}
 
 const MOMENT_REALIZATION_VALIDATORS = new Set([
   'RequiredBeatRealizationValidator',
@@ -1512,7 +1552,7 @@ export function buildSceneClusterRepairHandler(opts: SceneProseRepairOptions): C
   return async ({ story, blockingIssues }) => {
     const candidates = blockingIssues.filter(
       (issue) => {
-        if (!issue.sceneId || !issue.validator || !SCENE_CLUSTER_REPAIRABLE_VALIDATORS.has(issue.validator)) return false;
+        if (!isSceneClusterRepairableIssue(issue)) return false;
         if (!opts.routeIssue) return true;
         const route = opts.routeIssue(issue);
         if (route.kind !== 'scene_cluster_rewrite') {

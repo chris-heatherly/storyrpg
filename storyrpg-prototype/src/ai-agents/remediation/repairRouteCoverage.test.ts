@@ -40,7 +40,13 @@ import { GATE_REGISTRY, type GateSpec } from './gateRegistry';
 import { buildEncounterMetadataRepairHandler } from './encounterMetadataRepairHandler';
 import { buildEncounterRouteRepairHandler } from './encounterRouteRepairHandler';
 import { buildChoiceResolutionRepairHandler } from './choiceResolutionRepairHandler';
-import { selectSceneProseRepairs } from './sceneProseRepairHandler';
+import {
+  buildSceneClusterRepairHandler,
+  isSceneClusterRepairableIssue,
+  isSceneProseRepairableIssue,
+  selectSceneProseRepairs,
+} from './sceneProseRepairHandler';
+import { isTenseDriftIssue } from './tenseDriftRepairHandler';
 import { VALIDATOR_REGISTRY } from '../validators/validatorRegistry';
 import { validateEncounterProducerOutput } from '../pipeline/producerBlockerChecks';
 import type { Story } from '../../types/story';
@@ -783,6 +789,55 @@ const CLOSURE_SWEEP_EXEMPTIONS: Record<string, string> = {
   TreatmentSeedOnPageValidator: 'Seed projection is repaired by applyOnPageContracts on both ChoiceAuthor paths (2026-06-13); add a routed case when next touched.',
 };
 
+/**
+ * ROUTED AND CLAIMED (2026-07-15): routing metadata alone allowed a FOURTH
+ * starvation — route_duplicate_event routed scene_cluster_rewrite since
+ * 2026-07-05 while both prose handlers' admission lists excluded the
+ * validator, so the directive was a dead end no test looked at (bite-me
+ * 2026-07-15T20-44-49: the sole remaining blocker went unattempted through an
+ * entire enforcement). For every case in this file whose route is an LLM
+ * prose directive, at least one registered handler's REAL admission logic
+ * must accept the issue. Dedicated-handler claims (choice/encounter/outcome
+ * shapes) are each backed by an executable test that runs the actual handler.
+ */
+const LLM_PROSE_DIRECTIVES = new Set<RepairDirectiveKind>(['same_scene_retry', 'scene_cluster_rewrite']);
+
+function llmHandlerClaims(issue: BlockingClassCase['issue']): string[] {
+  const probe = issue as never;
+  const extra = issue as { repairHandler?: string; outcomeTier?: string; fieldPath?: string };
+  const claims: string[] = [];
+  if (isSceneProseRepairableIssue(probe)) claims.push('scene_prose');
+  if (isSceneClusterRepairableIssue(probe)) claims.push('scene_cluster');
+  if (isTenseDriftIssue(probe)) claims.push('tense_drift_deterministic');
+  if (extra.repairHandler === 'choice_reauthor') claims.push('choice_resolution');
+  if (extra.repairHandler === 'encounter_route' || extra.outcomeTier) claims.push('encounter_route');
+  if (issue.type === 'outcome_text_stub') claims.push('outcome_text_reauthor');
+  if (
+    issue.type === 'unsafe_fallback_prose'
+    && /^encounter\.(?:description|phases\[\d+\]\.description)$/.test(extra.fieldPath ?? '')
+  ) claims.push('encounter_metadata');
+  return claims;
+}
+
+describe('routed AND claimed — every LLM prose directive has an admitting handler', () => {
+  const router = new GateRepairRouter({});
+  const allCases: BlockingClassCase[] = [
+    ...BLOCKING_CLASSES,
+    ...Object.values(FINAL_GATE_ROUTES).flat(),
+  ];
+  for (const testCase of allCases) {
+    it(`"${testCase.name}" is admitted when routed to LLM repair`, () => {
+      const route = router.routeIssue(testCase.issue);
+      if (!LLM_PROSE_DIRECTIVES.has(route.kind)) return;
+      const claims = llmHandlerClaims(testCase.issue);
+      expect(
+        claims,
+        `(${testCase.issue.validator}/${testCase.issue.type ?? '-'}) routes ${route.kind} but NO handler admission accepts it — a route with no admitting handler is the same dead end as no route`,
+      ).not.toEqual([]);
+    });
+  }
+});
+
 describe('blocking-validator closure sweep', () => {
   it('every blocking final-stage validator is routed, allowlisted, pre-final-enforced, or exempt with rationale', () => {
     const normalized = (name: string): string => name.replace(/\s*\(.*\)$/, '').trim();
@@ -836,6 +891,40 @@ describe('handler claims for production-starved classes', () => {
       }],
     } as never);
     expect(result.attemptedIssueKeys?.length).toBe(1);
+  });
+
+  it('scene-cluster handler claims route_duplicate_event restage findings (bite-me 2026-07-15T20-44-49)', async () => {
+    const story = {
+      episodes: [{
+        number: 1,
+        scenes: [
+          { id: 's1-6', name: 'Night out', beats: [{ id: 'a1', text: 'The club empties around you.' }] },
+          { id: 's1-blog-aftermath', name: 'The post becomes public pressure', beats: [{ id: 'b1', text: "You hit 'Publish.' The counter climbs." }] },
+        ],
+      }],
+    } as never;
+    const issue = {
+      validator: 'RouteContinuityValidator',
+      type: 'route_duplicate_event',
+      severity: 'error',
+      sceneId: 's1-blog-aftermath',
+      episodeNumber: 1,
+      message: 'Reader route restages lateNightWriting in "s1-blog-aftermath" after that event was already owned earlier. Later scenes may carry aftermath or residue only.',
+      suggestion: 'Rewrite the later scene as consequence, memory, public reaction, changed access, or distinct escalation instead of replaying the owned event.',
+    };
+    const router = new GateRepairRouter({ story: story as never });
+    const handler = buildSceneClusterRepairHandler({
+      critic: () => ({
+        execute: async () => ({
+          success: true,
+          data: { rewrittenBeats: [{ id: 'b1', text: 'Your phone will not stop shaking; the city has read it, and the comments keep arriving.' }] },
+        }),
+      }) as never,
+      routeIssue: (candidate) => router.routeIssue(candidate),
+    });
+    const result = await handler({ story, blockingIssues: [issue] } as never);
+    expect(result.attemptedIssueKeys?.length).toBe(1);
+    expect(result.changed).toBe(true);
   });
 
   it('encounter-route handler claims outcome-tier findings', async () => {

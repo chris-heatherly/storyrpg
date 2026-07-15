@@ -228,6 +228,240 @@ describe('ContentGenerationPhase checkpoint resume validation', () => {
     }]);
     expect(emitted.some(event => event.phase === 'resumed_scene' && event.message?.includes('s1-1'))).toBe(true);
   });
+
+  it('accepts a resumed encounter scene with a choicePoint — encounter scenes have no separate choice-set checkpoint (bite-me 2026-07-15T20-44-49)', async () => {
+    const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
+    const emitted: Array<{ type: string; phase?: string; message?: string }> = [];
+    const phase = new ContentGenerationPhase({
+      sceneWriter: {
+        execute: async () => {
+          throw new Error('SceneWriter should not run for resumed encounter scene');
+        },
+        setContractLoadTemperature: () => undefined,
+      },
+      choiceAuthor: {
+        execute: async () => {
+          throw new Error('ChoiceAuthor should not run for an encounter scene');
+        },
+        setEpisodeSkillTargets: () => undefined,
+      },
+      encounterArchitect: {
+        execute: async () => {
+          throw new Error('EncounterArchitect must not re-roll a validated resumed encounter');
+        },
+      },
+      semanticRealizationJudge: {
+        identity: () => ({ policyVersion: 'test', provider: 'stub', model: 'stub' }),
+        execute: async () => ({ success: true, data: { verdicts: [] } }),
+      },
+      getThreadPlanner: () => ({}),
+      getTwistArchitect: () => ({}),
+      getCharacterArcTracker: () => ({}),
+      incrementalValidator: null,
+      sceneValidationResults: [],
+      seasonSkillPlan: undefined,
+      encounterTelemetry: [],
+      cachedPipelineMemory: null,
+      callbackLedger: { threads: [] } as never,
+      dependencySchedulerStats: { hasCycle: false, waveCount: 0, fallbackToSerial: false },
+      episodeArcTargets: new Map(),
+      episodeTwistPlans: new Map(),
+      generationPlan: null,
+      remediationBudget: null,
+      seasonChoicePlan: undefined,
+      seasonThreadLedger: { threads: [] } as never,
+      assertSceneDependencyInvariants: () => undefined,
+      buildBranchFallbackChoiceSet: () => undefined,
+      buildDeterministicChoiceSet: () => undefined,
+      buildChoiceAuthorNpcs: () => [],
+      buildCompactWorldContext: () => '',
+      buildEncounterPriorStateContext: () => undefined,
+      captureEncounterTelemetry: () => undefined,
+      checkCancellation: async () => undefined,
+      deriveStoryVerbsForBrief: () => [],
+      emitPhaseProgress: () => undefined,
+      emitPlanUpdate: () => undefined,
+      episodeCheckpointFile: (episodeNumber: number, kind: string, id?: string) => `checkpoints/episode-${episodeNumber}/${kind}-${id || 'all'}.json`,
+      establishedCanonForPrompt: () => undefined,
+      getPhase4DefaultCollisions: () => [],
+      getTargetBeatCountForScene: () => 1,
+      getUnresolvedCallbacksForPrompt: () => undefined,
+      inferBranchType: () => 'neutral',
+      isEpisodeFinalScene: () => false,
+      loadResumeUnit: (_outputDirectory: string | undefined, unitId: string) => {
+        if (unitId === 'scene_content:episode-1:enc-1') {
+          return { sceneId: 'enc-1', sceneName: 'Cismigiu rescue', beats: [] };
+        }
+        if (unitId === 'encounter:episode-1:enc-1') {
+          return {
+            beats: [{
+              id: 'enc-beat-1',
+              setupText: 'Fog closes over the park path as the stranger steps between you and the attackers.',
+              choices: [{
+                id: 'enc-choice-1',
+                text: 'Hold your ground.',
+                outcomes: {
+                  success: { narrativeText: 'You plant your feet and the attackers scatter into the dark hedges.' },
+                },
+              }],
+            }],
+          };
+        }
+        return undefined;
+      },
+      recordRemediationSafe: async () => undefined,
+      recordSceneValidationResult: () => undefined,
+      resolveWorldLocationForScene: () => undefined,
+      runSceneCriticPass: async () => undefined,
+      sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
+      saveResumeUnit: async () => undefined,
+      throwIfFailFast: () => undefined,
+      trackEncounterFlagConsequences: () => undefined,
+    } as never);
+
+    const result = await phase.run(
+      {
+        episode: { number: 1 },
+        options: {},
+        protagonist: { id: 'protagonist', name: 'Kylie', pronouns: 'she/her' },
+        story: { title: 'Checkpoint Story', genre: 'urban fantasy', tone: 'tense' },
+        world: { premise: 'A city at night.' },
+      } as never,
+      { locations: [] } as never,
+      { characters: [] } as never,
+      {
+        suggestedFlags: [],
+        suggestedScores: [],
+        scenes: [{
+          id: 'enc-1',
+          name: 'Cismigiu rescue',
+          description: 'Attack and rescue in the park.',
+          npcsPresent: [],
+          leadsTo: [],
+          requiredBeats: [],
+          isEncounter: true,
+          encounterType: 'romantic',
+          choicePoint: { description: 'How the rescue lands.' },
+        }],
+      } as never,
+      undefined,
+      '/tmp/story-run',
+      1,
+      {
+        config: { generation: {} },
+        emit: (event: { type: string; phase?: string; message?: string }) => emitted.push(event),
+      } as never,
+    );
+
+    expect(result.sceneContents.map(scene => scene.sceneId)).toEqual(['enc-1']);
+    expect(result.encounters.get('enc-1')).toBeTruthy();
+    expect(emitted.some(event => /Regenerating enc-1/.test(event.message ?? ''))).toBe(false);
+  });
+
+  it('names the rejection reason when a resume checkpoint is discarded (no silent discard)', async () => {
+    const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
+    const emitted: Array<{ type: string; phase?: string; message?: string }> = [];
+    const phase = new ContentGenerationPhase({
+      sceneWriter: { execute: async () => { throw new Error('SceneWriter should not run'); }, setContractLoadTemperature: () => undefined },
+      choiceAuthor: {
+        execute: async () => {
+          throw new Error('ChoiceAuthor should not run for an encounter scene');
+        },
+        setEpisodeSkillTargets: () => undefined,
+      },
+      encounterArchitect: {
+        execute: async () => {
+          throw new Error('stop after claiming the regeneration');
+        },
+      },
+      getThreadPlanner: () => ({}),
+      getTwistArchitect: () => ({}),
+      getCharacterArcTracker: () => ({}),
+      incrementalValidator: null,
+      sceneValidationResults: [],
+      seasonSkillPlan: undefined,
+      encounterTelemetry: [],
+      cachedPipelineMemory: null,
+      callbackLedger: { threads: [] } as never,
+      dependencySchedulerStats: { hasCycle: false, waveCount: 0, fallbackToSerial: false },
+      episodeArcTargets: new Map(),
+      episodeTwistPlans: new Map(),
+      generationPlan: null,
+      remediationBudget: null,
+      seasonChoicePlan: undefined,
+      seasonThreadLedger: { threads: [] } as never,
+      assertSceneDependencyInvariants: () => undefined,
+      buildBranchFallbackChoiceSet: () => undefined,
+      buildDeterministicChoiceSet: () => undefined,
+      buildChoiceAuthorNpcs: () => [],
+      buildCompactWorldContext: () => '',
+      buildEncounterPriorStateContext: () => undefined,
+      captureEncounterTelemetry: () => undefined,
+      checkCancellation: async () => undefined,
+      deriveStoryVerbsForBrief: () => [],
+      emitPhaseProgress: () => undefined,
+      emitPlanUpdate: () => undefined,
+      episodeCheckpointFile: (episodeNumber: number, kind: string, id?: string) => `checkpoints/episode-${episodeNumber}/${kind}-${id || 'all'}.json`,
+      establishedCanonForPrompt: () => undefined,
+      getPhase4DefaultCollisions: () => [],
+      getTargetBeatCountForScene: () => 1,
+      getUnresolvedCallbacksForPrompt: () => undefined,
+      inferBranchType: () => 'neutral',
+      isEpisodeFinalScene: () => false,
+      // Scene draft exists but the encounter checkpoint is missing entirely.
+      loadResumeUnit: (_outputDirectory: string | undefined, unitId: string) => {
+        if (unitId === 'scene_content:episode-1:enc-1') {
+          return { sceneId: 'enc-1', sceneName: 'Cismigiu rescue', beats: [] };
+        }
+        return undefined;
+      },
+      recordRemediationSafe: async () => undefined,
+      recordSceneValidationResult: () => undefined,
+      resolveWorldLocationForScene: () => undefined,
+      runSceneCriticPass: async () => undefined,
+      sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
+      saveResumeUnit: async () => undefined,
+      throwIfFailFast: () => undefined,
+      trackEncounterFlagConsequences: () => undefined,
+    } as never);
+
+    await phase.run(
+      {
+        episode: { number: 1 },
+        options: {},
+        protagonist: { id: 'protagonist', name: 'Kylie', pronouns: 'she/her' },
+        story: { title: 'Checkpoint Story', genre: 'urban fantasy', tone: 'tense' },
+        world: { premise: 'A city at night.' },
+      } as never,
+      { locations: [] } as never,
+      { characters: [] } as never,
+      {
+        suggestedFlags: [],
+        suggestedScores: [],
+        scenes: [{
+          id: 'enc-1',
+          name: 'Cismigiu rescue',
+          description: 'Attack and rescue in the park.',
+          npcsPresent: [],
+          leadsTo: [],
+          requiredBeats: [],
+          isEncounter: true,
+          encounterType: 'romantic',
+          choicePoint: { description: 'How the rescue lands.' },
+        }],
+      } as never,
+      undefined,
+      '/tmp/story-run',
+      1,
+      {
+        config: { generation: {} },
+        emit: (event: { type: string; phase?: string; message?: string }) => emitted.push(event),
+      } as never,
+    ).catch(() => undefined);
+
+    const rejection = emitted.find(event => /Regenerating enc-1 despite resume checkpoint/.test(event.message ?? ''));
+    expect(rejection?.message).toContain('encounter checkpoint missing');
+  });
 });
 
 describe('ContentGenerationPhase treatment density gate', () => {

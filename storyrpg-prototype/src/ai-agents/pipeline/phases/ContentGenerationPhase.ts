@@ -1589,7 +1589,16 @@ export class ContentGenerationPhase {
             data: { findings: [...resumedChoiceBlockers, ...resumedEncounterBlockers] },
           });
         }
-        const hasRequiredChoice = !sceneBlueprint.choicePoint
+        // Encounter scenes never author a separate ChoiceAuthor set — their
+        // choices live inside the encounter structure and ChoiceAuthor is
+        // skipped for them — so no choice_set resume unit exists to load.
+        // Requiring one here SILENTLY discarded a fully validated encounter on
+        // every resume (bite-me 2026-07-15T20-44-49: five same-day re-rolls of
+        // the same encounter, the last quarantined and killed the run before
+        // the final contract).
+        const requiresSeparateChoiceSet = Boolean(sceneBlueprint.choicePoint)
+          && !(sceneBlueprint.isEncounter && sceneBlueprint.encounterType);
+        const hasRequiredChoice = !requiresSeparateChoiceSet
           || Boolean(resumedChoice && resumedChoiceBlockers.length === 0);
         const hasRequiredEncounter = !(sceneBlueprint.isEncounter && sceneBlueprint.encounterType)
           || Boolean(
@@ -1639,6 +1648,25 @@ export class ContentGenerationPhase {
             `Resumed completed content for ${sceneBlueprint.id}`
           );
           continue;
+        }
+        // No silent discard: regenerating checkpointed work must say WHY the
+        // checkpoint was rejected. The choice-set gap above hid five same-day
+        // encounter re-rolls behind a fall-through with no log line.
+        if (resumedScene || resumedChoice || resumedEncounter) {
+          const rejectionReasons = [
+            !resumedScene ? 'scene draft missing' : '',
+            !hasRequiredChoice
+              ? (resumedChoice ? `choice set has ${resumedChoiceBlockers.length} unresolved blocker(s)` : 'choice-set checkpoint missing')
+              : '',
+            !hasRequiredEncounter
+              ? (resumedEncounter ? 'encounter failed rehydration checks (turn realization / boilerplate / blockers above)' : 'encounter checkpoint missing')
+              : '',
+          ].filter(Boolean);
+          context.emit({
+            type: 'warning',
+            phase: 'content',
+            message: `Regenerating ${sceneBlueprint.id} despite resume checkpoint(s): ${rejectionReasons.join('; ') || 'unknown rejection (report this)'}.`,
+          });
         }
       }
 

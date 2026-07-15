@@ -205,6 +205,20 @@ describe('semantic contract IR', () => {
     expect(result.issues.join(' | ')).toMatch(/unknown location the catacombs/);
   });
 
+  it('rejects prerequisites that invert the authored chronology (Dusk Club class)', () => {
+    // Live class: source reads "After testing Kylie, the three ... form the
+    // Dusk Club", but the compiler emitted form-the-club as p1 and
+    // Kylie-is-tested as p2 WITH p2 depending on p1 — forcing every owner
+    // surface to restage the test after the toast.
+    const contract = ir();
+    const [first, second] = contract.events[0].propositions;
+    first.sourceSpan = 'her other friend Iulia';
+    second.sourceSpan = 'Stela introduces Kylie to Valescu Club';
+    const result = validateAuthoredEventSemanticIR(contract, semanticContractEventSeeds(graph()), []);
+    expect(result.passed).toBe(false);
+    expect(result.issues.join(' | ')).toMatch(/inverts the authored chronology/);
+  });
+
   it('rejects source spans that are not exact authored substrings', () => {
     const contract = ir();
     contract.events[0].propositions[0].sourceSpan = 'Kylie meets everyone at the club';

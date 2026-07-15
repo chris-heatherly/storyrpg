@@ -437,7 +437,7 @@ export interface ContentGenerationPhaseDeps {
   // --- Agents ---
   sceneWriter: Pick<SceneWriter, 'execute' | 'executeSemanticPatch' | 'setContractLoadTemperature'>;
   choiceAuthor: Pick<ChoiceAuthor, 'execute' | 'repairSharedResolution' | 'setEpisodeSkillTargets'>;
-  encounterArchitect: Pick<EncounterArchitect, 'execute' | 'reauthorFallbackCostFields'>;
+  encounterArchitect: Pick<EncounterArchitect, 'execute' | 'reauthorFallbackCostFields' | 'reauthorEncounterDescription'>;
   semanticRealizationJudge: SemanticRealizationJudgeLike;
   getThreadPlanner: () => ThreadPlannerLike;
   getTwistArchitect: () => TwistArchitectLike;
@@ -5010,6 +5010,77 @@ export class ContentGenerationPhase {
                     phase: 'encounter',
                     message: `Encounter ${sceneBlueprint.id}: targeted cost-field re-author replaced ${repaired} deterministic placeholder(s) (${templateHits.length} signature(s) remain).`,
                   });
+                }
+              }
+
+              // PRODUCER-BOUNDARY PLANNING-PROSE SANITATION (bite-me
+              // 2026-07-15T03-28-40): the plan/treatment sentence kept riding
+              // encounter description fields into the final contract, where it
+              // was repaired downstream twice and re-pasted every fresh run.
+              // Detect planning-register text on the reader-facing description
+              // surfaces HERE — same detector the final RouteContinuityValidator
+              // uses — and route the exact field to the LLM re-author.
+              // Deterministic code detects and routes; it never writes prose.
+              {
+                const encounterForSanitation = encounters.get(sceneBlueprint.id) as unknown as Record<string, unknown> | undefined;
+                if (encounterForSanitation) {
+                  const descriptionFields: Array<{ path: string; get: () => string | undefined; set: (value: string) => void }> = [];
+                  if (typeof encounterForSanitation.description === 'string') {
+                    descriptionFields.push({
+                      path: 'encounter.description',
+                      get: () => encounterForSanitation.description as string,
+                      set: (value) => { encounterForSanitation.description = value; },
+                    });
+                  }
+                  const encPhases = (encounterForSanitation.phases as Array<Record<string, unknown>> | undefined) ?? [];
+                  encPhases.forEach((phase, index) => {
+                    if (phase && typeof phase.description === 'string') {
+                      descriptionFields.push({
+                        path: `encounter.phases[${index}].description`,
+                        get: () => phase.description as string,
+                        set: (value) => { phase.description = value; },
+                      });
+                    }
+                  });
+                  const encStorylets = (encounterForSanitation.storylets as Record<string, Record<string, unknown>> | undefined) ?? {};
+                  for (const [storyletKey, storylet] of Object.entries(encStorylets)) {
+                    if (storylet && typeof storylet.description === 'string') {
+                      descriptionFields.push({
+                        path: `encounter.storylets.${storyletKey}.description`,
+                        get: () => storylet.description as string,
+                        set: (value) => { storylet.description = value; },
+                      });
+                    }
+                  }
+                  const firstSetupText = (encPhases[0]?.beats as Array<{ setupText?: string }> | undefined)?.[0]?.setupText
+                    ?? (encounterForSanitation.beats as Array<{ setupText?: string; text?: string }> | undefined)?.[0]?.setupText;
+                  let sanitized = 0;
+                  for (const field of descriptionFields) {
+                    const text = field.get();
+                    if (!text || !isPlanningRegisterText(text)) continue;
+                    const next = await this.deps.encounterArchitect.reauthorEncounterDescription({
+                      currentDescription: text,
+                      sceneName: sceneBlueprint.name,
+                      sceneProse: firstSetupText,
+                    });
+                    if (next && next.trim() && next.trim() !== text.trim() && !isPlanningRegisterText(next)) {
+                      field.set(next.trim());
+                      sanitized += 1;
+                    } else {
+                      context.emit({
+                        type: 'warning',
+                        phase: 'encounter',
+                        message: `Encounter ${sceneBlueprint.id}: planning-register prose remains in ${field.path} after re-author — final contract will re-detect it.`,
+                      });
+                    }
+                  }
+                  if (sanitized > 0) {
+                    context.emit({
+                      type: 'debug',
+                      phase: 'encounter',
+                      message: `Encounter ${sceneBlueprint.id}: re-authored ${sanitized} planning-register description field(s) at the producer boundary.`,
+                    });
+                  }
                 }
               }
 

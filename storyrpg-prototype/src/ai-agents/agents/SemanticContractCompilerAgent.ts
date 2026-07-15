@@ -433,6 +433,8 @@ Rules:
 - Do not add facts, people, actions, locations, motives, outcomes, or chronology absent from the sources.
 - proposition is a concise factual meaning, not required wording.
 - semanticCriteria are concise meaning conditions a semantic judge can evaluate; do not provide keyword lists or stylistic advice.
+- ONE completed meaning per proposition. If a source clause chains several actions with "and" / "then" / "after" (e.g. "After testing her, the three become friends and form the club"), emit one proposition per action — a judge must be able to pass or fail each independently. Never bundle an introduction, a relationship change, and a location reference into one proposition.
+- Propositions follow the source's causal/temporal order. An action the source describes as happening FIRST ("after testing Kylie...") must be an earlier proposition, and a later action may list it in prerequisitePropositionIds — never the reverse.
 - participantIds name only participants explicitly present in or unambiguously referred to by the cited span. Pronouns may remain pronouns.
 - stagedLocation means the action physically occurs there. A mentioned destination belongs in referencedLocations instead.
 - Use only these known location strings for location fields: ${knownLocations.length > 0 ? knownLocations.join(' | ') : '(none)'}.

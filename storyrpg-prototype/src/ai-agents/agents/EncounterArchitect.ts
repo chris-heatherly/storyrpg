@@ -6210,7 +6210,13 @@ Phase 4 now generates bounded storylet slots separately: victory, partialVictory
       id: 'beat-1',
       phase: 'setup' as EscalationPhase,
       name: input.sceneName,
-      description: input.sceneDescription,
+      // NEVER copy input.sceneDescription here: for treatment-sourced runs it
+      // IS the raw plan/treatment sentence, and this field ships reader-facing
+      // as phases[0].description — the exact planning-prose leak that blocked
+      // bite-me_2026-07-15T03-28-40 at the final contract twice. The scene
+      // name is a reader-safe label; the LLM-authored setupText carries the
+      // prose.
+      description: input.sceneName,
       setupText: phase1.openingBeat.setupText,
       choices: beat1Choices,
       ...(this.sanitizeSetupTextVariants(phase3Result?.setupTextVariants)?.length

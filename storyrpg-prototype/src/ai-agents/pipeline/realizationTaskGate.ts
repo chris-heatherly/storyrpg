@@ -234,7 +234,14 @@ function sceneLocationNames(sceneContent: unknown): string[] {
   const setting = scene.settingContext && typeof scene.settingContext === 'object'
     ? scene.settingContext as Record<string, unknown>
     : undefined;
-  return [scene.locationName, setting?.locationName]
+  // Assembly projects the owner-stage settingContext.locationName into
+  // timeline.location on the runtime Scene shape. Reading only the owner-shape
+  // fields made identical prose pass owner validation and fail final
+  // validation after assembly (owner/final schema drift).
+  const timeline = scene.timeline && typeof scene.timeline === 'object'
+    ? scene.timeline as Record<string, unknown>
+    : undefined;
+  return [scene.locationName, setting?.locationName, timeline?.location]
     .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
 }
 

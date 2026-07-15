@@ -204,11 +204,13 @@ export function validateAuthoredEventSemanticIR(
     const sources = new Map(expected.sources.map((source) => [source.id, source.text]));
     const citedSourceIds = new Set<string>();
     const propositionIds = new Set<string>();
+    const propositionsById = new Map<string, (typeof event.propositions)[number]>();
     for (const [index, proposition] of event.propositions.entries()) {
       const expectedId = `${event.eventId}:semantic:${index + 1}`;
       if (proposition.id !== expectedId) issues.push(`Semantic proposition ${proposition.id || '<missing>'} must have stable id ${expectedId}.`);
       if (propositionIds.has(proposition.id)) issues.push(`Semantic IR duplicates proposition ${proposition.id}.`);
       propositionIds.add(proposition.id);
+      propositionsById.set(proposition.id, proposition);
       const source = sources.get(proposition.sourceId);
       if (!source) {
         issues.push(`Semantic proposition ${proposition.id} cites unknown source ${proposition.sourceId}.`);
@@ -238,6 +240,22 @@ export function validateAuthoredEventSemanticIR(
       for (const prerequisiteId of proposition.prerequisitePropositionIds ?? []) {
         if (!propositionIds.has(prerequisiteId)) {
           issues.push(`Semantic proposition ${proposition.id} prerequisite ${prerequisiteId} must refer to an earlier proposition in the same event.`);
+          continue;
+        }
+        // Source-order sanity: when both propositions cite the same source
+        // segment, the prerequisite's span must not START after the dependent's
+        // — a dependency pointing backward against the authored chronology
+        // ("form the Dusk Club" as prerequisite of "Kylie is tested" when the
+        // source reads "After testing Kylie, the three ... form the Dusk
+        // Club") compiles an impossible staging order for every downstream
+        // owner surface.
+        const prerequisite = propositionsById.get(prerequisiteId);
+        if (prerequisite && prerequisite.sourceId === proposition.sourceId && source) {
+          const prerequisiteStart = source.indexOf(prerequisite.sourceSpan ?? '');
+          const dependentStart = source.indexOf(proposition.sourceSpan ?? '');
+          if (prerequisiteStart >= 0 && dependentStart >= 0 && prerequisiteStart > dependentStart) {
+            issues.push(`Semantic proposition ${proposition.id} depends on ${prerequisiteId}, but the prerequisite's source span appears LATER in the source — the dependency inverts the authored chronology.`);
+          }
         }
       }
     }

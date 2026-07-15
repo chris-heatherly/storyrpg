@@ -18,7 +18,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { publicCheckpoint, publicJobState, sanitizeJobState } = require('./sanitizeJobState');
+const { publicCheckpoint, publicJobState, publicResumeContext, sanitizeJobState } = require('./sanitizeJobState');
 const { spawnTsNodeWorker } = require('./tsNodeSpawn');
 
 const WORKER_STALE_RUNNING_MS = 3 * 60 * 1000;
@@ -31,6 +31,8 @@ const MAX_SYNC_REGISTRY_SCAN_BYTES = 50 * 1024 * 1024;
 const WORKER_COMPLETED_PRUNE_MS = 2 * 60 * 60 * 1000;
 const WORKER_RESULT_TTL_MS = 10 * 60 * 1000;
 const JOB_STALE_RUNNING_MS = 3 * 60 * 60 * 1000;
+const WORKER_PUBLIC_TIMELINE_TAIL = 80;
+const WORKER_MAX_TIMELINE_ENTRY_BYTES = 32 * 1024;
 
 // WS1b: failureKind written by the worker when a run died on provider
 // credit/quota exhaustion (see src/ai-agents/utils/providerErrors.ts). Such
@@ -74,6 +76,131 @@ function stripLargeValues(obj, maxStringLen = 512) {
     }
   }
   return result;
+}
+
+function compactWorkerTimelineEntry(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  const { output, ...rest } = entry;
+  const compact = stripLargeValues(rest);
+  if (output !== undefined) {
+    compact.outputSummary = {
+      omitted: true,
+      success: typeof entry.success === 'boolean'
+        ? entry.success
+        : (output && typeof output === 'object' && typeof output.success === 'boolean'
+            ? output.success
+            : undefined),
+    };
+  }
+  const compactBytes = Buffer.byteLength(JSON.stringify(compact));
+  if (compactBytes > WORKER_MAX_TIMELINE_ENTRY_BYTES) {
+    return stripLargeValues({
+      workerEvent: compact.workerEvent,
+      type: compact.type,
+      eventType: compact.eventType,
+      phase: compact.phase,
+      step: compact.step,
+      agent: compact.agent,
+      message: compact.message,
+      timestamp: compact.timestamp,
+      telemetry: compact.telemetry,
+      dataSummary: compact.data === undefined ? undefined : {
+        omitted: true,
+        bytes: Buffer.byteLength(JSON.stringify(compact.data)),
+      },
+      outputSummary: compact.outputSummary,
+    });
+  }
+  return compact;
+}
+
+function compactWorkerCheckpoint(checkpoint) {
+  if (!checkpoint || typeof checkpoint !== 'object') return checkpoint;
+  return {
+    jobId: checkpoint.jobId,
+    createdAt: checkpoint.createdAt,
+    updatedAt: checkpoint.updatedAt,
+    steps: checkpoint.steps,
+    artifacts: checkpoint.artifacts,
+    failureContext: checkpoint.failureContext,
+    resumeContext: checkpoint.resumeContext,
+  };
+}
+
+function publicWorkerStatus(job, { includeTimeline = false } = {}) {
+  if (!job || typeof job !== 'object') return job;
+  const {
+    timeline,
+    result,
+    checkpoint,
+    resumeCheckpoint,
+    ...rest
+  } = job;
+  void result;
+  const compactTimeline = includeTimeline && Array.isArray(timeline)
+    ? timeline.slice(-WORKER_PUBLIC_TIMELINE_TAIL).map(compactWorkerTimelineEntry)
+    : undefined;
+  return publicJobState({
+    ...rest,
+    checkpoint: compactWorkerCheckpoint(checkpoint),
+    resumeCheckpoint: compactWorkerCheckpoint(resumeCheckpoint),
+    timelineLength: Array.isArray(timeline) ? timeline.length : 0,
+    ...(compactTimeline ? { timeline: compactTimeline } : {}),
+  });
+}
+
+function buildAnalysisStepProgressUpdate(mode, evt, previousProgress, eventAt, estimateProgress) {
+  if (
+    mode !== 'analysis'
+    || (evt?.type !== 'step_start' && evt?.type !== 'step_complete')
+    || (evt?.step !== 'source_analysis' && evt?.step !== 'season_plan')
+  ) {
+    return null;
+  }
+  const eventType = evt.type === 'step_complete' ? 'phase_complete' : 'phase_start';
+  return {
+    currentPhase: evt.step,
+    progress: estimateProgress(mode, evt.step, eventType, previousProgress),
+    phaseProgress: evt.type === 'step_complete' ? 100 : 0,
+    subphaseLabel: evt.step === 'season_plan' ? 'Building season plan' : 'Analyzing source material',
+    lastWorkerEventAt: eventAt,
+    lastWorkerEventType: evt.type,
+  };
+}
+
+function compactPersistedGenerationJob(job) {
+  if (!job?.checkpoint) return job;
+  const checkpoint = {
+    completedPhases: job.checkpoint.completedPhases,
+    lastSuccessfulPhase: job.checkpoint.lastSuccessfulPhase,
+    isResumable: job.checkpoint.isResumable,
+    resumeHint: job.checkpoint.resumeHint,
+    failureContext: job.checkpoint.failureContext,
+    resumeContext: publicResumeContext(job.checkpoint.resumeContext),
+    steps: job.checkpoint.steps,
+    artifacts: job.checkpoint.artifacts,
+  };
+  if (JSON.stringify(checkpoint) === JSON.stringify(job.checkpoint)) return job;
+  return { ...job, checkpoint };
+}
+
+function compactPersistedWorkerJob(job) {
+  if (!job || (job.status !== 'completed' && job.status !== 'failed' && job.status !== 'cancelled')) return job;
+  const timelineNeedsCompaction = Array.isArray(job.timeline) && job.timeline.some((entry) =>
+    entry?.output !== undefined
+    || Buffer.byteLength(JSON.stringify(entry)) > WORKER_MAX_TIMELINE_ENTRY_BYTES
+  );
+  const resumeContextNeedsCompaction = !!job.resumeContext?.requestPayload;
+  if (!timelineNeedsCompaction && !resumeContextNeedsCompaction && !job.resumeCheckpoint) return job;
+  const compact = {
+    ...job,
+    resumeContext: publicResumeContext(job.resumeContext),
+    timeline: timelineNeedsCompaction
+      ? job.timeline.map(compactWorkerTimelineEntry)
+      : job.timeline,
+  };
+  delete compact.resumeCheckpoint;
+  return compact;
 }
 
 function buildFailureContextFromEvent(evt, job) {
@@ -556,6 +683,17 @@ function createWorkerLifecycle({
   const loadCheckpoints = () => checkpointsStore.get();
   const saveCheckpoints = (rows) => checkpointsStore.set(sanitizeJobState(rows));
 
+  const persistedGenerationJobs = loadJobs();
+  const compactedGenerationJobs = persistedGenerationJobs.map(compactPersistedGenerationJob);
+  if (compactedGenerationJobs.some((job, index) => job !== persistedGenerationJobs[index])) {
+    saveJobs(compactedGenerationJobs);
+  }
+  const persistedWorkerJobs = loadWorkerJobs();
+  const compactedWorkerJobs = persistedWorkerJobs.map(compactPersistedWorkerJob);
+  if (compactedWorkerJobs.some((job, index) => job !== persistedWorkerJobs[index])) {
+    saveWorkerJobs(compactedWorkerJobs);
+  }
+
   function ensureWorkerCheckpointOutputDir(jobId) {
     const dir = path.join(WORKER_CHECKPOINT_OUTPUT_DIR, jobId);
     fs.mkdirSync(dir, { recursive: true });
@@ -904,6 +1042,8 @@ function createWorkerLifecycle({
         delete job.result;
         delete job.imageJobs;
         delete job.imageManifest;
+        delete job.resumeCheckpoint;
+        job.resumeContext = publicResumeContext(job.resumeContext);
       }
     }
 
@@ -912,7 +1052,7 @@ function createWorkerLifecycle({
     const updated = jobs.find((j) => j.id === jobId);
     const clients = workerStreamClients.get(jobId);
     if (updated && clients && clients.size > 0) {
-      const frame = `event: status\ndata: ${JSON.stringify(publicJobState(updated))}\n\n`;
+      const frame = `event: status\ndata: ${JSON.stringify(publicWorkerStatus(updated))}\n\n`;
       for (const client of clients) {
         try {
           client.write(frame);
@@ -930,7 +1070,7 @@ function createWorkerLifecycle({
     const idx = jobs.findIndex((j) => j.id === jobId);
     if (idx < 0) return;
     const timeline = Array.isArray(jobs[idx].timeline) ? jobs[idx].timeline : [];
-    const safeEntry = stripLargeValues(entry);
+    const safeEntry = compactWorkerTimelineEntry(entry);
     timeline.push(safeEntry);
     if (timeline.length > WORKER_MAX_TIMELINE) {
       timeline.splice(0, timeline.length - WORKER_MAX_TIMELINE);
@@ -1259,7 +1399,18 @@ function createWorkerLifecycle({
             active.lastWorkerEventType = evt.type;
           }
 
-          if (evt.type === 'pipeline_event') {
+          const analysisStepUpdate = buildAnalysisStepProgressUpdate(
+            workerJob.mode,
+            evt,
+            workerJob.mode === 'analysis'
+              ? Number(loadWorkerJobs().find((j) => j.id === workerJob.id)?.progress || 0)
+              : 0,
+            eventAt,
+            estimateWorkerProgress,
+          );
+          if (analysisStepUpdate) {
+            upsertWorkerJob(workerJob.id, analysisStepUpdate);
+          } else if (evt.type === 'pipeline_event') {
             const phase = evt.phase || 'processing';
             const currentJob = loadWorkerJobs().find((j) => j.id === workerJob.id);
             const prevProgress = Number(currentJob?.progress || 0);
@@ -1907,7 +2058,9 @@ function createWorkerLifecycle({
       const checkpoints = loadCheckpoints();
       const checkpointByJobId = new Map(checkpoints.map((checkpoint) => [checkpoint.jobId, hydrateCheckpointOutputs(checkpoint)]));
       const statsCache = new Map();
-      res.json(normalized.map((job) => publicJobState(enrichWorkerJobWithOutputState(job, checkpointByJobId.get(job.id), statsCache))));
+      res.json(normalized.map((job) => publicWorkerStatus(
+        enrichWorkerJobWithOutputState(job, checkpointByJobId.get(job.id), statsCache),
+      )));
     });
 
     app.get('/worker-jobs/:jobId', (req, res) => {
@@ -1920,17 +2073,29 @@ function createWorkerLifecycle({
       const checkpoint = loadCheckpoints().find((c) => c.jobId === job.id);
       const hydratedCheckpoint = hydrateCheckpointOutputs(checkpoint);
       const enrichedJob = enrichWorkerJobWithOutputState(job, hydratedCheckpoint);
+      res.json(publicWorkerStatus(
+        { ...enrichedJob, checkpoint: hydratedCheckpoint },
+        { includeTimeline: true },
+      ));
+    });
 
-      const cached = workerResultCache.get(job.id);
-      if (cached) {
-        if (Date.now() - cached.storedAt > WORKER_RESULT_TTL_MS) {
-          workerResultCache.delete(job.id);
-        } else {
-          return res.json(publicJobState({ ...enrichedJob, checkpoint: hydratedCheckpoint, result: cached.result }));
-        }
+    app.get('/worker-jobs/:jobId/result', (req, res) => {
+      const job = loadWorkerJobs().find((candidate) => candidate.id === req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'Worker job not found' });
+      if (job.status !== 'completed') {
+        return res.status(409).json({ error: 'Worker result is not ready', status: job.status });
       }
 
-      res.json(publicJobState({ ...enrichedJob, checkpoint: hydratedCheckpoint }));
+      const cached = workerResultCache.get(job.id);
+      if (!cached) {
+        return res.status(410).json({ error: 'Worker result is no longer available' });
+      }
+      if (Date.now() - cached.storedAt > WORKER_RESULT_TTL_MS) {
+        workerResultCache.delete(job.id);
+        return res.status(410).json({ error: 'Worker result is no longer available' });
+      }
+
+      res.json(sanitizeJobState(cached.result));
     });
 
     app.get('/worker-jobs/:jobId/failure-context', (req, res) => {
@@ -2001,7 +2166,7 @@ function createWorkerLifecycle({
       clients.add(res);
       workerStreamClients.set(jobId, clients);
 
-      res.write(`event: snapshot\ndata: ${JSON.stringify(publicJobState(job))}\n\n`);
+      res.write(`event: snapshot\ndata: ${JSON.stringify(publicWorkerStatus(job, { includeTimeline: true }))}\n\n`);
 
       req.on('close', () => {
         clearInterval(heartbeat);
@@ -2032,7 +2197,10 @@ function createWorkerLifecycle({
     app.get('/worker-jobs/:jobId/timeline', (req, res) => {
       const job = loadWorkerJobs().find((j) => j.id === req.params.jobId);
       if (!job) return res.status(404).json({ error: 'Worker job not found' });
-      res.json({ jobId: job.id, timeline: job.timeline || [] });
+      res.json({
+        jobId: job.id,
+        timeline: (job.timeline || []).map(compactWorkerTimelineEntry),
+      });
     });
 
     app.get('/worker-jobs/:jobId/export', (req, res) => {
@@ -2261,5 +2429,10 @@ module.exports = {
     computeWorkerJobConfigHash,
     applyAuthoritativeNarrativeProviderKeys,
     buildFailureContextFromEvent,
+    buildAnalysisStepProgressUpdate,
+    compactWorkerTimelineEntry,
+    compactPersistedGenerationJob,
+    compactPersistedWorkerJob,
+    publicWorkerStatus,
   },
 };

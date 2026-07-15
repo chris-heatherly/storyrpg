@@ -1066,7 +1066,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
           ...(getJob(jobId)?.checkpoint || {}),
           failureContext: data?.failureContext || undefined,
           resumeContext: data?.checkpoint?.resumeContext || undefined,
-          outputs: data?.checkpoint?.outputs || undefined,
         },
       });
     } catch (workspaceErr) {

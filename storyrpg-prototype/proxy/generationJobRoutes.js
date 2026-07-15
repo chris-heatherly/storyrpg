@@ -17,7 +17,7 @@ const path = require('path');
 
 const { atomicWriteJsonSync } = require('./atomicIo');
 const manifestModule = require('./storyManifest');
-const { publicJobState, sanitizeJobState } = require('./sanitizeJobState');
+const { publicGenerationJobState, sanitizeJobState } = require('./sanitizeJobState');
 
 const MAX_SYNC_REGISTRY_SCAN_BYTES = 50 * 1024 * 1024;
 
@@ -675,14 +675,14 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     const jobs = loadJobs();
     const { normalized, changed } = normalizeStaleRunningJobs(jobs);
     if (changed) saveJobs(normalized);
-    res.json(enrichJobsWithImageStats(normalized, { rootDir, storiesDir }).map(publicJobState));
+    res.json(enrichJobsWithImageStats(normalized, { rootDir, storiesDir }).map(publicGenerationJobState));
   });
 
   app.get('/generation-jobs/all', (req, res) => {
     const jobs = loadJobs();
     const { normalized, changed } = normalizeStaleRunningJobs(jobs);
     if (changed) saveJobs(normalized);
-    res.json(enrichJobsWithImageStats(normalized, { rootDir, storiesDir }).map(publicJobState));
+    res.json(enrichJobsWithImageStats(normalized, { rootDir, storiesDir }).map(publicGenerationJobState));
   });
 
   app.post('/generation-jobs/refresh', (req, res) => {
@@ -768,7 +768,7 @@ function registerGenerationJobRoutes(app, lifecycle, options = {}) {
     if (changed) saveJobs(normalized);
     const job = normalized.find((j) => j.id === jobId);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    res.json(publicJobState(job));
+    res.json(publicGenerationJobState(job));
   });
 
   app.patch('/generation-jobs/:jobId', (req, res) => {

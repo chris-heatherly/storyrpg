@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-const { sanitizeJobState, scrubPlanningRegisterProse } = require('./sanitizeJobState');
+const { publicGenerationJobState, sanitizeJobState, scrubPlanningRegisterProse } = require('./sanitizeJobState');
 
 describe('sanitizeJobState planning-register scrub', () => {
   it('rewrites choice-response planning prose in nested worker state', () => {
@@ -158,5 +158,29 @@ describe('sanitizeJobState resume payload preservation', () => {
     expect(once.output.sourceText).toMatch(/\.\.\.\[truncated 3800 chars\]$/);
     const twice = sanitizeJobState(once);
     expect(twice.output.sourceText).toBe(once.output.sourceText);
+  });
+});
+
+describe('publicGenerationJobState', () => {
+  it('keeps resumable metadata while omitting duplicated checkpoint outputs', () => {
+    const job = publicGenerationJobState({
+      id: 'generation-job',
+      status: 'failed',
+      checkpoint: {
+        isResumable: true,
+        resumeHint: 'Retry season planning',
+        failureContext: { message: 'Season planning failed' },
+        resumeContext: { outputDirectory: 'generated-stories/test' },
+        outputs: { season_plan: { large: 'x'.repeat(5000) } },
+      },
+    });
+
+    expect(job.checkpoint).toMatchObject({
+      isResumable: true,
+      resumeHint: 'Retry season planning',
+      failureContext: { message: 'Season planning failed' },
+      resumeContext: { outputDirectory: 'generated-stories/test' },
+    });
+    expect(job.checkpoint.outputs).toBeUndefined();
   });
 });

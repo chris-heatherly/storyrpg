@@ -353,6 +353,12 @@ limits live in `providerThrottle.ts` and the image service adapters.
 Workers persist job state, checkpoints, dead-letter state, checkpoint output
 files, and sanitized timelines through `proxy/workerLifecycle.js`.
 
+Worker polling and SSE status frames are summary-only: large step outputs stay
+in proxy-owned checkpoint files, timeline entries carry compact completion
+evidence, and the generator fetches the transient completion payload once from
+`/worker-jobs/:jobId/result`. Startup migration removes duplicated outputs from
+older worker and generation-job mirrors.
+
 Analysis workers checkpoint `source_analysis` immediately after the analyzer
 succeeds, before starting `season_plan`. A deterministic season-plan failure can
 resume from the saved source analysis without repeating the provider call.

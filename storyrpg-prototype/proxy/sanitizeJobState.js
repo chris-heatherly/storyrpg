@@ -277,7 +277,26 @@ function publicJobState(job) {
   });
 }
 
+function publicGenerationJobState(job) {
+  if (!job || typeof job !== 'object') return job;
+  const { checkpoint, ...rest } = job;
+  return publicJobState({
+    ...rest,
+    checkpoint: checkpoint ? {
+      completedPhases: checkpoint.completedPhases,
+      lastSuccessfulPhase: checkpoint.lastSuccessfulPhase,
+      isResumable: checkpoint.isResumable,
+      resumeHint: checkpoint.resumeHint,
+      failureContext: checkpoint.failureContext,
+      resumeContext: checkpoint.resumeContext,
+      steps: checkpoint.steps,
+      artifacts: checkpoint.artifacts,
+    } : undefined,
+  });
+}
+
 module.exports = {
+  publicGenerationJobState,
   publicCheckpoint,
   publicJobState,
   publicResumeContext,

@@ -116,6 +116,7 @@ export function useGeneratorRunner() {
     let seenTimeline = 0;
     let idlePolls = 0;
     let sseConnected = false;
+    let latestStreamStatus: any = null;
     let eventSource: EventSource | null = null;
     let pollingConnectionFailures = 0;
     const MAX_POLLING_CONNECTION_FAILURES = 8;
@@ -148,6 +149,7 @@ export function useGeneratorRunner() {
             console.error('[useGeneratorRunner] malformed worker status frame:', parsed.error.message);
             return;
           }
+          latestStreamStatus = parsed.value;
           onStatusUpdate?.(parsed.value);
         });
         eventSource.addEventListener('timeline', (event: MessageEvent) => {
@@ -165,6 +167,7 @@ export function useGeneratorRunner() {
             return;
           }
           const payload = parsed.value as Record<string, unknown>;
+          latestStreamStatus = payload;
           onStatusUpdate?.(payload);
           const timeline = Array.isArray(payload.timeline) ? (payload.timeline as unknown[]) : [];
           if (timeline.length > seenTimeline) {
@@ -185,37 +188,44 @@ export function useGeneratorRunner() {
 
     while (true) {
       await new Promise((resolve) => setTimeout(resolve, sseConnected ? 3500 : 2000));
-      let statusResp: Response;
-      try {
-        statusResp = await fetch(`${PROXY_CONFIG.workerJobs}/${jobId}`);
-      } catch (error) {
-        pollingConnectionFailures += 1;
-        sseConnected = false;
-        if (pollingConnectionFailures > MAX_POLLING_CONNECTION_FAILURES) {
-          closeEventSource();
-          const message = error instanceof Error ? error.message : String(error);
-          throw new Error(`Network request failed while polling worker job (${message})`);
+      let statusData: any;
+      if (sseConnected) {
+        if (!latestStreamStatus) continue;
+        statusData = latestStreamStatus;
+        latestStreamStatus = null;
+      } else {
+        let statusResp: Response;
+        try {
+          statusResp = await fetch(`${PROXY_CONFIG.workerJobs}/${jobId}`);
+        } catch (error) {
+          pollingConnectionFailures += 1;
+          sseConnected = false;
+          if (pollingConnectionFailures > MAX_POLLING_CONNECTION_FAILURES) {
+            closeEventSource();
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`Network request failed while polling worker job (${message})`);
+          }
+          continue;
         }
-        continue;
-      }
 
-      pollingConnectionFailures = 0;
-      if (!statusResp.ok) {
-        idlePolls += 1;
-        if (idlePolls > 5) {
-          closeEventSource();
-          throw new Error(`Worker job polling failed (${statusResp.status})`);
+        pollingConnectionFailures = 0;
+        if (!statusResp.ok) {
+          idlePolls += 1;
+          if (idlePolls > 5) {
+            closeEventSource();
+            throw new Error(`Worker job polling failed (${statusResp.status})`);
+          }
+          continue;
         }
-        continue;
-      }
-      idlePolls = 0;
-      const statusData = await statusResp.json();
-      onStatusUpdate?.(statusData);
-      const timeline = Array.isArray(statusData.timeline) ? statusData.timeline : [];
-      if (timeline.length > seenTimeline) {
-        const nextEvents = timeline.slice(seenTimeline);
-        seenTimeline = timeline.length;
-        nextEvents.forEach((nextEvent: any) => pushWorkerTimelineEvent(nextEvent));
+        idlePolls = 0;
+        statusData = await statusResp.json();
+        onStatusUpdate?.(statusData);
+        const timeline = Array.isArray(statusData.timeline) ? statusData.timeline : [];
+        if (timeline.length > seenTimeline) {
+          const nextEvents = timeline.slice(seenTimeline);
+          seenTimeline = timeline.length;
+          nextEvents.forEach((nextEvent: any) => pushWorkerTimelineEvent(nextEvent));
+        }
       }
 
       if (statusData.status === 'completed') {
@@ -225,7 +235,15 @@ export function useGeneratorRunner() {
         // the authoritative story package from /stories/:id and merge it
         // into the transfer payload. Fall back to the in-band result when
         // the proxy can't serve the story yet (e.g. legacy worker).
-        const baseResult = (statusData.result ?? {}) as Record<string, unknown>;
+        let baseResult = statusData.result as Record<string, unknown> | undefined;
+        if (!baseResult) {
+          const resultResp = await fetch(`${PROXY_CONFIG.workerJobs}/${jobId}/result`);
+          if (!resultResp.ok) {
+            const resultError = await resultResp.json().catch(() => null);
+            throw new Error(resultError?.error || `Worker result fetch failed (${resultResp.status})`);
+          }
+          baseResult = await resultResp.json() as Record<string, unknown>;
+        }
         const storyId =
           typeof statusData.storyId === 'string' && statusData.storyId
             ? statusData.storyId

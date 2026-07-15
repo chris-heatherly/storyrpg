@@ -83,7 +83,7 @@ export interface PipelineRuntimeSnapshot {
  * new phase means deciding which step it belongs to, which keeps the UI stable.
  */
 const STEPS = [
-  { id: 'world', name: 'WORLD', subPhases: ['queued', 'initialization', 'source_analysis', 'world'] },
+  { id: 'world', name: 'WORLD', subPhases: ['queued', 'initialization', 'source_analysis', 'season_plan', 'world'] },
   { id: 'characters', name: 'CHARACTERS', subPhases: ['characters', 'npc_validation'] },
   { id: 'episodes', name: 'EPISODES', subPhases: ['architecture', 'branch_analysis', 'content', 'scenes', 'choices', 'encounters', 'quick_validation', 'qa'] },
   { id: 'visuals', name: 'VISUALS', subPhases: ['master_images', 'images', 'video_generation'] },
@@ -93,6 +93,7 @@ const STEPS = [
 /** Human labels for normalized sub-phase IDs, used by the NOW panel. */
 const PHASE_LABELS: Record<string, string> = {
   source_analysis: 'Source analysis',
+  season_plan: 'Season planning',
   queued: 'Queued',
   initialization: 'Initializing',
   world: 'World building',

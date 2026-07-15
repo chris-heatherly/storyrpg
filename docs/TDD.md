@@ -847,6 +847,8 @@ The proxy is organized into modular route handlers:
 | `/generated-stories/*` | Static asset serving or GCS redirect | GET |
 | `/generation-jobs` and `/generation-jobs/:jobId` | List/manage generation job mirrors | GET/POST/PATCH/DELETE |
 | `/worker-jobs/start` | Start a worker generation job | POST |
+| `/worker-jobs/:jobId` | Fetch compact worker status and timeline summary | GET |
+| `/worker-jobs/:jobId/result` | Fetch the transient completion payload once the worker completes | GET |
 | `/worker-jobs/:jobId/stream` | Stream worker job events | GET |
 | `/worker-jobs/:jobId/cancel` | Cancel a worker job | POST |
 | `/worker-jobs/:jobId/resume` | Resume a failed/interrupted worker job | POST |

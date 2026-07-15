@@ -64,8 +64,7 @@ function prepareJobForStorage(job: GenerationJob): GenerationJob {
       resumeHint: checkpoint.resumeHint,
       failureContext: checkpoint.failureContext,
       resumeContext: checkpoint.resumeContext,
-      outputs: checkpoint.outputs,
-      // Drop the big JSON strings — they're only useful in-memory during active generation
+      // Full outputs stay in the proxy-owned worker checkpoint/failure workspace.
     } : undefined,
   };
 }

@@ -29,6 +29,37 @@ function makeLifecycle() {
   });
 }
 
+function registerRouteHarness(lifecycle) {
+  const routes = {
+    get: new Map(),
+    patch: new Map(),
+    post: new Map(),
+  };
+  lifecycle.registerWorkerLifecycleRoutes({
+    get: (path, handler) => routes.get.set(path, handler),
+    patch: (path, handler) => routes.patch.set(path, handler),
+    post: (path, handler) => routes.post.set(path, handler),
+  });
+  return routes;
+}
+
+function invokeJsonRoute(handler, req) {
+  let statusCode = 200;
+  let body;
+  const res = {
+    status: (nextStatus) => {
+      statusCode = nextStatus;
+      return res;
+    },
+    json: (nextBody) => {
+      body = nextBody;
+      return res;
+    },
+  };
+  handler(req, res);
+  return { statusCode, body };
+}
+
 describe('workerLifecycle resume checkpoint normalization', () => {
   it('uses server provider credentials over stale non-empty client keys', () => {
     const agents = {
@@ -141,6 +172,130 @@ describe('workerLifecycle resume checkpoint normalization', () => {
     });
     expect(normalized.generation).toBeUndefined();
     expect(normalized.queued.status).toBe('completed');
+  });
+});
+
+describe('workerLifecycle public progress transport', () => {
+  it('advances analysis jobs into the season-plan phase from worker step events', () => {
+    const update = __test__.buildAnalysisStepProgressUpdate(
+      'analysis',
+      { type: 'step_start', step: 'season_plan' },
+      70,
+      '2026-07-15T18:06:44.193Z',
+      (_mode, phase) => phase === 'season_plan' ? 90 : 70,
+    );
+
+    expect(update).toEqual({
+      currentPhase: 'season_plan',
+      progress: 90,
+      phaseProgress: 0,
+      subphaseLabel: 'Building season plan',
+      lastWorkerEventAt: '2026-07-15T18:06:44.193Z',
+      lastWorkerEventType: 'step_start',
+    });
+  });
+
+  it('keeps full step outputs out of timelines while retaining completion evidence', () => {
+    const compact = __test__.compactWorkerTimelineEntry({
+      type: 'step_complete',
+      step: 'season_plan',
+      timestamp: '2026-07-15T18:09:32.920Z',
+      output: { success: true, data: { episodes: Array.from({ length: 1000 }, (_, index) => ({ index })) } },
+    });
+
+    expect(compact.output).toBeUndefined();
+    expect(compact.outputSummary).toEqual({ omitted: true, success: true });
+    expect(JSON.stringify(compact).length).toBeLessThan(500);
+  });
+
+  it('returns a compact polling snapshot without result or checkpoint outputs', () => {
+    const status = __test__.publicWorkerStatus({
+      id: 'worker-analysis',
+      status: 'completed',
+      progress: 100,
+      currentPhase: 'season_plan',
+      result: { seasonPlan: { episodes: Array.from({ length: 1000 }, (_, index) => ({ index })) } },
+      checkpoint: {
+        jobId: 'worker-analysis',
+        steps: { season_plan: { status: 'completed' } },
+        outputs: { season_plan: { episodes: Array.from({ length: 1000 }, (_, index) => ({ index })) } },
+      },
+      timeline: [{
+        type: 'step_complete',
+        step: 'season_plan',
+        output: { episodes: Array.from({ length: 1000 }, (_, index) => ({ index })) },
+      }],
+    }, { includeTimeline: true });
+
+    expect(status.result).toBeUndefined();
+    expect(status.checkpoint.outputs).toBeUndefined();
+    expect(status.timelineLength).toBe(1);
+    expect(status.timeline[0].output).toBeUndefined();
+    expect(JSON.stringify(status).length).toBeLessThan(1000);
+  });
+
+  it('serves completion results separately from the compact status route', () => {
+    const lifecycle = makeLifecycle();
+    const routes = registerRouteHarness(lifecycle);
+    lifecycle.saveWorkerJobs([{
+      id: 'worker-complete',
+      mode: 'analysis',
+      status: 'completed',
+      progress: 100,
+      timeline: [{ type: 'step_complete', step: 'season_plan', output: { large: 'x'.repeat(5000) } }],
+    }]);
+    lifecycle.workerResultCache.set('worker-complete', {
+      storedAt: Date.now(),
+      result: { success: true, seasonPlan: { id: 'season-plan-1' } },
+    });
+
+    const statusResponse = invokeJsonRoute(
+      routes.get.get('/worker-jobs/:jobId'),
+      { params: { jobId: 'worker-complete' } },
+    );
+    const resultResponse = invokeJsonRoute(
+      routes.get.get('/worker-jobs/:jobId/result'),
+      { params: { jobId: 'worker-complete' } },
+    );
+
+    expect(statusResponse.statusCode).toBe(200);
+    expect(statusResponse.body.result).toBeUndefined();
+    expect(JSON.stringify(statusResponse.body).length).toBeLessThan(1000);
+    expect(resultResponse).toEqual({
+      statusCode: 200,
+      body: { success: true, seasonPlan: { id: 'season-plan-1' } },
+    });
+  });
+
+  it('migrates bulky persisted mirrors without changing authoritative checkpoints', () => {
+    const generationJob = __test__.compactPersistedGenerationJob({
+      id: 'generation-job',
+      checkpoint: {
+        isResumable: true,
+        failureContext: { message: 'retry me' },
+        outputs: { season_plan: { large: 'x'.repeat(5000) } },
+      },
+    });
+    const workerJob = __test__.compactPersistedWorkerJob({
+      id: 'worker-job',
+      status: 'completed',
+      resumeContext: { requestPayload: { source: 'x'.repeat(5000) }, approvedStyleSetup: true },
+      resumeCheckpoint: { outputs: { season_plan: { large: 'x'.repeat(5000) } } },
+      timeline: [{ type: 'step_complete', step: 'season_plan', output: { large: 'x'.repeat(5000) } }],
+    });
+
+    expect(generationJob.checkpoint).toEqual({
+      isResumable: true,
+      failureContext: { message: 'retry me' },
+    });
+    expect(workerJob.timeline[0].output).toBeUndefined();
+    expect(workerJob.timeline[0].outputSummary).toEqual({ omitted: true, success: undefined });
+    expect(workerJob.resumeContext).toEqual(expect.objectContaining({
+      approvedStyleSetup: true,
+      requestPayloadSummary: expect.any(Object),
+    }));
+    expect(workerJob.resumeContext.requestPayload).toBeUndefined();
+    expect(workerJob.resumeCheckpoint).toBeUndefined();
   });
 });
 

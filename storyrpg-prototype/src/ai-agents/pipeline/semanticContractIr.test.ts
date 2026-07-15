@@ -179,6 +179,32 @@ describe('semantic contract IR', () => {
     )).toEqual({ passed: true, issues: [] });
   });
 
+  it('matches location paraphrases against the authority by content tokens (worker-1784082660976)', () => {
+    // The IR compiler and the season planner are separate LLM outputs; exact
+    // string equality between them killed a run at source analysis when the
+    // compiler wrote "Kylie's Lipscani apartment" against an authority that
+    // rolled "Kylie's Apartment".
+    const contract = ir();
+    contract.events[0].propositions[0].stagedLocation = "Kylie's Lipscani apartment";
+    contract.events[0].propositions[0].referencedLocations = ["the apartment in Lipscani"];
+    expect(validateAuthoredEventSemanticIR(
+      contract,
+      semanticContractEventSeeds(graph()),
+      ["Kylie's Apartment", 'Lipscani Apartment'],
+    )).toEqual({ passed: true, issues: [] });
+
+    // Genuinely invented places still fail.
+    const invented = ir();
+    invented.events[0].propositions[0].referencedLocations = ['the catacombs'];
+    const result = validateAuthoredEventSemanticIR(
+      invented,
+      semanticContractEventSeeds(graph()),
+      ["Kylie's Apartment"],
+    );
+    expect(result.passed).toBe(false);
+    expect(result.issues.join(' | ')).toMatch(/unknown location the catacombs/);
+  });
+
   it('rejects source spans that are not exact authored substrings', () => {
     const contract = ir();
     contract.events[0].propositions[0].sourceSpan = 'Kylie meets everyone at the club';

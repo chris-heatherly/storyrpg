@@ -52,6 +52,35 @@ function unique<T>(values: T[]): T[] {
   return [...new Set(values)];
 }
 
+// Words that carry no place identity — dropped before authority comparison so
+// "the apartment in Lipscani" and "Lipscani apartment" compare equal.
+const LOCATION_STOP_TOKENS = new Set([
+  'the', 'a', 'an', 'in', 'at', 'of', 'on', 'near', 'inside', 'outside',
+  'her', 'his', 'their', 'your', 's',
+]);
+
+/** Normalized content tokens of a free-text location reference. */
+export function semanticLocationTokens(value: unknown): Set<string> {
+  return new Set(
+    clean(value)
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/['’]/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .split(' ')
+      .filter((token) => token && !LOCATION_STOP_TOKENS.has(token)),
+  );
+}
+
+function isTokenSubset(candidate: Set<string>, container: Set<string>): boolean {
+  if (candidate.size === 0 || candidate.size > container.size) return false;
+  for (const token of candidate) {
+    if (!container.has(token)) return false;
+  }
+  return true;
+}
+
 export function collectKnownSemanticLocations(
   ...locationGroups: Array<ReadonlyArray<string | undefined>>
 ): string[] {
@@ -138,7 +167,22 @@ export function validateAuthoredEventSemanticIR(
 
   const expectedById = new Map(expectedEvents.map((event) => [event.eventId, event]));
   const actualIds = new Set<string>();
-  const knownLocationSet = new Set(knownLocations.map((location) => clean(location).toLowerCase()).filter(Boolean));
+  const knownLocationTokenSets = knownLocations
+    .map((location) => semanticLocationTokens(location))
+    .filter((tokens) => tokens.size > 0);
+  // Tolerant authority matching: the IR compiler and the season planner are
+  // separate LLM outputs, so exact string equality between them is a plan
+  // lottery — "Kylie's Lipscani apartment" failed against an authority that
+  // rolled "Kylie's Apartment" and killed the run at source analysis
+  // (worker-1784082660976). A reference is KNOWN when its content tokens are
+  // a subset or superset of any authority entry: qualifiers and sublocations
+  // of known places pass; genuinely invented places still fail.
+  const isKnownLocation = (location: string): boolean => {
+    const tokens = semanticLocationTokens(location);
+    if (tokens.size === 0) return true;
+    return knownLocationTokenSets.some((known) =>
+      isTokenSubset(tokens, known) || isTokenSubset(known, tokens));
+  };
 
   for (const event of ir.events ?? []) {
     if (actualIds.has(event.eventId)) {
@@ -183,11 +227,11 @@ export function validateAuthoredEventSemanticIR(
       if (!Array.isArray(proposition.participantIds) || proposition.participantIds.length > 8) {
         issues.push(`Semantic proposition ${proposition.id} has invalid participants.`);
       }
-      if (proposition.stagedLocation && !knownLocationSet.has(clean(proposition.stagedLocation).toLowerCase())) {
+      if (proposition.stagedLocation && !isKnownLocation(proposition.stagedLocation)) {
         issues.push(`Semantic proposition ${proposition.id} stages unknown location ${proposition.stagedLocation}.`);
       }
       for (const location of proposition.referencedLocations ?? []) {
-        if (!knownLocationSet.has(clean(location).toLowerCase())) {
+        if (!isKnownLocation(location)) {
           issues.push(`Semantic proposition ${proposition.id} references unknown location ${location}.`);
         }
       }

@@ -1274,21 +1274,19 @@ export class FinalContract {
         emit: (message) => this.deps.emit({ type: 'debug', phase: input.phase, message }),
       });
       if ((outcome.inconclusive ?? 0) > 0) {
-        throw new PipelineError(
-          `[SemanticValidationInconclusive] Fidelity judge could not produce evidence-backed verdicts for ${outcome.inconclusive} finding(s); no prose repair was attempted.`,
-          'validation',
-          {
-            agent: 'SemanticRealizationJudge',
-            failure: {
-              code: 'semantic_validation_inconclusive',
-              ownerStage: 'final_contract',
-              retryClass: 'none',
-              issueCodes: ['SEMANTIC_VALIDATION_INCONCLUSIVE'],
-              artifactRefs: [],
-              repairTarget: 'legacy-fidelity-findings',
-            },
-          },
-        );
+        // Instrument-failure policy (same as judge-unavailable, and this
+        // gate's own documented conservative fallback): an inconclusive
+        // verdict means UNCONFIRMED-BUT-UNREFUTED — the heuristic finding
+        // keeps today's behavior: it STAYS BLOCKING and proceeds to the
+        // repair loop. Aborting here instead denied 8 completed scenes their
+        // repair pass over one indecisive judge call
+        // (bite-me_2026-07-15T20-44-49). A verdict may downgrade a finding;
+        // the absence of a verdict may not end the run.
+        this.deps.emit({
+          type: 'warning',
+          phase: input.phase,
+          message: `Fidelity judge was inconclusive for ${outcome.inconclusive} finding(s) — leaving them blocking for the repair loop (conservative fallback, same as judge-unavailable).`,
+        });
       }
       // Findings that left blocking = judge-refuted; remember them so re-validation
       // (which re-runs the heuristics fresh) does not re-block them.

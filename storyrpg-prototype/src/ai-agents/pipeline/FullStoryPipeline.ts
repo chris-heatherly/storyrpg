@@ -2557,7 +2557,15 @@ export class FullStoryPipeline {
   ): Promise<FullPipelineResult> {
     // Input validation
     this.validateBrief(brief);
-    resetStoryLexiconFromEnv();
+    // Same declared-setting extension as generateFromSourceAnalysis: without
+    // it the worker/UI path ran on the bare genre-neutral lexicon, so the
+    // story's own city ("Bucharest") counted as a second major location and
+    // SceneConstructionGate aborted the plan (bite-me_2026-07-15T00-30-46:
+    // conflicts "apartment, bucharest" / "exploration, bucharest").
+    setStoryLexicon(withDeclaredContainerLocations(
+      resetStoryLexiconFromEnv(),
+      [brief.multiEpisode?.sourceAnalysis?.setting?.location],
+    ));
     this.armRealizationPovContext(brief);
 
     const priorFingerprint = guardFailureResume(resumeCheckpoint);

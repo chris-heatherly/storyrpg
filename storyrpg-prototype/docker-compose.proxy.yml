@@ -18,3 +18,7 @@ services:
       - COGNEE_BASE_URL=http://cognee:8000
     volumes:
       - .:/app
+      # Read-only view of the repo's .git so the proxy/workers can stamp the
+      # commit they run (node slim image has no git binary; the app mount
+      # carries no .git — every ledger row said workerGitSha: unknown).
+      - ../.git:/repo-git:ro

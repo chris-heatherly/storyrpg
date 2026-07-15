@@ -150,4 +150,14 @@ describe('person entities are not location anchors (bite-me 2026-07-03T15-30-01 
     expect(cues).toContain('apartment');
     expect(cues).not.toContain('victor');
   });
+
+  it('rejects abstract activity nouns but keeps venue nouns sharing the suffix (bite-me 2026-07-15 s1-2)', () => {
+    // "exploration" was mined as a major location cue and, paired with the
+    // unregistered container city, aborted SceneConstructionGate at plan time.
+    expect(normalizeSceneLocationCue('Exploration')).toBeUndefined();
+    expect(normalizeSceneLocationCue('the investigation')).toBeUndefined();
+    expect(normalizeSceneLocationCue('celebration')).toBeUndefined();
+    // -tion venue words are still places.
+    expect(normalizeSceneLocationCue('the station')).toBe('station');
+  });
 });

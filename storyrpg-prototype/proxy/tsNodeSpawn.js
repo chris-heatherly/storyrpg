@@ -19,9 +19,39 @@ function resolveProxyGitSha() {
       timeout: 3000,
     }).trim() || null;
   } catch {
-    cachedGitSha = null;
+    // The compose proxy runs in node:20-bookworm-slim with the repo
+    // bind-mounted but no git binary — read .git directly instead of
+    // stamping every ledger row "unknown".
+    cachedGitSha = readGitShaFromDotGit() || null;
   }
   return cachedGitSha;
+}
+
+function readGitShaFromDotGit() {
+  const fs = require('fs');
+  const path = require('path');
+  // Host layout: repo root is one level ABOVE storyrpg-prototype. Container
+  // layout: docker-compose.proxy.yml mounts the repo's .git read-only at
+  // /repo-git (the app mount alone carries no .git).
+  const candidates = [
+    path.resolve(__dirname, '..', '..', '.git'),
+    '/repo-git',
+  ];
+  for (const gitDir of candidates) {
+    try {
+      const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+      if (!head.startsWith('ref: ')) return head.slice(0, 10);
+      const ref = head.slice(5).trim();
+      const refPath = path.join(gitDir, ...ref.split('/'));
+      if (fs.existsSync(refPath)) return fs.readFileSync(refPath, 'utf8').trim().slice(0, 10);
+      const packed = fs.readFileSync(path.join(gitDir, 'packed-refs'), 'utf8');
+      const line = packed.split('\n').find((entry) => entry.endsWith(` ${ref}`));
+      if (line) return line.split(' ')[0].slice(0, 10);
+    } catch {
+      // try the next candidate
+    }
+  }
+  return undefined;
 }
 
 function buildTsNodeSpawnArgs(entryScriptPath, payloadPath) {

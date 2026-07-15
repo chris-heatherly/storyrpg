@@ -40,6 +40,16 @@ export function normalizeSceneLocationCue(value: unknown): string | undefined {
   if (!normalized) return undefined;
   if (/^(?:purpose|scene|episode|next|before|after|consequence|consequences|turn|handoff)\b/.test(normalized)) return undefined;
   if (ACTION_GERUND_OPENER_RE.test(normalized)) return undefined;
+  // Abstract activity nouns ("exploration", "investigation", "celebration")
+  // are dramatic content, not places — the gerund guard misses the -tion/-ment
+  // family and "exploration" hard-aborted SceneConstructionGate as a second
+  // major location (bite-me_2026-07-15T00-30-46 s1-2: exploration+bucharest).
+  // Venue nouns that share the suffix ("station") stay places.
+  if (
+    /^[a-z]+(?:tion|sion|ment|ance|ence)$/.test(normalized)
+    && !VENUE_WORD_RE.test(normalized)
+    && !containerCues().has(normalized)
+  ) return undefined;
   const lexicon = getStoryLexicon();
   // Story-signature places collapse to their canonical cue.
   for (const place of lexicon.signaturePlaces) {

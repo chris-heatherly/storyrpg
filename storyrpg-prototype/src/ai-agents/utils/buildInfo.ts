@@ -32,7 +32,38 @@ export function resolveWorkerGitSha(): string | undefined {
       timeout: 3000,
     }).trim() || undefined;
   } catch {
-    cachedSha = undefined;
+    // Containerized workers (node slim image, repo bind-mounted, no git
+    // binary) read .git directly.
+    cachedSha = readShaFromDotGit();
   }
   return cachedSha;
+}
+
+function readShaFromDotGit(): string | undefined {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fs = require('fs') as typeof import('fs');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const path = require('path') as typeof import('path');
+  // Host layout: repo root is one level above storyrpg-prototype (four above
+  // this file). Container layout: the compose file mounts the repo's .git
+  // read-only at /repo-git.
+  const candidates = [
+    path.resolve(__dirname, '..', '..', '..', '..', '.git'),
+    '/repo-git',
+  ];
+  for (const gitDir of candidates) {
+    try {
+      const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+      if (!head.startsWith('ref: ')) return head.slice(0, 10);
+      const ref = head.slice(5).trim();
+      const refPath = path.join(gitDir, ...ref.split('/'));
+      if (fs.existsSync(refPath)) return fs.readFileSync(refPath, 'utf8').trim().slice(0, 10);
+      const packed = fs.readFileSync(path.join(gitDir, 'packed-refs'), 'utf8');
+      const line = packed.split('\n').find((entry) => entry.endsWith(` ${ref}`));
+      if (line) return line.split(' ')[0].slice(0, 10);
+    } catch {
+      // try the next candidate
+    }
+  }
+  return undefined;
 }

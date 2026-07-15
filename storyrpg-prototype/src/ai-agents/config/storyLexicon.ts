@@ -99,6 +99,10 @@ function normalizeDeclaredContainer(value: string): string {
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/^(?:set in|the city of)\s+/, '')
     .replace(/^(?:(?:modern day|present day|near future|far future|post war|postwar|ancient|modern|contemporary|medieval|victorian|regency|renaissance|futuristic|future)\s+)+/, '')
+    // Match the article stripping in normalizeSceneLocationCue, or the
+    // registered container ("the carpathian mountains") never equals the
+    // mined cue ("carpathian mountains").
+    .replace(/\b(?:the|a|an)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -114,8 +118,16 @@ export function withDeclaredContainerLocations(
   locations: ReadonlyArray<string | undefined>,
 ): StoryLexicon {
   const declared = locations
-    .map((location) => normalizeDeclaredContainer(location ?? ''))
-    .filter(Boolean);
+    // A declared setting often names several ambient containers at once
+    // ("Modern Bucharest and the Carpathian Mountains (Bran), Romania").
+    // Registering the joined phrase matches nothing — each conjunct must be
+    // its own container or the city still counts as a major location cue.
+    .flatMap((location) => String(location ?? '').split(/\s+(?:and|&)\s+|\s*\/\s*/i))
+    .map((location) => normalizeDeclaredContainer(location))
+    .filter(Boolean)
+    // A conjunct that is itself a venue phrase ("the castle") must not become
+    // an ambient container that exempts real multi-location conflicts.
+    .filter((location) => location.split(' ').length <= 3);
   if (declared.length === 0) return lexicon;
   return {
     ...lexicon,

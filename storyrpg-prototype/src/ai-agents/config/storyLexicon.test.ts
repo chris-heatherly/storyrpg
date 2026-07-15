@@ -41,4 +41,18 @@ describe('storyLexicon (R2.4)', () => {
     expect(lexicon.containerCities).not.toContain('alfama');
     expect(GENRE_NEUTRAL_LEXICON.containerCities).not.toContain('lisbon');
   });
+
+  it('registers every conjunct of a multi-part declared setting (bite-me 2026-07-15 plan abort)', () => {
+    // "Modern Bucharest and the Carpathian Mountains (Bran), Romania" used to
+    // register as ONE joined phrase that matched no mined cue, so "bucharest"
+    // counted as a second major location and SceneConstructionGate aborted the
+    // plan (conflicts: apartment+bucharest, exploration+bucharest).
+    const lexicon = withDeclaredContainerLocations(GENRE_NEUTRAL_LEXICON, [
+      'Modern Bucharest and the Carpathian Mountains (Bran), Romania',
+    ]);
+    expect(lexicon.containerCities).toContain('bucharest');
+    expect(lexicon.containerCities).toContain('carpathian mountains');
+    expect(lexicon.containerCities).not.toContain('bran');
+    expect(lexicon.containerCities).not.toContain('romania');
+  });
 });

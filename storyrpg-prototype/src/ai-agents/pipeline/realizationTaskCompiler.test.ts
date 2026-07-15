@@ -400,3 +400,40 @@ describe('compileNarrativeRealizationTasks', () => {
     expect(premise?.minimumEvidenceHits).toBe(1);
   });
 });
+
+
+describe('reveal-timing negative contracts (F1.1)', () => {
+  it('projects forbidden final-regression tasks onto every pre-reveal episode scene only', () => {
+    const graph = {
+      version: 1, compilerVersion: 't', storyId: 's', sourceHash: 'h',
+      events: [], characterPresenceContracts: [], dependencies: [],
+      validation: { passed: true, issues: [] },
+      revealContracts: [{
+        id: 'reveal:1:staged-rescue',
+        secretDescription: 'The rescue was staged by Victor as bait.',
+        forbiddenMeanings: [
+          'The rescue or attack is revealed as staged, arranged, or bait.',
+          'Victor serves, reports to, or acts for his father or a larger power.',
+        ],
+        revealEpisode: 5,
+        sourceRef: 'Episode 5 outline',
+      }],
+    } as never;
+    const scenes = [
+      { id: 's1-1', episodeNumber: 1, order: 1 },
+      { id: 's4-2', episodeNumber: 4, order: 2 },
+      { id: 's5-1', episodeNumber: 5, order: 1 },
+      { id: 's6-1', episodeNumber: 6, order: 1 },
+    ] as never;
+    const tasks = compileNarrativeRealizationTasks(graph, scenes);
+    const revealTasks = tasks.filter((candidate) => candidate.contractId === 'reveal:1:staged-rescue');
+    // Episodes 1 and 4 are protected; the reveal episode and later are not.
+    expect(revealTasks.map((candidate) => candidate.sceneId).sort()).toEqual(['s1-1', 's4-2']);
+    for (const revealTask of revealTasks) {
+      expect(revealTask.enforcementPhase).toBe('final_regression');
+      expect(revealTask.blocking).toBe(true);
+      expect(revealTask.evidenceAtoms).toHaveLength(2);
+      expect(revealTask.evidenceAtoms.every((atom) => atom.polarity === 'forbidden')).toBe(true);
+    }
+  });
+});

@@ -172,6 +172,32 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
         }
         scenePlan = { ...scenePlan, semanticEventIr: semanticResult.data };
       }
+      // F1.1 (Treatment Fidelity Plan): compile season secrets into
+      // reveal-timing contracts once at analysis; downstream compilation turns
+      // them into forbidden semantic atoms on every pre-reveal episode.
+      // Best-effort — absence means no enforcement, never a failed analysis.
+      if (!scenePlan.revealContracts) {
+        const revealCompiler = new SemanticContractCompilerAgent(getSeasonPlannerConfig(request.config));
+        const analysis = analysisResult.analysis;
+        const episodes = (analysis?.episodeBreakdown ?? []).map((episode) => ({
+          number: episode.episodeNumber,
+          title: episode.title,
+          summary: [episode.synopsis, episode.sourceSummary].filter(Boolean).join(' '),
+        }));
+        const seasonGuidance = analysis?.treatmentSeasonGuidance;
+        const npcSecretNotes = (seasonGuidance?.npcGuidance ?? [])
+          .filter((npc) => npc.secretOrContradiction?.trim())
+          .map((npc) => `${npc.name}: ${npc.secretOrContradiction}`);
+        const revealContracts = await revealCompiler.compileRevealContracts({
+          episodes,
+          npcSecretNotes,
+          audiencePromise: seasonGuidance?.audiencePromise,
+        });
+        scenePlan = { ...scenePlan, revealContracts };
+        if (revealContracts.length > 0) {
+          console.log(`[Analysis] Compiled ${revealContracts.length} reveal-timing contract(s): ${revealContracts.map((contract) => `${contract.id}→ep${contract.revealEpisode}`).join(', ')}`);
+        }
+      }
       scenePlan = compileAndApplyNarrativeContracts(workingPlan, scenePlan);
       workingPlan.scenePlan = scenePlan;
       for (const episode of workingPlan.episodes ?? []) {

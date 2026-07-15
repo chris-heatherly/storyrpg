@@ -1288,6 +1288,8 @@ export interface SeasonScenePlan {
   narrativeContractGraph?: NarrativeContractGraph;
   /** LLM-authored semantic decomposition consumed by the canonical compiler. */
   semanticEventIr?: AuthoredEventSemanticIR;
+  /** Season secrets with reveal-episode bounds, compiled once at analysis. */
+  revealContracts?: import('./narrativeContract').NarrativeRevealContract[];
   /** Immutable episode-local ownership projections keyed by episode number. */
   episodeEventPlans?: Record<number, EpisodeEventPlan>;
   /** Parsed treatment-field obligations assigned across the scene plan. */

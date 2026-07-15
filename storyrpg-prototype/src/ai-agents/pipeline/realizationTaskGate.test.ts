@@ -740,3 +740,30 @@ describe('validateOwnerRealizationTasks', () => {
     })[0]?.missingEvidenceAtoms).toEqual(['bookshop-location']);
   });
 });
+
+
+describe('final_regression enforcement phase', () => {
+  it('owner-stage validation skips reveal-timing tasks; final regression includes them', () => {
+    const revealTask = {
+      id: 'task:reveal:1:s1-1', contractId: 'reveal:1', episodeNumber: 1,
+      ownerStage: 'scene_writer', repairHandler: 'scene_prose', sceneId: 's1-1',
+      enforcementPhase: 'final_regression',
+      evidenceAtoms: [{
+        id: 'reveal:1:forbidden:1', description: 'The rescue is staged.',
+        // Literal authority so this test stays deterministic (no judge).
+        acceptedPatterns: ['the bait worked'], kind: 'lexical', polarity: 'forbidden', required: true,
+      }],
+      target: { scope: 'owner', surfaces: ['beat_text'] },
+      sourceContractIds: ['reveal:1'], blocking: true,
+    } as never;
+    const sceneContent = { beats: [{ text: 'My father will be pleased. The bait worked perfectly.' }] };
+    const ownerFindings = validateOwnerRealizationTasks({
+      sceneId: 's1-1', tasks: [revealTask], sceneContent, mode: 'owner', currentStage: 'scene_writer',
+    });
+    expect(ownerFindings).toEqual([]);
+    const finalFindings = validateOwnerRealizationTasks({
+      sceneId: 's1-1', tasks: [revealTask], sceneContent, mode: 'final_regression',
+    });
+    expect(finalFindings.some((finding) => (finding.matchedForbiddenAtoms ?? []).includes('reveal:1:forbidden:1'))).toBe(true);
+  });
+});

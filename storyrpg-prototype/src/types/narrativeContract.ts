@@ -249,6 +249,10 @@ export interface NarrativeRealizationTask {
   target: NarrativeEvidenceTarget;
   sourceContractIds: string[];
   blocking: boolean;
+  /** 'final_regression' tasks are skipped by owner-stage validation (cost +
+   * mid-generation churn) and enforced only by the final semantic contract.
+   * Reveal-timing negative contracts use this phase. */
+  enforcementPhase?: 'owner' | 'final_regression';
 }
 
 /** Addressable reader-facing evidence supplied to an interpretive judge. */
@@ -474,6 +478,26 @@ export interface NarrativeTwistContract {
   provenance: 'treatment_required' | 'season_architecture' | 'quality_recommendation';
 }
 
+/**
+ * Season-level secret that must stay unrevealed on reader-facing surfaces
+ * until its reveal episode. The pipeline verifies required meanings and
+ * forbidden labels; this is the missing third leg — forbidden MEANINGS with a
+ * time bound. Live defect: bite-me_2026-07-15T18-38-14 shipped "The bait
+ * worked perfectly" in Episode 1, detonating the staged-rescue secret the
+ * treatment holds until Episode 5, through a passing final contract.
+ */
+export interface NarrativeRevealContract {
+  id: string;
+  /** What the secret IS — planning metadata, never reader-facing. */
+  secretDescription: string;
+  /** Meanings whose on-page presence before revealEpisode is a canon breach. */
+  forbiddenMeanings: string[];
+  /** First episode where this truth may surface on reader-facing surfaces. */
+  revealEpisode: number;
+  /** Treatment/NPC-brief grounding for audits. */
+  sourceRef?: string;
+}
+
 export interface NarrativeEventContract {
   id: string;
   episodeNumber: number;
@@ -578,6 +602,8 @@ export interface NarrativeContractGraph {
   transitionContracts?: NarrativeTransitionContract[];
   choiceResidueContracts?: NarrativeChoiceResidueContract[];
   twistContracts?: NarrativeTwistContract[];
+  /** Season secrets with reveal-episode bounds (forbidden meanings before). */
+  revealContracts?: NarrativeRevealContract[];
   realizationTasks?: NarrativeRealizationTask[];
   dependencies: NarrativeDependencyContract[];
   validation: { passed: boolean; issues: NarrativeContractIssue[] };

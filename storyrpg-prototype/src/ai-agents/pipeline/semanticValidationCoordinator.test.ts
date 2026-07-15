@@ -403,3 +403,63 @@ describe('semanticValidationCoordinator', () => {
     });
   });
 });
+
+
+describe('reveal-timing enforcement (F1.1)', () => {
+  const revealTask = () => task({
+    id: 'task:reveal:1:staged-rescue:s1-final',
+    contractId: 'reveal:1:staged-rescue',
+    canonicalEventId: undefined,
+    enforcementPhase: 'final_regression',
+    evidenceAtoms: [{
+      id: 'reveal:1:forbidden:1:s1-final',
+      description: 'The rescue or attack is revealed as staged, arranged, or bait.',
+      acceptedPatterns: [],
+      kind: 'semantic',
+      verificationAuthority: 'semantic_judge',
+      polarity: 'forbidden',
+      required: true,
+    }],
+  });
+
+  it('flags the archived bait-message class as forbidden meaning present', async () => {
+    // The exact defect that shipped in bite-me_2026-07-15T18-38-14: the final
+    // beat confirmed the staged rescue seven episodes early through a passing
+    // contract, because nothing modeled forbidden meanings with a time bound.
+    const judge: SemanticRealizationJudgeLike = {
+      identity: () => ({ policyVersion: 'test-v2', provider: 'test', model: 'test-judge' }),
+      execute: async (claims) => ({
+        success: true,
+        data: { verdicts: claims.map((claim) => verdict(claim, 'fulfilled', 'The bait worked perfectly.')) },
+      }),
+    };
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1-final',
+      tasks: [revealTask()],
+      sceneContent: { beats: [{ text: "It's Mr. Midnight. 'My father will be pleased. The bait worked perfectly. Welcome to the Dusk Club.'" }] },
+      judge,
+    });
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      blocking: true,
+      matchedForbiddenAtoms: ['reveal:1:forbidden:1:s1-final'],
+    });
+  });
+
+  it('passes a cliffhanger that deepens mystery without confirming the secret', async () => {
+    const judge: SemanticRealizationJudgeLike = {
+      identity: () => ({ policyVersion: 'test-v2', provider: 'test', model: 'test-judge' }),
+      execute: async (claims) => ({
+        success: true,
+        data: { verdicts: claims.map((claim) => verdict(claim, 'not_fulfilled', '')) },
+      }),
+    };
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1-final',
+      tasks: [revealTask()],
+      sceneContent: { beats: [{ text: 'Your phone buzzes: an unknown number, a single line — "Welcome to the night, Kylie." You never gave him your name.' }] },
+      judge,
+    });
+    expect(result.findings).toEqual([]);
+  });
+});

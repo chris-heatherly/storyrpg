@@ -1644,7 +1644,7 @@ function topologicalEvents(events: NarrativeEventContract[]): { ordered: Narrati
 
 export function compileNarrativeContractGraph(
   plan: SeasonPlan,
-  scenePlan: Pick<SeasonScenePlan, 'scenes' | 'setupPayoffEdges' | 'episodeSpines' | 'sourceHash' | 'semanticEventIr'>,
+  scenePlan: Pick<SeasonScenePlan, 'scenes' | 'setupPayoffEdges' | 'episodeSpines' | 'sourceHash' | 'semanticEventIr' | 'revealContracts'>,
 ): NarrativeContractGraph {
   const events: NarrativeEventContract[] = [];
   const compilationIssues: NarrativeContractIssue[] = [
@@ -2039,6 +2039,7 @@ export function compileNarrativeContractGraph(
     transitionContracts,
     choiceResidueContracts,
     twistContracts,
+    revealContracts: scenePlan.revealContracts,
     dependencies: dedupedDependencies,
     validation: { passed: true, issues: [] },
   };

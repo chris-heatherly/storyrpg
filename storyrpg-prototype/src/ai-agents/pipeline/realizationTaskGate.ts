@@ -601,6 +601,10 @@ export function validateOwnerRealizationTasks(input: {
 }): RealizationTaskGateFinding[] {
   const findings: RealizationTaskGateFinding[] = [];
   for (const task of input.tasks ?? []) {
+    // final_regression-phase tasks (reveal-timing negative contracts) are
+    // enforced only by the final semantic contract — owner stages skip them
+    // to avoid per-scene judge spend and mid-generation churn.
+    if ((input.mode ?? 'owner') !== 'final_regression' && task.enforcementPhase === 'final_regression') continue;
     if ((input.mode ?? 'owner') === 'owner' && input.currentStage && task.ownerStage !== input.currentStage) continue;
     const semanticGroups = collectNarrativeTaskEvidenceTextGroups({ ...input, task });
     const deterministicGroups = taskTextGroups({ ...input, task });

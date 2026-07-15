@@ -191,6 +191,38 @@ function premiseContractSchema(premiseCount: number) {
   };
 }
 
+function revealContractSchema(maxEpisode: number) {
+  return {
+    name: 'season_reveal_contracts',
+    description: 'Season secrets that must stay unrevealed until their reveal episode.',
+    maxOutputTokens: 3072,
+    outputBudget: { visibleTokens: 3072, reasoningProfile: 'minimal' as const, safetyTokens: 512 },
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['revealContracts'],
+      properties: {
+        revealContracts: {
+          type: 'array',
+          minItems: 0,
+          maxItems: 12,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['secretDescription', 'forbiddenMeanings', 'revealEpisode', 'sourceRef'],
+            properties: {
+              secretDescription: { type: 'string', maxLength: 240 },
+              forbiddenMeanings: { type: 'array', minItems: 1, maxItems: 4, items: { type: 'string', maxLength: 240 } },
+              revealEpisode: { type: 'integer', minimum: 2, maximum: maxEpisode },
+              sourceRef: { type: 'string', maxLength: 200 },
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 export class SemanticContractCompilerAgent extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Semantic Contract Compiler', { ...config, temperature: 0.1 });
@@ -245,6 +277,61 @@ export class SemanticContractCompilerAgent extends BaseAgent {
         success: false,
         error: error instanceof Error ? error.message : String(error),
       };
+    }
+  }
+
+  /**
+   * F1.1 (Treatment Fidelity Plan): extract season secrets + reveal episodes
+   * from the episode outlines and NPC secret notes. Deterministic validation
+   * bounds episodes and requires grounded meanings; downstream these become
+   * forbidden semantic atoms on every episode BEFORE the reveal. Best-effort:
+   * failure returns [] with a warning — reveal enforcement is protection, not
+   * a new way for analysis to die.
+   */
+  async compileRevealContracts(input: {
+    episodes: Array<{ number: number; title?: string; summary: string }>;
+    npcSecretNotes: string[];
+    audiencePromise?: string;
+  }): Promise<import('../../types/narrativeContract').NarrativeRevealContract[]> {
+    const maxEpisode = Math.max(2, ...input.episodes.map((episode) => episode.number));
+    if (input.episodes.length < 2) return [];
+    const prompt = `You are compiling REVEAL-TIMING contracts for a serialized interactive story. You do not write prose.
+
+A reveal contract names one season-level secret, the FIRST episode where the story may confirm it on reader-facing surfaces, and 1-4 forbidden meanings: statements whose on-page presence in ANY EARLIER episode would spoil the secret. A forbidden meaning is a complete factual claim a judge can test prose against (e.g. "The rescue was staged as bait"), never a keyword list.
+
+Rules:
+- Only secrets the source material itself schedules for a later episode (twists, hidden natures, hidden allegiances, staged events, hidden pasts).
+- revealEpisode = the episode whose outline actually reveals it. Foreshadowing in earlier episodes is allowed and is NOT a forbidden meaning — forbid CONFIRMATION, not atmosphere.
+- sourceRef quotes or names the outline/NPC line grounding the secret.
+- Do not invent secrets absent from the material.
+
+${input.audiencePromise ? `AUDIENCE PROMISE (pacing contract):\n${input.audiencePromise}\n` : ''}
+EPISODE OUTLINES:
+${input.episodes.map((episode) => `Episode ${episode.number}${episode.title ? ` (${episode.title})` : ''}: ${episode.summary}`).join('\n\n')}
+
+NPC SECRETS:
+${input.npcSecretNotes.map((note) => `- ${note}`).join('\n') || '(none)'}`;
+    try {
+      const { data } = await this.callLLMForJson<{ revealContracts: Array<{
+        secretDescription: string; forbiddenMeanings: string[]; revealEpisode: number; sourceRef: string;
+      }> }>([{ role: 'user', content: prompt }], { jsonSchema: revealContractSchema(maxEpisode) });
+      const contracts = (data?.revealContracts ?? [])
+        .filter((contract) => contract
+          && typeof contract.secretDescription === 'string' && contract.secretDescription.trim()
+          && Array.isArray(contract.forbiddenMeanings) && contract.forbiddenMeanings.some((meaning) => meaning?.trim())
+          && Number.isInteger(contract.revealEpisode)
+          && contract.revealEpisode >= 2 && contract.revealEpisode <= maxEpisode)
+        .map((contract, index) => ({
+          id: `reveal:${index + 1}:${contract.secretDescription.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48)}`,
+          secretDescription: contract.secretDescription.trim(),
+          forbiddenMeanings: contract.forbiddenMeanings.map((meaning) => String(meaning ?? '').trim()).filter(Boolean).slice(0, 4),
+          revealEpisode: contract.revealEpisode,
+          sourceRef: contract.sourceRef?.trim() || undefined,
+        }));
+      return contracts;
+    } catch (error) {
+      console.warn(`[Semantic Contract Compiler] reveal-contract compilation failed (continuing without): ${error instanceof Error ? error.message : String(error)}`);
+      return [];
     }
   }
 

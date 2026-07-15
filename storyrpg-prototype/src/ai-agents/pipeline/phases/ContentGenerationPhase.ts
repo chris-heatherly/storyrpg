@@ -591,8 +591,14 @@ export class ContentGenerationPhase {
     currentStage?: NarrativeRealizationOwnerStage;
     candidateHash?: string;
   }) {
+    // Owner-mode validation never evaluates final_regression-phase tasks
+    // (reveal-timing negative contracts) — they are judged once, at the final
+    // semantic contract.
+    const phasedInput = (input.mode ?? 'owner') === 'final_regression'
+      ? input
+      : { ...input, tasks: input.tasks?.filter((task) => task.enforcementPhase !== 'final_regression') };
     const semantic = await validateSemanticRealizationTasks({
-      ...input,
+      ...phasedInput,
       judge: this.deps.semanticRealizationJudge,
     });
     const combinedFindings = semantic.findings;
@@ -1910,6 +1916,12 @@ export class ContentGenerationPhase {
             (e) => e.episodeNumber === brief.episode.number,
           )?.storyCircleRole,
           episodeCircle: blueprint.episodeCircle,
+          // F1.2: season secrets scheduled for later episodes are explicit
+          // prohibitions in the authoring prompt — a cliffhanger may deepen a
+          // question, never answer one early.
+          revealProhibitions: (brief.seasonPlan?.scenePlan?.narrativeContractGraph?.revealContracts ?? [])
+            .filter((contract) => contract.revealEpisode > (brief.episode.number ?? 1))
+            .flatMap((contract) => contract.forbiddenMeanings),
           cliffhangerPlan: this.deps.isEpisodeFinalScene(sceneBlueprint, blueprint)
             ? brief.seasonPlan?.episodes.find((e) => e.episodeNumber === brief.episode.number)?.cliffhangerPlan
             : undefined,

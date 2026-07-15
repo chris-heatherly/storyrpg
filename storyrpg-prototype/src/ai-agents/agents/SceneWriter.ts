@@ -309,6 +309,9 @@ export interface SceneWriterInput {
    * Only supplied to scenes that may need to land the episode ending.
    */
   cliffhangerPlan?: CliffhangerPlan;
+  /** F1.2: forbidden meanings for season secrets not yet revealed — the final
+   * beat may escalate mystery but never confirm one of these. */
+  revealProhibitions?: string[];
 
   // Context about the episode's climactic encounter that this scene is building toward.
   // Provided for all non-encounter scenes so the writer can plant seeds, establish stakes,
@@ -719,6 +722,7 @@ You are a master prose writer who brings scene blueprints to life with concrete,
 - Forward pressure may be a cliffhanger, reveal, unresolved cost, emotional rupture, new danger, changed relationship, choice consequence, or handoff.
 - For non-finale episode endings, heighten next-episode pressure. For finale/resolution endings, resolve the central conflict and show aftermath.
 - When a cliffhanger plan is supplied, the final beat must satisfy that plan: close the immediate scene/episode tension enough to feel authored, then open the specified next pressure.
+- REVEAL SAFETY: a cliffhanger or reveal may DEEPEN a question, never answer a season-scheduled secret early. Never invent canon to sharpen a hook: no new relatives, factions, allegiances, staged-event confirmations, or prior interactions/messages/history the reader never saw on-page.
 - When characters are in jeopardy or believe they are in jeopardy, dialogue should become more pointed, urgent, interrupted, selective, or stripped down. As fear, danger, exposure, or time pressure increases, reduce explanation and sharpen what characters say.
 - Never write a static meeting where characters only discuss information. If characters talk, ground the conversation in fitting physical activity, spatial pressure, object handling, preparation, travel, hiding, training, repair, cooking, cleaning, fighting, searching, ritual, medical care, escape, or another action appropriate to the circumstances.
 - The physical activity should make the power shift or emotional pressure visible.
@@ -2382,7 +2386,7 @@ ${input.cliffhangerPlan ? `
 - Immediate episode tension to acknowledge/resolve: ${input.cliffhangerPlan.resolvedEpisodeTension}
 - New open question: ${input.cliffhangerPlan.newOpenQuestion}
 - Emotional charge: ${input.cliffhangerPlan.emotionalCharge}
-- Next-episode pressure: ${this.scrubNextEpisodePressureForSceneWriter(input)}
+- Next-episode pressure: ${this.scrubNextEpisodePressureForSceneWriter(input)}${input.revealProhibitions?.length ? `\n- DO NOT STATE OR CONFIRM (season secrets scheduled for later episodes — escalate mystery around them without confirming): ${input.revealProhibitions.map((meaning) => `"${meaning}"`).join('; ')}` : ''}
 
 If this scene has no outgoing scene, write the last beat as serialized-TV craft:
 1. Acknowledge the episode's immediate conflict or consequence.

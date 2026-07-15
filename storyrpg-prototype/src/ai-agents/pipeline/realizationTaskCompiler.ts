@@ -538,6 +538,11 @@ function assertTaskFeasibility(
     ]),
   };
   for (const task of tasks) {
+    // final_regression-phase tasks (reveal-timing negative contracts) are not
+    // owner-stage work: their surfaces span everything the READER sees on the
+    // assembled scene, and enforcement happens only at the final semantic
+    // contract. Owner-stage reachability does not apply.
+    if (task.enforcementPhase === 'final_regression') continue;
     if (!task.sceneId) {
       if (task.blocking) throw new NarrativeTaskCompilerError(`Blocking task ${task.id} has no target scene.`);
     } else {
@@ -724,6 +729,48 @@ export function compileNarrativeRealizationTasks(
 ): NarrativeRealizationTask[] {
   const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
   const tasks: NarrativeRealizationTask[] = [];
+
+  // F1.1: reveal-timing negative contracts. Every scene in an episode BEFORE
+  // a secret's reveal episode carries the secret's forbidden meanings as
+  // judge-verified forbidden atoms — enforced at final regression only
+  // (enforcementPhase), where forbidden-on-page is already the critical
+  // class: it blocks, routes to prose repair, and can never ship. This is
+  // what makes "The bait worked perfectly" impossible in Episode 1.
+  for (const reveal of graph.revealContracts ?? []) {
+    if (!reveal.forbiddenMeanings?.length) continue;
+    for (const scene of scenes) {
+      if (scene.episodeNumber >= reveal.revealEpisode) continue;
+      tasks.push({
+        id: `task:${reveal.id}:${scene.id}`,
+        contractId: reveal.id,
+        sourceKinds: ['treatment'],
+        episodeNumber: scene.episodeNumber,
+        ownerStage: 'scene_writer',
+        repairHandler: 'scene_prose',
+        sceneId: scene.id,
+        artifactPath: `episodes[${scene.episodeNumber}].scenes[${scene.id}]`,
+        enforcementPhase: 'final_regression',
+        evidenceAtoms: reveal.forbiddenMeanings.map((meaning, index) => ({
+          id: `${reveal.id}:forbidden:${index + 1}:${scene.id}`,
+          description: meaning,
+          acceptedPatterns: [],
+          sourceText: reveal.sourceRef ?? reveal.secretDescription,
+          kind: 'semantic',
+          polarity: 'forbidden' as const,
+          required: true,
+        })),
+        target: {
+          scope: 'owner',
+          surfaces: [
+            'transition_in', 'beat_text', 'dialogue', 'choice_text', 'choice_outcome',
+            'encounter_entry', 'encounter_setup', 'encounter_phase', 'encounter_outcome', 'terminal_storylet',
+          ],
+        },
+        sourceContractIds: [reveal.id],
+        blocking: true,
+      });
+    }
+  }
 
   for (const premise of graph.premiseContracts ?? []) {
     const feasibility = applySecondPersonPremiseFeasibility(premiseAtoms(premise), graph.narrativeVoice);

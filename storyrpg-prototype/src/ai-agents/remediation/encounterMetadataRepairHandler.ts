@@ -89,7 +89,12 @@ export function buildEncounterMetadataRepairHandler(
         });
         authoredBySceneSource.set(authoringKey, next);
       }
-      if (!next || next === currentDescription) continue;
+      if (!next || next === currentDescription) {
+        // A verbatim echo used to skip SILENTLY here — three resumes showed
+        // zero metadata-repair evidence while the budget burned. Say so.
+        options.emit?.(`Encounter metadata re-author for ${issue.fieldPath} returned ${next ? 'the same text (verbatim echo)' : 'nothing'} — keeping the field for the next round.`);
+        continue;
+      }
       // Accept only text the final validator's own ruler considers clean —
       // an unchecked re-author that still reads as pasted synopsis just
       // burns a repair round and re-flags on revalidation.

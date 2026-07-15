@@ -3932,20 +3932,22 @@ RULES:
     sceneName?: string;
     sceneProse?: string;
   }): Promise<string | undefined> {
-    const prompt = `Re-author one playable encounter description as reader-facing interactive-fiction prose.
+    // Convergence note: earlier versions showed the unsafe description AND the
+    // synopsis in-context, and Gemini reliably echoed them back with cosmetic
+    // edits — the acceptance ruler rejected every attempt and the field never
+    // cleared (bite-me_2026-07-15T20-44-49, three resumes). Author from the
+    // realized scene prose ONLY; the poison never enters the prompt.
+    const prompt = `Author one playable encounter description as reader-facing interactive-fiction prose, derived ONLY from the realized scene prose below.
 
 Requirements:
-- One concrete second-person sentence, 40 words maximum.
-- Describe the immediate in-world pressure the reader faces.
-- Preserve immediate source facts already true at encounter entry, especially the named location, present action, threat, and participants.
-- Do not summarize or spoil later outcomes unless they are already present in the realized scene prose.
+- One concrete sentence, 40 words maximum, second person ("you"), present tense.
+- NEVER use she/her/he/him for the point-of-view character; the reader is "you".
+- Describe the immediate in-world pressure the reader faces at encounter entry.
+- Never summarize the whole scene or its ending; describe only the entry moment.
 - Do not mention treatments, plans, beats, metadata, protagonists, players, stats, dice, or system mechanics.
-- Do not copy the source wording verbatim.
 
 Scene: ${input.sceneName || 'Encounter'}
-Current unsafe description: ${input.currentDescription || 'none'}
-Author-only source context: ${input.sourceSynopsis || 'none'}
-Realized scene prose: ${input.sceneProse || 'none'}`;
+Realized scene prose (your only source): ${input.sceneProse || input.sceneName || 'A tense confrontation begins.'}`;
     const jsonSchema = {
       name: 'encounter_description_reauthor',
       description: 'One compact reader-facing encounter description.',

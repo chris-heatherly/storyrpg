@@ -1,4 +1,5 @@
 import type { Story } from '../../types/story';
+import { flagUnsafeReaderDescription } from '../constants/unsafeReaderText';
 import {
   ENCOUNTER_DESCRIPTION_FIELD_PATH,
   resolveEncounterDescriptionField,
@@ -89,6 +90,14 @@ export function buildEncounterMetadataRepairHandler(
         authoredBySceneSource.set(authoringKey, next);
       }
       if (!next || next === currentDescription) continue;
+      // Accept only text the final validator's own ruler considers clean —
+      // an unchecked re-author that still reads as pasted synopsis just
+      // burns a repair round and re-flags on revalidation.
+      const unsafeLabel = flagUnsafeReaderDescription(next);
+      if (unsafeLabel) {
+        options.emit?.(`Encounter metadata re-author for ${issue.fieldPath} still reads as ${unsafeLabel} — keeping the field for the next round.`);
+        continue;
+      }
       field.set(next);
       changed += 1;
       changedSceneIds.add(issue.sceneId!);

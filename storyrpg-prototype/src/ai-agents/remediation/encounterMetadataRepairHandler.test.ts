@@ -111,3 +111,35 @@ describe('encounter metadata field-owned repair', () => {
     expect(new RouteContinuityValidator().validate({ story }).issues).toHaveLength(0);
   });
 });
+
+
+describe('re-author acceptance uses the shared safety ruler', () => {
+  it('rejects re-authored text that still reads as pasted synopsis', async () => {
+    const story = {
+      episodes: [{
+        number: 1,
+        scenes: [{
+          id: 'enc-1', name: 'Rescue', beats: [],
+          encounter: { description: 'Walking home through Cismigiu, she is attacked and rescued by the impossibly handsome stranger, who walks her to her threshold and vanishes.' },
+        }],
+      }],
+    } as never;
+    const handler = buildEncounterMetadataRepairHandler({
+      author: () => ({
+        // The re-author echoes the synopsis right back (the realistic Gemini
+        // failure) with only cosmetic changes — must NOT be accepted.
+        reauthorEncounterDescription: async () => 'Walking home through Cismigiu, she is attacked and saved by a stranger in a charcoal suit.',
+      }),
+    });
+    const result = await handler({
+      story,
+      blockingIssues: [{
+        type: 'unsafe_fallback_prose', severity: 'error', validator: 'RouteContinuityValidator',
+        sceneId: 'enc-1', fieldPath: 'encounter.description', message: 'paste',
+      }],
+    } as never);
+    expect(result.changed).toBe(false);
+    const scene = (story as never as { episodes: Array<{ scenes: Array<{ encounter: { description: string } }> }> }).episodes[0].scenes[0];
+    expect(scene.encounter.description).toContain('Walking home through Cismigiu');
+  });
+});

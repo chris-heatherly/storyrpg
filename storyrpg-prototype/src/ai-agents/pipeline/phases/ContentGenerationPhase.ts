@@ -22,6 +22,7 @@ import { BEST_OF_N_DEFAULTS, INCREMENTAL_VALIDATION_DEFAULTS } from '../../../co
 import { GrowthCurveEntry, buildGrowthTemplates } from '../../../engine/growthConsequenceBuilder';
 import { ThreadLedger } from '../../../types/narrativeThread';
 import type { ValidatorExecutionRecord } from '../../../types/validation';
+import { flagUnsafeReaderDescription } from '../../constants/unsafeReaderText';
 import { isPlanningRegisterText } from '../../constants/planningRegisterText';
 import { enumerateEncounterDescriptionFields } from '../../utils/readerFacingDescriptionFields';
 import { AgentResponse } from '../../agents/BaseAgent';
@@ -5045,7 +5046,10 @@ export class ContentGenerationPhase {
                   let sanitationAttempts = 0;
                   for (const field of descriptionFields) {
                     const text = field.get();
-                    if (!text || !isPlanningRegisterText(text)) continue;
+                    // Same composite ruler the final RouteContinuityValidator
+                    // applies — a producer gate measuring with a subset of the
+                    // final detectors just relocates the failure downstream.
+                    if (!text || !flagUnsafeReaderDescription(text)) continue;
                     // Every LLM re-author is remediation spend — charge it to
                     // the same budget as every other repair, or a pathological
                     // producer could re-author unbounded fields for free.
@@ -5064,7 +5068,7 @@ export class ContentGenerationPhase {
                       sceneName: sceneBlueprint.name,
                       sceneProse: firstSetupText,
                     });
-                    if (next && next.trim() && next.trim() !== text.trim() && !isPlanningRegisterText(next)) {
+                    if (next && next.trim() && next.trim() !== text.trim() && !flagUnsafeReaderDescription(next)) {
                       field.set(next.trim());
                       sanitized += 1;
                     } else {

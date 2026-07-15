@@ -65,6 +65,14 @@ Navigate the pipeline by phase, not by scrolling: `pipeline/phases/`,
 - Don't grow `FullStoryPipeline.ts` (CI monolith ratchet will fail) — extract
   into `pipeline/phases/` instead.
 - Reproduce with a mocked/cheap run where possible; full generation costs API credits.
+- The REAL proxy is the compose container (`docker compose -f docker-compose.proxy.yml up -d` to
+  recreate after proxy-side changes) — a local `node proxy-server.js` is a split-brain trap.
+  Workers pick up pipeline source per fresh job; plan/compile-time fixes need a FRESH run — resume
+  chains carry fossil IR and pre-fix artifacts.
+- Attribution first: check `workerGitSha` in the ledger row / `worker_start` event before
+  diagnosing (a `-dirty` suffix means uncommitted code; `+mount` means container-derived).
+  `npm run report:kills -- --since <date>` is the kill table; `npm run replay:owner-repair` replays
+  a scene's repair policy offline from its blockers artifact.
 
 See also: `docs/CURRENT_PIPELINE_STATUS.md`, `docs/STORY_QUALITY_CONTRACT.md`,
 `docs/PROJECT_AUDIT_2026-05-28.md`.

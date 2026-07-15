@@ -46,6 +46,15 @@ consequence budget; encounter-first design with goal/threat clocks and a branchi
   call site (season, architecture, quick, full, diagnostic, artifact, final), update
   `validatorRegistry.ts` when it belongs in the gate map, and add config/gates only when runtime
   policy needs them. Register in `IntegratedBestPracticesValidator` only for quick/full checks.
+- New BLOCKING class = complete its row in `repairRouteCoverage.test.ts` (route + executable
+  handler claim) or CI fails — the closure sweep enumerates every blocking final-stage validator.
+  Renames count as new names.
+- Cross-artifact identity is never string equality: two LLM outputs never agree on exact strings
+  (route tiers vs storylet keys, mined cues vs plan text, IR locations vs the authority). Use
+  `utils/entityIdentity.ts` (`entityTokensMatch`) or a judge. Content verdicts are never fuzzy.
+- One collector per surface: "where does reader text live" answers belong in shared modules
+  (`utils/readerFacingDescriptionFields.ts`, `validators/encounterTextSurfaces.ts`) — when you find
+  a private copy, replace it, don't fork it.
 
 See also: the Cursor `pipeline-validation` + `story-structure-rules` skills,
 `docs/INCREMENTAL_VALIDATION_PLAN.md`, `docs/STORY_QUALITY_CONTRACT.md`.

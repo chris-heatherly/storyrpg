@@ -83,6 +83,8 @@ export interface QualityLedgerEntry {
   gateConfigHash?: string;
   /** Git commit the worker actually ran — resolves which fixes a run exercised. */
   workerGitSha?: string;
+  /** Deferral backpressure: owner-stage findings handed to episode-contract repair this run. */
+  deferredRealizationCount?: number;
   /** The validator/agent that produced the blocking failure, when known. */
   validatorId?: string;
   /** S3: total remediation attempts (scene/encounter/choice regen, autofix) this run. */

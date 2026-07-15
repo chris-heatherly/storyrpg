@@ -3054,6 +3054,17 @@ export class FullStoryPipeline {
       const { sceneContents } = contentGenerationResult;
       ({ choiceSets, encounters } = contentGenerationResult);
       mergeDeferredRealizationRecords(this.deferredRealizationRecords, contentGenerationResult.deferredRealizationRecords);
+      // Deferral backpressure gauge: defer-and-continue is only healthy while
+      // the episode-contract repair loop can absorb the pile. Surface a loud
+      // advisory well before the loop's round/scene budgets would drown.
+      const deferredThisEpisode = (contentGenerationResult.deferredRealizationRecords ?? []).length;
+      if (deferredThisEpisode > 12) {
+        this.emit({
+          type: 'warning',
+          phase: 'content',
+          message: `Episode deferred ${deferredThisEpisode} realization finding(s) to episode-contract repair — above the healthy band (≤12). Owner-stage repair may be regressing; inspect before the pile exceeds the final repair budget.`,
+        });
+      }
       this.markPhaseComplete('content_generation');
       // Mark this single episode complete in the structure plan (covers the
       // resume path, where setSceneBeats never ran for the cached scenes).
@@ -5793,6 +5804,7 @@ export class FullStoryPipeline {
           // F4: early-return path — record the failed run in the quality ledger.
           const earlyFail = episodeResults.find((r) => !r.success)?.failure;
           await appendFailedRunLedger(outputDirectory, episodeResults.filter(r => !r.success).length, {
+            deferredRealizationCount: this.deferredRealizationRecords.length,
             blocked: true,
             failureKind: earlyFail?.phase ?? 'episode_generation',
             failureCode: earlyFail?.code,
@@ -5866,6 +5878,7 @@ export class FullStoryPipeline {
           // terminal catch), so record the failed run in the quality ledger here.
           const epFail = failedEpisodeResults.find((result) => result.failure)?.failure;
           await appendFailedRunLedger(outputDirectory, failedEpisodeResults.length, {
+            deferredRealizationCount: this.deferredRealizationRecords.length,
             blocked: true,
             failureKind: epFail?.phase ?? 'episode_generation',
             failureCode: epFail?.code,
@@ -6240,6 +6253,7 @@ export class FullStoryPipeline {
           // B3a: record the failure kind for cross-run triage. PipelineError carries
           // the phase (failureKind) + agent/validator (validatorId).
           await appendFailedRunLedger(this._currentOutputDirectory, 1, {
+            deferredRealizationCount: this.deferredRealizationRecords.length,
             blocked: true,
             failureKind: error instanceof PipelineError ? error.phase : (error instanceof Error ? error.name : 'unknown'),
             failureCode: error instanceof PipelineError ? error.code : undefined,

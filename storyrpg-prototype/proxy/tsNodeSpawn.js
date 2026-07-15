@@ -4,27 +4,38 @@
 
 const { spawn, execSync } = require('child_process');
 
-// Resolve once at proxy startup: the proxy always runs from the repo, while
-// the worker's own git lookup can fail in packaged/containerized contexts —
-// which left quality-ledger rows with workerGitSha: null and made "which code
-// did this run exercise" an investigation again.
-let cachedGitSha;
+// Resolve PER SPAWN, never cached: the startup-cached version stamped
+// fcedc501ae on every run for a full day while newer commits were actually
+// executing — attribution is only useful when it tells the truth. Host runs
+// also mark a dirty working tree; container runs (git binary absent, repo
+// bind-mounted) mark '+mount' because dirtiness is undetectable there.
 function resolveProxyGitSha() {
-  if (cachedGitSha !== undefined) return cachedGitSha;
   try {
-    cachedGitSha = execSync('git rev-parse --short=10 HEAD', {
+    const sha = execSync('git rev-parse --short=10 HEAD', {
       cwd: __dirname,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 3000,
-    }).trim() || null;
+    }).trim();
+    if (!sha) return null;
+    try {
+      const dirty = execSync('git status --porcelain', {
+        cwd: __dirname,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 3000,
+      }).trim().length > 0;
+      return dirty ? `${sha}-dirty` : sha;
+    } catch {
+      return sha;
+    }
   } catch {
     // The compose proxy runs in node:20-bookworm-slim with the repo
     // bind-mounted but no git binary — read .git directly instead of
     // stamping every ledger row "unknown".
-    cachedGitSha = readGitShaFromDotGit() || null;
+    const sha = readGitShaFromDotGit();
+    return sha ? `${sha}+mount` : null;
   }
-  return cachedGitSha;
 }
 
 function readGitShaFromDotGit() {
@@ -74,11 +85,12 @@ function buildTsNodeSpawnArgs(entryScriptPath, payloadPath) {
 function spawnTsNodeWorker({ appRootDir, entryScriptPath, payloadPath, env = {}, stdio = ['ignore', 'pipe', 'pipe'] }) {
   const { command, args } = buildTsNodeSpawnArgs(entryScriptPath, payloadPath);
   const workerMaxOldSpaceSize = Number(process.env.STORYRPG_WORKER_MAX_OLD_SPACE_SIZE_MB) || 4096;
+  const spawnGitSha = resolveProxyGitSha();
   return spawn(command, args, {
     cwd: appRootDir,
     env: {
       ...process.env,
-      ...(resolveProxyGitSha() ? { STORYRPG_WORKER_GIT_SHA: resolveProxyGitSha() } : {}),
+      ...(spawnGitSha ? { STORYRPG_WORKER_GIT_SHA: spawnGitSha } : {}),
       ...env,
       FORCE_COLOR: '0',
       TS_NODE_PREFER_TS_EXTS: 'true',

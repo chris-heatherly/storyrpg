@@ -5055,9 +5055,23 @@ export class ContentGenerationPhase {
                   const firstSetupText = (encPhases[0]?.beats as Array<{ setupText?: string }> | undefined)?.[0]?.setupText
                     ?? (encounterForSanitation.beats as Array<{ setupText?: string; text?: string }> | undefined)?.[0]?.setupText;
                   let sanitized = 0;
+                  let sanitationAttempts = 0;
                   for (const field of descriptionFields) {
                     const text = field.get();
                     if (!text || !isPlanningRegisterText(text)) continue;
+                    // Every LLM re-author is remediation spend — charge it to
+                    // the same budget as every other repair, or a pathological
+                    // producer could re-author unbounded fields for free.
+                    if (!shouldAttemptRemediation(this.deps.remediationBudget)) {
+                      context.emit({
+                        type: 'warning',
+                        phase: 'encounter',
+                        message: `Encounter ${sceneBlueprint.id}: remediation budget exhausted — leaving planning-register prose in ${field.path} for final-contract repair.`,
+                      });
+                      break;
+                    }
+                    this.deps.remediationBudget?.spend(1);
+                    sanitationAttempts += 1;
                     const next = await this.deps.encounterArchitect.reauthorEncounterDescription({
                       currentDescription: text,
                       sceneName: sceneBlueprint.name,
@@ -5073,6 +5087,19 @@ export class ContentGenerationPhase {
                         message: `Encounter ${sceneBlueprint.id}: planning-register prose remains in ${field.path} after re-author — final contract will re-detect it.`,
                       });
                     }
+                  }
+                  if (sanitationAttempts > 0) {
+                    await this.deps.recordRemediationSafe({
+                      rule: 'producer_description_sanitation',
+                      scope: 'encounter',
+                      attempted: sanitationAttempts,
+                      succeeded: sanitized === sanitationAttempts,
+                      degraded: sanitized < sanitationAttempts,
+                      blocked: false,
+                      attempts: sanitationAttempts,
+                      storyId: idSlugify(brief.story.title),
+                      details: `Encounter ${sceneBlueprint.id}: re-authored ${sanitized}/${sanitationAttempts} planning-register description field(s) at the producer boundary`,
+                    });
                   }
                   if (sanitized > 0) {
                     context.emit({

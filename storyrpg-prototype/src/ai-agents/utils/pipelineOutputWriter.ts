@@ -963,6 +963,8 @@ export async function appendFailedRunLedger(
     repairTarget?: string;
     topBlockingValidator?: string;
     gateConfigHash?: string;
+    /** Deferral backpressure gauge: findings handed to episode-contract repair. */
+    deferredRealizationCount?: number;
     validatorId?: string;
     durationMs?: number;
     llmLedger?: LlmLedger | null;
@@ -988,6 +990,7 @@ export async function appendFailedRunLedger(
       outcome: 'failed',
       workerGitSha: resolveWorkerGitSha(),
       errorCount,
+      deferredRealizationCount: details?.deferredRealizationCount,
       blocked: details?.blocked,
       failureKind: details?.failureKind,
       failureCode: details?.failureCode,

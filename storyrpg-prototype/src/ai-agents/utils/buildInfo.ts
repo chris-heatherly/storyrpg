@@ -25,16 +25,33 @@ export function resolveWorkerGitSha(): string | undefined {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { execSync } = require('child_process') as typeof import('child_process');
-    cachedSha = execSync('git rev-parse --short=10 HEAD', {
+    const sha = execSync('git rev-parse --short=10 HEAD', {
       cwd: __dirname,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 3000,
     }).trim() || undefined;
+    if (sha) {
+      // A stamp that can't represent a dirty tree is half a stamp: a full day
+      // of runs executed uncommitted code under a clean-looking SHA.
+      try {
+        const dirty = execSync('git status --porcelain', {
+          cwd: __dirname,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 3000,
+        }).trim().length > 0;
+        cachedSha = dirty ? `${sha}-dirty` : sha;
+      } catch {
+        cachedSha = sha;
+      }
+    }
   } catch {
     // Containerized workers (node slim image, repo bind-mounted, no git
-    // binary) read .git directly.
-    cachedSha = readShaFromDotGit();
+    // binary) read .git directly; dirtiness is undetectable there, so the
+    // stamp is explicitly marked as mount-derived.
+    const sha = readShaFromDotGit();
+    cachedSha = sha ? `${sha}+mount` : undefined;
   }
   return cachedSha;
 }

@@ -15,6 +15,7 @@
  */
 
 const fs = require('fs');
+const { atomicWriteJsonSync } = require('./atomicIo');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
@@ -1126,6 +1127,73 @@ function createWorkerLifecycle({
       });
     }
     saveCheckpoints(rows);
+    persistResumeContextToRunDir(rows[idx >= 0 ? idx : 0]);
+  }
+
+  // Durability (2026-07-16): the private stores (.worker-jobs.json /
+  // .worker-checkpoints.json) were lost while a failed run's artifacts sat
+  // complete on disk, and the official resume 400'd with "No resume payload
+  // stored". The run directory is the durable source of truth — mirror the
+  // resume-critical checkpoint state (request payload with API keys SCRUBBED;
+  // server keys are re-injected by hydrateWorkerConfigApiKeys at resume) into
+  // <outputDir>/checkpoints/resume-context.json so a resume can always be
+  // reconstructed from the run alone. Best-effort: never fails the checkpoint.
+  function scrubApiKeysDeep(value) {
+    if (Array.isArray(value)) return value.map(scrubApiKeysDeep);
+    if (!value || typeof value !== 'object') return value;
+    const out = {};
+    for (const [key, child] of Object.entries(value)) {
+      out[key] = /apikey/i.test(key) && typeof child === 'string' ? '' : scrubApiKeysDeep(child);
+    }
+    return out;
+  }
+
+  function resolveRunDirForResumeContext(row) {
+    const dir = row?.resumeContext?.outputDirectory
+      || row?.outputs?.output_directory?.outputDirectory;
+    if (!dir || typeof dir !== 'string') return null;
+    return path.isAbsolute(dir) ? dir : path.resolve(rootDir, dir);
+  }
+
+  function persistResumeContextToRunDir(row) {
+    try {
+      if (!row?.resumeContext?.requestPayload) return;
+      const runDir = resolveRunDirForResumeContext(row);
+      if (!runDir || !fs.existsSync(runDir)) return;
+      const checkpointsDir = path.join(runDir, 'checkpoints');
+      fs.mkdirSync(checkpointsDir, { recursive: true });
+      atomicWriteJsonSync(path.join(checkpointsDir, 'resume-context.json'), {
+        savedAt: new Date().toISOString(),
+        jobId: row.jobId,
+        requestPayload: scrubApiKeysDeep(row.resumeContext.requestPayload),
+        checkpoint: scrubApiKeysDeep({ ...row, resumeContext: { ...row.resumeContext, requestPayload: undefined } }),
+      }, { pretty: true });
+    } catch (e) {
+      console.warn('[WorkerLifecycle] Failed to mirror resume context into the run dir (non-fatal):', e.message);
+    }
+  }
+
+  function loadResumeContextFromRunDir(job, checkpointResumeContext) {
+    const candidates = [
+      checkpointResumeContext?.outputDirectory,
+      job?.checkpoint?.resumeContext?.outputDirectory,
+      job?.outputDir,
+    ].filter((dir) => typeof dir === 'string' && dir.trim());
+    for (const dir of candidates) {
+      try {
+        const runDir = path.isAbsolute(dir) ? dir : path.resolve(rootDir, dir);
+        const file = path.join(runDir, 'checkpoints', 'resume-context.json');
+        if (!fs.existsSync(file)) continue;
+        const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (stored?.requestPayload && typeof stored.requestPayload === 'object') {
+          console.info(`[WorkerLifecycle] Recovered resume payload from run dir ${runDir} (private store had none).`);
+          return stored;
+        }
+      } catch (e) {
+        console.warn('[WorkerLifecycle] Failed to read run-dir resume context (continuing):', e.message);
+      }
+    }
+    return null;
   }
 
   function markArtifactCommitted(jobId, artifactKey, meta = {}) {
@@ -2253,12 +2321,31 @@ function createWorkerLifecycle({
           console.info(`[WorkerLifecycle] Resume of ${requestedJob.id} redirected to latest chain checkpoint ${sourceJob.id}`);
         }
       }
-      const hydratedCheckpoint = hydrateCheckpointOutputs(
+      let hydratedCheckpoint = hydrateCheckpointOutputs(
         loadCheckpoints().find((c) => c.jobId === sourceJob.id)
         || sourceJob.checkpoint
       );
-      const resumeContext = hydratedCheckpoint?.resumeContext || {};
-      const basePayload = resumeContext.requestPayload;
+      let resumeContext = hydratedCheckpoint?.resumeContext || {};
+      let basePayload = resumeContext.requestPayload;
+      if (!basePayload || typeof basePayload !== 'object') {
+        // Durability fallback: the private stores can be lost (wiped file,
+        // ephemeral runtime, competing proxy instance) while the run directory
+        // holds everything — recover the mirrored resume context from
+        // <outputDir>/checkpoints/resume-context.json. API keys were scrubbed
+        // at persist time; hydrateWorkerConfigApiKeys re-injects server keys
+        // below.
+        const recovered = loadResumeContextFromRunDir(sourceJob, resumeContext);
+        if (recovered) {
+          basePayload = recovered.requestPayload;
+          if (recovered.checkpoint && typeof recovered.checkpoint === 'object') {
+            hydratedCheckpoint = hydrateCheckpointOutputs({
+              ...recovered.checkpoint,
+              resumeContext: { ...(recovered.checkpoint.resumeContext || {}), requestPayload: basePayload },
+            }) || hydratedCheckpoint;
+            resumeContext = hydratedCheckpoint?.resumeContext || recovered.checkpoint.resumeContext || resumeContext;
+          }
+        }
+      }
       if (!basePayload || typeof basePayload !== 'object') {
         return res.status(400).json({ error: 'No resume payload stored for this job' });
       }

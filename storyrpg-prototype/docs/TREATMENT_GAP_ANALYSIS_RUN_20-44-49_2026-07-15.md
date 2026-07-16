@@ -179,7 +179,7 @@ us the keys for free.)
 - **G3 SHIPPED** (01a546df): flagConsumptionAudit wired as final-contract
   warnings; replayed on the packaged story → 7 findings matching this
   analysis exactly.
-- **G5 SHIPPED** (c3f6ece2): `compileAnchorContracts` binds each episode's
+- **G5 SHIPPED** (f697978e): `compileAnchorContracts` binds each episode's
   likely-consequence anchors to {owningSceneId, onPageAction, npcName?,
   firstSighting?} by meaning (schema-constrained scene ids; best-effort like
   reveals). Anchors project to advisory judge-verified planting tasks on the

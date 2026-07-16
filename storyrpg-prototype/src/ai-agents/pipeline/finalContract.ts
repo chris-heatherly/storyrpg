@@ -51,6 +51,7 @@ import {
 } from '../remediation/finalContractCarryForward';
 import { resolveWorkerGitSha } from '../utils/buildInfo';
 import { auditFlagConsumption } from './flagConsumptionAudit';
+import { auditDepartureContradictions } from './departureContradictionAudit';
 import { buildSceneClusterRepairHandler, buildSceneProseRepairHandler } from '../remediation/sceneProseRepairHandler';
 import { requiredMomentFromMessage } from '../remediation/realizationScoring';
 import { missingRequiredMoments, type SceneContractSource } from '../remediation/sceneRealizationGuard';
@@ -1708,6 +1709,29 @@ export class FinalContract {
       }
     } catch (auditError) {
       console.warn(`[Pipeline] Flag-consumption audit failed (non-fatal): ${auditError instanceof Error ? auditError.message : String(auditError)}`);
+    }
+    // A2 advisory audit: a closing/bridge beat that announces "home" and then
+    // routes somewhere that is neither home nor named as the walk home is a
+    // reader teleport (run 14-50-23: s1-4 "walk home" → rooftop bar).
+    try {
+      const departureFindings = auditDepartureContradictions(input.story);
+      if (departureFindings.length > 0) {
+        report.warnings.push(...departureFindings.slice(0, 10).map((finding) => ({
+          type: 'departure_destination_contradiction',
+          severity: 'warning',
+          message: finding.message,
+          sceneId: finding.sceneId,
+          beatId: finding.beatId,
+          validator: 'DepartureContradictionAudit',
+        }) as never));
+        this.deps.emit({
+          type: 'debug',
+          phase: input.phase,
+          message: `Departure-contradiction audit: ${departureFindings.length} announced destination(s) contradict the routed next scene. Advisory.`,
+        } as any);
+      }
+    } catch (auditError) {
+      console.warn(`[Pipeline] Departure-contradiction audit failed (non-fatal): ${auditError instanceof Error ? auditError.message : String(auditError)}`);
     }
 
     report.executionRecords = [

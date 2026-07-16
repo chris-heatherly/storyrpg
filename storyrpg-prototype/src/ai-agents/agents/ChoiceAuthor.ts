@@ -1017,7 +1017,8 @@ ${tasks.flatMap((task) => task.evidenceAtoms.map((atom) => `- ${atom.description
     ));
     if (destinations.length === 0) return '';
     return `## MOTIVATED DEPARTURE (the story moves to ${destinations.join(' / ')} next)
-The next scene is NOT here${here ? ` (currently: ${here})` : ''}. Every outcomeTexts tier must end with the protagonist deciding or beginning to leave, with a visible reason (tiredness, an errand, an escape, a pull toward something) — so arriving at ${destinations.join(' or ')} reads as cause-and-effect, never a teleport. Keep it to one clause inside the existing sentence budget; vary it by tier.`;
+The next scene is NOT here${here ? ` (currently: ${here})` : ''}. Every outcomeTexts tier must end with the protagonist deciding or beginning to leave, with a visible reason (tiredness, an errand, an escape, a pull toward something) — so arriving at ${destinations.join(' or ')} reads as cause-and-effect, never a teleport. Keep it to one clause inside the existing sentence budget; vary it by tier.
+CRITICAL: the departure must point at ${destinations.join(' or ')} and NOWHERE ELSE. Never write "home", "back to the apartment", or any other destination unless it IS the next location — a character who announces going home and then appears at ${destinations[0]} is a continuity error the reader will feel.`;
   }
 
   private collectConsequenceCompletenessIssues(choice: GeneratedChoice, choiceId: string, input: ChoiceAuthorInput): string[] {

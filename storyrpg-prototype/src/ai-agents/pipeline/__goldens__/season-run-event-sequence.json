@@ -451,6 +451,11 @@
       "message": "Final contract repair ran 1 round(s); now passing"
     },
     {
+      "type": "debug",
+      "phase": "incremental_contract_ep_1",
+      "message": "Flag-consumption audit: 1 unread choice flag(s), 1 asymmetric variant famil(y/ies). Advisory."
+    },
+    {
       "type": "checkpoint",
       "phase": "incremental_contract_ep_1",
       "message": "Final story contract passed (1 episode(s), 3 scene(s))"
@@ -811,6 +816,11 @@
       "message": "Final contract repair ran 1 round(s); now passing"
     },
     {
+      "type": "debug",
+      "phase": "incremental_contract_ep_2",
+      "message": "Flag-consumption audit: 1 unread choice flag(s), 1 asymmetric variant famil(y/ies). Advisory."
+    },
+    {
       "type": "checkpoint",
       "phase": "incremental_contract_ep_2",
       "message": "Final story contract passed (1 episode(s), 3 scene(s))"
@@ -899,6 +909,11 @@
       "type": "phase_complete",
       "phase": "story_authoring",
       "message": "Story authoring complete for 2 episode(s)."
+    },
+    {
+      "type": "debug",
+      "phase": "final_story_contract",
+      "message": "Flag-consumption audit: 1 unread choice flag(s), 1 asymmetric variant famil(y/ies). Advisory."
     },
     {
       "type": "checkpoint",

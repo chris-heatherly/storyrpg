@@ -223,6 +223,40 @@ function revealContractSchema(maxEpisode: number) {
   };
 }
 
+function anchorContractSchema(sceneIds: string[], castNames: string[]) {
+  return {
+    name: 'season_anchor_contracts',
+    description: 'Live season anchors bound to their owning scene and an on-page planting action.',
+    maxOutputTokens: 3072,
+    outputBudget: { visibleTokens: 3072, reasoningProfile: 'minimal' as const, safetyTokens: 512 },
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['anchorContracts'],
+      properties: {
+        anchorContracts: {
+          type: 'array',
+          minItems: 0,
+          maxItems: 10,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['anchorName', 'owningSceneId', 'onPageAction'],
+            properties: {
+              anchorName: { type: 'string', maxLength: 120 },
+              owningSceneId: { type: 'string', enum: sceneIds },
+              onPageAction: { type: 'string', maxLength: 240 },
+              npcName: castNames.length > 0 ? { type: 'string', enum: castNames } : { type: 'string', maxLength: 80 },
+              firstSighting: { type: 'boolean' },
+              sourceRef: { type: 'string', maxLength: 200 },
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 export class SemanticContractCompilerAgent extends BaseAgent {
   constructor(config: AgentConfig) {
     super('Semantic Contract Compiler', { ...config, temperature: 0.1 });
@@ -331,6 +365,75 @@ ${input.npcSecretNotes.map((note) => `- ${note}`).join('\n') || '(none)'}`;
       return contracts;
     } catch (error) {
       console.warn(`[Semantic Contract Compiler] reveal-contract compilation failed (continuing without): ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+  }
+
+  /**
+   * G5 (treatment-gap analysis 2026-07-15): bind each "live season anchor"
+   * from an episode outline's likely-consequence line to the SCENE that owns
+   * planting it and a concrete reader-visible action. This must be semantic —
+   * the treatment stages Radu's first sighting anonymously ("a rougher man
+   * near the kitchen"), so no name match can find the owning scene. Best-
+   * effort: failure returns [] with a warning; anchors are protection, not a
+   * new way for analysis to die.
+   */
+  async compileAnchorContracts(input: {
+    episodeNumber: number;
+    episodeOutline: string;
+    likelyConsequence: string;
+    scenes: Array<{ id: string; order: number; summary: string }>;
+    castNames: string[];
+  }): Promise<import('../../types/narrativeContract').NarrativeAnchorContract[]> {
+    if (!input.likelyConsequence?.trim() || input.scenes.length === 0) return [];
+    const orderedScenes = [...input.scenes].sort((left, right) => left.order - right.order);
+    const prompt = `You are binding SEASON ANCHORS for a serialized interactive story. You do not write prose.
+
+The episode outline ends with a likely-consequence line naming things that "become live season anchors" — promises the season builds on. For each anchor, name the ONE scene in this episode that owns planting it, and the concrete READER-VISIBLE ACTION that plants it: something a judge can test the prose against (an object accepted, a threshold crossed, a person first seen, a pact spoken), never a mood or a metadata fact.
+
+Rules:
+- Only anchors the likely-consequence line actually names. Do not invent anchors.
+- owningSceneId must be the scene whose summary stages the anchor's planting moment — match by MEANING (the outline may describe a character anonymously, e.g. "a rougher man near the kitchen" can be a named cast member's first sighting).
+- When the anchor is about a cast member, set npcName to their canonical name, and firstSighting: true when the owning scene is the reader's FIRST on-page look at them.
+- onPageAction states what the reader must SEE in the owning scene ("Kylie accepts a protective object from Stela"), not what it means for the season.
+- sourceRef quotes the anchor phrase from the likely-consequence line.
+
+CAST: ${input.castNames.join(', ') || '(unknown)'}
+
+EPISODE ${input.episodeNumber} OUTLINE:
+${input.episodeOutline}
+
+LIKELY CONSEQUENCE (the anchor list):
+${input.likelyConsequence}
+
+SCENES (in order):
+${orderedScenes.map((scene) => `- ${scene.id}: ${scene.summary}`).join('\n')}`;
+    try {
+      const { data } = await this.callLLMForJson<{ anchorContracts: Array<{
+        anchorName: string; owningSceneId: string; onPageAction: string;
+        npcName?: string; firstSighting?: boolean; sourceRef?: string;
+      }> }>([{ role: 'user', content: prompt }], {
+        jsonSchema: anchorContractSchema(orderedScenes.map((scene) => scene.id), input.castNames),
+      });
+      const sceneIds = new Set(orderedScenes.map((scene) => scene.id));
+      return (data?.anchorContracts ?? [])
+        .filter((anchor) => anchor
+          && typeof anchor.anchorName === 'string' && anchor.anchorName.trim()
+          && typeof anchor.onPageAction === 'string' && anchor.onPageAction.trim()
+          && typeof anchor.owningSceneId === 'string' && sceneIds.has(anchor.owningSceneId))
+        .slice(0, 10)
+        .map((anchor, index) => ({
+          id: `anchor:${input.episodeNumber}:${index + 1}:${anchor.anchorName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48)}`,
+          anchorName: anchor.anchorName.trim(),
+          episodeNumber: input.episodeNumber,
+          owningSceneId: anchor.owningSceneId,
+          onPageAction: anchor.onPageAction.trim(),
+          npcName: anchor.npcName?.trim() || undefined,
+          firstSighting: anchor.firstSighting === true || undefined,
+          sourceRef: anchor.sourceRef?.trim() || undefined,
+        }));
+    } catch (error) {
+      console.warn(`[Semantic Contract Compiler] anchor-contract compilation failed (continuing without): ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }
   }

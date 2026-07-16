@@ -772,6 +772,45 @@ export function compileNarrativeRealizationTasks(
     }
   }
 
+  // G5: season anchors must be PLANTED on-page in their owning scene — a
+  // reader-visible action, judge-verified, never satisfied by character
+  // metadata (run 20-44-49: "Stela's protection" was a pendant description;
+  // Kylie never accepted anything). Advisory (blocking: false) — shadow
+  // evidence before any promotion.
+  for (const anchor of graph.anchorContracts ?? []) {
+    const scene = sceneById.get(anchor.owningSceneId);
+    if (!scene || !anchor.onPageAction?.trim()) continue;
+    const execution = resolveTaskExecutionTarget({
+      scene,
+      episodeNumber: anchor.episodeNumber,
+      kind: 'event',
+    });
+    tasks.push({
+      id: `task:${anchor.id}:planting`,
+      contractId: anchor.id,
+      episodeNumber: anchor.episodeNumber,
+      sourceKinds: ['treatment'],
+      ownerStage: execution.ownerStage,
+      repairHandler: execution.repairHandler,
+      sceneId: anchor.owningSceneId,
+      artifactPath: execution.artifactPath,
+      evidenceAtoms: [{
+        id: `${anchor.id}:on-page-action`,
+        description: anchor.onPageAction,
+        acceptedPatterns: [],
+        sourceText: anchor.sourceRef ?? anchor.anchorName,
+        kind: 'semantic',
+        producerStage: execution.ownerStage,
+        temporalSlot: execution.temporalSlot,
+        required: true,
+        verificationAuthority: 'semantic_judge',
+      }],
+      target: { scope: 'owner', surfaces: execution.surfaces },
+      sourceContractIds: [anchor.id],
+      blocking: false,
+    });
+  }
+
   for (const premise of graph.premiseContracts ?? []) {
     const feasibility = applySecondPersonPremiseFeasibility(premiseAtoms(premise), graph.narrativeVoice);
     const atoms = feasibility.atoms;

@@ -245,6 +245,7 @@ function describeBoilerplateHits(hits: EncounterProseScanHit[], max = 6): string
   }).join('\n');
 }
 import { CallbackLedger } from '../callbackLedger';
+import { auditAnchorCastOrder } from '../anchorCastOrderPreflight';
 import {
   mergeDuplicatePublicAftermathScenes,
   validateBlueprintRouteCueOrder,
@@ -947,6 +948,28 @@ export class ContentGenerationPhase {
       .map((issue) => issue.message);
     const routeCueIssues = validateBlueprintRouteCueOrder(blueprint);
     const routeCueIssueMessages = routeCueIssues.map((issue) => issue.message);
+    // G5 advisory: an NPC cast before their treatment-anchored first sighting
+    // duplicates and defuses the planned moment (run 20-44-49: Radu in s1-2
+    // before the rooftop). Warnings + diagnostic only — the anchor linkage is
+    // LLM-compiled and earns gate trust through shadow evidence first.
+    const anchorCastOrderFindings = auditAnchorCastOrder(
+      brief.seasonPlan?.scenePlan?.narrativeContractGraph?.anchorContracts ?? [],
+      blueprint.scenes.map((scene, index) => ({
+        id: scene.id,
+        episodeNumber: densityEpisodeNumber,
+        order: index,
+        npcsPresent: scene.npcsPresent,
+        npcsInvolved: (scene as { npcsInvolved?: string[] }).npcsInvolved,
+      })),
+    );
+    if (anchorCastOrderFindings.length > 0) {
+      context.emit({
+        type: 'warning',
+        phase: 'scenes',
+        message: `Anchor cast-order preflight: ${anchorCastOrderFindings.length} NPC(s) cast before their anchored first sighting — ${anchorCastOrderFindings.map((finding) => `${finding.npcName} in ${finding.earlySceneId} (anchored: ${finding.owningSceneId})`).join('; ')}. Advisory.`,
+        data: { findings: anchorCastOrderFindings },
+      });
+    }
     if (outputDirectory) {
       await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-construction-report.json`, {
         episodeNumber: densityEpisodeNumber,
@@ -956,6 +979,7 @@ export class ContentGenerationPhase {
         causalRepairDiagnostics,
         sceneOwnershipPreflightIssues,
         routeCueIssues,
+        anchorCastOrderFindings,
         sceneConstructionApplications: sceneConstruction.applications,
         profiles: blueprint.scenes.map((scene) => scene.sceneConstructionProfile),
         eventOwnershipProfiles: blueprint.scenes.map((scene) => scene.sceneEventOwnership),

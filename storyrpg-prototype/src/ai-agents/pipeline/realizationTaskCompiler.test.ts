@@ -331,6 +331,47 @@ describe('compileNarrativeRealizationTasks', () => {
     expect(tasks.find((task) => task.id === 'task:transition:club-to-club-back:departure')).toBeUndefined();
   });
 
+  it('compiles an advisory judge-verified planting task for a season anchor on its owning scene', () => {
+    const graph = {
+      events: [],
+      dependencies: [],
+      anchorContracts: [{
+        id: 'anchor:1:2:stela-s-protection',
+        anchorName: "Stela's protection",
+        episodeNumber: 1,
+        owningSceneId: 's1-3',
+        onPageAction: 'Kylie accepts a protective object or blessing from Stela with visible consent.',
+        sourceRef: "Stela's protection … become live season anchors.",
+      }],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 's1-3', episodeNumber: 1, order: 0, kind: 'standard' },
+    ] as any);
+
+    expect(tasks.find((task) => task.id === 'task:anchor:1:2:stela-s-protection:planting')).toMatchObject({
+      sceneId: 's1-3',
+      blocking: false,
+      evidenceAtoms: [expect.objectContaining({
+        description: 'Kylie accepts a protective object or blessing from Stela with visible consent.',
+        verificationAuthority: 'semantic_judge',
+      })],
+    });
+  });
+
+  it('skips anchor tasks whose owning scene is not in the compiled slice', () => {
+    const graph = {
+      events: [],
+      dependencies: [],
+      anchorContracts: [{
+        id: 'anchor:2:1:x', anchorName: 'X', episodeNumber: 2, owningSceneId: 's2-9', onPageAction: 'Y.',
+      }],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 's1-3', episodeNumber: 1, order: 0, kind: 'standard' },
+    ] as any);
+    expect(tasks.find((task) => task.contractId === 'anchor:2:1:x')).toBeUndefined();
+  });
+
   it('writes one explicit verification authority on every blocking atom', () => {
     const graph = {
       events: [{

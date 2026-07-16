@@ -498,6 +498,32 @@ export interface NarrativeRevealContract {
   sourceRef?: string;
 }
 
+/**
+ * G5 (treatment-gap analysis 2026-07-15): a "live season anchor" from an
+ * episode outline's likely-consequence line, compiled to the scene that owns
+ * planting it and a reader-visible ACTION that plants it. Run 20-44-49:
+ * "Stela's protection" was satisfied by character metadata (a pendant
+ * description) with no consented object ever accepted on-page, and "Radu's
+ * first sighting" was staged twice because nothing told the intro scheduler
+ * the rooftop owned it — the treatment stages him anonymously, so this
+ * linkage must be compiled semantically, never name-matched.
+ */
+export interface NarrativeAnchorContract {
+  id: string;
+  /** The anchor as the treatment names it (e.g. "Stela's protection"). */
+  anchorName: string;
+  episodeNumber: number;
+  /** Scene that owns planting this anchor on-page. */
+  owningSceneId: string;
+  /** Concrete reader-visible action that plants the anchor — a judge-testable claim, never a vibe. */
+  onPageAction: string;
+  /** Canonical cast-member name when the anchor is about a character. */
+  npcName?: string;
+  /** True when the owning scene is that character's FIRST on-page appearance. */
+  firstSighting?: boolean;
+  sourceRef?: string;
+}
+
 export interface NarrativeEventContract {
   id: string;
   episodeNumber: number;
@@ -604,6 +630,8 @@ export interface NarrativeContractGraph {
   twistContracts?: NarrativeTwistContract[];
   /** Season secrets with reveal-episode bounds (forbidden meanings before). */
   revealContracts?: NarrativeRevealContract[];
+  /** Live season anchors bound to their owning scene + on-page planting action. */
+  anchorContracts?: NarrativeAnchorContract[];
   realizationTasks?: NarrativeRealizationTask[];
   dependencies: NarrativeDependencyContract[];
   validation: { passed: boolean; issues: NarrativeContractIssue[] };

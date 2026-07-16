@@ -1290,6 +1290,8 @@ export interface SeasonScenePlan {
   semanticEventIr?: AuthoredEventSemanticIR;
   /** Season secrets with reveal-episode bounds, compiled once at analysis. */
   revealContracts?: import('./narrativeContract').NarrativeRevealContract[];
+  /** Live season anchors bound to owning scene + on-page action, compiled once at analysis. */
+  anchorContracts?: import('./narrativeContract').NarrativeAnchorContract[];
   /** Immutable episode-local ownership projections keyed by episode number. */
   episodeEventPlans?: Record<number, EpisodeEventPlan>;
   /** Parsed treatment-field obligations assigned across the scene plan. */

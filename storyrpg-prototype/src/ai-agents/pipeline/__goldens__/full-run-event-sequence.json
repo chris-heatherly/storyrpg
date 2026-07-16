@@ -384,6 +384,11 @@
       "message": "Transition bridge continuity normalized 1 beat(s)."
     },
     {
+      "type": "debug",
+      "phase": "final_story_contract",
+      "message": "Flag-consumption audit: 3 unread choice flag(s), 0 asymmetric variant famil(y/ies). Advisory."
+    },
+    {
       "type": "checkpoint",
       "phase": "final_story_contract",
       "message": "Final story contract passed (1 episode(s), 3 scene(s))"

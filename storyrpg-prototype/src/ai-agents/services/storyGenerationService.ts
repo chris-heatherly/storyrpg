@@ -198,6 +198,40 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
           console.log(`[Analysis] Compiled ${revealContracts.length} reveal-timing contract(s): ${revealContracts.map((contract) => `${contract.id}→ep${contract.revealEpisode}`).join(', ')}`);
         }
       }
+      // G5 (treatment-gap analysis 2026-07-15): bind each episode's "live
+      // season anchors" to their owning scene + a reader-visible planting
+      // action. Downstream: advisory realization atoms on the owning scene,
+      // and the first-sighting cast-order preflight. Best-effort like reveals.
+      if (!scenePlan.anchorContracts) {
+        const anchorCompiler = new SemanticContractCompilerAgent(getSeasonPlannerConfig(request.config));
+        const analysis = analysisResult.analysis;
+        const castNames = (analysis?.treatmentSeasonGuidance?.npcGuidance ?? [])
+          .map((npc) => npc.name)
+          .filter((name): name is string => Boolean(name?.trim()));
+        const anchorContracts: import('../../types/narrativeContract').NarrativeAnchorContract[] = [];
+        for (const episode of analysis?.episodeBreakdown ?? []) {
+          const guidance = (episode as {
+            treatmentGuidance?: { endingPressure?: string; encounterAftermath?: string; synopsis?: string };
+          }).treatmentGuidance;
+          const likelyConsequence = guidance?.endingPressure ?? guidance?.encounterAftermath ?? '';
+          if (!likelyConsequence.trim()) continue;
+          const scenes = scenePlan.scenes
+            .filter((scene) => scene.episodeNumber === episode.episodeNumber)
+            .map((scene) => ({ id: scene.id, order: scene.order, summary: `${scene.title}: ${scene.dramaticPurpose}` }));
+          if (scenes.length === 0) continue;
+          anchorContracts.push(...await anchorCompiler.compileAnchorContracts({
+            episodeNumber: episode.episodeNumber,
+            episodeOutline: [episode.synopsis, guidance?.synopsis].filter(Boolean).join(' '),
+            likelyConsequence,
+            scenes,
+            castNames,
+          }));
+        }
+        scenePlan = { ...scenePlan, anchorContracts };
+        if (anchorContracts.length > 0) {
+          console.info(`[Analysis] Compiled ${anchorContracts.length} season-anchor contract(s): ${anchorContracts.map((anchor) => `${anchor.anchorName}→${anchor.owningSceneId}`).join(', ')}`);
+        }
+      }
       scenePlan = compileAndApplyNarrativeContracts(workingPlan, scenePlan);
       workingPlan.scenePlan = scenePlan;
       for (const episode of workingPlan.episodes ?? []) {

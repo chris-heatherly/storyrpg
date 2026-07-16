@@ -8,6 +8,7 @@ import type {
 import type { AgentResponse } from '../agents/BaseAgent';
 import type { NarrativeRealizationTask } from '../../types/narrativeContract';
 import {
+  clearOwnerAtomReceiptsForTest,
   clearSemanticValidationCache,
   validateSemanticRealizationTasks,
 } from './semanticValidationCoordinator';
@@ -461,5 +462,107 @@ describe('reveal-timing enforcement (F1.1)', () => {
       judge,
     });
     expect(result.findings).toEqual([]);
+  });
+});
+
+describe('owner-receipt continuity at final regression (W3.2)', () => {
+  beforeEach(() => {
+    clearSemanticValidationCache();
+    clearOwnerAtomReceiptsForTest();
+  });
+
+  const ownerProse = 'A tall stranger steps from the fog and hauls the assailant off you.';
+
+  it('honors a confirmed owner receipt when assembly only ADDED excerpts (run 2026-07-16T03-12-37)', async () => {
+    const rescueTask = task({
+      id: 'task:event:rescue:owner-event',
+      evidenceAtoms: [{
+        id: 'atom:rescue',
+        description: 'Kylie is rescued by a handsome stranger.',
+        acceptedPatterns: [],
+        kind: 'semantic',
+        verificationAuthority: 'semantic_judge',
+        required: true,
+      }],
+    });
+    const ownerJudge = new FakeJudge((claim) => verdict(claim, 'fulfilled', 'hauls the assailant off you'));
+    const ownerResult = await validateSemanticRealizationTasks({
+      sceneId: 'enc-1', tasks: [rescueTask], sceneContent: { beats: [{ text: ownerProse }] }, judge: ownerJudge,
+    });
+    expect(ownerResult.findings).toEqual([]);
+
+    // Final regression sees the SAME prose plus assembly-injected summary text;
+    // this judge would flip the verdict — it must never be asked.
+    const flippyJudge = new FakeJudge((claim) => verdict(claim, 'not_fulfilled'));
+    const finalResult = await validateSemanticRealizationTasks({
+      sceneId: 'enc-1',
+      tasks: [rescueTask],
+      sceneContent: { beats: [{ text: ownerProse }, { text: 'You survive the attack and reach your doorstep safely.' }] },
+      mode: 'final_regression',
+      currentStage: 'scene_writer',
+      judge: flippyJudge,
+    });
+    expect(finalResult.findings).toEqual([]);
+    expect(flippyJudge.calls).toBe(0);
+  });
+
+  it('re-judges when the owner-confirmed excerpts are no longer all present', async () => {
+    const rescueTask = task({
+      id: 'task:event:rescue:owner-event',
+      evidenceAtoms: [{
+        id: 'atom:rescue',
+        description: 'Kylie is rescued by a handsome stranger.',
+        acceptedPatterns: [],
+        kind: 'semantic',
+        verificationAuthority: 'semantic_judge',
+        required: true,
+      }],
+    });
+    const ownerJudge = new FakeJudge((claim) => verdict(claim, 'fulfilled', 'hauls the assailant off you'));
+    await validateSemanticRealizationTasks({
+      sceneId: 'enc-1', tasks: [rescueTask], sceneContent: { beats: [{ text: ownerProse }] }, judge: ownerJudge,
+    });
+
+    const finalJudge = new FakeJudge((claim) => verdict(claim, 'not_fulfilled'));
+    const finalResult = await validateSemanticRealizationTasks({
+      sceneId: 'enc-1',
+      tasks: [rescueTask],
+      sceneContent: { beats: [{ text: 'A quiet walk home with no incident at all.' }] },
+      mode: 'final_regression',
+      currentStage: 'scene_writer',
+      judge: finalJudge,
+    });
+    expect(finalJudge.calls).toBeGreaterThan(0);
+    expect(finalResult.findings.map((finding) => finding.code)).toContain('SEMANTIC_REALIZATION_MISSING');
+  });
+
+  it('never honors receipts for forbidden atoms — added text can introduce a leak', async () => {
+    const forbiddenTask = task({
+      id: 'task:reveal:secret:s1',
+      evidenceAtoms: [{
+        id: 'atom:secret',
+        description: 'Victor is a vampire.',
+        acceptedPatterns: [],
+        kind: 'semantic',
+        polarity: 'forbidden',
+        verificationAuthority: 'semantic_judge',
+        required: true,
+      }],
+    });
+    const cleanJudge = new FakeJudge((claim) => verdict(claim, 'not_fulfilled'));
+    await validateSemanticRealizationTasks({
+      sceneId: 's1', tasks: [forbiddenTask], sceneContent: { beats: [{ text: ownerProse }] }, judge: cleanJudge,
+    });
+
+    const finalJudge = new FakeJudge((claim) => verdict(claim, 'not_fulfilled'));
+    await validateSemanticRealizationTasks({
+      sceneId: 's1',
+      tasks: [forbiddenTask],
+      sceneContent: { beats: [{ text: ownerProse }, { text: 'New assembly text.' }] },
+      mode: 'final_regression',
+      currentStage: 'scene_writer',
+      judge: finalJudge,
+    });
+    expect(finalJudge.calls).toBeGreaterThan(0);
   });
 });

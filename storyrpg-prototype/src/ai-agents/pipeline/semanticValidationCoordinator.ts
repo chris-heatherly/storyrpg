@@ -14,6 +14,7 @@ import type {
   SemanticRealizationVerdict,
 } from '../agents/SemanticRealizationJudge';
 import { stableHash } from './artifacts/store';
+import { isGateEnabled } from '../remediation/gateDefaults';
 import {
   collectNarrativeTaskEvidenceTextGroups,
   evaluateDeterministicRealizationTaskVerdicts,
@@ -407,6 +408,55 @@ function receiptDisposition(consensus: ClaimConsensus): SemanticReceiptVerdict['
   return consensus.verdict === 'fulfilled' ? 'confirmed' : 'refuted';
 }
 
+/**
+ * Owner-receipt continuity (W3.2, first live proof run 2026-07-16T03-12-37).
+ *
+ * The owner stage judged "Kylie is rescued by a handsome stranger" FULFILLED
+ * with eleven evidence refs; minutes later the final regression judged the
+ * SAME prose missing and killed the run — because assembly injects extra
+ * reader-facing strings into the encounter, the final excerpt set differs,
+ * the consensus cache misses, and a fresh judge call re-rolls a verdict the
+ * owner already confirmed.
+ *
+ * A positive atom the owner judge confirmed against excerpt set E stays
+ * confirmed at final regression when E is a SUBSET of the final excerpts:
+ * added text cannot un-fulfill a positive meaning. Forbidden atoms are never
+ * honored (added text CAN introduce a forbidden meaning). In-process only —
+ * every resume re-runs owner validation at rehydration before the final
+ * contract, so the registry is warm exactly when it matters; an empty
+ * registry degrades to judging as before.
+ */
+const ownerFulfilledAtomReceipts = new Map<string, Array<Set<string>>>();
+const OWNER_RECEIPT_CAP = 5000;
+
+function ownerReceiptKey(taskId: string, atomId: string): string {
+  return `${taskId}::${atomId}`;
+}
+
+function recordOwnerFulfilledAtomReceipt(taskId: string, atomId: string, excerptTextHashes: string[]): void {
+  if (ownerFulfilledAtomReceipts.size >= OWNER_RECEIPT_CAP) return;
+  const key = ownerReceiptKey(taskId, atomId);
+  const receipts = ownerFulfilledAtomReceipts.get(key) ?? [];
+  receipts.push(new Set(excerptTextHashes));
+  ownerFulfilledAtomReceipts.set(key, receipts);
+}
+
+function hasFulfilledOwnerReceipt(taskId: string, atomId: string, finalExcerptTextHashes: Set<string>): boolean {
+  const receipts = ownerFulfilledAtomReceipts.get(ownerReceiptKey(taskId, atomId)) ?? [];
+  return receipts.some((ownerHashes) => {
+    if (ownerHashes.size === 0) return false;
+    for (const hash of ownerHashes) {
+      if (!finalExcerptTextHashes.has(hash)) return false;
+    }
+    return true;
+  });
+}
+
+/** Test hook: receipts are process-scoped state. */
+export function clearOwnerAtomReceiptsForTest(): void {
+  ownerFulfilledAtomReceipts.clear();
+}
+
 export async function validateSemanticRealizationTasks(input: {
   sceneId: string;
   tasks?: NarrativeRealizationTask[];
@@ -429,8 +479,55 @@ export async function validateSemanticRealizationTasks(input: {
       return semanticAtomsNeededForTask(task, item.groupKey, deterministicVerdicts).has(item.atom.id);
     });
   const atomsByClaimId = new Map(built.map(({ claim, atom }) => [claim.id, atom]));
-  const consensus = await evaluateClaims(input.judge, built.map(({ claim }) => claim), atomsByClaimId);
+  // W3.2 receipt continuity: at final regression, positive atoms the owner
+  // judge confirmed against a SUBSET of these excerpts are honored, not
+  // re-judged. Forbidden atoms always re-judge (added text can introduce a
+  // forbidden meaning; it cannot un-fulfill a positive one).
+  const honorReceipts = input.mode === 'final_regression' && isGateEnabled('GATE_SEMANTIC_RECEIPT_CONTINUITY');
+  const honored: Array<{ taskId: string; atomId: string; groupKey: string }> = [];
+  let toJudge = built;
+  if (honorReceipts) {
+    toJudge = [];
+    for (const item of built) {
+      const finalHashes = new Set(item.claim.excerpts.map((excerpt) => excerpt.textHash));
+      if (item.atom.polarity !== 'forbidden' && hasFulfilledOwnerReceipt(item.claim.taskId, item.atom.id, finalHashes)) {
+        honored.push({
+          taskId: item.claim.taskId,
+          atomId: item.atom.id,
+          groupKey: item.claim.id.split('::').at(-1) ?? 'owner:1',
+        });
+      } else {
+        toJudge.push(item);
+      }
+    }
+    if (honored.length > 0) {
+      console.info(`[SemanticValidation] Honoring ${honored.length} owner-stage receipt(s) at final regression for ${input.sceneId} (owner excerpts ⊆ final excerpts).`);
+    }
+  }
+  const consensus = await evaluateClaims(input.judge, toJudge.map(({ claim }) => claim), atomsByClaimId);
+  if ((input.mode ?? 'owner') === 'owner') {
+    for (const item of consensus) {
+      if (item.outcome !== 'pass') continue;
+      const atom = atomsByClaimId.get(item.claim.id);
+      if (!atom || atom.polarity === 'forbidden') continue;
+      recordOwnerFulfilledAtomReceipt(
+        item.claim.taskId,
+        item.claim.atomId,
+        item.claim.excerpts.map((excerpt) => excerpt.textHash),
+      );
+    }
+  }
   const semanticVerdictsByTaskAndGroup = new Map<string, NarrativeAtomVerdict[]>();
+  for (const entry of honored) {
+    const key = `${entry.taskId}::${entry.groupKey}`;
+    semanticVerdictsByTaskAndGroup.set(key, [...(semanticVerdictsByTaskAndGroup.get(key) ?? []), {
+      taskId: entry.taskId,
+      atomId: entry.atomId,
+      groupKey: entry.groupKey,
+      authority: 'semantic_judge',
+      outcome: 'pass',
+    }]);
+  }
   for (const item of consensus) {
     const groupKey = item.claim.id.split('::').at(-1) ?? 'owner:1';
     const key = `${item.claim.taskId}::${groupKey}`;

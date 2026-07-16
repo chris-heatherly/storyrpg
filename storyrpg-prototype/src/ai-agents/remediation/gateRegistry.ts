@@ -146,6 +146,9 @@ const RAW_GATE_REGISTRY = [
   // Carry the still-failing contract's repaired candidate across resumes so
   // repair rounds accumulate instead of resetting (fail-open; see gateDefaults).
   { id: 'GATE_REPAIR_CARRYFORWARD', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
+  // Honor owner-stage judge receipts at final regression when owner excerpts
+  // are a subset of final excerpts (positive atoms only; see gateDefaults).
+  { id: 'GATE_SEMANTIC_RECEIPT_CONTINUITY', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FINAL_CONTRACT_SCENE_REGEN', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FINAL_CONTRACT_OUTCOME_REGEN', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FIDELITY_JUDGE_CONFIRM', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },

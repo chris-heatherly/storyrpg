@@ -88,6 +88,16 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // class exists. Reversible via env=0.
   GATE_REPAIR_CARRYFORWARD: true,
 
+  // Owner-receipt continuity at final regression (W3.2 first slice,
+  // 2026-07-16T03-12-37): a positive semantic atom the owner-stage judge
+  // confirmed stays confirmed at the final contract when the owner's excerpt
+  // set is a SUBSET of the final excerpts — assembly-injected text cannot
+  // un-fulfill a positive meaning, and re-rolling the judge over a bigger
+  // excerpt batch flipped a confirmed rescue into a run-killing miss.
+  // Forbidden atoms always re-judge. In-process registry only; an empty
+  // registry degrades to full judging. Reversible via env=0.
+  GATE_SEMANTIC_RECEIPT_CONTINUITY: true,
+
   // Scene-shape architecture gates. These were kept default-off while planned
   // scenes could bypass the architecture validator path and emit generic scene
   // containers. Planned-scene blueprints now receive deterministic dramatic

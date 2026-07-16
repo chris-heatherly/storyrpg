@@ -407,3 +407,77 @@ describe('NarrativeContractValidator', () => {
     expect(result.issues.some((issue) => /transition metadata/i.test(issue.message))).toBe(true);
   });
 });
+
+describe('choice reconvergence residue (run 2026-07-16T03-12-37)', () => {
+  function convergenceStory(openingVariants: unknown[] | undefined): Story {
+    return {
+      id: 'bite-me', title: 'Bite Me', genre: 'romance', synopsis: '', coverImage: '', npcs: [],
+      initialState: { attributes: {}, skills: {}, tags: [], inventory: [] },
+      episodes: [{
+        id: 'ep1', number: 1, title: 'Ep 1', synopsis: '', coverImage: '', startingSceneId: 's1',
+        scenes: [
+          {
+            id: 's1', name: 'Choice scene', startingBeatId: 'b1',
+            beats: [{
+              id: 'b1', text: 'What do you do first?', isChoicePoint: true,
+              choices: [
+                { id: 'c1', text: 'Hit the streets now.', nextSceneId: 's2', consequences: [{ type: 'setFlag', flag: 'kylie_is_impulsive', value: true }] },
+                { id: 'c2', text: 'Take something of grandma’s along.', nextSceneId: 's2', consequences: [{ type: 'setFlag', flag: 'kylie_is_sentimental', value: true }] },
+              ],
+            }],
+          },
+          {
+            id: 's2', name: 'Streets', startingBeatId: 'b2',
+            beats: [{ id: 'b2', text: 'The apartment felt too quiet, so you walked the Bucharest streets.', textVariants: openingVariants }],
+          },
+        ],
+      }],
+    } as unknown as Story;
+  }
+  const convergenceIssues = (result: { issues: Array<{ message: string; suggestion?: string }> }) =>
+    result.issues.filter((issue) => /converge on scene/.test(issue.message));
+
+  it('accepts a receiving scene whose opening carries a routed-flag textVariant (the actual reflection mechanism)', () => {
+    const result = new NarrativeContractValidator().validate({
+      story: convergenceStory([{ conditions: [{ type: 'flag', flag: 'kylie_is_impulsive', value: true }], text: 'Still breathless from bolting out the door, you take the streets at a stride.' }]),
+      graph: { version: 2, compilerVersion: 'test', storyId: 'bite-me', sourceHash: 'h', events: [], dependencies: [], validation: { passed: true, issues: [] } } as never,
+    });
+    expect(convergenceIssues(result)).toEqual([]);
+  });
+
+  it('flags an undifferentiated convergence, targets the RECEIVING scene, and names the routed flags', () => {
+    const result = new NarrativeContractValidator().validate({
+      story: convergenceStory(undefined),
+      graph: { version: 2, compilerVersion: 'test', storyId: 'bite-me', sourceHash: 'h', events: [], dependencies: [], validation: { passed: true, issues: [] } } as never,
+    });
+    const issues = convergenceIssues(result);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('"s2"');
+    expect(issues[0].suggestion).toContain('kylie_is_impulsive');
+    expect(issues[0].suggestion).toContain('kylie_is_sentimental');
+    expect((issues[0] as { location?: string }).location ?? '').toContain('s2');
+  });
+
+  it('accepts a variant gated on a SIBLING choice flag when the family routes mixed (direct + payoff)', () => {
+    // Run 03-12-37 shape: c1 routes via its payoff beat (no nextSceneId), c2/c3
+    // route direct; s1-2's opening variant is gated on c1's flag.
+    const mixed = convergenceStory([{ conditions: [{ type: 'flag', flag: 'kylie_is_planner', value: true }], text: 'List in hand, you walk the streets to a plan.' }]) as never as { episodes: Array<{ scenes: Array<{ beats: Array<{ choices?: unknown[] }> }> }> };
+    (mixed.episodes[0].scenes[0].beats[0].choices as unknown[]).push({
+      id: 'c3', text: 'Make a plan first.', nextBeatId: 'b1-payoff-3',
+      consequences: [{ type: 'setFlag', flag: 'kylie_is_planner', value: true }],
+    });
+    const result = new NarrativeContractValidator().validate({
+      story: mixed as never,
+      graph: { version: 2, compilerVersion: 'test', storyId: 'bite-me', sourceHash: 'h', events: [], dependencies: [], validation: { passed: true, issues: [] } } as never,
+    });
+    expect(convergenceIssues(result)).toEqual([]);
+  });
+
+  it('still flags when the only variants are gated on unrelated flags', () => {
+    const result = new NarrativeContractValidator().validate({
+      story: convergenceStory([{ conditions: [{ type: 'flag', flag: 'treatment_seed_ep1_1', value: true }], text: 'Unrelated variant.' }]),
+      graph: { version: 2, compilerVersion: 'test', storyId: 'bite-me', sourceHash: 'h', events: [], dependencies: [], validation: { passed: true, issues: [] } } as never,
+    });
+    expect(convergenceIssues(result)).toHaveLength(1);
+  });
+});

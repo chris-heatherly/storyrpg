@@ -393,7 +393,23 @@ export class NarrativeContractValidator extends BaseValidator {
 
     for (const episode of input.story.episodes ?? []) {
       const choicesByTarget = new Map<string, Array<{ choice: Choice; sceneId: string }>>();
+      // Sibling flags per choice: a choice family may route MIXED (some
+      // siblings direct via nextSceneId, some via their payoff beat), and a
+      // receiving-scene variant gated on ANY family member's flag proves the
+      // opening reflects the family choice (base text = the neutral path).
+      const familyFlagsByChoiceId = new Map<string, string[]>();
+      const setFlagsOf = (choice: Choice): string[] => (choice.consequences ?? [])
+        .map((consequence) => consequence as { type?: string; flag?: unknown })
+        .filter((consequence) => consequence.type === 'setFlag' && typeof consequence.flag === 'string')
+        .map((consequence) => consequence.flag as string);
       for (const scene of episode.scenes ?? []) {
+        for (const beat of scene.beats ?? []) {
+          const beatChoices = ((beat as { choices?: Choice[] }).choices ?? []);
+          const familyFlags = beatChoices.flatMap(setFlagsOf);
+          for (const choice of beatChoices) {
+            if (choice.id) familyFlagsByChoiceId.set(choice.id, familyFlags);
+          }
+        }
         for (const choice of choicesInScene(scene)) {
           if (!choice.nextSceneId) continue;
           choicesByTarget.set(choice.nextSceneId, [...(choicesByTarget.get(choice.nextSceneId) ?? []), { choice, sceneId: scene.id }]);
@@ -405,8 +421,36 @@ export class NarrativeContractValidator extends BaseValidator {
         if (!target) continue;
         const opening = normalize((target.beats ?? []).find((beat) => beat.text?.trim())?.text ?? '');
         if (!opening || new Set(routedChoices.map(({ choice }) => normalize(choice.text))).size < 2) continue;
-        const branchOpening = routedChoices.map(() => opening);
-        if (new Set(branchOpening).size !== 1) continue;
+        // The reflection mechanism this contract asks for IS a state-conditioned
+        // textVariant on the receiving scene's opening (base text carries the
+        // neutral path; variants carry the divergent ones — the same convention
+        // as post-encounter outcome reactivity). The old check compared the
+        // single opening STRING against itself per routed choice — identical by
+        // construction — so any scene receiving 2+ consequential choices failed
+        // regardless of authored variants (run 2026-07-16T03-12-37: s1-2's
+        // opening carried a routed-flag variant and the finding was
+        // structurally unclearable through two repair rounds).
+        const routedFlags = new Set(routedChoices.flatMap(({ choice }) => [
+          ...setFlagsOf(choice),
+          ...(choice.id ? familyFlagsByChoiceId.get(choice.id) ?? [] : []),
+        ]));
+        const earlyBeats = (target.beats ?? []).filter((beat) => beat.text?.trim()).slice(0, 3);
+        const variantConditionFlags = (variant: unknown): string[] => {
+          const record = variant as { conditions?: unknown; condition?: unknown };
+          const conditions = Array.isArray(record.conditions)
+            ? record.conditions
+            : record.condition
+              ? [record.condition]
+              : [];
+          return conditions
+            .filter((condition): condition is { type?: string; flag?: string } => Boolean(condition && typeof condition === 'object'))
+            .map((condition) => condition.flag)
+            .filter((flag): flag is string => typeof flag === 'string');
+        };
+        const differentiated = earlyBeats.some((beat) =>
+          ((beat as { textVariants?: unknown[] }).textVariants ?? []).some((variant) =>
+            variantConditionFlags(variant).some((flag) => routedFlags.has(flag))));
+        if (differentiated) continue;
         const hasMeaningfulConsequence = routedChoices.some(({ choice }) => (choice.consequences ?? []).some((consequence) =>
           consequence.type === 'setFlag'
           || consequence.type === 'relationship'
@@ -415,11 +459,17 @@ export class NarrativeContractValidator extends BaseValidator {
           || consequence.type === 'attribute'
           || consequence.type === 'addItem'
         ));
+        const flagHint = routedFlags.size > 0
+          ? ` Gate the variants on the routed choices' flags: ${[...routedFlags].join(', ')}.`
+          : '';
         const message = `Multiple distinct choices in episode ${episode.number} converge on scene "${targetSceneId}" with identical opening prose; branch residue is not visibly differentiated.`;
-        const suggestion = 'Author distinct state-conditioned opening text, a text variant, or changed character behavior for each meaningful choice path.';
+        const suggestion = `Author a state-conditioned textVariant on an early beat of "${targetSceneId}" for each meaningful choice path (base text stays true for the neutral path).${flagHint}`;
+        // sceneId = the TARGET scene: that is where the fix surface lives — a
+        // rewrite of the choice scene can never differentiate the receiving
+        // scene's opening.
         issues.push(hasMeaningfulConsequence
-          ? this.error(message, `choiceResidue:ep${episode.number}:${routedChoices[0].sceneId}`, suggestion)
-          : this.warning(message, `choiceResidue:ep${episode.number}:${routedChoices[0].sceneId}`, suggestion));
+          ? this.error(message, `choiceResidue:ep${episode.number}:${targetSceneId}`, suggestion)
+          : this.warning(message, `choiceResidue:ep${episode.number}:${targetSceneId}`, suggestion));
       }
     }
 

@@ -50,6 +50,7 @@ import {
   type FinalContractRepairCandidate,
 } from '../remediation/finalContractCarryForward';
 import { resolveWorkerGitSha } from '../utils/buildInfo';
+import { auditFlagConsumption } from './flagConsumptionAudit';
 import { buildSceneClusterRepairHandler, buildSceneProseRepairHandler } from '../remediation/sceneProseRepairHandler';
 import { requiredMomentFromMessage } from '../remediation/realizationScoring';
 import { missingRequiredMoments, type SceneContractSource } from '../remediation/sceneRealizationGuard';
@@ -1683,6 +1684,30 @@ export class FinalContract {
           message: `Scene-turn warning repair ran ${outcome.attempts} round(s); now ${committed.committed ? 'committed' : 'discarded advisory rewrite'}`,
         } as any);
       }
+    }
+
+    // G3 advisory audit (treatment-gap analysis 2026-07-15): flags set by
+    // choices but never read anywhere are dropped player decisions; a sibling
+    // family where SOME paths get variants and one doesn't is a proven-reactive
+    // site with a hole. Warnings only — this class must never block a run.
+    try {
+      const flagAudit = auditFlagConsumption(input.story);
+      if (flagAudit.findings.length > 0) {
+        report.warnings.push(...flagAudit.findings.slice(0, 20).map((finding) => ({
+          type: finding.type,
+          severity: 'warning',
+          message: finding.message,
+          sceneId: finding.sceneId,
+          validator: 'FlagConsumptionAudit',
+        }) as never));
+        this.deps.emit({
+          type: 'debug',
+          phase: input.phase,
+          message: `Flag-consumption audit: ${flagAudit.findings.length} unread choice flag(s), ${flagAudit.findings.filter((finding) => finding.type === 'flag_family_asymmetric_variants').length} asymmetric variant famil(y/ies). Advisory.`,
+        } as any);
+      }
+    } catch (auditError) {
+      console.warn(`[Pipeline] Flag-consumption audit failed (non-fatal): ${auditError instanceof Error ? auditError.message : String(auditError)}`);
     }
 
     report.executionRecords = [

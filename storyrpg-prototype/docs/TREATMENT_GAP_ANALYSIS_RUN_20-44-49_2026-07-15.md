@@ -170,6 +170,26 @@ us the keys for free.)
 
 ---
 
+## Wave A status (2026-07-15)
+
+- **G1 SHIPPED** (f9887ce0): departure tasks compiled per location-changing
+  transition (advisory); SceneWriter MOTIVATED DEPARTURE directive (incl. the
+  choice-point case the old pre-encounter handoff skipped); ChoiceAuthor
+  outcome-tier departure handoff; possibleNextScenes carries location.
+- **G3 SHIPPED** (01a546df): flagConsumptionAudit wired as final-contract
+  warnings; replayed on the packaged story → 7 findings matching this
+  analysis exactly.
+- **G5 DESIGNED, NOT YET IMPLEMENTED.** The deterministic half is blocked on
+  the semantic half: the treatment stages Radu's first sighting anonymously
+  ("a rougher man near the kitchen"), so anchor→scene linkage cannot be a
+  name-match — it needs `compileAnchorContracts` on
+  SemanticContractCompilerAgent (same shape as F1's compileRevealContracts):
+  extract each "live season anchor" → {npcId?, owningSceneId, onPageAction
+  atom}. THEN two cheap deterministic checks fall out: (a) an NPC cast in
+  npcsPresent before their sighting anchor's owning scene → advisory
+  preflight finding; (b) anchors with an action atom must be judge-realized
+  on-page (metadata can never satisfy them). One focused session.
+
 ## Sequencing recommendation
 
 Wave A (plan-time compilations on existing rails — highest leverage):

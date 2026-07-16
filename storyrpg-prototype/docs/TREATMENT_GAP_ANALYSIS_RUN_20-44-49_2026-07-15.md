@@ -188,6 +188,20 @@ us the keys for free.)
   (fires on Radu-in-s1-2, ignores post-sighting casts). Note: compilation
   runs on FRESH analyses only; resumed plans skip it.
 
+## Wave B status (2026-07-15)
+
+- **G2 SHIPPED** (b74bd092): reveal compiler extracts knowledge boundaries,
+  hidden ally roles (incl. handle/alias leakage), and codename coinage — all
+  as ordinary reveal contracts reusing the F1 plumbing; the semantic judge
+  gains the alias-attribution rule.
+- **G4 SHIPPED** (b74bd092): choice-resolution repair prefers tier-distinct
+  variants of the same resolution facts; authoring guidance keeps
+  sharedResolutionText to the minimal invariant.
+- **G6 SHIPPED** (b74bd092): cliffhanger escalation budget — at most one new
+  threat signal in the closing beat (prompt-side; scoring waits for W3.1).
+  Plan-time residue atoms per inbound branch (G4's complement) deferred with
+  Wave C.
+
 ## Sequencing recommendation
 
 Wave A (plan-time compilations on existing rails — highest leverage):

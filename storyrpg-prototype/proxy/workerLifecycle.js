@@ -889,7 +889,11 @@ function createWorkerLifecycle({
     const failure = job.failureContext || checkpoint?.failureContext || {};
     const message = String(failure.message || job.error || '');
     const { outputDirectory, manifest, manifestError } = loadResumeManifest(checkpoint);
-    const canResume = Boolean(checkpoint?.resumeContext?.requestPayload);
+    // The resume endpoint can recover its payload from the run-dir mirror
+    // when the private store lost it — the plan must report the same reality
+    // or the UI greys out a resume that would succeed.
+    const canResume = Boolean(checkpoint?.resumeContext?.requestPayload)
+      || Boolean(loadResumeContextFromRunDir(job, checkpoint?.resumeContext));
     const units = manifest?.units && typeof manifest.units === 'object' ? manifest.units : {};
     const unitIds = Object.keys(units);
     const reusableUnits = unitIds.filter((id) => units[id]?.status === 'completed');

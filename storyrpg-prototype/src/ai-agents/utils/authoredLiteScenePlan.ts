@@ -448,6 +448,7 @@ function insertSplitScenes(
   let splits = 0;
   const [keepText, ...overflowTexts] = splitTexts;
   const keepTier = tiers[0] ?? 'authored';
+  const nextSplitId = () => nextSpatialSplitId(scene.id, scenes);
   scene.requiredBeats = [...staticBeats, requiredBeatFromSplit(scene.id, 0, keepText, keepTier)];
   const keepLocation = inferLocation(keepText, locations);
   if (keepLocation) scene.locations = [keepLocation];
@@ -457,8 +458,9 @@ function insertSplitScenes(
     const text = overflowTexts[beatIndex];
     const tier = tiers[beatIndex + 1] ?? 'authored';
     const beatLocation = inferLocation(text, locations);
+    const splitId = nextSplitId();
     const splitScene: PlannedScene = {
-      id: `${scene.id}-spatial-${beatIndex + 1}`,
+      id: splitId,
       episodeNumber: scene.episodeNumber,
       order: nextInsert,
       kind: 'standard',
@@ -471,7 +473,7 @@ function insertSplitScenes(
       paysOff: [...(scene.paysOff ?? [])],
       hasChoice: scene.hasChoice,
       budgetWeight: scene.budgetWeight,
-      requiredBeats: [requiredBeatFromSplit(`${scene.id}-spatial-${beatIndex + 1}`, 0, text, tier)],
+      requiredBeats: [requiredBeatFromSplit(splitId, 0, text, tier)],
     };
     scenes.splice(nextInsert, 0, splitScene);
     nextInsert += 1;
@@ -481,6 +483,23 @@ function insertSplitScenes(
     scenes.forEach((entry, order) => { entry.order = order; });
   }
   return splits;
+}
+
+/**
+ * Collision-proof split-scene id: the old `${sceneId}-spatial-${beatIndex+1}`
+ * reset per split pass, so a scene split twice (or by both split paths in
+ * separate passes) regenerated `-spatial-1` and ScenePlanGate killed the
+ * analysis on a duplicate scene id (run 2026-07-16, s1-4-spatial-1). The
+ * suffix now advances past every existing id for that scene.
+ */
+function nextSpatialSplitId(sceneId: string, scenes: ReadonlyArray<{ id: string }>): string {
+  const pattern = new RegExp(`^${sceneId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-spatial-(\\d+)$`);
+  let highest = 0;
+  for (const scene of scenes) {
+    const match = pattern.exec(scene.id);
+    if (match) highest = Math.max(highest, Number(match[1]));
+  }
+  return `${sceneId}-spatial-${highest + 1}`;
 }
 
 /** Split scenes whose hard beats span multiple major locations (safety net after bind). */
@@ -531,7 +550,7 @@ export function splitStackedSpatialScenes(
       const beat = overflow[beatIndex];
       const beatLocation = inferLocation(beat.mustDepict || beat.sourceTurn || '', locations);
       const splitScene: PlannedScene = {
-        id: `${scene.id}-spatial-${beatIndex + 1}`,
+        id: nextSpatialSplitId(scene.id, scenes),
         episodeNumber: scene.episodeNumber,
         order: insertAt,
         kind: 'standard',

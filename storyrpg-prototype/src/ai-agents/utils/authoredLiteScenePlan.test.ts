@@ -131,6 +131,34 @@ describe('authoredLiteScenePlan scene budget', () => {
     expect(scenes[1].requiredBeats?.filter((beat) => beat.tier === 'authored')).toHaveLength(1);
   });
 
+  it('never reuses a spatial split id when the same scene splits across passes (run 2026-07-16 s1-4-spatial-1)', () => {
+    const infer = (text: string) => (
+      /bookshop|bookstore/i.test(text) ? 'Lumina Books' : /bucharest/i.test(text) ? 'Bucharest' : undefined
+    );
+    const scenes = [
+      scene('s1-4', 0, {
+        locations: ['Lumina Books'],
+        requiredBeats: [
+          { id: 'rb1', tier: 'authored', mustDepict: 'She explores the streets of Bucharest.', sourceTurn: 'explore' },
+          { id: 'rb2', tier: 'authored', mustDepict: 'She wanders into a bookshop owned by Stela.', sourceTurn: 'shop' },
+        ],
+      }),
+    ];
+    const ep = liteEpisode({ locations: ['Bucharest', 'Lumina Books'] });
+    expect(splitStackedSpatialScenes(ep, scenes, infer)).toBe(1);
+    // Second pass: the original scene violates again (a later bind stacked a
+    // new cross-location beat onto it). The old per-pass counter regenerated
+    // "-spatial-1" here and ScenePlanGate aborted on the duplicate id.
+    scenes[0].requiredBeats = [
+      ...(scenes[0].requiredBeats ?? []),
+      { id: 'rb3', tier: 'authored', mustDepict: 'She hurries back through Bucharest at dusk.', sourceTurn: 'return' },
+    ];
+    splitStackedSpatialScenes(ep, scenes, infer);
+    const ids = scenes.map((item) => item.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.filter((id) => id.startsWith('s1-4-spatial-')).sort()).toEqual(['s1-4-spatial-1', 's1-4-spatial-2']);
+  });
+
   it('trims surplus standard scenes without authored beats', () => {
     const ep = liteEpisode({
       treatmentGuidance: {

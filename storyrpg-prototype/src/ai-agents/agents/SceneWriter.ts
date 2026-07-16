@@ -2440,6 +2440,10 @@ This scene leads directly into an encounter scene: "${input.nextSceneContext.nam
 - Do not end on a newly introduced fact if the next scene starts in a different place or tactical situation; give the player a readable cause-and-effect path into the encounter.
 - Preserve the final planned key beat from this scene while adding the bridge.
 ${input.nextSceneContext.encounterBeatPlan?.length ? `- Upcoming encounter beat plan:\n${input.nextSceneContext.encounterBeatPlan.map(beat => `  - ${beat}`).join('\n')}` : ''}
+` : ''}${input.nextSceneContext?.location && input.nextSceneContext.location !== input.sceneBlueprint.location ? `
+## MOTIVATED DEPARTURE (CRITICAL — the next scene is at ${input.nextSceneContext.location}, not here)
+The reader must never find the protagonist somewhere new without seeing them decide to go. Before this scene ends, the prose must show WHY the protagonist leaves ${input.sceneBlueprint.location} and where they are headed (a reason to go: tiredness, a promise, an errand, an escape, a pull toward something).
+${input.sceneBlueprint.choicePoint ? '- This scene ends on a choice point: build the departure PRESSURE in the beats BEFORE the choice (the night winding down, a reason to slip away), so the choice reads as how or on-what-terms the protagonist leaves — the Choice Author will land the exit itself in the outcomes.' : '- Land the decision and the first step of the exit in the final beat; the next scene opens on arrival, not on the missing middle.'}
 ` : ''}
 ${input.incomingChoiceContext ? `
 ## CHOICE PAYOFF (CRITICAL — the player CHOSE this)

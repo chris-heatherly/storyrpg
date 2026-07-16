@@ -526,6 +526,7 @@ export class SceneGraphValidation {
             id,
             name: scene?.name || id,
             description: scene?.description || '',
+            location: scene?.location,
           };
         }),
         optionCount: Math.max(sceneBlueprint.choicePoint?.optionHints?.length || 0, Math.min(3, sceneBlueprint.leadsTo.length)),

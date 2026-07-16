@@ -156,6 +156,8 @@ export interface ChoiceAuthorInput {
     id: string;
     name: string;
     description: string;
+    /** Next scene's location — when it differs from this scene's, outcomes must land a motivated departure. */
+    location?: string;
   }>;
 
   /**
@@ -789,6 +791,7 @@ Before finalizing:
     const optionHints = (choicePoint.optionHints || []).slice(0, input.optionCount).join(' | ');
     const choiceResolutionSection = this.buildChoiceResolutionTaskSection(input);
     const requiresSharedResolution = choiceResolutionSection.length > 0;
+    const departureHandoffSection = this.buildDepartureHandoffSection(input);
 
     return `Return one complete compact ChoiceSet JSON object. The deterministic schema is supplied by the caller; match it exactly. Return ONLY JSON.
 
@@ -807,7 +810,7 @@ Choice point:
 - stakes.want: ${choicePoint.stakes.want}
 - stakes.cost: ${choicePoint.stakes.cost}
 - stakes.identity: ${choicePoint.stakes.identity}
-${isBranching ? `Next scene targets:\n${branchTargets || nextScenes || 'Use available next scenes from schema context.'}` : ''}${choiceResolutionSection ? `\n${choiceResolutionSection}` : ''}
+${isBranching ? `Next scene targets:\n${branchTargets || nextScenes || 'Use available next scenes from schema context.'}` : ''}${choiceResolutionSection ? `\n${choiceResolutionSection}` : ''}${departureHandoffSection ? `\n${departureHandoffSection}` : ''}
 
 Required choice fields:
 ${requiresSharedResolution ? '- Top level: beatId, choiceType, choices, overallStakes, designNotes, sharedResolutionText.\n' : ''}- Every choice: id, text, choiceType, choiceIntent, impactFactors, consequenceTier, stakesAnnotation, consequences, outcomeTexts.
@@ -995,6 +998,25 @@ Return JSON only: {"sharedResolutionText":"..."}`;
     return `## Canonical Shared Choice Resolution
 Write one fiction-first sharedResolutionText passage that happens after any option resolves and before the route continues. It must naturally realize every requirement below. Do not paste task ids or planning labels. This passage is authored once and will be shown on every option and every outcome tier.
 ${tasks.flatMap((task) => task.evidenceAtoms.map((atom) => `- ${atom.description}: use a natural realization equivalent to ${atom.acceptedPatterns.join(' / ')}`)).join('\n')}`;
+  }
+
+  /**
+   * G1 (treatment-gap analysis 2026-07-15): when this choice point's scene
+   * leads to a different location, the outcome texts are the LAST prose the
+   * reader sees before the cut — they must land the motivated departure, or
+   * the protagonist teleports (run 20-44-49: rooftop ended on a lingering
+   * gaze, next line she was in Cismigiu Gardens).
+   */
+  private buildDepartureHandoffSection(input: ChoiceAuthorInput): string {
+    const here = input.sceneBlueprint.location?.trim();
+    const destinations = Array.from(new Set(
+      (input.possibleNextScenes ?? [])
+        .map((scene) => scene.location?.trim())
+        .filter((location): location is string => Boolean(location && (!here || location !== here))),
+    ));
+    if (destinations.length === 0) return '';
+    return `## MOTIVATED DEPARTURE (the story moves to ${destinations.join(' / ')} next)
+The next scene is NOT here${here ? ` (currently: ${here})` : ''}. Every outcomeTexts tier must end with the protagonist deciding or beginning to leave, with a visible reason (tiredness, an errand, an escape, a pull toward something) — so arriving at ${destinations.join(' or ')} reads as cause-and-effect, never a teleport. Keep it to one clause inside the existing sentence budget; vary it by tier.`;
   }
 
   private collectConsequenceCompletenessIssues(choice: GeneratedChoice, choiceId: string, input: ChoiceAuthorInput): string[] {
@@ -2274,6 +2296,7 @@ CRITICAL REQUIREMENTS:
       : '';
     const choiceResolutionSection = this.buildChoiceResolutionTaskSection(input);
     const requiresSharedResolution = choiceResolutionSection.length > 0;
+    const departureHandoffSection = this.buildDepartureHandoffSection(input);
 
     return `Create a compact playable ChoiceSet. Return ONLY JSON. The deterministic response schema is supplied by the caller; match that schema exactly and do not invent fields.
 
@@ -2330,7 +2353,7 @@ ${input.sceneBlueprint.relationshipPacing.filter((contract) => contract.mileston
     return `- ${milestone.id}: group ${contract.groupId}; members ${milestone.memberNpcIds.join(', ')}; route policy ${milestone.routeRealizationPolicy ?? 'selected_route'}.${milestone.routeRealizationPolicy === 'all_routes' ? ' EVERY option must still realize formation; choices vary how it happens and what it costs, never whether it happens.' : ''}`;
   }).join('\n')}
 Use only the exact canonical NPC ids listed under Characters Present in every relationship consequence and relationshipValueEvidence entry.
-` : ''}${choiceResolutionSection ? `\n${choiceResolutionSection}` : ''}
+` : ''}${choiceResolutionSection ? `\n${choiceResolutionSection}` : ''}${departureHandoffSection ? `\n${departureHandoffSection}` : ''}
 
 ## Required Shape
 Top level fields: beatId, choiceType, choices, overallStakes, designNotes${requiresSharedResolution ? ', sharedResolutionText' : ''}.

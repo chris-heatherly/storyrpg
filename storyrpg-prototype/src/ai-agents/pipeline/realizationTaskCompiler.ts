@@ -996,6 +996,51 @@ export function compileNarrativeRealizationTasks(
       sourceContractIds: [...transition.sourceContractIds],
       blocking: true,
     });
+
+    // G1 (treatment-gap analysis 2026-07-15, run 20-44-49): the bridge above
+    // contracts the ARRIVAL side only — "orient the receiving scene at X"
+    // passed while the previous scene ended mid-gaze and the protagonist
+    // teleported to Cismigiu. A location-changing transition also compiles a
+    // DEPARTURE task on the SOURCE scene: the reader must see the protagonist
+    // decide to leave, with a visible motive. Advisory (blocking: false) —
+    // judge-verified shadow evidence first; never a new blocking class.
+    const fromScene = sceneById.get(transition.fromSceneId);
+    const departureDestination = transition.toLocation ?? transition.locationRequirement?.canonicalValue;
+    const locationChanges = Boolean(transition.locationRequirement?.required)
+      && (!transition.fromLocation || !departureDestination || transition.fromLocation !== departureDestination);
+    if (fromScene && locationChanges) {
+      const departureExecution = resolveTaskExecutionTarget({
+        scene: fromScene,
+        episodeNumber: transition.episodeNumber,
+        kind: 'transition',
+      });
+      tasks.push({
+        id: `task:${transition.id}:departure`,
+        contractId: transition.id,
+        episodeNumber: transition.episodeNumber,
+        sourceKinds: ['transition'],
+        ownerStage: departureExecution.ownerStage,
+        repairHandler: departureExecution.repairHandler,
+        sceneId: transition.fromSceneId,
+        artifactPath: departureExecution.artifactPath,
+        evidenceAtoms: [{
+          id: `${transition.id}:departure:motivated-exit`,
+          description: `Before this scene ends, the protagonist visibly decides or begins to leave${transition.fromLocation ? ` ${transition.fromLocation}` : ''} with a reason the reader can see${departureDestination ? `, heading toward ${departureDestination}` : ''}. An abrupt cut with no departure or motive is a miss.`,
+          acceptedPatterns: [],
+          kind: 'semantic',
+          semanticRole: 'transition_bridge',
+          producerStage: departureExecution.ownerStage,
+          temporalSlot: departureExecution.temporalSlot,
+          referencedLocations: [transition.fromLocation, departureDestination]
+            .filter((value): value is string => Boolean(value)),
+          required: true,
+          verificationAuthority: 'semantic_judge',
+        }],
+        target: { scope: 'owner', surfaces: departureExecution.surfaces },
+        sourceContractIds: [...transition.sourceContractIds],
+        blocking: false,
+      });
+    }
   }
 
   for (const scene of scenes) {

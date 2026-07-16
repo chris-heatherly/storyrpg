@@ -3187,6 +3187,7 @@ export class ContentGenerationPhase {
                   id,
                   name: scene?.name || id,
                   description: scene?.description || '',
+                  location: scene?.location,
                 };
               }),
               optionCount: sceneRealizationBlueprint.choicePoint?.optionHints?.length || 3,
@@ -3673,7 +3674,7 @@ export class ContentGenerationPhase {
                       availableTags: blueprint.suggestedTags,
                       possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
                         const scene = blueprint.scenes.find(s => s.id === id);
-                        return { id, name: scene?.name || id, description: scene?.description || '' };
+                        return { id, name: scene?.name || id, description: scene?.description || '', location: scene?.location };
                       }),
                       optionCount: sceneRealizationBlueprint.choicePoint?.optionHints?.length || 3,
                       sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
@@ -4135,7 +4136,7 @@ export class ContentGenerationPhase {
                     availableTags: blueprint.suggestedTags,
                     possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
                       const scene = blueprint.scenes.find(s => s.id === id);
-                      return { id, name: scene?.name || id, description: scene?.description || '' };
+                      return { id, name: scene?.name || id, description: scene?.description || '', location: scene?.location };
                     }),
                     optionCount: sceneRealizationBlueprint.choicePoint?.optionHints?.length || 3,
                     sourceAnalysis: brief.multiEpisode?.sourceAnalysis,

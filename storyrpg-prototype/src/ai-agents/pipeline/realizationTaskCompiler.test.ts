@@ -276,6 +276,61 @@ describe('compileNarrativeRealizationTasks', () => {
     });
   });
 
+  it('compiles an advisory motivated-departure task on the SOURCE scene of a location-changing transition', () => {
+    const graph = {
+      events: [],
+      dependencies: [],
+      transitionContracts: [{
+        id: 'transition:club-to-park', episodeNumber: 1, fromSceneId: 'club', toSceneId: 'park-attack',
+        fromLocation: 'Valescu Club', toLocation: 'Cismigiu Gardens', bridgePolicy: 'orientation_only',
+        locationRequirement: { canonicalValue: 'Cismigiu Gardens', acceptedAliases: [], required: true },
+        requiredBridgeEvidence: ['Cismigiu Gardens'], stateContracts: [], blocking: true,
+        sourceContractIds: ['scene:club', 'scene:park-attack'],
+      }],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 'club', episodeNumber: 1, order: 0, kind: 'standard' },
+      { id: 'park-attack', episodeNumber: 1, order: 1, kind: 'encounter', encounter: {} },
+    ] as any);
+
+    const departure = tasks.find((task) => task.id === 'task:transition:club-to-park:departure');
+    expect(departure).toMatchObject({
+      sceneId: 'club',
+      ownerStage: 'scene_writer',
+      blocking: false,
+      evidenceAtoms: [expect.objectContaining({
+        verificationAuthority: 'semantic_judge',
+        semanticRole: 'transition_bridge',
+      })],
+    });
+    expect(departure!.evidenceAtoms[0].description).toContain('decides or begins to leave');
+    // The arrival bridge is unchanged and still targets the receiving scene.
+    expect(tasks.find((task) => task.id === 'task:transition:club-to-park:bridge')).toMatchObject({
+      sceneId: 'park-attack',
+      blocking: true,
+    });
+  });
+
+  it('compiles no departure task when the transition stays in the same location', () => {
+    const graph = {
+      events: [],
+      dependencies: [],
+      transitionContracts: [{
+        id: 'transition:club-to-club-back', episodeNumber: 1, fromSceneId: 'club-front', toSceneId: 'club-back',
+        fromLocation: 'Valescu Club', toLocation: 'Valescu Club', bridgePolicy: 'orientation_only',
+        locationRequirement: { canonicalValue: 'Valescu Club', acceptedAliases: [], required: true },
+        requiredBridgeEvidence: ['Valescu Club'], stateContracts: [], blocking: true,
+        sourceContractIds: ['scene:club-front', 'scene:club-back'],
+      }],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 'club-front', episodeNumber: 1, order: 0, kind: 'standard' },
+      { id: 'club-back', episodeNumber: 1, order: 1, kind: 'standard' },
+    ] as any);
+
+    expect(tasks.find((task) => task.id === 'task:transition:club-to-club-back:departure')).toBeUndefined();
+  });
+
   it('writes one explicit verification authority on every blocking atom', () => {
     const graph = {
       events: [{

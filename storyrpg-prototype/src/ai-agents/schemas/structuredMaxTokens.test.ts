@@ -65,14 +65,21 @@ describe('provider-aware structured call budgets', () => {
     });
   });
 
-  it('rejects an impossible budget before making a provider call', () => {
-    expect(() => resolveStructuredCallBudget({
+  it('fails open on an infeasible budget instead of rejecting the call (74713783)', () => {
+    // A config bug may warn and shrink, never kill the call: three resumes of
+    // bite-me_2026-07-15T20-44-49 died because a declared totalCeiling made
+    // every re-author attempt pre-flight-reject. The resolver now fits
+    // reasoning into whatever the configured cap allows.
+    const budget = resolveStructuredCallBudget({
       configured: 2048,
       schema: semanticPatchSchema,
       defaultCap: DEFAULT_CAP,
       provider: 'gemini',
       model: 'gemini-2.5-pro',
-    })).toThrow(/requires 2304, but the available cap is 2048/);
+    });
+    expect(budget.maxOutputTokens).toBeLessThanOrEqual(2048);
+    expect(budget.maxOutputTokens).toBeGreaterThan(0);
+    expect(budget.visibleTokens).toBeGreaterThan(0);
   });
 
   it('preserves complete planning JSON capacity on Gemini 2.5 and Gemini 3', () => {

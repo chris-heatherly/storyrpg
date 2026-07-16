@@ -701,7 +701,7 @@ export class QAPhase {
               availableTags: episodeBlueprint.suggestedTags,
               possibleNextScenes: sceneBlueprint.leadsTo.map(id => {
                 const scene = episodeBlueprint.scenes.find(s => s.id === id);
-                return { id, name: scene?.name || id, description: scene?.description || '' };
+                return { id, name: scene?.name || id, description: scene?.description || '', location: scene?.location };
               }),
               optionCount: sceneBlueprint.choicePoint?.optionHints?.length || 3,
               sourceAnalysis: brief.multiEpisode?.sourceAnalysis,

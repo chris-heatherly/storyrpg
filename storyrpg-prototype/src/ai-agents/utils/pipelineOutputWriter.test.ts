@@ -96,6 +96,27 @@ describe('deriveRunQualityScore', () => {
       ]));
   });
 
+  it('never lets ADVISORY warnings drive a blocking-tier score cap (run 2026-07-16T14-50-23)', () => {
+    const contract = passingFinalStoryContract();
+    (contract as { warnings: unknown[] }).warnings = [{
+      type: 'semantic_realization_violation',
+      severity: 'warning',
+      validator: 'SemanticRealizationJudge',
+      sceneId: 's1-5',
+      message: 'Canonical realization validation confirms that task task:transition:ep1:s1-5:to:treatment-enc-1-1:departure is missing: transition:ep1:s1-5:to:treatment-enc-1-1:departure:motivated-exit.',
+    }];
+    const result = deriveRunQualityScore({
+      finalStory: makeStoryCircleStory(),
+      qaReport: judgedQAReport(44),
+      bestPracticesReport: { overallScore: 52, overallPassed: true, blockingIssues: [], warnings: [], suggestions: [] } as any,
+      finalStoryContractReport: contract,
+    });
+    // The advisory departure warning regex-matched the treatment-atom cap and
+    // ceilinged a zero-blocker run at 74. Caps read blocking issues only.
+    expect(result.basis.caps.map((cap: { id: string }) => cap.id)).not.toContain('missing_required_treatment_atom');
+    expect(result.score).toBeGreaterThan(74);
+  });
+
   it('caps below 70 when every enabled Quality Council checkpoint errors before producing findings', () => {
     const result = deriveRunQualityScore({
       finalStory: makeStoryCircleStory(),

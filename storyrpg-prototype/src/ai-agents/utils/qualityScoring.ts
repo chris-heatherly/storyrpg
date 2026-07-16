@@ -1710,10 +1710,13 @@ function applyCaps(
 
   // Arbitration demotions are audit evidence, not quality defects. They must
   // not trigger a cap merely because the original heuristic type remains in
-  // the warning message.
+  // the warning message. Hard caps read BLOCKING issues only: warnings are
+  // advisory by definition, and run 2026-07-16T14-50-23 was capped at 74 by
+  // its own ADVISORY departure warnings ("…departure is missing:
+  // transition:ep1:…:treatment-enc-1-1…" regex-matched the treatment-atom
+  // cap) while zero blocking issues existed.
   const finalContractIssues = [
     ...(inputs.finalStoryContractReport?.blockingIssues || []),
-    ...(inputs.finalStoryContractReport?.warnings || []),
   ].filter((issue) => issue.disposition !== 'refuted' && issue.disposition !== 'uncorroborated');
   if (hasIssue(finalContractIssues, /planning_register|planning-register|raw treatment|scaffold|fallback prose|protagonist synopsis/i)) {
     caps.push({

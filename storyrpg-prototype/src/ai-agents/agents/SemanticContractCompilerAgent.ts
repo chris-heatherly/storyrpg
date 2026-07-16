@@ -338,6 +338,10 @@ Rules:
 - revealEpisode = the episode whose outline actually reveals it. Foreshadowing in earlier episodes is allowed and is NOT a forbidden meaning — forbid CONFIRMATION, not atmosphere.
 - sourceRef quotes or names the outline/NPC line grounding the secret.
 - Do not invent secrets absent from the material.
+- Secrets are not only identities. Also extract:
+  * KNOWLEDGE BOUNDARIES: when a watcher/antagonist secretly monitors or steers the protagonist, anyone outside the circle DEMONSTRATING knowledge of the circle's private names, pacts, or plans before the episode that reveals the surveillance is a leak (e.g. "An outsider shows they know the friends' private pact or its name").
+  * HIDDEN ROLES: an ally's secret protective or assigned function (warder, planted friend, anonymous guardian) — publicly performing or announcing that role before its reveal episode is a leak, INCLUDING through a screen name, handle, or alias attributable to that character.
+  * CODENAME COINAGE: a codename is a coined artifact. When an outline coins a codename in episode N, emit a contract with revealEpisode N whose forbidden meaning is that the codename appears or is used in any reader-facing text (e.g. "The codename 'The Mountain' is used") — before its coining, the name does not exist.
 
 ${input.audiencePromise ? `AUDIENCE PROMISE (pacing contract):\n${input.audiencePromise}\n` : ''}
 EPISODE OUTLINES:

@@ -24,6 +24,19 @@ export interface SharedResolutionAuthor {
     protagonistName?: string;
     feedback?: string;
   }): Promise<string | undefined>;
+  /**
+   * G4: tier-distinct renderings of the same resolution facts. Preferred over
+   * the single passage — pasting one identical sentence into every tier made
+   * the choice read as if the player said nothing (run 20-44-49 Dusk Club).
+   */
+  reauthorSharedResolutionVariants?(ctx: {
+    currentPassage?: string;
+    requiredMeanings: string[];
+    sceneName?: string;
+    protagonistName?: string;
+    feedback?: string;
+    tiers: string[];
+  }): Promise<Record<string, string> | undefined>;
 }
 
 type RepairIssue = ContractRepairReport['blockingIssues'][number];
@@ -84,24 +97,31 @@ export function buildChoiceResolutionRepairHandler(options: {
       }
       const meanings = Array.from(new Set(sceneIssues.flatMap((issue) => missingMeanings(issue, options.tasksById?.()))));
       const sampleOutcome = choices[0].outcomeTexts?.success ?? Object.values(choices[0].outcomeTexts ?? {})[0];
-      const passage = await author.reauthorSharedResolutionText({
+      const authorContext = {
         currentPassage: sampleOutcome,
         requiredMeanings: meanings,
         sceneName: (scene as { name?: string }).name,
         feedback: sceneIssues.map((issue) => issue.message).filter(Boolean).join('; '),
-      });
-      if (!passage) continue;
-      // Route invariance: the authored payoff is appended once to every tier
-      // that does not already carry it (materializeSharedChoiceResolution
-      // semantics over the shipped story shape).
-      const normalized = passage.toLowerCase();
+      };
+      // G4: prefer tier-distinct renderings of the same resolution facts —
+      // convergent endpoint, distinct residue. Fall back to the single shared
+      // passage only when the variants author is unavailable or declines.
+      const tierKeys = Array.from(new Set(choices.flatMap((choice) => Object.keys(choice.outcomeTexts ?? {}))));
+      const variants = await author.reauthorSharedResolutionVariants?.({ ...authorContext, tiers: tierKeys });
+      const passage = variants ? undefined : await author.reauthorSharedResolutionText(authorContext);
+      if (!variants && !passage) continue;
+      // Route invariance: the authored payoff lands on every tier that does
+      // not already carry it (materializeSharedChoiceResolution semantics over
+      // the shipped story shape) — per-tier text when variants exist.
       let projected = 0;
       for (const choice of choices) {
         for (const tier of Object.keys(choice.outcomeTexts ?? {})) {
+          const addition = variants?.[tier] ?? passage;
+          if (!addition) continue;
           const existing = choice.outcomeTexts![tier]?.trim();
-          if (!existing || existing.toLowerCase().includes(normalized)) continue;
+          if (!existing || existing.toLowerCase().includes(addition.toLowerCase())) continue;
           const separator = /[.!?…”]$/.test(existing) ? ' ' : '. ';
-          choice.outcomeTexts![tier] = `${existing}${separator}${passage}`;
+          choice.outcomeTexts![tier] = `${existing}${separator}${addition}`;
           projected += 1;
         }
       }

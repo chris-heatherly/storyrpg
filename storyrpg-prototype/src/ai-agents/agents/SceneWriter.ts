@@ -2394,6 +2394,7 @@ If this scene has no outgoing scene, write the last beat as serialized-TV craft:
 3. End with forward pressure, but do not rely on ellipses or a generic question as the whole hook.
 4. Make the visual contract show the hook: the object, face, gesture, arrival, absence, or rupture the reader should remember.
 5. The planned hook IS the episode's single closing image. Do NOT invent a SECOND, competing terminal object or delivery (a different gift, parcel, package, letter, or item arriving on the same doorstep/counter/threshold) — that contradicts the planned hook. If the hook is an object that arrives, that object is the only one; the final choice, if any, operates on the planned hook itself, not a substitute.
+6. ESCALATION BUDGET: land AT MOST ONE new threat signal in the closing beat — one watcher, one message, one precise unsettling detail. Several coordinated menaces arriving at once (multiple ominous senders, a "they are all connected" chorus) spends future episodes' dread in a single beat and breaks the season's tone contract. Preserve the scene's earned victory or emotion, then let ONE signal carry the chill.
 ` : ''}
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)

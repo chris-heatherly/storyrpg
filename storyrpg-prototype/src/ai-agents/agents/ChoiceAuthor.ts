@@ -997,6 +997,7 @@ Return JSON only: {"sharedResolutionText":"..."}`;
     if (tasks.length === 0) return '';
     return `## Canonical Shared Choice Resolution
 Write one fiction-first sharedResolutionText passage that happens after any option resolves and before the route continues. It must naturally realize every requirement below. Do not paste task ids or planning labels. This passage is authored once and will be shown on every option and every outcome tier.
+- Keep sharedResolutionText to the MINIMAL invariant fact (what is now true on every route). The emotional texture belongs in each option's own outcomeTexts, which must stay tier-distinct — never let the shared passage carry so much that every outcome reads identical regardless of what the player chose.
 ${tasks.flatMap((task) => task.evidenceAtoms.map((atom) => `- ${atom.description}: use a natural realization equivalent to ${atom.acceptedPatterns.join(' / ')}`)).join('\n')}`;
   }
 
@@ -1137,6 +1138,56 @@ Return ONLY a JSON object: {"sharedResolutionText":"..."}. No prose outside the 
       return undefined;
     } catch (err) {
       console.warn(`[ChoiceAuthor] reauthorSharedResolutionText failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * G4 (treatment-gap analysis 2026-07-15): tier-distinct renderings of the
+   * SAME shared resolution. Projecting one identical passage into all nine
+   * outcome tiers made the Dusk Club bond a naming ceremony regardless of
+   * what the player said (run 20-44-49) — convergent endpoint, distinct
+   * residue is the standing outcome-tier principle.
+   */
+  async reauthorSharedResolutionVariants(ctx: {
+    currentPassage?: string;
+    requiredMeanings: string[];
+    sceneName?: string;
+    protagonistName?: string;
+    feedback?: string;
+    tiers: string[];
+  }): Promise<Record<string, string> | undefined> {
+    const tiers = ctx.tiers.length > 0 ? ctx.tiers.slice(0, 4) : ['success', 'partial', 'failure'];
+    const prompt = `Rewrite the shared post-choice resolution for one interactive-fiction choice set as TIER-DISTINCT prose.
+
+Every outcome tier must land the SAME resolution facts — the route converges — but each tier renders them with its own texture and cost: a clean win reads earned, a partial win reads frayed or provisional, a failure reads fail-forward (the fact still lands, paid for). Never reuse a sentence between tiers. One or two concise, fiction-first, second-person sentences per tier. Do not mention tasks, contracts, validation, choices, outcomes, stats, or mechanics.
+
+CURRENT PASSAGE (previously pasted identically into every tier — replace):
+${ctx.currentPassage?.trim() || '(missing)'}
+
+REQUIRED MEANINGS (each must be observably dramatized in EVERY tier):
+${ctx.requiredMeanings.map((meaning) => `- ${meaning}`).join('\n')}
+${ctx.feedback ? `\nVALIDATION FEEDBACK:\n${ctx.feedback}\n` : ''}
+SCENE: ${ctx.sceneName || 'the current scene'}
+PROTAGONIST: ${ctx.protagonistName || 'the protagonist'}
+TIERS: ${tiers.join(', ')}
+
+Return ONLY a JSON object mapping each tier to its passage: {${tiers.map((tier) => `"${tier}":"..."`).join(',')}}. No prose outside the JSON.`;
+    try {
+      const raw = await this.callLLM([{ role: 'user', content: prompt }], 2);
+      const parsed = this.parseJSON<Record<string, unknown>>(raw);
+      if (!parsed) return undefined;
+      const variants: Record<string, string> = {};
+      for (const tier of tiers) {
+        const value = parsed[tier];
+        if (typeof value !== 'string' || value.trim().length < 12) return undefined;
+        variants[tier] = value.trim();
+      }
+      const distinct = new Set(Object.values(variants).map((value) => value.toLowerCase()));
+      if (distinct.size < Object.keys(variants).length) return undefined;
+      return variants;
+    } catch (err) {
+      console.warn(`[ChoiceAuthor] reauthorSharedResolutionVariants failed: ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
     }
   }

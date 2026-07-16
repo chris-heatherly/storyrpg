@@ -80,6 +80,49 @@ describe('choiceResolutionRepairHandler', () => {
     expect(result.attemptedIssueKeys?.length).toBe(1);
   });
 
+  it('prefers tier-distinct variants over one pasted passage (G4: convergent endpoint, distinct residue)', async () => {
+    let sharedCalled = false;
+    const handler = buildChoiceResolutionRepairHandler({
+      author: () => ({
+        reauthorSharedResolutionText: async () => {
+          sharedCalled = true;
+          return 'One pasted passage.';
+        },
+        reauthorSharedResolutionVariants: async (ctx) => {
+          expect(ctx.tiers.sort()).toEqual(['failure', 'partial', 'success']);
+          return {
+            success: 'The pact lands clean — the Dusk Club is born over raised glasses.',
+            partial: 'The pact forms anyway, but the Dusk Club begins on a guarded smile.',
+            failure: 'Even after the stumble, the Dusk Club takes shape — earned the hard way.',
+          };
+        },
+      }),
+      tasksById: () => new Map([[String((task as { id: string }).id), task]]),
+    });
+    const story = storyWithChoices();
+    const result = await handler({ story, blockingIssues: [issue] } as never);
+    expect(result.changed).toBe(true);
+    expect(sharedCalled).toBe(false);
+    const choice = (story as never as { episodes: Array<{ scenes: Array<{ beats: Array<{ choices: Array<{ outcomeTexts: Record<string, string> }> }> }> }> })
+      .episodes[0].scenes[0].beats[0].choices[0];
+    const texts = ['success', 'partial', 'failure'].map((tier) => choice.outcomeTexts[tier]);
+    for (const text of texts) expect(text).toContain('Dusk Club');
+    expect(new Set(texts).size).toBe(3);
+  });
+
+  it('falls back to the shared passage when the variants author declines', async () => {
+    const handler = buildChoiceResolutionRepairHandler({
+      author: () => ({
+        reauthorSharedResolutionText: async () => 'The Dusk Club is born.',
+        reauthorSharedResolutionVariants: async () => undefined,
+      }),
+      tasksById: () => new Map([[String((task as { id: string }).id), task]]),
+    });
+    const story = storyWithChoices();
+    const result = await handler({ story, blockingIssues: [issue] } as never);
+    expect(result.changed).toBe(true);
+  });
+
   it('reports unchanged when the author produces nothing', async () => {
     const handler = buildChoiceResolutionRepairHandler({
       author: () => ({ reauthorSharedResolutionText: async () => undefined }),

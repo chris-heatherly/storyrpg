@@ -86,6 +86,11 @@ import type {
   NarrativeCharacterPresenceContract,
   NarrativeCharacterRoleConstraint,
   NarrativeIdentityScheduleContract,
+  NarrativeLexicalArtifactContract,
+  NarrativeSceneStateContract,
+  NarrativeFirstAppearanceContract,
+  NarrativeRouteRealizationContract,
+  NarrativeEncounterParticipationContract,
   NarrativeRealizationTask,
 } from '../../types/narrativeContract';
 import type { CharacterArchitecture, EndingMode, StoryEndingTarget } from '../../types/sourceAnalysis';
@@ -605,6 +610,11 @@ export interface SceneBlueprint {
   characterPresenceContracts?: NarrativeCharacterPresenceContract[];
   identityScheduleContracts?: NarrativeIdentityScheduleContract[];
   characterRoleConstraints?: NarrativeCharacterRoleConstraint[];
+  lexicalArtifactContracts?: NarrativeLexicalArtifactContract[];
+  sceneStateContract?: NarrativeSceneStateContract;
+  firstAppearanceContracts?: NarrativeFirstAppearanceContract[];
+  routeRealizationContract?: NarrativeRouteRealizationContract;
+  encounterParticipationContract?: NarrativeEncounterParticipationContract;
 
   // Narrative function
   narrativeFunction: string;
@@ -1366,7 +1376,16 @@ export class StoryArchitect extends BaseAgent {
       // the s1-7 consequence scene after she'd been cast in s1-2..s1-6).
       // Characters the plan never stages textually are handled by the runtime
       // first-appearance directive + CharacterIntroductionValidator repair.
-      const target = this.findIntroductionSceneForCharacter(character, blueprint, input);
+      const canonicalAppearance = (input.seasonPlanDirectives?.episodeEventPlan?.firstAppearanceContracts ?? [])
+        .find((contract) => {
+          const contractKey = normalizeCharacterSlug(contract.characterId || contract.characterName);
+          const characterKey = normalizeCharacterSlug(character.id || character.name);
+          return contractKey === characterKey
+            || normalizeName(contract.characterName) === normalizeName(character.name);
+        });
+      const target = canonicalAppearance
+        ? blueprint.scenes.find((scene) => scene.id === canonicalAppearance.owningSceneId)
+        : this.findIntroductionSceneForCharacter(character, blueprint, input);
       if (!target) {
         console.warn(
           `[StoryArchitect] Episode ${input.episodeNumber} is planned to introduce "${character.name}" but no planned scene stages them in its authored text; relying on the runtime first-appearance directive instead of forcing a hard intro beat.`,
@@ -1388,8 +1407,12 @@ export class StoryArchitect extends BaseAgent {
         characterName: character.name,
         stagingText,
       });
-      let introMode = this.resolveIntroModeForCharacter(character, stagingText);
-      if (targetIsNamedIntro) {
+      let introMode = canonicalAppearance?.mode === 'named_on_page'
+        ? 'named' as const
+        : canonicalAppearance?.mode === 'anonymous_plant'
+          ? 'anonymous_plant' as const
+          : this.resolveIntroModeForCharacter(character, stagingText);
+      if (targetIsNamedIntro && !canonicalAppearance) {
         introMode = 'named';
       }
       if (introMode === 'named') {
@@ -4216,6 +4239,16 @@ Remember: The encounter is the heart. Design outward from it.
         identityScheduleContracts: input.seasonPlanDirectives?.episodeEventPlan?.identityScheduleContracts,
         characterRoleConstraints: (input.seasonPlanDirectives?.episodeEventPlan?.characterRoleConstraints ?? [])
           .filter((contract) => contract.episodeNumber === p.episodeNumber),
+        lexicalArtifactContracts: (input.seasonPlanDirectives?.episodeEventPlan?.lexicalArtifactContracts ?? [])
+          .filter((contract) => contract.creatorSceneId === p.id || contract.forbiddenBeforeSceneIds.includes(p.id)),
+        sceneStateContract: (input.seasonPlanDirectives?.episodeEventPlan?.sceneStateContracts ?? [])
+          .find((contract) => contract.sceneId === p.id),
+        firstAppearanceContracts: (input.seasonPlanDirectives?.episodeEventPlan?.firstAppearanceContracts ?? [])
+          .filter((contract) => contract.owningSceneId === p.id || contract.earlierSceneIds.includes(p.id)),
+        routeRealizationContract: (input.seasonPlanDirectives?.episodeEventPlan?.routeRealizationContracts ?? [])
+          .find((contract) => contract.sourceSceneId === p.id),
+        encounterParticipationContract: (input.seasonPlanDirectives?.episodeEventPlan?.encounterParticipationContracts ?? [])
+          .find((contract) => contract.sceneId === p.id),
         narrativeFunction: localPurpose,
         narrativeConstraints: p.narrativeConstraints,
         narrativeRole: p.narrativeRole,
@@ -4687,6 +4720,13 @@ Remember: The encounter is the heart. Design outward from it.
       scene.narrativeEventPlanVersion = eventPlan.version;
       scene.characterPresenceContracts = (eventPlan.characterPresenceContracts ?? [])
         .filter((contract) => contract.sceneId === scene.id);
+      scene.lexicalArtifactContracts = (eventPlan.lexicalArtifactContracts ?? []).filter((contract) =>
+        contract.creatorSceneId === scene.id || contract.forbiddenBeforeSceneIds.includes(scene.id));
+      scene.sceneStateContract = (eventPlan.sceneStateContracts ?? []).find((contract) => contract.sceneId === scene.id);
+      scene.firstAppearanceContracts = (eventPlan.firstAppearanceContracts ?? []).filter((contract) =>
+        contract.owningSceneId === scene.id || contract.earlierSceneIds.includes(scene.id));
+      scene.routeRealizationContract = (eventPlan.routeRealizationContracts ?? []).find((contract) => contract.sourceSceneId === scene.id);
+      scene.encounterParticipationContract = (eventPlan.encounterParticipationContracts ?? []).find((contract) => contract.sceneId === scene.id);
       scene.supportingContractIds = Array.from(new Set([
         ...(scene.supportingContractIds ?? []),
         ...(scene.sceneEventOwnership?.sourceContractIds ?? []),

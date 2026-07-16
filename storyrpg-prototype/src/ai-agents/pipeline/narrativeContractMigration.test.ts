@@ -141,7 +141,7 @@ describe('narrative contract migration', () => {
     } as any;
 
     const migrated = normalizePersistedSeasonScenePlan(legacyPlan);
-    expect(migrated.narrativeContractGraph).toMatchObject({ version: 9, narrativeVoice: 'second_person' });
+    expect(migrated.narrativeContractGraph).toMatchObject({ version: 10, narrativeVoice: 'second_person' });
     expect(migrated.narrativeContractGraph?.transitionContracts?.[0]).toMatchObject({
       bridgePolicy: 'orientation_only',
       locationRequirement: { canonicalValue: 'Cismigiu Gardens', required: true },

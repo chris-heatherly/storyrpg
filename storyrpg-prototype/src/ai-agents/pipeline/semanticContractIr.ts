@@ -231,6 +231,25 @@ export function validateAuthoredEventSemanticIR(
           }
         }
       }
+      const lexicalIds = new Set<string>();
+      for (const artifact of proposition.createdLexicalArtifacts ?? []) {
+        if (!artifact.id || lexicalIds.has(artifact.id)) {
+          issues.push(`Semantic proposition ${proposition.id} has a missing or duplicate lexical artifact id.`);
+        }
+        lexicalIds.add(artifact.id);
+        if (!clean(artifact.canonicalValue) || !proposition.sourceSpan.includes(artifact.canonicalValue)) {
+          issues.push(`Lexical artifact ${artifact.id} value must be copied exactly from proposition ${proposition.id}'s source span.`);
+        }
+        if (artifact.routePolicy === 'source_invariant' && artifact.allowedAlternatives.length > 0) {
+          issues.push(`Source-invariant lexical artifact ${artifact.id} cannot declare route alternatives.`);
+        }
+        if (artifact.routePolicy === 'player_selected' && artifact.allowedAlternatives.length === 0) {
+          issues.push(`Player-selected lexical artifact ${artifact.id} must declare at least one authored alternative.`);
+        }
+        if (artifact.allowedAlternatives.some((alternative) => !proposition.sourceSpan.includes(alternative))) {
+          issues.push(`Lexical artifact ${artifact.id} declares an alternative absent from its exact source span.`);
+        }
+      }
     }
     for (const sourceId of sources.keys()) {
       if (!citedSourceIds.has(sourceId)) issues.push(`Semantic IR event ${event.eventId} does not realize authored source segment ${sourceId}.`);

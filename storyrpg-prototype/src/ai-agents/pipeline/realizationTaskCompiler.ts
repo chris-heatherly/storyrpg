@@ -730,6 +730,82 @@ export function compileNarrativeRealizationTasks(
   const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
   const tasks: NarrativeRealizationTask[] = [];
 
+  // Exact lexical artifacts have a creation boundary. Earlier scenes carry a
+  // literal negative contract; the creator scene carries exact-value evidence
+  // only when the authored source mandates one invariant value. The event's
+  // semantic proposition remains responsible for judging that the value is
+  // actually coined rather than merely mentioned.
+  for (const artifact of graph.lexicalArtifactContracts ?? []) {
+    for (const sceneId of artifact.forbiddenBeforeSceneIds) {
+      const scene = sceneById.get(sceneId);
+      if (!scene) continue;
+      tasks.push({
+        id: `task:${artifact.id}:forbidden:${sceneId}`,
+        contractId: artifact.id,
+        sourceKinds: ['treatment'],
+        episodeNumber: artifact.episodeNumber,
+        ownerStage: 'scene_writer',
+        repairHandler: 'scene_prose',
+        sceneId,
+        artifactPath: `episodes[${artifact.episodeNumber}].scenes[${sceneId}]`,
+        enforcementPhase: 'final_regression',
+        evidenceAtoms: [{
+          id: `${artifact.id}:forbidden:${sceneId}`,
+          description: `The not-yet-created ${artifact.kind.replace(/_/g, ' ')} "${artifact.canonicalValue}" must not appear.`,
+          acceptedPatterns: [artifact.canonicalValue],
+          sourceText: artifact.canonicalValue,
+          kind: 'lexical',
+          verificationAuthority: 'literal',
+          polarity: 'forbidden',
+          required: true,
+        }],
+        target: { scope: 'owner', surfaces: ['transition_in', 'beat_text', 'dialogue', 'choice_text', 'choice_outcome', 'encounter_entry', 'encounter_setup', 'encounter_phase', 'encounter_outcome', 'terminal_storylet'] },
+        sourceContractIds: [...artifact.sourceContractIds],
+        blocking: artifact.blocking,
+      });
+    }
+    if (artifact.routePolicy !== 'source_invariant') continue;
+    const scene = sceneById.get(artifact.creatorSceneId);
+    if (!scene) continue;
+    const execution = resolveTaskExecutionTarget({ scene, episodeNumber: artifact.episodeNumber, kind: 'event' });
+    tasks.push({
+      id: `task:${artifact.id}:creation-value`,
+      contractId: artifact.id,
+      canonicalEventId: artifact.creatorEventId,
+      sourceKinds: ['event'],
+      episodeNumber: artifact.episodeNumber,
+      ownerStage: execution.ownerStage,
+      repairHandler: execution.repairHandler,
+      sceneId: artifact.creatorSceneId,
+      artifactPath: execution.artifactPath,
+      evidenceAtoms: [{
+        id: `${artifact.id}:canonical-value`,
+        description: `The created ${artifact.kind.replace(/_/g, ' ')} is exactly "${artifact.canonicalValue}".`,
+        acceptedPatterns: [artifact.canonicalValue],
+        sourceText: artifact.canonicalValue,
+        kind: 'lexical',
+        verificationAuthority: 'literal',
+        producerStage: execution.ownerStage,
+        temporalSlot: execution.temporalSlot,
+        required: true,
+      }, {
+        id: `${artifact.id}:causal-creation`,
+        description: `${artifact.creatorParticipantId || 'The authored creator'} coins or creates "${artifact.canonicalValue}" before any other character uses it as an established term.`,
+        acceptedPatterns: [],
+        sourceText: artifact.canonicalValue,
+        kind: 'semantic',
+        verificationAuthority: 'semantic_judge',
+        semanticCriteria: [`The named creator visibly originates "${artifact.canonicalValue}" before it is treated as shared vocabulary.`],
+        producerStage: execution.ownerStage,
+        temporalSlot: execution.temporalSlot,
+        required: true,
+      }],
+      target: { scope: 'owner', surfaces: execution.surfaces },
+      sourceContractIds: [...artifact.sourceContractIds],
+      blocking: artifact.blocking,
+    });
+  }
+
   // F1.1: reveal-timing negative contracts. Every scene in an episode BEFORE
   // a secret's reveal episode carries the secret's forbidden meanings as
   // judge-verified forbidden atoms — enforced at final regression only

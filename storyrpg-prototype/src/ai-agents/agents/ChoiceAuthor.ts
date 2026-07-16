@@ -890,6 +890,19 @@ Return JSON only.`;
       }
     });
 
+    const routeContract = input.sceneBlueprint.routeRealizationContract;
+    if (routeContract?.requiresVisibleResidue && choices.length > 1) {
+      const normalizeSurface = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+      const routeSurfaces = choices.map((choice) => normalizeSurface([
+        choice.reactionText,
+        ...(choice.outcomeTexts ? Object.values(choice.outcomeTexts) : []),
+        ...(choice.residueHints ?? []).map((hint) => hint.description),
+      ].filter(Boolean).join(' ')));
+      if (new Set(routeSurfaces).size !== routeSurfaces.length) {
+        issues.push('Two or more non-expression options have identical visible route residue; author distinct immediate reactions/outcomes before convergence.');
+      }
+    }
+
     return issues;
   }
 
@@ -1907,6 +1920,23 @@ ${due.map(describe).join('\n')}
 `;
   }
 
+  private buildCanonicalContinuitySection(input: ChoiceAuthorInput): string {
+    const route = input.sceneBlueprint.routeRealizationContract;
+    const lexical = input.sceneBlueprint.lexicalArtifactContracts ?? [];
+    if (!route && lexical.length === 0) return '';
+    const lexicalLines = lexical.map((contract) => contract.creatorSceneId === input.sceneBlueprint.id
+      ? `- ${contract.canonicalValue}: ${contract.routePolicy === 'source_invariant' ? 'canonical on every option; do not offer alternate naming choices and use the exact value downstream' : `player-selected; every outcome and later reference must use the selected value from [${contract.allowedAlternatives.join(', ')}]`}`
+      : `- ${contract.canonicalValue}: not yet created; forbidden on every choice-facing surface in this scene.`);
+    return `
+## Canonical Route And Lexical Continuity
+${route ? `- Planned type: ${route.choiceType || 'unspecified'}; convergence: ${route.convergencePolicy}; allowed destinations: ${route.allowedTargetSceneIds.join(', ') || 'episode terminal'}.
+- Route-invariant events: ${route.routeInvariantEventIds.join(', ') || 'none'}.
+- ${route.requiresVisibleResidue ? 'Every non-expression option must leave distinct visible immediate residue in its own outcome text before convergence. State deltas alone do not count.' : 'This expression choice may vary tone without inventing route consequences.'}` : ''}
+${lexicalLines.join('\n')}
+Shared resolution may contain only facts invariant across every option. Never hard-code a route-sensitive selected value into sharedResolutionText.
+`;
+  }
+
   private buildPrompt(input: ChoiceAuthorInput): string {
     const npcList = input.npcsInScene
       .map(npc => {
@@ -1970,6 +2000,7 @@ ${directFragmentList}
       episodeCircle: input.episodeCircle,
     });
     const residueSection = this.buildResidueObligationSection(input);
+    const canonicalContinuitySection = this.buildCanonicalContinuitySection(input);
 
     return `
 Create player choices for the following decision point:
@@ -2123,6 +2154,7 @@ Use the matching generated choice tier:
 
 If branch topology makes the assigned tier impossible, stay fiction-first and choose the nearest feasible lower-cost tier, but preserve visible residue and explain the tradeoff in \`designNotes\`.
 ` : ''}
+${canonicalContinuitySection}
 ${input.arcTargets && (input.arcTargets.identityDeltaHints?.length || input.arcTargets.relationshipTrajectory?.length) ? `
 ## Character Arc Milestone Targets (from Arc Tracker)
 Design at least ONE choice whose consequences move the protagonist toward these targets.
@@ -2343,6 +2375,7 @@ CRITICAL REQUIREMENTS:
       .slice(0, 6)
       .map(h => `- ${h.id}: ${h.summary}`)
       .join('\n');
+    const canonicalContinuitySection = this.buildCanonicalContinuitySection(input);
     const branchTargets = input.requiredBranchTargets?.length
       ? input.requiredBranchTargets.map(t => `- ${t.sceneId}: ${t.intent}`).join('\n')
       : '';
@@ -2387,6 +2420,7 @@ ${branchTargets ? `
 Author exactly one choice for each target below. Set nextSceneId to that target.
 ${branchTargets}
 ` : ''}
+${canonicalContinuitySection}
 
 ## Available State
 Flags:

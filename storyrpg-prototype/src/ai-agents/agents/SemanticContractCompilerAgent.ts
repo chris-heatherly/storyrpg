@@ -30,6 +30,14 @@ type RawSemanticProposition = {
   stagedLocation?: string;
   referencedLocations: string[];
   required: boolean;
+  createdLexicalArtifacts: Array<{
+    artifactId: string;
+    kind: 'coined_term' | 'group_name' | 'title' | 'handle' | 'codeword';
+    canonicalValue: string;
+    creatorParticipantId?: string;
+    routePolicy: 'source_invariant' | 'player_selected';
+    allowedAlternatives: string[];
+  }>;
 };
 
 type RawSemanticEvent = {
@@ -108,7 +116,7 @@ function semanticContractSchema(eventCount: number) {
                   required: [
                     'propositionId', 'sourceId', 'sourceSpan', 'proposition', 'semanticRole',
                     'participantIds', 'semanticCriteria', 'prerequisitePropositionIds',
-                    'referencedLocations', 'required',
+                    'referencedLocations', 'required', 'createdLexicalArtifacts',
                   ],
                   properties: {
                     propositionId: { type: 'string', maxLength: 8 },
@@ -122,6 +130,23 @@ function semanticContractSchema(eventCount: number) {
                     stagedLocation: { type: 'string', maxLength: 180 },
                     referencedLocations: { type: 'array', maxItems: 5, items: { type: 'string', maxLength: 180 } },
                     required: { type: 'boolean' },
+                    createdLexicalArtifacts: {
+                      type: 'array',
+                      maxItems: 3,
+                      items: {
+                        type: 'object',
+                        additionalProperties: false,
+                        required: ['artifactId', 'kind', 'canonicalValue', 'routePolicy', 'allowedAlternatives'],
+                        properties: {
+                          artifactId: { type: 'string', maxLength: 8 },
+                          kind: { type: 'string', enum: ['coined_term', 'group_name', 'title', 'handle', 'codeword'] },
+                          canonicalValue: { type: 'string', maxLength: 120 },
+                          creatorParticipantId: { type: 'string', maxLength: 120 },
+                          routePolicy: { type: 'string', enum: ['source_invariant', 'player_selected'] },
+                          allowedAlternatives: { type: 'array', maxItems: 6, items: { type: 'string', maxLength: 120 } },
+                        },
+                      },
+                    },
                   },
                 },
               },
@@ -241,13 +266,14 @@ function anchorContractSchema(sceneIds: string[], castNames: string[]) {
           items: {
             type: 'object',
             additionalProperties: false,
-            required: ['anchorName', 'owningSceneId', 'onPageAction'],
+            required: ['anchorName', 'owningSceneId', 'onPageAction', 'appearanceMode'],
             properties: {
               anchorName: { type: 'string', maxLength: 120 },
               owningSceneId: { type: 'string', enum: sceneIds },
               onPageAction: { type: 'string', maxLength: 240 },
               npcName: castNames.length > 0 ? { type: 'string', enum: castNames } : { type: 'string', maxLength: 80 },
               firstSighting: { type: 'boolean' },
+              appearanceMode: { type: 'string', enum: ['named_on_page', 'anonymous_plant', 'not_applicable'] },
               sourceRef: { type: 'string', maxLength: 200 },
             },
           },
@@ -399,6 +425,8 @@ Rules:
 - Only anchors the likely-consequence line actually names. Do not invent anchors.
 - owningSceneId must be the scene whose summary stages the anchor's planting moment — match by MEANING (the outline may describe a character anonymously, e.g. "a rougher man near the kitchen" can be a named cast member's first sighting).
 - When the anchor is about a cast member, set npcName to their canonical name, and firstSighting: true when the owning scene is the reader's FIRST on-page look at them.
+- Whenever firstSighting is true, set appearanceMode to named_on_page only when the source permits the reader to learn the canonical name in that scene; otherwise use anonymous_plant. An anonymous description that corresponds semantically to a cast member remains anonymous even though npcName identifies the contract owner.
+- For anchors that are not character first sightings, set appearanceMode to not_applicable.
 - onPageAction states what the reader must SEE in the owning scene ("Kylie accepts a protective object from Stela"), not what it means for the season.
 - sourceRef quotes the anchor phrase from the likely-consequence line.
 
@@ -415,7 +443,7 @@ ${orderedScenes.map((scene) => `- ${scene.id}: ${scene.summary}`).join('\n')}`;
     try {
       const { data } = await this.callLLMForJson<{ anchorContracts: Array<{
         anchorName: string; owningSceneId: string; onPageAction: string;
-        npcName?: string; firstSighting?: boolean; sourceRef?: string;
+        npcName?: string; firstSighting?: boolean; appearanceMode: 'named_on_page' | 'anonymous_plant' | 'not_applicable'; sourceRef?: string;
       }> }>([{ role: 'user', content: prompt }], {
         jsonSchema: anchorContractSchema(orderedScenes.map((scene) => scene.id), input.castNames),
       });
@@ -434,6 +462,7 @@ ${orderedScenes.map((scene) => `- ${scene.id}: ${scene.summary}`).join('\n')}`;
           onPageAction: anchor.onPageAction.trim(),
           npcName: anchor.npcName?.trim() || undefined,
           firstSighting: anchor.firstSighting === true || undefined,
+          appearanceMode: anchor.appearanceMode,
           sourceRef: anchor.sourceRef?.trim() || undefined,
         }));
     } catch (error) {
@@ -570,6 +599,11 @@ ${orderedScenes.map((scene) => `- ${scene.id}: ${scene.summary}`).join('\n')}`;
         if (proposition.propositionId !== `p${index + 1}`) {
           throw new Error(`Event ${seed.eventId} must use ordered proposition ids p1..pN; received ${proposition.propositionId || '<missing>'} at position ${index + 1}.`);
         }
+        for (const [artifactIndex, artifact] of (proposition.createdLexicalArtifacts ?? []).entries()) {
+          if (artifact.artifactId !== `a${artifactIndex + 1}`) {
+            throw new Error(`Event ${seed.eventId} proposition ${proposition.propositionId} must use lexical artifact ids a1..aN; received ${artifact.artifactId || '<missing>'}.`);
+          }
+        }
       }
       const localIdMap = new Map(raw.propositions.map((proposition, index) => [
         proposition.propositionId,
@@ -591,6 +625,14 @@ ${orderedScenes.map((scene) => `- ${scene.id}: ${scene.summary}`).join('\n')}`;
           stagedLocation: proposition.stagedLocation || undefined,
           referencedLocations: proposition.referencedLocations ?? [],
           required: proposition.required !== false,
+          createdLexicalArtifacts: (proposition.createdLexicalArtifacts ?? []).map((artifact, artifactIndex) => ({
+            id: `${seed.eventId}:semantic:${index + 1}:lexical:${artifactIndex + 1}`,
+            kind: artifact.kind,
+            canonicalValue: artifact.canonicalValue.trim(),
+            creatorParticipantId: artifact.creatorParticipantId?.trim() || undefined,
+            routePolicy: artifact.routePolicy,
+            allowedAlternatives: (artifact.allowedAlternatives ?? []).map((value) => value.trim()).filter(Boolean),
+          })),
         })),
       };
     });
@@ -644,6 +686,9 @@ Rules:
 - stagedLocation means the action physically occurs there. A mentioned destination belongs in referencedLocations instead.
 - Use only these known location strings for location fields: ${knownLocations.length > 0 ? knownLocations.join(' | ') : '(none)'}.
 - prerequisitePropositionIds may reference only earlier propositionIds in the same event.
+- createdLexicalArtifacts lists exact names, titles, handles, codewords, or group names that THIS proposition creates on-page. Use [] when it creates none. Do not mark an ordinary mention as creation.
+- canonicalValue must be copied exactly from sourceSpan. routePolicy is source_invariant when the source mandates that value; use player_selected only when the source explicitly allows the player/protagonist to choose among alternatives. Do not infer optionality merely because the eventual scene may contain a choice.
+- artifactId values are a1, a2, ... within the proposition. allowedAlternatives contains only alternatives explicitly authored by the source; otherwise return [].
 - Mark every authored proposition required unless the source explicitly describes an optional possibility.
 
 INPUT EVENTS:

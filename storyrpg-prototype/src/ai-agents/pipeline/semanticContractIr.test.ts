@@ -239,4 +239,19 @@ describe('semantic contract IR', () => {
       `Semantic proposition ${eventId}:semantic:1 source span is not an exact substring of ${eventId}:source:1.`,
     );
   });
+
+  it('rejects lexical artifacts that are not exact source-grounded creations', () => {
+    const contract = ir();
+    contract.events[0].propositions[0].createdLexicalArtifacts = [{
+      id: `${eventId}:semantic:1:lexical:1`,
+      kind: 'group_name',
+      canonicalValue: 'Midnight Circle',
+      routePolicy: 'source_invariant',
+      allowedAlternatives: ['Lantern Circle'],
+    }];
+    const result = validateAuthoredEventSemanticIR(contract, semanticContractEventSeeds(graph()), []);
+    expect(result.passed).toBe(false);
+    expect(result.issues.join(' | ')).toContain('must be copied exactly');
+    expect(result.issues.join(' | ')).toContain('cannot declare route alternatives');
+  });
 });

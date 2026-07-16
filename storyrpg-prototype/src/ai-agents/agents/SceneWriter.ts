@@ -2035,6 +2035,17 @@ Return exactly one complete SceneContent JSON object with:
       .filter((contract) => contract.firstNamedEpisode > input.sceneBlueprint.episodeNumber)
       .map((contract) => `- ${contract.canonicalName}: canonical name forbidden until episode ${contract.firstNamedEpisode}; allowed aliases: ${contract.allowedAliases.join(', ') || 'visual description only'}`)
       .join('\n');
+    const lexicalSchedule = (input.sceneBlueprint.lexicalArtifactContracts ?? [])
+      .map((contract) => contract.creatorSceneId === input.sceneBlueprint.id
+        ? `- CREATE HERE: ${contract.kind.replace(/_/g, ' ')} "${contract.canonicalValue}" is created by proposition ${contract.creatorPropositionId}. No character may use it before the creating action. ${contract.routePolicy === 'source_invariant' ? 'The exact value is canonical on every route; do not offer alternate names.' : `Resolve later references through the selected value (${contract.allowedAlternatives.join(', ')}).`}`
+        : `- NOT YET CREATED: do not use "${contract.canonicalValue}" in transitions, narration, dialogue, choices, or outcomes.`)
+      .join('\n');
+    const sceneState = input.sceneBlueprint.sceneStateContract;
+    const firstAppearanceSchedule = (input.sceneBlueprint.firstAppearanceContracts ?? [])
+      .map((contract) => contract.owningSceneId === input.sceneBlueprint.id
+        ? `- ${contract.characterName}: this scene uniquely owns the ${contract.mode.replace(/_/g, ' ')} first appearance.`
+        : `- ${contract.characterName}: first appearance belongs to ${contract.owningSceneId}; do not stage or name the character here.`)
+      .join('\n');
 
     const flagContext = input.relevantFlags
       ? input.relevantFlags.map(f => `- ${f.name}: ${f.description}`).join('\n')
@@ -2068,6 +2079,9 @@ ${structuralContext}
 ${input.storyContext.userPrompt ? `- **User Instructions/Prompt**: ${input.storyContext.userPrompt}\n` : ''}${input.memoryContext ? `\n## Pipeline Memory (Insights from Prior Generations)\n${input.memoryContext}\n` : ''}${input.establishedCanon ? `\n## ${input.establishedCanon}\n(Treat the above as fixed truth — your prose must not contradict it.)\n` : ''}
 ${presenceContracts ? `\n### Canonical Character Presence Contracts\nThese are immutable generator contracts for this scene. They control whether a character is named, planted anonymously, or kept offscreen. Never change the policy to satisfy prose convenience.\n${presenceContracts}\n` : ''}
 ${identitySchedule ? `\n### Canonical Identity Schedule\nDo not reveal any canonical name before its scheduled episode. The protagonist may observe the person, use an allowed codename, or describe them visually, but must not disclose the forbidden identity through prose, dialogue, metadata, or recap.\n${identitySchedule}\n` : ''}
+${lexicalSchedule ? `\n### Temporal Lexical Artifacts\nNames and codewords have causal ownership. Creation must happen before use, and source-invariant values cannot become cosmetic naming choices.\n${lexicalSchedule}\n` : ''}
+${firstAppearanceSchedule ? `\n### First-Appearance Ownership\nThese contracts have one canonical owner. Earlier scenes may only use the explicitly allowed disclosure mode.\n${firstAppearanceSchedule}\n` : ''}
+${sceneState ? `\n### Transactional Scene State\n- Entry: location=${sceneState.entryLocation || input.sceneBlueprint.location}; time=${sceneState.entryTimeOfDay || input.sceneBlueprint.timeOfDay || 'unchanged'}; state=${sceneState.beforeState || 'carry forward the prior exit'}.\n- Owned events, in order: ${sceneState.ownedEventIds.join(', ') || 'none'}.\n- Already happened and forbidden to restage: ${sceneState.forbiddenRestageEventIds.join(', ') || 'none'}.\n- Exit: location=${sceneState.exitLocation || input.sceneBlueprint.location}; time=${sceneState.exitTimeOfDay || input.sceneBlueprint.timeOfDay || 'unchanged'}; state=${sceneState.afterState || 'the scene turn must leave visible residue'}.\nBegin in the entry state exactly once, perform only owned events, and end in the exit state. Do not replay an arrival, handoff, attack, writing act, or other prior event as if it is happening for the first time.\n` : ''}
 ${premiseContracts ? `\n### Canonical Premise Contracts\nThese authored premise facts must become concrete reader-facing evidence in this scene. Use behavior, dialogue, a specific object, or a consequence; do not mention contracts or paste planning text. For every contract marked [required], include at least two distinctive evidence phrases naturally in the reader-facing prose, prefer the listed phrases over vague implication, and verify each required contract before returning.\n${premiseContracts}\n` : ''}
 > Continuity (#26C): only name characters, factions, and props already established in this
 > story. Do not invent a named character or object the reader hasn't met; reference the

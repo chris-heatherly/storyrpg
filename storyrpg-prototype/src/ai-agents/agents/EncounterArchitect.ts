@@ -29,7 +29,11 @@ import {
   buildEncounterStoryletDraftJsonSchema,
   buildEncounterStructureJsonSchema,
 } from '../schemas/encounterSchemas';
-import type { NarrativeCharacterPresenceContract, NarrativeRealizationTask } from '../../types/narrativeContract';
+import type {
+  NarrativeCharacterPresenceContract,
+  NarrativeEncounterParticipationContract,
+  NarrativeRealizationTask,
+} from '../../types/narrativeContract';
 import { describeNarrativeEvidenceTarget } from '../pipeline/narrativeContractMigration';
 import { validateOwnerRealizationTasks } from '../pipeline/realizationTaskGate';
 
@@ -361,6 +365,7 @@ export interface EncounterArchitectInput {
   /** Immutable first-contact policy for encounter cast and outcome surfaces. */
   characterPresenceContracts?: NarrativeCharacterPresenceContract[];
   identityScheduleContracts?: import('../../types/narrativeContract').NarrativeIdentityScheduleContract[];
+  encounterParticipationContract?: NarrativeEncounterParticipationContract;
   characterRoleConstraints?: import('../../types/narrativeContract').NarrativeCharacterRoleConstraint[];
 }
 
@@ -3009,6 +3014,26 @@ RULES:
         description: `${beat.phase} tension`
       }));
     }
+    if (input.encounterParticipationContract) {
+      const canonicalIds = new Set(input.encounterParticipationContract.canonicalParticipantIds);
+      const sourceById = new Map(input.npcsInvolved.map((npc) => [npc.id, npc]));
+      const stateById = new Map(structure.npcStates.filter((state) => canonicalIds.has(state.npcId)).map((state) => [state.npcId, state]));
+      structure.npcStates = input.encounterParticipationContract.canonicalParticipantIds.map((npcId) => {
+        const existing = stateById.get(npcId);
+        if (existing) return existing;
+        const source = sourceById.get(npcId);
+        return {
+          npcId,
+          name: source?.name ?? npcId,
+          initialDisposition: source?.role === 'enemy' ? 'confident' : 'wary',
+          reactionToAggressive: `${source?.name ?? npcId} responds to aggression`,
+          reactionToCautious: `${source?.name ?? npcId} observes carefully`,
+          reactionToClever: `${source?.name ?? npcId} is caught off guard`,
+          tells: [],
+          dispositionShifts: [],
+        };
+      });
+    }
 
     this.requireAuthoredStorylets(structure.storylets, input, 'normalizeStructure');
     for (const storylet of Object.values(structure.storylets || {})) {
@@ -4291,6 +4316,13 @@ ${input.characterPresenceContracts?.length ? `
 These policies are immutable across encounter setup, phases, choices, victory, partial victory, defeat, and escape. Named introductions must name the character naturally. Anonymous plants must use distinctive visual or behavioral evidence and must not use the roster name or first name. Offscreen references must not appear.
 ${input.characterPresenceContracts.map((contract) => `- ${contract.characterName}: ${contract.mode}; required evidence: ${contract.requiredEvidence.join('; ')}; forbidden evidence: ${contract.forbiddenEvidence.join(', ') || 'none'}`).join('\n')}
 ` : ''}
+${input.encounterParticipationContract ? `
+## Canonical Encounter Participation
+- Required NPC ids: ${input.encounterParticipationContract.requiredNpcIds.join(', ') || 'none'}.
+- Canonical participant ids: ${input.encounterParticipationContract.canonicalParticipantIds.join(', ') || 'none'}.
+- Protagonist participates: ${input.encounterParticipationContract.protagonistRequired ? 'yes' : 'no'}.
+Use exactly these roles across setup, phases, choices, outcomes, metadata, and storylets. Do not substitute nearby allies or omit the protagonist from second-person action.
+` : ''}
 
 ## Scene Context
 - **Scene ID**: ${input.sceneId}
@@ -5067,6 +5099,15 @@ CRITICAL RULES:
   }
 
   private validateStructure(structure: EncounterStructure, input: EncounterArchitectInput): void {
+    if (input.encounterParticipationContract) {
+      const expected = new Set(input.encounterParticipationContract.canonicalParticipantIds);
+      const actual = new Set((structure.npcStates ?? []).map((state) => state.npcId));
+      const missing = [...expected].filter((npcId) => !actual.has(npcId));
+      const foreign = [...actual].filter((npcId) => !expected.has(npcId));
+      if (missing.length > 0 || foreign.length > 0) {
+        throw new Error(`[EncounterArchitect] Canonical participant mismatch for ${input.sceneId}: missing=${missing.join(', ') || 'none'} foreign=${foreign.join(', ') || 'none'}.`);
+      }
+    }
     const progressionDepth = this.getEncounterProgressionDepth(structure);
     // Accept either 2+ top-level beats or a tree with 2+ reachable stages.
     if (structure.beats.length < 2 && progressionDepth < 2) {
@@ -5410,11 +5451,14 @@ CRITICAL RULES:
     const roles = (input.characterRoleConstraints ?? [])
       .map((constraint) => `- ${constraint.characterName}: allowed functions ${constraint.allowedFunctions.join(', ')}; forbidden functions ${constraint.forbiddenFunctions.join(', ')}`)
       .join('\n');
-    if (!presence && !identity && !roles) return '';
+    const participation = input.encounterParticipationContract
+      ? `\n## Canonical Encounter Participation\n- Required NPC ids: ${input.encounterParticipationContract.requiredNpcIds.join(', ') || 'none'}\n- Canonical participant ids: ${input.encounterParticipationContract.canonicalParticipantIds.join(', ') || 'none'}\n- Protagonist participates: ${input.encounterParticipationContract.protagonistRequired ? 'yes' : 'no'}\nKeep setup, phases, outcomes, storylets, and metadata aligned to this exact participant set.`
+      : '';
+    if (!presence && !identity && !roles && !participation) return '';
     return `
 ## Canonical Character Presence Contracts
 Apply these immutable policies to every generated encounter surface. Named characters must be named naturally and grounded as people. Anonymous plants must be shown through distinctive visual or behavioral evidence without using the roster name or first name. Offscreen references must not appear in reader-facing prose.
-${presence}${identity ? `\n## Canonical Identity Schedule\n${identity}` : ''}${roles ? `\n## Canonical Role Constraints\n${roles}` : ''}
+${presence}${identity ? `\n## Canonical Identity Schedule\n${identity}` : ''}${roles ? `\n## Canonical Role Constraints\n${roles}` : ''}${participation}
 `;
   }
 

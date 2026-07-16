@@ -106,7 +106,7 @@ behavior-preserving migrations.
 
 ## Canonical Narrative Realization Contract
 
-`NarrativeContractGraph` and `EpisodeEventPlan` version 8 compile premise,
+`NarrativeContractGraph` and `EpisodeEventPlan` version 10 compile premise,
 event, relationship-pacing, and route obligations into executable
 `NarrativeRealizationTask` records. A task has one owner (`SceneWriter`,
 `ChoiceAuthor`, or `EncounterArchitect`), one discriminated evidence `target`,
@@ -274,8 +274,20 @@ the union of those receipts exactly; missing owner artifacts fail as
 
 Three older event heuristics (viral payoff, exact codename, and all-route threat
 checks) remain only for persisted graphs that have no compiled realization task.
-They do not execute alongside a version-8 task and are tracked for deletion in
+They do not execute alongside a current canonical task and are tracked for deletion in
 `docs/LEGACY_REMOVAL_REGISTRY.md`.
+
+Version 10 also makes continuity-producing facts explicit before authoring.
+Semantic event propositions identify exact lexical artifacts (coined names,
+handles, titles, group names, and codewords) at the proposition that creates
+them. The graph projects their creator event/scene, pre-creation prohibition,
+and source-invariant versus player-selected route policy. Scene plans also
+carry transactional entry/exit state, one canonical first-appearance owner,
+route-visible-residue requirements, and canonical encounter participants.
+SceneWriter, ChoiceAuthor, and EncounterArchitect receive only their local
+projections. Deterministic code validates identities, ordering, route surfaces,
+and participant parity; semantic judges remain responsible for whether prose
+actually earns a coinage, relationship change, or other interpretive turn.
 
 Validation ownership now has two explicit levels:
 

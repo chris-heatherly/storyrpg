@@ -1,7 +1,7 @@
 /** Generator-only canonical contracts for narrative planning and realization. */
 
-export const NARRATIVE_CONTRACT_GRAPH_VERSION = 9;
-export const EPISODE_EVENT_PLAN_VERSION = 9;
+export const NARRATIVE_CONTRACT_GRAPH_VERSION = 10;
+export const EPISODE_EVENT_PLAN_VERSION = 10;
 export const NARRATIVE_REALIZATION_LEDGER_VERSION = 1;
 
 export type NarrativeVerificationAuthority =
@@ -142,6 +142,20 @@ export interface AuthoredEventSemanticProposition {
   stagedLocation?: string;
   referencedLocations: string[];
   required: boolean;
+  /** Exact reader-facing artifacts created by this proposition. The semantic
+   * compiler identifies creation; deterministic code only schedules use. */
+  createdLexicalArtifacts?: AuthoredLexicalArtifact[];
+}
+
+export interface AuthoredLexicalArtifact {
+  id: string;
+  kind: 'coined_term' | 'group_name' | 'title' | 'handle' | 'codeword';
+  canonicalValue: string;
+  creatorParticipantId?: string;
+  /** Source-mandated values remain invariant. Player-selected artifacts may
+   * vary, but every downstream use must resolve through the selected value. */
+  routePolicy: 'source_invariant' | 'player_selected';
+  allowedAlternatives: string[];
 }
 
 export interface AuthoredEventSemanticContract {
@@ -238,7 +252,7 @@ export interface NarrativeRealizationTask {
   evidenceAtoms: NarrativeEvidenceAtom[];
   evidenceGroups?: NarrativeEvidenceGroup[];
   enforcementMode?: NarrativeContractEnforcementMode;
-  /** Canonical satisfaction policy for version-9 tasks. Legacy thresholds are
+  /** Canonical satisfaction policy for version-10 tasks. Legacy thresholds are
    * normalized at evaluation and migration boundaries. */
   satisfaction?: NarrativeTaskSatisfactionExpression;
   /** Minimum number of positive evidence atoms required when the task models
@@ -521,7 +535,83 @@ export interface NarrativeAnchorContract {
   npcName?: string;
   /** True when the owning scene is that character's FIRST on-page appearance. */
   firstSighting?: boolean;
+  /** Disclosure policy for a first sighting. Required by new semantic output
+   * whenever firstSighting is true. */
+  appearanceMode?: Extract<NarrativeCharacterPresenceMode, 'named_on_page' | 'anonymous_plant'> | 'not_applicable';
   sourceRef?: string;
+}
+
+/** A name, title, handle, or codeword that does not exist in reader-facing
+ * continuity until one canonical proposition creates it. */
+export interface NarrativeLexicalArtifactContract {
+  id: string;
+  episodeNumber: number;
+  creatorEventId: string;
+  creatorSceneId: string;
+  creatorPropositionId: string;
+  kind: AuthoredLexicalArtifact['kind'];
+  canonicalValue: string;
+  creatorParticipantId?: string;
+  routePolicy: AuthoredLexicalArtifact['routePolicy'];
+  allowedAlternatives: string[];
+  forbiddenBeforeSceneIds: string[];
+  sourceContractIds: string[];
+  blocking: boolean;
+}
+
+/** Transactional scene-state projection. The strings remain authored planning
+ * facts; deterministic validation checks ordering and identity, not meaning. */
+export interface NarrativeSceneStateContract {
+  id: string;
+  episodeNumber: number;
+  sceneId: string;
+  sceneOrder: number;
+  entryLocation?: string;
+  exitLocation?: string;
+  entryTimeOfDay?: string;
+  exitTimeOfDay?: string;
+  beforeState?: string;
+  afterState?: string;
+  ownedEventIds: string[];
+  priorEventIdsWithinEpisode: string[];
+  forbiddenRestageEventIds: string[];
+  sourceContractIds: string[];
+}
+
+export interface NarrativeFirstAppearanceContract {
+  id: string;
+  characterId: string;
+  characterName: string;
+  episodeNumber: number;
+  owningSceneId: string;
+  mode: NarrativeCharacterPresenceMode;
+  earlierSceneIds: string[];
+  sourceContractIds: string[];
+  blocking: boolean;
+}
+
+export interface NarrativeRouteRealizationContract {
+  id: string;
+  episodeNumber: number;
+  sourceSceneId: string;
+  choiceType?: 'expression' | 'relationship' | 'strategic' | 'dilemma';
+  routeInvariantEventIds: string[];
+  allowedTargetSceneIds: string[];
+  requiresVisibleResidue: boolean;
+  convergencePolicy: 'immediate' | 'branch_then_converge' | 'episode_terminal';
+  sourceContractIds: string[];
+  blocking: boolean;
+}
+
+export interface NarrativeEncounterParticipationContract {
+  id: string;
+  episodeNumber: number;
+  sceneId: string;
+  canonicalParticipantIds: string[];
+  requiredNpcIds: string[];
+  protagonistRequired: boolean;
+  sourceContractIds: string[];
+  blocking: boolean;
 }
 
 export interface NarrativeEventContract {
@@ -632,6 +722,11 @@ export interface NarrativeContractGraph {
   revealContracts?: NarrativeRevealContract[];
   /** Live season anchors bound to their owning scene + on-page planting action. */
   anchorContracts?: NarrativeAnchorContract[];
+  lexicalArtifactContracts?: NarrativeLexicalArtifactContract[];
+  sceneStateContracts?: NarrativeSceneStateContract[];
+  firstAppearanceContracts?: NarrativeFirstAppearanceContract[];
+  routeRealizationContracts?: NarrativeRouteRealizationContract[];
+  encounterParticipationContracts?: NarrativeEncounterParticipationContract[];
   realizationTasks?: NarrativeRealizationTask[];
   dependencies: NarrativeDependencyContract[];
   validation: { passed: boolean; issues: NarrativeContractIssue[] };
@@ -670,6 +765,11 @@ export interface EpisodeEventPlan {
   transitionContracts?: NarrativeTransitionContract[];
   choiceResidueContracts?: NarrativeChoiceResidueContract[];
   twistContracts?: NarrativeTwistContract[];
+  lexicalArtifactContracts?: NarrativeLexicalArtifactContract[];
+  sceneStateContracts?: NarrativeSceneStateContract[];
+  firstAppearanceContracts?: NarrativeFirstAppearanceContract[];
+  routeRealizationContracts?: NarrativeRouteRealizationContract[];
+  encounterParticipationContracts?: NarrativeEncounterParticipationContract[];
   realizationTasks?: NarrativeRealizationTask[];
   validation: { passed: boolean; issues: NarrativeContractIssue[] };
 }

@@ -4636,6 +4636,7 @@ export class ContentGenerationPhase {
           characterPresenceContracts: sceneBlueprint.characterPresenceContracts,
           identityScheduleContracts: sceneBlueprint.identityScheduleContracts,
           characterRoleConstraints: sceneBlueprint.characterRoleConstraints,
+          encounterParticipationContract: sceneBlueprint.encounterParticipationContract,
           encounterRelevantSkills,
           encounterBeatPlan,
           difficulty: sceneBlueprint.encounterDifficulty || 'moderate',

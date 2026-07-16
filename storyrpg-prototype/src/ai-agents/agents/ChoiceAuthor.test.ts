@@ -190,6 +190,46 @@ describe('ChoiceAuthor.validateChoices', () => {
     expect(author.buildCompactRetryJsonSchema(input).name).toBe('choice_set_compact_retry');
   });
 
+  it('rejects identical visible residue across non-expression routes before commit', () => {
+    const author: any = new ChoiceAuthor(config);
+    const input = makeInput({
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'The Test',
+        choicePoint: { type: 'relationship', stakes: { want: 'belong', cost: 'risk rejection', identity: 'answer honestly' }, optionHints: [] },
+        routeRealizationContract: {
+          id: 'route-realization:scene-1',
+          episodeNumber: 1,
+          sourceSceneId: 'scene-1',
+          choiceType: 'relationship',
+          routeInvariantEventIds: [],
+          allowedTargetSceneIds: ['scene-2'],
+          requiresVisibleResidue: true,
+          convergencePolicy: 'immediate',
+          sourceContractIds: [],
+          blocking: true,
+        },
+      },
+    });
+    const choices = [1, 2, 3].map((index) => ({
+      id: `c${index}`,
+      text: `Answer in way ${index}`,
+      choiceType: 'relationship',
+      choiceIntent: 'blind',
+      impactFactors: ['relationship'],
+      consequenceTier: 'callback',
+      consequences: [{ type: 'setFlag', flag: `answer_${index}`, value: true }],
+      statCheck: { skillWeights: { persuasion: 1 }, difficulty: 45 },
+      reactionText: 'They raise the same glass.',
+      tintFlag: 'tint:honesty',
+      outcomeTexts: { success: 'The club is born.', partial: 'The club is born.', failure: 'The club is born.' },
+      residueHints: [{ description: 'The club is born.' }],
+    }));
+
+    const issues = author.collectChoiceAuthoringCompletenessIssues(makeChoiceSet({ choiceType: 'relationship', choices }), input);
+    expect(issues).toContain('Two or more non-expression options have identical visible route residue; author distinct immediate reactions/outcomes before convergence.');
+  });
+
   it('normalizes stat-check difficulty and skill weights before returning choices', async () => {
     BaseAgent.setLlmTransportOverride(async () => JSON.stringify({
       beatId: 'beat-1',

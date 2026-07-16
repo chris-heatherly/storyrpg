@@ -20,6 +20,11 @@ import type {
   NarrativeTransitionContract,
   NarrativeTransitionStateContract,
   NarrativeTwistContract,
+  NarrativeLexicalArtifactContract,
+  NarrativeSceneStateContract,
+  NarrativeFirstAppearanceContract,
+  NarrativeRouteRealizationContract,
+  NarrativeEncounterParticipationContract,
 } from '../../types/narrativeContract';
 import {
   EPISODE_EVENT_PLAN_VERSION,
@@ -46,8 +51,15 @@ import {
   validateAuthoredEventSemanticIR,
   type SemanticContractEventSeed,
 } from './semanticContractIr';
+import {
+  compileEncounterParticipationContracts,
+  compileFirstAppearanceContracts,
+  compileLexicalArtifactContracts,
+  compileRouteRealizationContracts,
+  compileSceneStateContracts,
+} from './narrativeContinuityCompiler';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v26';
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v27';
 
 const MAX_BLOCKING_PREMISE_PROPOSITIONS_PER_SCENE = 12;
 
@@ -1606,6 +1618,80 @@ function validateGraph(graph: NarrativeContractGraph): NarrativeContractIssue[] 
       issues.push({ code: 'transition_scene_missing', severity: 'error', message: `Transition contract "${transition.id}" is missing a scene endpoint.` });
     }
   }
+  const knownSceneIds = new Set([
+    ...graph.events.map((event) => event.ownerSceneId).filter((sceneId): sceneId is string => Boolean(sceneId)),
+    ...(graph.sceneStateContracts ?? []).map((contract) => contract.sceneId),
+  ]);
+  const lexicalValues = new Map<string, string>();
+  for (const artifact of graph.lexicalArtifactContracts ?? []) {
+    const creator = eventById.get(artifact.creatorEventId);
+    if (!creator || creator.ownerSceneId !== artifact.creatorSceneId || creator.episodeNumber !== artifact.episodeNumber) {
+      issues.push({ code: 'lexical_artifact_creator_mismatch', severity: 'error', message: `Lexical artifact "${artifact.id}" does not resolve to its creator event and scene.`, eventId: artifact.creatorEventId, episodeNumber: artifact.episodeNumber, sceneId: artifact.creatorSceneId });
+    }
+    const valueKey = `${artifact.episodeNumber}:${slug(artifact.canonicalValue)}`;
+    const prior = lexicalValues.get(valueKey);
+    if (prior && prior !== artifact.id) {
+      issues.push({ code: 'duplicate_lexical_artifact_creator', severity: 'error', message: `Lexical value "${artifact.canonicalValue}" has multiple creation contracts in episode ${artifact.episodeNumber}.`, episodeNumber: artifact.episodeNumber });
+    }
+    lexicalValues.set(valueKey, artifact.id);
+    if (artifact.routePolicy === 'source_invariant' && artifact.allowedAlternatives.length > 0) {
+      issues.push({ code: 'invariant_lexical_artifact_has_alternatives', severity: 'error', message: `Source-invariant lexical artifact "${artifact.id}" declares route alternatives.`, episodeNumber: artifact.episodeNumber, sceneId: artifact.creatorSceneId });
+    }
+    if (artifact.forbiddenBeforeSceneIds.includes(artifact.creatorSceneId)) {
+      issues.push({ code: 'lexical_artifact_forbidden_in_creator', severity: 'error', message: `Lexical artifact "${artifact.id}" forbids its own creator scene.`, episodeNumber: artifact.episodeNumber, sceneId: artifact.creatorSceneId });
+    }
+  }
+  const stateSceneIds = new Set<string>();
+  const stateOrders = new Set<string>();
+  for (const state of graph.sceneStateContracts ?? []) {
+    if (stateSceneIds.has(state.sceneId)) {
+      issues.push({ code: 'duplicate_scene_state_contract', severity: 'error', message: `Scene "${state.sceneId}" has multiple transactional state contracts.`, episodeNumber: state.episodeNumber, sceneId: state.sceneId });
+    }
+    stateSceneIds.add(state.sceneId);
+    const orderKey = `${state.episodeNumber}:${state.sceneOrder}`;
+    if (stateOrders.has(orderKey)) {
+      issues.push({ code: 'duplicate_scene_state_order', severity: 'error', message: `Episode ${state.episodeNumber} has multiple scene-state contracts at order ${state.sceneOrder}.`, episodeNumber: state.episodeNumber });
+    }
+    stateOrders.add(orderKey);
+    if (state.ownedEventIds.some((eventId) => eventById.get(eventId)?.ownerSceneId !== state.sceneId)) {
+      issues.push({ code: 'scene_state_event_owner_mismatch', severity: 'error', message: `Scene-state contract "${state.id}" contains an event owned by another scene.`, episodeNumber: state.episodeNumber, sceneId: state.sceneId });
+    }
+    if (state.priorEventIdsWithinEpisode.some((eventId) => state.ownedEventIds.includes(eventId))) {
+      issues.push({ code: 'scene_state_prior_event_overlap', severity: 'error', message: `Scene-state contract "${state.id}" treats an owned event as prior history.`, episodeNumber: state.episodeNumber, sceneId: state.sceneId });
+    }
+  }
+  const firstAppearanceCharacters = new Set<string>();
+  for (const anchor of graph.anchorContracts ?? []) {
+    if (anchor.firstSighting && anchor.appearanceMode !== 'named_on_page' && anchor.appearanceMode !== 'anonymous_plant') {
+      issues.push({ code: 'first_sighting_disclosure_mode_missing', severity: 'error', message: `First-sighting anchor "${anchor.id}" must declare named_on_page or anonymous_plant disclosure.`, episodeNumber: anchor.episodeNumber, sceneId: anchor.owningSceneId });
+    }
+  }
+  for (const appearance of graph.firstAppearanceContracts ?? []) {
+    const appearanceKey = slug(appearance.characterName || appearance.characterId);
+    if (firstAppearanceCharacters.has(appearanceKey)) {
+      issues.push({ code: 'duplicate_first_appearance_owner', severity: 'error', message: `Character "${appearance.characterName}" has multiple canonical first-appearance owners.`, episodeNumber: appearance.episodeNumber, sceneId: appearance.owningSceneId });
+    }
+    firstAppearanceCharacters.add(appearanceKey);
+    if (!knownSceneIds.has(appearance.owningSceneId)) {
+      issues.push({ code: 'first_appearance_scene_missing', severity: 'error', message: `First-appearance contract "${appearance.id}" references an unknown scene.`, episodeNumber: appearance.episodeNumber, sceneId: appearance.owningSceneId });
+    }
+  }
+  for (const route of graph.routeRealizationContracts ?? []) {
+    if (!knownSceneIds.has(route.sourceSceneId)) {
+      issues.push({ code: 'route_realization_source_missing', severity: 'error', message: `Route-realization contract "${route.id}" references an unknown source scene.`, episodeNumber: route.episodeNumber, sceneId: route.sourceSceneId });
+    }
+    if (route.routeInvariantEventIds.some((eventId) => eventById.get(eventId)?.ownerSceneId !== route.sourceSceneId)) {
+      issues.push({ code: 'route_invariant_event_owner_mismatch', severity: 'error', message: `Route-realization contract "${route.id}" contains a route-invariant event owned elsewhere.`, episodeNumber: route.episodeNumber, sceneId: route.sourceSceneId });
+    }
+  }
+  for (const encounter of graph.encounterParticipationContracts ?? []) {
+    if (!knownSceneIds.has(encounter.sceneId)) {
+      issues.push({ code: 'encounter_participation_scene_missing', severity: 'error', message: `Encounter participation contract "${encounter.id}" references an unknown scene.`, episodeNumber: encounter.episodeNumber, sceneId: encounter.sceneId });
+    }
+    if (encounter.requiredNpcIds.some((npcId) => !encounter.canonicalParticipantIds.includes(npcId))) {
+      issues.push({ code: 'encounter_required_participant_missing', severity: 'error', message: `Encounter participation contract "${encounter.id}" requires an NPC absent from canonical participants.`, episodeNumber: encounter.episodeNumber, sceneId: encounter.sceneId });
+    }
+  }
   return issues;
 }
 
@@ -2020,6 +2106,23 @@ export function compileNarrativeContractGraph(
   const transitionContracts = compileTransitionContracts(scenes);
   const choiceResidueContracts = compileChoiceResidueContracts(plan);
   const twistContracts = compileTwistContracts(plan, scenes);
+  const lexicalArtifactContracts: NarrativeLexicalArtifactContract[] = compileLexicalArtifactContracts({
+    semanticIr: scenePlan.semanticEventIr,
+    events,
+    scenes,
+  });
+  const sceneStateContracts: NarrativeSceneStateContract[] = compileSceneStateContracts({ scenes, events });
+  const firstAppearanceContracts: NarrativeFirstAppearanceContract[] = compileFirstAppearanceContracts({
+    scenes,
+    presenceContracts: characterPresenceContracts,
+    firstSightingAnchors: scenePlan.anchorContracts,
+  });
+  const routeRealizationContracts: NarrativeRouteRealizationContract[] = compileRouteRealizationContracts({
+    scenes,
+    events,
+    transitions: transitionContracts,
+  });
+  const encounterParticipationContracts: NarrativeEncounterParticipationContract[] = compileEncounterParticipationContracts(scenes);
   const graph: NarrativeContractGraph = {
     version: NARRATIVE_CONTRACT_GRAPH_VERSION,
     compilerVersion: NARRATIVE_CONTRACT_COMPILER_VERSION,
@@ -2041,6 +2144,11 @@ export function compileNarrativeContractGraph(
     twistContracts,
     revealContracts: scenePlan.revealContracts,
     anchorContracts: scenePlan.anchorContracts,
+    lexicalArtifactContracts,
+    sceneStateContracts,
+    firstAppearanceContracts,
+    routeRealizationContracts,
+    encounterParticipationContracts,
     dependencies: dedupedDependencies,
     validation: { passed: true, issues: [] },
   };
@@ -2088,6 +2196,11 @@ export function compileNarrativeContractGraph(
     transitionContracts: graph.transitionContracts,
     choiceResidueContracts: graph.choiceResidueContracts,
     twistContracts: graph.twistContracts,
+    lexicalArtifactContracts: graph.lexicalArtifactContracts,
+    sceneStateContracts: graph.sceneStateContracts,
+    firstAppearanceContracts: graph.firstAppearanceContracts,
+    routeRealizationContracts: graph.routeRealizationContracts,
+    encounterParticipationContracts: graph.encounterParticipationContracts,
     realizationTasks: graph.realizationTasks,
     dependencies: graph.dependencies,
   });
@@ -2237,6 +2350,11 @@ export function compileEpisodeEventPlan(
   const transitionContracts = (graph.transitionContracts ?? []).filter((contract) => contract.episodeNumber === episodeNumber);
   const choiceResidueContracts = (graph.choiceResidueContracts ?? []).filter((contract) => contract.sourceEpisodeNumber === episodeNumber || contract.targetEpisodeNumbers.includes(episodeNumber));
   const twistContracts = (graph.twistContracts ?? []).filter((contract) => contract.episodeNumber === episodeNumber);
+  const lexicalArtifactContracts = (graph.lexicalArtifactContracts ?? []).filter((contract) => contract.episodeNumber === episodeNumber);
+  const sceneStateContracts = (graph.sceneStateContracts ?? []).filter((contract) => contract.episodeNumber === episodeNumber);
+  const firstAppearanceContracts = (graph.firstAppearanceContracts ?? []).filter((contract) => contract.episodeNumber === episodeNumber);
+  const routeRealizationContracts = (graph.routeRealizationContracts ?? []).filter((contract) => contract.episodeNumber === episodeNumber);
+  const encounterParticipationContracts = (graph.encounterParticipationContracts ?? []).filter((contract) => contract.episodeNumber === episodeNumber);
   const realizationTasks = (graph.realizationTasks ?? []).filter((task) => task.episodeNumber === episodeNumber);
   const { ordered, issues } = topologicalEvents(events);
   const assignments = ordered
@@ -2314,6 +2432,11 @@ export function compileEpisodeEventPlan(
     transitionContracts,
     choiceResidueContracts,
     twistContracts,
+    lexicalArtifactContracts,
+    sceneStateContracts,
+    firstAppearanceContracts,
+    routeRealizationContracts,
+    encounterParticipationContracts,
     realizationTasks,
     validation: {
       passed: ![...issues, ...assignmentIssues, ...executableIssues].some((issue) => issue.severity === 'error'),

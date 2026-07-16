@@ -148,7 +148,7 @@ export function normalizePersistedNarrativeContractGraph(
     version: NARRATIVE_CONTRACT_GRAPH_VERSION,
     compilerVersion: graph.version === NARRATIVE_CONTRACT_GRAPH_VERSION
       ? graph.compilerVersion
-      : `${graph.compilerVersion}:migration-v9`,
+      : `${graph.compilerVersion}:migration-v10`,
     narrativeVoice: 'second_person',
     premiseContracts,
     realizationTasks,
@@ -173,7 +173,7 @@ export function normalizePersistedEpisodeEventPlan(plan: EpisodeEventPlan): Epis
     version: EPISODE_EVENT_PLAN_VERSION,
     compilerVersion: plan.version === EPISODE_EVENT_PLAN_VERSION
       ? plan.compilerVersion
-      : `${plan.compilerVersion}:migration-v9`,
+      : `${plan.compilerVersion}:migration-v10`,
     premiseContracts,
     realizationTasks,
   };

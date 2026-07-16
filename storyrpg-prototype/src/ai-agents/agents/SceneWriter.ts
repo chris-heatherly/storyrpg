@@ -273,6 +273,12 @@ export interface SceneWriterInput {
   // possible outcomes + their pre-seeded state flags. The scene must author
   // textVariants gated on these flags so its prose reflects what happened (e.g. an
   // ally wounded on partialVictory) rather than reading identically on every path.
+  /** A1: the previous scene's choice family — author choice-conditioned variants at write time. */
+  priorChoiceFamilies?: Array<{
+    sceneId: string;
+    sceneName: string;
+    options: Array<{ label: string; flag: string }>;
+  }>;
   priorEncounterOutcomes?: Array<{
     encounterId: string;
     encounterName: string;
@@ -2419,7 +2425,15 @@ The previous scene ("${input.sceneTimeline.previous?.sceneName ?? 'previous scen
 ` : ''}
 ${(input.priorEncounterOutcomes?.length ?? 0) > 0 ? `
 ## POST-ENCOUNTER OUTCOME REACTIVITY (CRITICAL)
-This scene follows an encounter that can end several ways, and the gameplay state already records which: ${input.priorEncounterOutcomes!.map(e => `"${e.encounterName}"${e.defeatStakes ? ` (a hard outcome means: ${e.defeatStakes})` : ''}`).join('; ')}.
+This scene follows an encounter that can end several ways, and the gameplay state already records which: ${input.priorEncounterOutcomes!.map(e => `"${e.encounterName}"${e.defeatStakes ? ` (a hard outcome means: ${e.defeatStakes})` : ''}${(input.priorChoiceFamilies?.length ?? 0) > 0 ? `
+## POST-CHOICE REACTIVITY (CRITICAL — the player just chose)
+This scene follows a player choice in ${input.priorChoiceFamilies!.map(f => `"${f.sceneName}"`).join(' and ')}, and the gameplay state records which option they took.
+- The opening MUST NOT read identically regardless of what the player chose.
+- Author at least one textVariant on an EARLY beat gated on the choice flag so the prose visibly reflects the decision — changed mood, posture, a line of dialogue, what the protagonist carries or regrets. Use these EXACT flags:
+${input.priorChoiceFamilies!.flatMap(f => f.options.map(o => `  - { "type": "flag", "flag": "${o.flag}", "value": true }  // chose: "${o.label}"`)).join('\n')}
+- Cover EVERY sibling flag above (one variant each, or one variant per flag on different early beats) — a path without a variant silently loses its reflection.
+- Keep it lean: one or two early beats only; base text stays true for the most neutral reading.
+` : ''}`).join('; ')}.
 - The opening MUST NOT read identically regardless of how that encounter went.
 - Author at least one textVariant on an EARLY beat gated on the outcome flag so the prose reflects the result — e.g. an ally who was hurt appears injured, a costly win shows its cost, a defeat colors the mood. Use these EXACT flags:
 ${input.priorEncounterOutcomes!.flatMap(e => e.outcomeFlags.map(o => `  - { "type": "flag", "flag": "${o.flag}", "value": true }  // ${e.encounterName}: ${o.outcome}`)).join('\n')}

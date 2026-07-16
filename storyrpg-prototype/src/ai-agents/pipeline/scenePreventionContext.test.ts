@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPriorEncounterOutcomes, buildContinueInLocation } from './scenePreventionContext';
+import { buildPriorChoiceFamilies, buildPriorEncounterOutcomes, buildContinueInLocation } from './scenePreventionContext';
 
 // Light identity sanitizer for tests (the pipeline passes its reader-facing one).
 const passthru = (name: string | undefined, fallback: string) => name || fallback;
@@ -76,5 +76,40 @@ describe('buildContinueInLocation (B1 prevention)', () => {
       { id: 'b', location: 'Hall' },
     ] } as any;
     expect(buildContinueInLocation(bp, bp.scenes[1])).toBeUndefined();
+  });
+});
+
+describe('buildPriorChoiceFamilies (A1)', () => {
+  const sanitize = (name: string | undefined, fallback: string) => name || fallback;
+  const blueprint = {
+    scenes: [
+      { id: 's1-4', name: 'Valescu Club', leadsTo: ['s1-5'], isEncounter: false },
+      { id: 's1-5', name: 'Rooftop', leadsTo: [], isEncounter: false },
+    ],
+  } as never;
+  const target = { id: 's1-5' } as never;
+
+  it('surfaces the prior scene choice family with reader-visible flags only', () => {
+    const families = buildPriorChoiceFamilies(blueprint, target, sanitize, new Map([
+      ['s1-4', {
+        choices: [
+          { text: 'Write about what you see.', consequences: [{ type: 'setFlag', flag: 'dusk_club_founded_on_writing' }, { type: 'setFlag', flag: 'tint:idealism' }] },
+          { text: 'Find the best party in this city.', consequences: [{ type: 'setFlag', flag: 'dusk_club_founded_on_parties' }] },
+          { text: 'I just don’t want to be alone.', consequences: [{ type: 'setFlag', flag: 'dusk_club_founded_on_vulnerability' }] },
+        ],
+      }],
+    ]));
+    expect(families).toHaveLength(1);
+    expect(families![0].sceneName).toBe('Valescu Club');
+    expect(families![0].options.map((option) => option.flag)).toEqual([
+      'dusk_club_founded_on_writing', 'dusk_club_founded_on_parties', 'dusk_club_founded_on_vulnerability',
+    ]);
+  });
+
+  it('returns undefined when the family has fewer than two reader-visible paths', () => {
+    expect(buildPriorChoiceFamilies(blueprint, target, sanitize, new Map([
+      ['s1-4', { choices: [{ text: 'Only option.', consequences: [{ type: 'setFlag', flag: 'tint:caution' }] }] }],
+    ]))).toBeUndefined();
+    expect(buildPriorChoiceFamilies(blueprint, target, sanitize, new Map())).toBeUndefined();
   });
 });

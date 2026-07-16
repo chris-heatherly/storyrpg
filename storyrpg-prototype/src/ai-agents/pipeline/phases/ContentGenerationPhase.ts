@@ -277,7 +277,7 @@ import { GenerationPlan, markSceneActive, setSceneBeats } from '../generationPla
 import { buildOutcomeTextVariants } from '../outcomeVariants';
 import { buildSceneSettingContext } from '../planningHelpers';
 import { attachResidueRequirements } from '../reconvergenceResidue';
-import { buildContinueInLocation, buildPriorEncounterOutcomes } from '../scenePreventionContext';
+import { buildContinueInLocation, buildPriorChoiceFamilies, buildPriorEncounterOutcomes } from '../scenePreventionContext';
 import { plannedConsequenceTiersByScene } from '../plannedSceneBudgets';
 import { findChoiceSetForScene } from '../choiceSetLookup';
 import { reconcileRelationshipPacingWithChoiceTypes } from '../relationshipPacingChoiceTypeReconciliation';
@@ -1951,6 +1951,13 @@ export class ContentGenerationPhase {
           // are written in dependency order, so an incoming encounter already exists).
           priorEncounterOutcomes: buildPriorEncounterOutcomes(
             blueprint, sceneBlueprint, (n, f) => this.deps.sanitizeReaderFacingSceneName(n, f), encounters,
+          ),
+          // A1: the previous scene's choice family — author choice-conditioned
+          // variants at write time instead of hoping repair adds them (scenes
+          // are written in dependency order, so incoming choices exist).
+          priorChoiceFamilies: buildPriorChoiceFamilies(
+            blueprint, sceneBlueprint, (n, f) => this.deps.sanitizeReaderFacingSceneName(n, f),
+            new Map(choiceSets.filter((cs) => cs.sceneId).map((cs) => [cs.sceneId as string, cs])),
           ),
           // B1 prevention: if the prior scene shares this scene's location, tell the
           // writer to continue the visit rather than re-stage an arrival (dual-first-entry).

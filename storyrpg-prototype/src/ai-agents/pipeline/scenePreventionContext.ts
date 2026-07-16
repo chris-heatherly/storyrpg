@@ -93,3 +93,56 @@ export function buildContinueInLocation(
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   return norm(here) === norm(there) ? here : undefined;
 }
+
+/**
+ * A1 (quality-gap plan, run 2026-07-16T14-50-23, responsiveness 62): the
+ * previous scene's CHOICE family, surfaced to the next scene's SceneWriter so
+ * choice-conditioned textVariants are AUTHORED at write time — the mirror of
+ * buildPriorEncounterOutcomes for ordinary choice points. Without this, the
+ * state graph branches (243 fingerprints) while the reader-facing narrative
+ * does not, and the flag audit reports the corpses afterwards.
+ */
+export interface PriorChoiceFamilyOption {
+  label: string;
+  flag: string;
+}
+
+export interface PriorChoiceFamily {
+  sceneId: string;
+  sceneName: string;
+  options: PriorChoiceFamilyOption[];
+}
+
+const SEASON_SCOPE_FLAG_RE = [/^tint:/, /^consequence_treatment_chain_/, /^treatment_branch_/, /^encounter_/];
+
+export function buildPriorChoiceFamilies(
+  blueprint: EpisodeBlueprint,
+  sceneBlueprint: SceneBlueprint,
+  sanitizeName: (name: string | undefined, fallback: string) => string,
+  choiceSetsBySceneId: ReadonlyMap<string, { choices?: Array<{ text?: string; consequences?: Array<{ type?: string; flag?: string }> }> }>,
+): PriorChoiceFamily[] | undefined {
+  const incoming = (blueprint.scenes || []).filter(
+    (scene) => !scene.isEncounter && (scene.leadsTo || []).includes(sceneBlueprint.id),
+  );
+  const families: PriorChoiceFamily[] = [];
+  for (const prior of incoming) {
+    const choices = choiceSetsBySceneId.get(prior.id)?.choices ?? [];
+    const options: PriorChoiceFamilyOption[] = [];
+    for (const choice of choices) {
+      const flag = (choice.consequences ?? [])
+        .find((consequence) => consequence.type === 'setFlag'
+          && typeof consequence.flag === 'string'
+          && !SEASON_SCOPE_FLAG_RE.some((pattern) => pattern.test(consequence.flag!)))?.flag;
+      if (flag && choice.text?.trim()) options.push({ label: choice.text.trim().slice(0, 80), flag });
+    }
+    // A family needs at least two distinct reader-visible paths to reflect.
+    if (new Set(options.map((option) => option.flag)).size >= 2) {
+      families.push({
+        sceneId: prior.id,
+        sceneName: sanitizeName(prior.name, prior.id),
+        options: options.slice(0, 4),
+      });
+    }
+  }
+  return families.length > 0 ? families : undefined;
+}

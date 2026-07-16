@@ -244,9 +244,18 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
       if (!workingPlan.notes.includes(semanticNote)) workingPlan.notes.push(semanticNote);
       seasonPlanResult = { ...seasonPlanResult, data: workingPlan };
     } catch (error) {
+      // Typed feasibility failure (2026-07-16): a contract-compilation policy
+      // conflict is a COMPILER defect, never a content/provider failure — name
+      // it so the failure payload routes to the right owner instead of the
+      // generic worker-death shape, and keep the compiler's own error code.
+      const compilerCode = (error as { name?: string; code?: string })?.name === 'NarrativeTaskCompilerError'
+        ? (error as { code?: string }).code
+        : undefined;
       seasonPlanResult = {
         success: false,
-        error: `[SemanticContractIRGate] ${error instanceof Error ? error.message : String(error)}`,
+        error: compilerCode
+          ? `[NarrativeTaskCompiler][contract_feasibility_policy_conflict:${compilerCode}] ${error instanceof Error ? error.message : String(error)}`
+          : `[SemanticContractIRGate] ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NarrativeContractGraph } from '../../types/narrativeContract';
-import { assertNoContradictoryLiteralEvidence, assertNoContradictorySemanticLiteralEvidence, compileNarrativeRealizationTasks } from './realizationTaskCompiler';
+import { assertNoContradictoryLiteralEvidence, compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 
 describe('compileNarrativeRealizationTasks', () => {
   it('compiles premise, route, and relationship obligations with owning stages', () => {
@@ -436,32 +436,61 @@ describe('compileNarrativeRealizationTasks', () => {
     }])).toThrow(/Contradictory literal evidence.*mika/i);
   });
 
-  it('rejects required semantic stems that conflict with forbidden literal patterns', () => {
-    expect(() => assertNoContradictorySemanticLiteralEvidence([{
-      id: 'task:friendship', contractId: 'rel', episodeNumber: 1, sceneId: 'club',
+  // Wording-invariance (2026-07-16 regression): semantic_judge text is
+  // DESCRIPTIVE, never contractual wording. The deleted stem-overlap rule
+  // declared plans impossible when an incidental word in a semantic
+  // description substring-matched a forbidden literal ("after" inside
+  // "Dating After Dusk" killed a fresh analysis). These negative controls
+  // pin that incidental wording can never change deterministic feasibility.
+  function feasibilityTask(atoms: unknown[]): unknown {
+    return {
+      id: 'task:wording', contractId: 'wording', episodeNumber: 1, sceneId: 's1-1',
       ownerStage: 'scene_writer', repairHandler: 'scene_prose', sourceContractIds: ['treatment'], blocking: true,
       target: { scope: 'owner', surfaces: ['beat_text'] },
-      evidenceAtoms: [
-        {
-          id: 'required-befriend',
-          description: 'You befriend Mika over drinks',
-          acceptedPatterns: ['befriend'],
-          kind: 'semantic',
-          verificationAuthority: 'semantic_judge',
-          required: true,
-          semanticCriteria: ['befriends Mika'],
-        },
-        {
-          id: 'forbidden-friend',
-          description: 'Do not say friend',
-          acceptedPatterns: ['friend'],
-          kind: 'lexical',
-          verificationAuthority: 'literal',
-          required: true,
-          polarity: 'forbidden',
-        },
-      ],
-    } as any])).toThrow(/Contradictory semantic\/literal evidence.*friend/i);
+      evidenceAtoms: atoms,
+    };
+  }
+  function forbiddenLiteral(id: string, pattern: string): unknown {
+    return { id, description: `Do not use "${pattern}" yet`, acceptedPatterns: [pattern], kind: 'lexical', verificationAuthority: 'literal', required: true, polarity: 'forbidden' };
+  }
+  function requiredSemantic(id: string, description: string, criteria: string[]): unknown {
+    return { id, description, acceptedPatterns: [], kind: 'semantic', verificationAuthority: 'semantic_judge', required: true, semanticCriteria: criteria };
+  }
+
+  it('compiles when a semantic description shares an incidental word with a forbidden title ("after" vs "Dating After Dusk")', () => {
+    expect(() => assertNoContradictoryLiteralEvidence([feasibilityTask([
+      requiredSemantic('premise:identity', 'She observes the room and writes about it after.', ['Kylie observes first, writes later']),
+      forbiddenLiteral('artifact:title', 'Dating After Dusk'),
+    ]) as never])).not.toThrow();
+  });
+
+  it('compiles when a semantic meaning overlaps a forbidden literal word ("become friends" vs "friend")', () => {
+    expect(() => assertNoContradictoryLiteralEvidence([feasibilityTask([
+      requiredSemantic('rel:befriend', 'You befriend Mika over drinks', ['befriends Mika']),
+      forbiddenLiteral('lexicon:friend', 'friend'),
+    ]) as never])).not.toThrow();
+  });
+
+  it('compiles "club" prose obligations against a forbidden "Dusk Club" coinage', () => {
+    expect(() => assertNoContradictoryLiteralEvidence([feasibilityTask([
+      requiredSemantic('event:club-night', 'The group spends the night at the club.', ['a night out at the club']),
+      forbiddenLiteral('artifact:dusk-club', 'Dusk Club'),
+    ]) as never])).not.toThrow();
+  });
+
+  it('rewording a semantic description never changes deterministic feasibility', () => {
+    const rewordings = [
+      'She catalogues the room, drafting sentences for later.',
+      'After watching everyone, she plans what to write.',
+      'Dating strangers gives her material; dusk is when she writes.',
+      'Her habit: observe now, author the story after dusk settles.',
+    ];
+    for (const description of rewordings) {
+      expect(() => assertNoContradictoryLiteralEvidence([feasibilityTask([
+        requiredSemantic('premise:identity', description, [description]),
+        forbiddenLiteral('artifact:title', 'Dating After Dusk'),
+      ]) as never])).not.toThrow();
+    }
   });
 
   it('drops second-person-unrealizable pronoun atoms from premise tasks', () => {

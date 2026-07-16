@@ -59,7 +59,11 @@ import {
   compileSceneStateContracts,
 } from './narrativeContinuityCompiler';
 
-export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v27';
+// v28 (2026-07-16): removed the semantic→literal stem-overlap feasibility
+// rule — semantic_judge wording is descriptive, never contractual. Failed v27
+// graphs (killed by incidental-word collisions like "after" vs "Dating After
+// Dusk") must not be resumed; the bump invalidates cached plans.
+export const NARRATIVE_CONTRACT_COMPILER_VERSION = 'narrative-contract-compiler-v28';
 
 const MAX_BLOCKING_PREMISE_PROPOSITIONS_PER_SCENE = 12;
 

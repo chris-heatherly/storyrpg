@@ -437,71 +437,27 @@ export function assertNoContradictoryLiteralEvidence(tasks: NarrativeRealization
   }
 }
 
-function normalizeEvidenceStem(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 /**
- * Fail plan-time when a required semantic obligation shares a stem with a
- * forbidden literal pattern in the same scene/owner scope (e.g. required
- * "befriends" vs forbidden literal "friend").
+ * REMOVED (2026-07-16): the semantic→literal stem-overlap feasibility rule.
+ *
+ * It tokenized `semantic_judge` atom DESCRIPTIONS into ≥4-char word stems and
+ * declared the plan impossible when any stem substring-matched a forbidden
+ * literal pattern in the same scene bucket. The premise atom "she observes
+ * the room and writes about it AFTER" collided with the forbidden title
+ * "Dating AFTER Dusk" and killed a fresh analysis before any content existed.
+ *
+ * The authority model forbids exactly this (CURRENT_PIPELINE_STATUS.md:
+ * "Deterministic matching never clears or blocks a semantic_judge atom"):
+ * a semantic atom's wording is DESCRIPTIVE, not contractual — the meaning
+ * "befriends Mika" can be depicted without the word "friend", and the judge
+ * exists to tell the difference. Genuine plan impossibility (the same exact
+ * normalized value both required and forbidden on an intersecting scope) is
+ * fully covered by assertNoContradictoryLiteralEvidence above.
+ *
+ * Guard rule going forward: no deterministic feasibility check may consume
+ * semantic_judge text as wording. The wording-invariance test in
+ * realizationTaskCompiler.test.ts enforces it.
  */
-export function assertNoContradictorySemanticLiteralEvidence(tasks: NarrativeRealizationTask[]): void {
-  type Bucket = {
-    requiredSemantic: Array<{ atomId: string; stems: string[] }>;
-    forbiddenLiteral: Array<{ atomId: string; patterns: string[] }>;
-  };
-  const buckets = new Map<string, Bucket>();
-  for (const task of tasks) {
-    for (const atom of task.evidenceAtoms) {
-      const semanticScope = atom.subjectIds?.length
-        ? atom.subjectIds.slice().sort().join(',')
-        : task.evidenceScope?.npcId
-          ? `npc:${task.evidenceScope.npcId}`
-          : task.evidenceScope?.groupId
-            ? `group:${task.evidenceScope.groupId}`
-            : 'scene';
-      const key = `${task.episodeNumber}|${task.sceneId ?? ''}|${task.ownerStage}|${semanticScope}`;
-      const entry = buckets.get(key) ?? { requiredSemantic: [], forbiddenLiteral: [] };
-      if (atom.verificationAuthority === 'semantic_judge' && atom.polarity !== 'forbidden') {
-        const stems = [
-          atom.description,
-          ...(atom.semanticCriteria ?? []),
-          ...(atom.acceptedPatterns ?? []),
-        ]
-          .map(normalizeEvidenceStem)
-          .filter(Boolean)
-          .flatMap((text) => text.split(' ').filter((token) => token.length >= 4));
-        if (stems.length > 0) entry.requiredSemantic.push({ atomId: atom.id, stems: [...new Set(stems)] });
-      }
-      if (atom.verificationAuthority === 'literal' && atom.polarity === 'forbidden') {
-        const patterns = atom.acceptedPatterns.map(normalizeEvidenceStem).filter(Boolean);
-        if (patterns.length > 0) entry.forbiddenLiteral.push({ atomId: atom.id, patterns });
-      }
-      buckets.set(key, entry);
-    }
-  }
-  for (const [scope, bucket] of buckets) {
-    for (const required of bucket.requiredSemantic) {
-      for (const forbidden of bucket.forbiddenLiteral) {
-        const overlap = required.stems.filter((stem) =>
-          forbidden.patterns.some((pattern) => pattern.includes(stem) || stem.includes(pattern)));
-        if (overlap.length > 0) {
-          throw new NarrativeTaskCompilerError(
-            `Contradictory semantic/literal evidence in ${scope}: required semantic atom ${required.atomId} conflicts with forbidden literal ${forbidden.atomId} on stem(s) ${overlap.join(', ')}.`,
-            'task_unsatisfiable',
-          );
-        }
-      }
-    }
-  }
-}
 
 function assertTaskFeasibility(
   tasks: NarrativeRealizationTask[],
@@ -523,7 +479,6 @@ function assertTaskFeasibility(
   }
   const taskByAtomId = new Map(atomEntries);
   assertNoContradictoryLiteralEvidence(tasks);
-  assertNoContradictorySemanticLiteralEvidence(tasks);
   const stageOrder: Record<NarrativeRealizationOwnerStage, number> = {
     scene_writer: 0,
     choice_author: 1,

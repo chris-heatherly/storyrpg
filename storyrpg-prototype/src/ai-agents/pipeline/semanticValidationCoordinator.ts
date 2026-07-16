@@ -421,7 +421,11 @@ function receiptDisposition(consensus: ClaimConsensus): SemanticReceiptVerdict['
  * A positive atom the owner judge confirmed against excerpt set E stays
  * confirmed at final regression when E is a SUBSET of the final excerpts:
  * added text cannot un-fulfill a positive meaning. Forbidden atoms are never
- * honored (added text CAN introduce a forbidden meaning). In-process only —
+ * honored (added text CAN introduce a forbidden meaning). The injection that
+ * motivated this (encounterConverter copying stakes.victory/defeat into
+ * phase.onSuccess/onFailure.outcomeText) has since been removed at the
+ * converter, but the receipt stays as the general guard against surface
+ * drift between owner and final collection. In-process only —
  * every resume re-runs owner validation at rehydration before the final
  * contract, so the registry is warm exactly when it matters; an empty
  * registry degrades to judging as before.

@@ -453,12 +453,13 @@ export function convertEncounterStructureToEncounter(
     description: authoredDescription,
     situationImage: '',
     beats: encounterBeats,
-    onSuccess: {
-      outcomeText: structure.stakes?.victory || 'You succeeded!',
-    },
-    onFailure: {
-      outcomeText: structure.stakes?.defeat || 'Things didn\'t go as planned...',
-    },
+    // No onSuccess/onFailure: phase-level outcomeText is reader-visible
+    // (EncounterView phase_outcome interstitial), but stakes.victory/defeat is
+    // design metadata, not authored reader prose — copying it here injected
+    // reader-facing text absent from the checkpointed treatment and
+    // destabilized owner→final semantic excerpt sets. With these absent the
+    // reader ends the encounter directly on the LLM-authored
+    // outcomes.<tier>.outcomeText.
   };
 
   // Get next scene from blueprint

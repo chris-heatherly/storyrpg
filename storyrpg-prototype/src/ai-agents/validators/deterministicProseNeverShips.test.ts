@@ -93,9 +93,9 @@ describe('deterministic prose never ships unregistered', () => {
   describe('encounterConverter fallbacks are registered', () => {
     const encounter = convertEncounterStructureToEncounter(degenerateStructure(), blueprint());
 
-    it('registers the phase success/failure outcome stubs', () => {
-      expect(isRegistered(encounter.phases[0].onSuccess?.outcomeText)).toBe(true);
-      expect(isRegistered(encounter.phases[0].onFailure?.outcomeText)).toBe(true);
+    it('emits no phase-level outcome text (stakes is design metadata, not reader prose)', () => {
+      expect(encounter.phases[0].onSuccess).toBeUndefined();
+      expect(encounter.phases[0].onFailure).toBeUndefined();
     });
 
     it('registers the per-choice outcome narrativeText stubs', () => {

@@ -553,3 +553,62 @@ describe('runFinalContractRepair', () => {
     expect(out.records.some((record) => record.rule === 'final_contract_coldopen_fallback_route_cleanup')).toBe(true);
   });
 });
+
+describe('buildChoicePayoffRematerializationHandler', () => {
+  const makeStory = () => ({
+    id: 'bite-me',
+    episodes: [{
+      id: 'ep1',
+      number: 1,
+      scenes: [{
+        id: 's1-1',
+        beats: [
+          { id: 's1-1-b5', text: 'The last box waits.', nextBeatId: 's1-1-b6' },
+          {
+            id: 's1-1-b6',
+            text: 'What do you unpack first?',
+            isChoicePoint: true,
+            nextSceneId: 's1-2',
+            choices: [
+              { id: 'c1', text: 'The framed photo.', nextBeatId: 's1-1-b6-payoff-1', outcomeTexts: { partial: 'You set the photo where morning light will find it.' } },
+              { id: 'c2', text: 'The knives.', nextBeatId: 's1-1-b6-payoff-2', reactionText: 'Steel first; sentiment later.' },
+            ],
+          },
+        ],
+      }],
+    }],
+  }) as unknown as Story;
+
+  const issues = [
+    { type: 'broken_navigation', severity: 'error' as const, sceneId: 's1-1', beatId: 's1-1-b6', message: 'Choice "c1" routes to missing beat "s1-1-b6-payoff-1".' },
+    { type: 'broken_navigation', severity: 'error' as const, sceneId: 's1-1', beatId: 's1-1-b6', message: 'Choice "c2" routes to missing beat "s1-1-b6-payoff-2".' },
+  ];
+
+  it('rebuilds dropped payoff beats from the choices own authored outcome prose (run 2026-07-16T03-12-37)', async () => {
+    const target = makeStory();
+    const { buildChoicePayoffRematerializationHandler } = await import('./finalContractRepair');
+    const handler = buildChoicePayoffRematerializationHandler();
+    const result = await handler({ story: target, blockingIssues: issues as never });
+    expect(result.changed).toBe(true);
+    expect(result.attemptedIssueKeys?.length).toBe(2);
+    const beats = (target as unknown as { episodes: Array<{ scenes: Array<{ beats: Array<{ id: string; text: string; nextSceneId?: string; isChoicePayoff?: boolean }> }> }> })
+      .episodes[0].scenes[0].beats;
+    const p1 = beats.find((beat) => beat.id === 's1-1-b6-payoff-1');
+    const p2 = beats.find((beat) => beat.id === 's1-1-b6-payoff-2');
+    expect(p1?.text).toContain('morning light');
+    expect(p2?.text).toContain('Steel first');
+    expect(p1?.isChoicePayoff).toBe(true);
+    // Choice point has no onward beat, so the payoff carries the scene handoff.
+    expect(p1?.nextSceneId).toBe('s1-2');
+  });
+
+  it('ignores broken navigation that does not target a payoff beat', async () => {
+    const { buildChoicePayoffRematerializationHandler } = await import('./finalContractRepair');
+    const handler = buildChoicePayoffRematerializationHandler();
+    const result = await handler({
+      story: makeStory(),
+      blockingIssues: [{ type: 'broken_navigation', severity: 'error', sceneId: 's1-1', message: 'Beat s1-1-b5 nextBeatId references non-existent beat: s1-1-b9.' }] as never,
+    });
+    expect(result.changed).toBe(false);
+  });
+});

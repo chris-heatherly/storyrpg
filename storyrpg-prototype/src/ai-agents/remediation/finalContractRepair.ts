@@ -532,7 +532,7 @@ export async function runFinalContractRepair(opts: {
   rejectIntroducedBlockingIssues?: boolean;
 }): Promise<FinalContractRepairOutcome> {
   const maxAttempts = opts.maxAttempts ?? 2;
-  let story = opts.story;
+  const story = opts.story;
   let report = opts.initialReport;
   const records: Array<Omit<RemediationLedgerRecord, 'timestamp'>> = [];
   const issueAttempts = new Map<string, number>();
@@ -768,8 +768,97 @@ export async function runFinalContractRepair(opts: {
  * real abort-reduction comes from injecting LLM-backed regen handlers (template
  * prose, design-note leaks, treatment drift) into the loop alongside these.
  */
+/**
+ * Re-materialize choice payoff beats that a post-choice scene rewrite dropped
+ * (run 2026-07-16T03-12-37: the POV/voice regen swapped s1-1's beats
+ * wholesale, deleting the three pipeline-materialized payoff beats while the
+ * choices kept routing to them — broken_navigation with no claimant through
+ * every repair round). Deterministic code only COPIES the choice's own
+ * LLM-authored outcome prose, mirroring the original materializer's fallback
+ * chain (outcomeTexts.partial → reactionText → choice label).
+ */
+export function buildChoicePayoffRematerializationHandler(): ContractRepairHandler {
+  return ({ story, blockingIssues }) => {
+    const targets = blockingIssues.filter((issue) =>
+      issue.type === 'broken_navigation'
+      && issue.sceneId
+      && /-payoff-\d+"?\s*\.?\s*$/.test(issue.message ?? ''));
+    if (targets.length === 0) return { story, changed: false };
+
+    const attemptedIssueKeys: string[] = [];
+    let rebuilt = 0;
+    for (const issue of targets) {
+      attemptedIssueKeys.push(contractRepairIssueFingerprint(issue));
+      const missingBeatId = /routes to missing beat "([^"]+)"/.exec(issue.message ?? '')?.[1];
+      if (!missingBeatId) continue;
+      for (const episode of (story as Story).episodes ?? []) {
+        const sceneIndex = (episode.scenes ?? []).findIndex((candidate) => candidate.id === issue.sceneId);
+        const scene = sceneIndex >= 0 ? episode.scenes![sceneIndex] : undefined;
+        if (!scene) continue;
+        const beats = (scene.beats ?? []) as unknown as Array<MutableRecord & {
+          id?: string; nextBeatId?: string; nextSceneId?: string;
+          choices?: Array<MutableRecord & { nextBeatId?: string; text?: string; reactionText?: string; outcomeTexts?: Record<string, string> }>;
+        }>;
+        if (beats.some((beat) => beat.id === missingBeatId)) continue;
+        const owningBeat = beats.find((beat) =>
+          (beat.choices ?? []).some((choice) => choice.nextBeatId === missingBeatId));
+        const choice = (owningBeat?.choices ?? []).find((candidate) => candidate.nextBeatId === missingBeatId);
+        if (!owningBeat || !choice) continue;
+        const label = String(choice.text ?? '').trim();
+        const partial = String(choice.outcomeTexts?.partial ?? '').trim();
+        const reaction = String(choice.reactionText ?? '').trim();
+        const text = (partial && partial !== label) ? partial
+          : (reaction && reaction !== label) ? reaction
+          : (label.endsWith('.') ? label : `${label}.`);
+        if (!text) continue;
+        // Route like the original materializer: onward beat of the choice
+        // point when it has one, otherwise the scene's onward scene.
+        const successor = owningBeat.nextBeatId && owningBeat.nextBeatId !== owningBeat.id
+          ? owningBeat.nextBeatId
+          : undefined;
+        // Onward-scene fallback chain: an explicit beat edge, the scene's own
+        // leadsTo, then reading order — 'episode-end' only when this truly is
+        // the final scene (routing scene 1 to episode-end would end the story).
+        const onwardSceneId = successor ? undefined
+          : (beats.map((beat) => beat.nextSceneId).find(Boolean)
+            ?? (scene as { leadsTo?: string[] }).leadsTo?.[0]
+            ?? episode.scenes?.[sceneIndex + 1]?.id
+            ?? 'episode-end');
+        beats.push({
+          id: missingBeatId,
+          text,
+          isChoicePoint: false,
+          isChoicePayoff: true,
+          nextBeatId: successor,
+          nextSceneId: onwardSceneId,
+          isChoiceBridge: !successor && Boolean(onwardSceneId),
+        });
+        scene.beats = beats as never;
+        rebuilt += 1;
+      }
+    }
+    if (rebuilt === 0) return { story, changed: false, attemptedIssueKeys };
+    return {
+      story,
+      changed: true,
+      attemptedIssueKeys,
+      record: {
+        rule: 'final_contract_payoff_rematerialization',
+        scope: 'scene',
+        attempted: targets.length,
+        succeeded: rebuilt === targets.length,
+        degraded: rebuilt < targets.length,
+        blocked: false,
+        attempts: 1,
+        details: `Rebuilt ${rebuilt} dropped choice payoff beat(s) from the choices' own authored outcome prose`,
+      },
+    };
+  };
+}
+
 export function buildDeterministicContractHandlers(): ContractRepairHandler[] {
   return [
+    buildChoicePayoffRematerializationHandler(),
     ({ story }) => {
       const { story: fixed, fixedCount } = new StructuralValidator().autoFix(story);
       if (fixedCount <= 0) return { story, changed: false };

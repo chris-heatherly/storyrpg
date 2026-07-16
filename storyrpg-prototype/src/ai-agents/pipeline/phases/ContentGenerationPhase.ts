@@ -246,6 +246,7 @@ function describeBoilerplateHits(hits: EncounterProseScanHit[], max = 6): string
 }
 import { CallbackLedger } from '../callbackLedger';
 import { auditAnchorCastOrder } from '../anchorCastOrderPreflight';
+import { preservePipelineMaterializedBeats } from '../pipelineMaterializedBeats';
 import {
   mergeDuplicatePublicAftermathScenes,
   validateBlueprintRouteCueOrder,
@@ -4050,7 +4051,12 @@ export class ContentGenerationPhase {
               // that keeps the same defect fingerprints is not an improvement.
               if (revisedValidation.regenerationRequested === 'none' ||
                   shouldAdoptRegenAttempt(issueDescriptions, collectRegenIssues(revisedValidation))) {
-                // Revised version is better — swap it in
+                // Revised version is better — swap it in. But this loop runs
+                // AFTER choice authoring: the payoff/bridge beats appended by
+                // the pipeline are not SceneWriter's to regenerate, and a
+                // wholesale swap silently dropped them while the choice set
+                // kept routing to them (broken_navigation, run 03-12-37).
+                revisedContent.beats = preservePipelineMaterializedBeats(sceneContent.beats, revisedContent.beats);
                 const sceneIdx = sceneContents.findIndex(sc => sc.sceneId === sceneBlueprint.id);
                 if (sceneIdx !== -1) {
                   sceneContents[sceneIdx] = revisedContent;

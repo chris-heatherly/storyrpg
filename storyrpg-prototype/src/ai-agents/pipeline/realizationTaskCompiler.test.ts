@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NarrativeContractGraph } from '../../types/narrativeContract';
-import { assertNoContradictoryLiteralEvidence, compileNarrativeRealizationTasks } from './realizationTaskCompiler';
+import { assertNoContradictoryLiteralEvidence, compileForeshadowRealizationTasks, compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 
 describe('compileNarrativeRealizationTasks', () => {
   it('compiles premise, route, and relationship obligations with owning stages', () => {
@@ -608,5 +608,34 @@ describe('reveal-timing negative contracts (F1.1)', () => {
     });
     expect(signatureTasks[0].evidenceAtoms[0].description).toContain('platinum bob');
     expect(signatureTasks[0].evidenceAtoms[0].description).toContain('never as a checklist');
+  });
+
+  it('B4: compiles advisory foreshadow atoms per owning scene from twist-plan directives', () => {
+    const tasks = compileForeshadowRealizationTasks({
+      episodeNumber: 1,
+      twistPlan: {
+        headline: 'The rescue was staged',
+        directives: [
+          { sceneId: 's1-2', beatRole: 'foreshadow', hint: 'The stranger arrives seconds too fast, as if waiting' },
+          { sceneId: 's1-2', beatRole: 'misdirect', hint: 'Stela credits luck, warmly and a little too quickly' },
+          { sceneId: 's1-5', beatRole: 'reveal', hint: 'never compiled — reveals are owned by the twist scene itself' },
+          { sceneId: 'missing-scene', beatRole: 'foreshadow', hint: 'dropped: unknown scene' },
+          { sceneId: 's1-3', beatRole: 'foreshadow', hint: '   ' },
+        ],
+      },
+      scenes: [{ id: 's1-1' }, { id: 's1-2' }, { id: 's1-3' }, { id: 's1-5' }],
+    });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: 'task:twist:ep1:s1-2:foreshadow',
+      sceneId: 's1-2',
+      ownerStage: 'scene_writer',
+      blocking: false,
+    });
+    expect(tasks[0].evidenceAtoms).toHaveLength(2);
+    expect(tasks[0].evidenceAtoms[0].verificationAuthority).toBe('semantic_judge');
+    expect(tasks[0].evidenceAtoms[0].description).toContain('The rescue was staged');
+    expect(tasks[0].evidenceAtoms[0].description).toContain('never signposted');
+    expect(tasks[0].evidenceAtoms[1].description).toContain('misdirection beat');
   });
 });

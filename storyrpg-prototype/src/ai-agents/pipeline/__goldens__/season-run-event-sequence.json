@@ -152,6 +152,11 @@
     },
     {
       "type": "debug",
+      "phase": "content",
+      "message": "B4: compiled 1 advisory foreshadow atom task(s) for episode 1 (scene-1)"
+    },
+    {
+      "type": "debug",
       "phase": "incremental_validation",
       "message": "Initialized incremental validation with 1 flags, 0 scores, 1 NPC relationship baselines"
     },
@@ -173,7 +178,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-1: 16905 -> 15900 bytes"
+      "message": "SceneWriter input compacted for scene-1: 17874 -> 16869 bytes"
     },
     {
       "type": "debug",
@@ -517,6 +522,11 @@
     },
     {
       "type": "debug",
+      "phase": "content",
+      "message": "B4: compiled 1 advisory foreshadow atom task(s) for episode 2 (scene-4)"
+    },
+    {
+      "type": "debug",
       "phase": "incremental_validation",
       "message": "Initialized incremental validation with 1 flags, 0 scores, 1 NPC relationship baselines"
     },
@@ -538,7 +548,7 @@
     {
       "type": "debug",
       "phase": "scenes",
-      "message": "SceneWriter input compacted for scene-4: 17139 -> 16073 bytes"
+      "message": "SceneWriter input compacted for scene-4: 18139 -> 17073 bytes"
     },
     {
       "type": "warning",

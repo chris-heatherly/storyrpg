@@ -843,6 +843,7 @@ export function compileNarrativeRealizationTasks(
   }
 
   // B1 (quality-gap 14-50-23): an NPC's first on-page appearance must land
+  // (see also compileForeshadowRealizationTasks below — B4's episode-time rail)
   // their immutable treatment signature details (voice/visual tokens) through
   // action or observation — run 14-50-23 introduced NPCs as biographical
   // wallpaper. Advisory (blocking: false), judge-verified; a miss also feeds
@@ -1327,4 +1328,70 @@ export function compileNarrativeRealizationTasks(
     }
   }
   return coalescedTasks.sort((a, b) => a.episodeNumber - b.episodeNumber || a.id.localeCompare(b.id));
+}
+
+/**
+ * B4 (quality-gap 14-50-23): planned foreshadow/misdirect beats compile to
+ * advisory judge-verified atoms on their owning scenes — today nothing
+ * verifies a planned plant actually landed (run 14-50-23: the staged-rescue
+ * suspicion never made the page and nothing noticed).
+ *
+ * Episode-time rail: TwistPlans exist only during content generation (they
+ * are produced per episode, after the season contract compile), so these
+ * tasks are appended to scene blueprints there — same advisory shape as the
+ * anchor-planting rail. A miss feeds the A3 critic routing via the
+ * `:foreshadow` suffix. Never blocking.
+ */
+export function compileForeshadowRealizationTasks(input: {
+  episodeNumber: number;
+  twistPlan: {
+    headline: string;
+    directives: Array<{ sceneId: string; beatRole: 'foreshadow' | 'misdirect' | 'reveal' | 'aftermath'; hint: string }>;
+  };
+  scenes: Array<PlannedScene | { id: string }>;
+}): NarrativeRealizationTask[] {
+  const sceneById = new Map(input.scenes.map((scene) => [scene.id, scene as PlannedScene]));
+  const tasks: NarrativeRealizationTask[] = [];
+  const plantDirectives = input.twistPlan.directives.filter(
+    (directive) => directive.beatRole === 'foreshadow' || directive.beatRole === 'misdirect',
+  );
+  const bySceneId = new Map<string, typeof plantDirectives>();
+  for (const directive of plantDirectives) {
+    if (!directive.hint?.trim() || !sceneById.has(directive.sceneId)) continue;
+    const list = bySceneId.get(directive.sceneId) ?? [];
+    list.push(directive);
+    bySceneId.set(directive.sceneId, list);
+  }
+  for (const [sceneId, directives] of bySceneId) {
+    const execution = resolveTaskExecutionTarget({
+      scene: sceneById.get(sceneId),
+      episodeNumber: input.episodeNumber,
+      kind: 'event',
+    });
+    tasks.push({
+      id: `task:twist:ep${input.episodeNumber}:${sceneId}:foreshadow`,
+      contractId: `twist:ep${input.episodeNumber}`,
+      episodeNumber: input.episodeNumber,
+      sourceKinds: ['treatment'],
+      ownerStage: execution.ownerStage,
+      repairHandler: execution.repairHandler,
+      sceneId,
+      artifactPath: execution.artifactPath,
+      evidenceAtoms: directives.map((directive, index) => ({
+        id: `twist:ep${input.episodeNumber}:${sceneId}:${directive.beatRole}:${index + 1}`,
+        description: `The scene plants ${directive.beatRole === 'misdirect' ? 'a misdirection beat' : 'foreshadowing'} for the planned twist ("${input.twistPlan.headline}"): ${directive.hint}. It must read as texture on first pass — present and noticeable in hindsight, never signposted.`,
+        acceptedPatterns: [],
+        sourceText: directive.hint,
+        kind: 'semantic',
+        producerStage: execution.ownerStage,
+        temporalSlot: execution.temporalSlot,
+        required: true,
+        verificationAuthority: 'semantic_judge',
+      })),
+      target: { scope: 'owner', surfaces: execution.surfaces },
+      sourceContractIds: [`twist:ep${input.episodeNumber}`],
+      blocking: false,
+    });
+  }
+  return tasks;
 }

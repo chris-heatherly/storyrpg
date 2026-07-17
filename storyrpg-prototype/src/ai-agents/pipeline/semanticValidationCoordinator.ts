@@ -571,8 +571,11 @@ export async function validateSemanticRealizationTasks(input: {
     const unavailable = [...new Set(relevantGroups.flatMap((group) => group.satisfaction.unavailableAtomIds))];
     if (unavailable.length > 0) {
       findings.push({
+        // Infra unavailability inherits the task's tier: judge downtime on an
+        // ADVISORY shadow atom must never outrank the atom itself (B4 fixture
+        // proof: advisory foreshadow atoms + no judge aborted the episode).
         code: 'SEMANTIC_VALIDATION_UNAVAILABLE', taskId: task.id, contractId: task.contractId,
-        sceneId: input.sceneId, ownerStage: task.ownerStage, blocking: true,
+        sceneId: input.sceneId, ownerStage: task.ownerStage, blocking: task.blocking,
         field: task.artifactPath ?? 'scene',
         message: `Semantic validation infrastructure was unavailable for ${unavailable.join(', ')}.`,
         missingEvidenceAtoms: unavailable,
@@ -583,7 +586,7 @@ export async function validateSemanticRealizationTasks(input: {
     if (inconclusive.length > 0) {
       findings.push({
         code: 'SEMANTIC_VALIDATION_INCONCLUSIVE', taskId: task.id, contractId: task.contractId,
-        sceneId: input.sceneId, ownerStage: task.ownerStage, blocking: true,
+        sceneId: input.sceneId, ownerStage: task.ownerStage, blocking: task.blocking,
         field: task.artifactPath ?? 'scene',
         message: `Semantic validation could not reach a stable evidence-backed verdict for ${inconclusive.join(', ')}.`,
         missingEvidenceAtoms: inconclusive,

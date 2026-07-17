@@ -69,6 +69,7 @@ import { shouldAdoptRegenAttempt } from '../../remediation/regenAdoption';
 import { flagSceneForCritic, addCriticNote } from '../../remediation/sceneCriticFlags';
 import { lintSceneMechanics, mechanicsLintFeedback } from '../../utils/proseMechanicsLint';
 import { npcSignatureDetails } from '../../utils/npcSignatureDetails';
+import { compileForeshadowRealizationTasks } from '../realizationTaskCompiler';
 import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
 import {
   buildSceneConstructionPromptView,
@@ -624,7 +625,15 @@ export class ContentGenerationPhase {
         receipt: semantic.receipt,
       });
     }
-    const unavailable = semantic.findings.filter((finding) => finding.code === 'SEMANTIC_VALIDATION_UNAVAILABLE');
+    // Advisory tasks fail open on judge downtime: their unavailability is a
+    // console warning, never an abort (the atoms are shadow evidence).
+    const advisoryUnavailable = semantic.findings.filter((finding) => finding.code === 'SEMANTIC_VALIDATION_UNAVAILABLE' && !finding.blocking);
+    if (advisoryUnavailable.length > 0) {
+      console.warn(
+        `[SemanticValidation] ${input.sceneId}: judge unavailable for ${advisoryUnavailable.length} ADVISORY task(s) (${advisoryUnavailable.map((finding) => finding.taskId).join(', ')}) — shadow evidence skipped, generation continues.`,
+      );
+    }
+    const unavailable = semantic.findings.filter((finding) => finding.code === 'SEMANTIC_VALIDATION_UNAVAILABLE' && finding.blocking);
     if (unavailable.length > 0) {
       throw new PipelineError(
         `[SemanticValidationUnavailable] ${input.sceneId} could not obtain semantic verdicts; content was not regenerated.`,
@@ -643,7 +652,7 @@ export class ContentGenerationPhase {
         },
       );
     }
-    const inconclusive = semantic.findings.filter((finding) => finding.code === 'SEMANTIC_VALIDATION_INCONCLUSIVE');
+    const inconclusive = semantic.findings.filter((finding) => finding.code === 'SEMANTIC_VALIDATION_INCONCLUSIVE' && finding.blocking);
     if (inconclusive.length > 0 && input.mode === 'final_regression') {
       throw new PipelineError(
         `[SemanticValidationInconclusive] ${input.sceneId} could not obtain a stable semantic verdict; content was not regenerated.`,
@@ -1177,6 +1186,32 @@ export class ContentGenerationPhase {
       });
       if (threadLedger) mergeIntoSeasonLedger(this.deps.seasonThreadLedger, threadLedger, ttEpisode);
       if (twistPlan) this.deps.episodeTwistPlans.set(ttEpisode, twistPlan);
+      // B4: planned foreshadow/misdirect beats become advisory judge-verified
+      // atoms on their owning scenes — the twist plan exists only here (per
+      // episode, post contract compile), so the tasks are appended to the scene
+      // blueprints the owner-stage validation already reads. Never blocking; a
+      // miss feeds the A3 critic routing.
+      if (twistPlan) {
+        const foreshadowTasks = compileForeshadowRealizationTasks({
+          episodeNumber: ttEpisode,
+          twistPlan,
+          scenes: (blueprint.scenes ?? []).map((scene) => scene as unknown as { id: string }),
+        });
+        for (const foreshadowTask of foreshadowTasks) {
+          const targetScene = (blueprint.scenes ?? []).find((scene) => scene.id === foreshadowTask.sceneId) as
+            | { realizationTasks?: typeof foreshadowTasks }
+            | undefined;
+          if (!targetScene) continue;
+          targetScene.realizationTasks = [...(targetScene.realizationTasks ?? []), foreshadowTask];
+        }
+        if (foreshadowTasks.length > 0) {
+          context.emit({
+            type: 'debug',
+            phase: 'content',
+            message: `B4: compiled ${foreshadowTasks.length} advisory foreshadow atom task(s) for episode ${ttEpisode} (${foreshadowTasks.map((task) => task.sceneId).join(', ')})`,
+          });
+        }
+      }
       if (this.deps.writeAgentOutcome) {
         await Promise.all([
           threadLedger ? this.deps.writeAgentOutcome({
@@ -2635,7 +2670,7 @@ export class ContentGenerationPhase {
           // atom named — a scene-time rewrite is cheap; the same gap at final
           // scoring is a shipped defect.
           for (const advisoryFinding of initialOwnerValidation.findings.filter((finding) => !finding.blocking)) {
-            const advisoryKind = advisoryFinding.taskId?.endsWith(':planting') || advisoryFinding.taskId?.endsWith(':signature')
+            const advisoryKind = advisoryFinding.taskId?.endsWith(':planting') || advisoryFinding.taskId?.endsWith(':signature') || advisoryFinding.taskId?.endsWith(':foreshadow')
               ? 'advisory-planting-miss' as const
               : advisoryFinding.taskId?.endsWith(':departure')
                 ? 'advisory-departure-miss' as const

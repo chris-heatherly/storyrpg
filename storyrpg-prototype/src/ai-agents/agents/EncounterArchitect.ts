@@ -3017,7 +3017,13 @@ RULES:
     if (input.encounterParticipationContract) {
       const canonicalIds = new Set(input.encounterParticipationContract.canonicalParticipantIds);
       const sourceById = new Map(input.npcsInvolved.map((npc) => [npc.id, npc]));
-      const stateById = new Map(structure.npcStates.filter((state) => canonicalIds.has(state.npcId)).map((state) => [state.npcId, state]));
+      // Lean-mode responses legitimately omit npcStates (the ensure-fallback
+      // below runs AFTER this block). Reconciliation must tolerate that and
+      // synthesize states for every canonical participant — run r114:
+      // undefined.filter here crashed BOTH generation flows deterministically,
+      // so no retry could ever clear it (dormant path armed by the new
+      // participation contracts).
+      const stateById = new Map((structure.npcStates ?? []).filter((state) => canonicalIds.has(state.npcId)).map((state) => [state.npcId, state]));
       structure.npcStates = input.encounterParticipationContract.canonicalParticipantIds.map((npcId) => {
         const existing = stateById.get(npcId);
         if (existing) return existing;

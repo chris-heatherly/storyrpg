@@ -681,4 +681,39 @@ describe('phase-3 conditional choices resolve terminally (no template branch)', 
     expect(blob.includes('This is the moment that decides everything')).toBe(false);
     expect(blob.includes('Push for a decisive outcome')).toBe(false);
   });
+
+  it('run r114 regression: participation-contract reconciliation tolerates a lean response with NO npcStates', () => {
+    const architect = new EncounterArchitect(config) as any;
+    // Lean-mode responses legitimately omit npcStates; the ensure-fallback
+    // runs AFTER reconciliation. undefined.filter here crashed BOTH generation
+    // flows deterministically (bite-me-ep1-r114, treatment-enc-1-1).
+    const structure = {
+      sceneId: 'scene-3', encounterType: 'dramatic',
+      goalClock: { name: 'g', segments: 6, filled: 0, type: 'goal' },
+      threatClock: { name: 't', segments: 4, filled: 0, type: 'threat' },
+      storylets: makePhase4(),
+      beats: [{
+        id: 'beat-1', phase: 'setup', name: 'Open', setupText: 'Vraxxan steps from shadow.',
+        choices: [
+          { id: 'c1', text: 'Strike', outcomes: { success: { tier: 'success', narrativeText: 'Hit.', nextSituation: { setupText: 'He reels, bespoke and specific.', choices: [{ id: 'n', text: 'Press the advantage' }] } }, complicated: { tier: 'complicated', narrativeText: 'Glances.', isTerminal: true, encounterOutcome: 'partialVictory' }, failure: { tier: 'failure', narrativeText: 'Miss.', isTerminal: true, encounterOutcome: 'defeat' } } },
+        ],
+      }],
+      // npcStates deliberately ABSENT.
+    };
+    const contractInput = {
+      ...input,
+      encounterParticipationContract: {
+        id: 'participation:scene-3',
+        episodeNumber: 1,
+        sceneId: 'scene-3',
+        canonicalParticipantIds: ['eros'],
+        protagonistRequired: true,
+      },
+    };
+    const normalized = architect.normalizeStructure(structure, contractInput);
+    // States are SYNTHESIZED for every canonical participant from npcsInvolved.
+    expect(normalized.npcStates.map((state: { npcId: string }) => state.npcId)).toEqual(['eros']);
+    expect(normalized.npcStates[0].name).toBe('Eros');
+    expect(normalized.npcStates[0].initialDisposition).toBe('confident');
+  });
 });

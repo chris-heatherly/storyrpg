@@ -114,6 +114,7 @@ const PROSE_CRAFT_CONCEPT_IDS = [
   'rhythm_pacing',
   'dialogue_naturalness',
   'voice_style_consistency',
+  'tone_lens_fidelity',
 ] as const;
 
 export function buildProseCraftReportJsonSchema(): StructuredJsonSchema {

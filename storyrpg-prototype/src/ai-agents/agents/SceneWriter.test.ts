@@ -2127,4 +2127,30 @@ describe('buildSourceMaterialFidelitySection', () => {
     expect(section).toContain('The old road remembered every footstep.');
     expect(section).toContain('Stay behind me.');
   });
+
+  it('B2/G7: renders the tone + perception-lens contract from treatment guidance', () => {
+    const section = buildSourceMaterialFidelitySection({
+      treatmentSeasonGuidance: {
+        tone: 'Champagne fizz on top, blood at the bottom.',
+        protagonistGuidance: {
+          roleInWorld: 'Food writer chasing reinvention',
+          startingIdentity: 'appetite as armor',
+        },
+      },
+    } as SourceMaterialAnalysis);
+
+    expect(section).toContain('Tone & Perception Lens (season contract)');
+    expect(section).toContain('Champagne fizz on top, blood at the bottom.');
+    expect(section).toContain('Food writer chasing reinvention — appetite as armor');
+    expect(section).toContain('notices FIRST');
+  });
+
+  it('B2/G7: emits NOTHING extra when treatment guidance has no tone or lens (golden stability)', () => {
+    const withoutGuidance = buildSourceMaterialFidelitySection({} as SourceMaterialAnalysis);
+    const withEmptyGuidance = buildSourceMaterialFidelitySection({
+      treatmentSeasonGuidance: { tone: '  ' },
+    } as SourceMaterialAnalysis);
+    expect(withEmptyGuidance).toBe(withoutGuidance);
+    expect(withoutGuidance).not.toContain('Tone & Perception Lens');
+  });
 });

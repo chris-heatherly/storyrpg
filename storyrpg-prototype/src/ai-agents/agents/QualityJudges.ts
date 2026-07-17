@@ -138,7 +138,8 @@ export type ProseCraftConceptId =
   | 'filler_density'
   | 'rhythm_pacing'
   | 'dialogue_naturalness'
-  | 'voice_style_consistency';
+  | 'voice_style_consistency'
+  | 'tone_lens_fidelity';
 
 export const PROSE_CRAFT_CONCEPTS: ProseCraftConceptId[] = [
   'sentence_craft',
@@ -147,6 +148,7 @@ export const PROSE_CRAFT_CONCEPTS: ProseCraftConceptId[] = [
   'rhythm_pacing',
   'dialogue_naturalness',
   'voice_style_consistency',
+  'tone_lens_fidelity',
 ];
 
 export interface ProseCraftConceptScore {
@@ -167,6 +169,8 @@ export interface ProseCraftJudgeInput {
   sceneContents: SceneContent[];
   storyThemes?: string[];
   targetTone?: string;
+  /** B2/G7: the protagonist's identity lens (role/starting identity) the narration should perceive through. */
+  protagonistLens?: string;
   /** Prompt-size budget for sampled prose; default keeps the prompt bounded. */
   maxSampleChars?: number;
 }
@@ -235,6 +239,7 @@ judge it as published prose.
 - **rhythm_pacing**: sentence-length variety, paragraph rhythm, openers that don't drone ("You… You… You…").
 - **dialogue_naturalness**: speech that sounds like people, carries subtext, avoids on-the-nose exposition.
 - **voice_style_consistency**: one controlled narrative voice; no register lurches or style drift between scenes.
+- **tone_lens_fidelity**: the prose sustains the story's stated tonal register (all its layers, not just the easiest one) AND filters perception through the protagonist's identity lens — what they notice first and the vocabulary they reach for. When no register/lens is supplied, grade internal tonal coherence.
 
 ## Grading Bar
 
@@ -314,6 +319,7 @@ Grade the prose craft of the following interactive-fiction excerpts.
 
 ## Story Register
 - Tone: ${input.targetTone || 'unspecified'}
+- Protagonist lens: ${input.protagonistLens || 'unspecified'}
 - Themes: ${(input.storyThemes ?? []).join(', ') || 'unspecified'}
 
 ## Sampled Prose
@@ -321,10 +327,10 @@ ${proseBlock}
 
 ## Your Task
 
-Grade all six concepts (sentence_craft, specificity_show_dont_tell,
-filler_density, rhythm_pacing, dialogue_naturalness, voice_style_consistency)
-against the grading bar. Report concrete issues with scene/beat locations for
-anything that pulled a grade below 75.
+Grade all seven concepts (sentence_craft, specificity_show_dont_tell,
+filler_density, rhythm_pacing, dialogue_naturalness, voice_style_consistency,
+tone_lens_fidelity) against the grading bar. Report concrete issues with
+scene/beat locations for anything that pulled a grade below 75.
 
 Respond with ONLY a valid JSON object (no prose, no markdown fences) in EXACTLY this shape:
 {
@@ -339,7 +345,7 @@ Respond with ONLY a valid JSON object (no prose, no markdown fences) in EXACTLY 
 }
 
 Rules:
-- Grade ALL six conceptIds; scores are numbers 0-100.
+- Grade ALL seven conceptIds; scores are numbers 0-100.
 - "evidence" is REQUIRED per concept: one short quote or concrete observation.
 - Use "error" only for prose a reader would call broken or filler-dominated.
 - At most 10 issues; one short sentence per string field.

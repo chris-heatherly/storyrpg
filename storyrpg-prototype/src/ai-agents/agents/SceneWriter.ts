@@ -115,12 +115,23 @@ export function buildSourceMaterialFidelitySection(sourceAnalysis?: SourceMateri
     ? guidance.keyThemesToPreserve
     : elementsToPreserve;
   const moments = Array.isArray(guidance?.iconicMoments) ? guidance.iconicMoments : [];
+  // B2/G7: the treatment's tonal register and the protagonist's identity lens
+  // are a writing contract, not flavor — perception must filter through who
+  // the protagonist is, and the tone's layers must BOTH stay on the page.
+  const seasonGuidance = sourceAnalysis.treatmentSeasonGuidance;
+  const seasonTone = seasonGuidance?.tone?.trim();
+  const lensIdentity = [seasonGuidance?.protagonistGuidance?.roleInWorld, seasonGuidance?.protagonistGuidance?.startingIdentity]
+    .map((value) => value?.trim())
+    .filter(Boolean)
+    .join(' — ');
 
   return `
 ## Source Material Fidelity (IP Research)
 The following language, terminology, and prose-style rules have been identified from the source material.
 **Prioritize this writing contract when drafting player-facing prose.**
-
+${seasonTone || lensIdentity ? `
+### Tone & Perception Lens (season contract)
+${seasonTone ? `- **Tonal register**: ${seasonTone}. Sustain EVERY layer of this register in every scene — when the tone names a surface and an undercurrent, both must be present; do not let the prose flatten into only one of them.` : ''}${lensIdentity ? `${seasonTone ? '\n' : ''}- **Protagonist lens**: ${lensIdentity}. What the narration notices FIRST — and the vocabulary it reaches for — flows from this identity. Ground rooms, people, and tension in the senses and appetites this protagonist actually has; a new place should register through their professional/personal lens before it registers as generic scenery.` : ''}` : ''}
 ${guide ? `### Writing Style Guide (${guide.source})
 - **Summary**: ${guide.summary}
 - **Narrative Voice**: ${guide.narrativeVoice}

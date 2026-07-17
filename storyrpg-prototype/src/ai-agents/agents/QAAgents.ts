@@ -1127,6 +1127,8 @@ export interface QAInput {
   establishedFacts: string[];
   storyThemes: string[];
   targetTone: string;
+  /** B2/G7: the protagonist's identity lens for the prose-craft judge's tone_lens_fidelity concept. */
+  protagonistLens?: string;
   sceneContexts: Array<{
     sceneId: string;
     sceneName: string;
@@ -1416,6 +1418,7 @@ export class QARunner {
           sceneContents: input.sceneContents,
           storyThemes: input.storyThemes,
           targetTone: input.targetTone,
+          protagonistLens: input.protagonistLens,
         })
       );
     }

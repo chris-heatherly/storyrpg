@@ -890,7 +890,14 @@ export class QAPhase {
       // "character does something they can't" (the scholar-doing-blade-work bug).
       establishedFacts: capabilityFactStrings(characterBible.characters),
       storyThemes: brief.story.themes,
-      targetTone: brief.story.tone,
+      // B2/G7: prefer the treatment's authored tone line — brief.story.tone is
+      // often a genre word; the treatment tone is the layered contract the
+      // tone_lens_fidelity concept grades against.
+      targetTone: brief.multiEpisode?.sourceAnalysis?.treatmentSeasonGuidance?.tone?.trim() || brief.story.tone,
+      protagonistLens: [
+        brief.multiEpisode?.sourceAnalysis?.treatmentSeasonGuidance?.protagonistGuidance?.roleInWorld,
+        brief.multiEpisode?.sourceAnalysis?.treatmentSeasonGuidance?.protagonistGuidance?.startingIdentity,
+      ].map((value) => value?.trim()).filter(Boolean).join(' — ') || undefined,
       sceneContexts: blueprint.scenes.map(s => ({
         sceneId: s.id,
         sceneName: s.name,

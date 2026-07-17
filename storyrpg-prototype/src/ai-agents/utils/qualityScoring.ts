@@ -314,6 +314,9 @@ const DEFAULT_DOMAIN_DEFINITIONS: QualityDomainDefinition[] = [
       { id: 'rhythm_pacing', label: 'Rhythm and pacing', weight: 14, judgeOnly: true, keywords: ['monotony', 'opener', 'sentenceopener', 'repetitive rhythm', 'intensity_distribution', 'intensity distribution'] },
       { id: 'dialogue_naturalness', label: 'Dialogue naturalness', weight: 14, judgeOnly: true, keywords: ['stilted dialogue', 'unnatural dialogue', 'on-the-nose'] },
       { id: 'voice_style_consistency', label: 'Narrative voice / style consistency', weight: 14, judgeOnly: true, keywords: ['narrative voice', 'style drift', 'register shift'] },
+      // B2/G7: judge-only, never capping — a low grade lowers the domain
+      // average via the normalized weight formula and nothing else.
+      { id: 'tone_lens_fidelity', label: 'Tone register / protagonist lens fidelity', weight: 14, judgeOnly: true, keywords: ['tone fidelity', 'tonal register', 'protagonist lens', 'perception lens'] },
     ],
   },
   {
@@ -630,6 +633,7 @@ const PROSE_CRAFT_CONCEPT_IDS = new Set([
   'rhythm_pacing',
   'dialogue_naturalness',
   'voice_style_consistency',
+  'tone_lens_fidelity',
 ]);
 
 const RESPONSIVENESS_CONCEPT_DOMAINS: Record<string, QualityDomainId> = {

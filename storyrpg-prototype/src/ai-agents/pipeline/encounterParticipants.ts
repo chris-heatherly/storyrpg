@@ -43,6 +43,26 @@ interface PlannedEncounterParticipantSource {
   npcsInvolved?: string[];
 }
 
+/**
+ * D3 (quality-gap 14-50-23): an encounter scene's reader-facing
+ * `charactersInvolved` must name who is actually IN the encounter, not the
+ * scene's social cast (run 16-30-16: the alley-attack scene listed the club
+ * hosts). The encounter structure's npcStates is the canonical participant
+ * roster (seeded from collectEncounterParticipantRefs and reconciled against
+ * the participation contract at authoring time). Returns undefined when the
+ * structure carries no roster so callers keep their existing fallback.
+ */
+export function encounterCastFromStructure(
+  encounterStructure: { npcStates?: Array<{ npcId?: unknown }> } | undefined,
+): string[] | undefined {
+  const ids = Array.from(new Set(
+    (encounterStructure?.npcStates ?? [])
+      .map((state) => String(state?.npcId ?? '').trim())
+      .filter(Boolean),
+  ));
+  return ids.length > 0 ? ids : undefined;
+}
+
 export function collectEncounterParticipantRefs(
   sceneBlueprint: EncounterParticipantSource,
   plannedEncounter?: PlannedEncounterParticipantSource,

@@ -35,6 +35,7 @@ import { ChoiceSet } from '../agents/ChoiceAuthor';
 import { EncounterStructure } from '../agents/EncounterArchitect';
 import { ImageAgentTeam } from '../agents/image-team/ImageAgentTeam';
 import { convertEncounterStructureToEncounter } from '../converters';
+import { encounterCastFromStructure } from './encounterParticipants';
 import { encounterInfoMarkerTargets, emitSceneInfoMarkersOnBeats } from './episodePlantContext';
 import { assembleChoiceForStory, isSafeChoiceAttachmentBeat, reconcileChoiceSetBeatIds } from './choiceAssembly';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
@@ -291,7 +292,10 @@ export class Assembly {
       return {
         id: sceneBlueprint.id,
         name: this.deps.sanitizeReaderFacingSceneName(sceneBlueprint.name, sceneBlueprint.name),
-        charactersInvolved: content.charactersInvolved || sceneBlueprint.npcsPresent,
+        // D3: encounter scenes name the encounter's actual participants, not
+        // the scene's social cast (fallback preserved when no roster exists).
+        charactersInvolved: (encounter ? encounterCastFromStructure(encounterStructure) : undefined)
+          ?? (content.charactersInvolved || sceneBlueprint.npcsPresent),
         beats,
         startingBeatId: content.startingBeatId,
         backgroundImage: sceneImages.get(this.deps.getEpisodeScopedSceneId(brief, sceneBlueprint.id)),
@@ -550,7 +554,8 @@ export class Assembly {
       scenes.push({
         id: sb.id,
         name: this.deps.sanitizeReaderFacingSceneName(sb.name, sb.name),
-        charactersInvolved: content.charactersInvolved || sb.npcsPresent,
+        charactersInvolved: (encounter ? encounterCastFromStructure(encounterStructure) : undefined)
+          ?? (content.charactersInvolved || sb.npcsPresent),
         startingBeatId: content.startingBeatId,
         backgroundImage: sceneImages.get(this.deps.getEpisodeScopedSceneId(brief, sb.id)),
         beats: content.beats.map(gb => ({

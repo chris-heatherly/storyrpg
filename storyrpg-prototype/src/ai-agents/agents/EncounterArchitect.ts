@@ -537,6 +537,22 @@ export interface EncounterPhaseError {
 }
 
 /** Classify a phase failure for telemetry. */
+/**
+ * Deterministic runtime crashes (r114: undefined.filter in normalization) are
+ * CODE defects, never content failures — re-rolling the LLM against one burns
+ * the whole retry ladder (r114: six 35-55s attempts) and cannot succeed. The
+ * ladder fails fast on these; the error carries ENCOUNTER_CODE_DEFECT_PREFIX
+ * so outer retry loops can skip their rounds too.
+ */
+export const ENCOUNTER_CODE_DEFECT_PREFIX = '[EncounterCodeDefect]';
+const RUNTIME_CODE_DEFECT_RE = /cannot read propert|is not a function|is not iterable|cannot destructure|undefined is not an object|cannot convert undefined/i;
+
+export function isRuntimeCodeDefectError(err: unknown): boolean {
+  if (err instanceof TypeError || err instanceof ReferenceError) return true;
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  return msg.includes(ENCOUNTER_CODE_DEFECT_PREFIX) || RUNTIME_CODE_DEFECT_RE.test(msg);
+}
+
 export function classifyPhaseError(err: unknown): EncounterPhaseError['reason'] {
   if (err instanceof TimeoutError) return 'timeout';
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
@@ -1946,6 +1962,10 @@ Outcomes should include consequences that match the skill being tested:
           // P3: phase errors must survive the failure — they are the diagnosis.
           return { success: false, error: msg, metadata: { phaseErrors: phasedError.phaseErrors } };
         }
+        if (isRuntimeCodeDefectError(phasedError)) {
+          console.error(`[EncounterArchitect] Phased generation for ${input.sceneId} crashed on a DETERMINISTIC code defect — the legacy flow runs the same normalizer, so no retry can succeed. Failing fast: ${msg}`);
+          return { success: false, error: `${ENCOUNTER_CODE_DEFECT_PREFIX} ${msg}` };
+        }
         console.warn(`[EncounterArchitect] Phased generation failed for ${input.sceneId}, falling back to legacy flow: ${msg}`);
       }
     }
@@ -2016,6 +2036,14 @@ Outcomes should include consequences that match the skill being tested:
     const leanResult = await this.tryLLMAttempt(input, 1, 'lean', minimumBeatCount, attemptSummaries, undefined, undefined);
     if (leanResult.success && leanResult.data) {
       return { ...leanResult, metadata: { ...(leanResult.metadata ?? {}), encounterTelemetry: buildLeanTelemetry(1, leanResult.data) } };
+    }
+    if (isRuntimeCodeDefectError(leanResult.error)) {
+      console.error(`[EncounterArchitect] Lean attempt for ${input.sceneId} crashed on a DETERMINISTIC code defect — skipping retry/decomposed rungs (they run the same code). Failing fast: ${leanResult.error}`);
+      return {
+        success: false,
+        error: `${ENCOUNTER_CODE_DEFECT_PREFIX} ${leanResult.error}`,
+        metadata: { attemptSummaries },
+      };
     }
 
     // MONOTONE LADDER: a truncation means the full-structure ask does not fit

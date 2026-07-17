@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ENCOUNTER_CODE_DEFECT_PREFIX,
   EncounterArchitect,
   classifyPhaseError,
+  isRuntimeCodeDefectError,
   mapWithConcurrency,
   type EncounterArchitectInput,
   type EncounterPhaseError,
@@ -715,5 +717,24 @@ describe('phase-3 conditional choices resolve terminally (no template branch)', 
     expect(normalized.npcStates.map((state: { npcId: string }) => state.npcId)).toEqual(['eros']);
     expect(normalized.npcStates[0].name).toBe('Eros');
     expect(normalized.npcStates[0].initialDisposition).toBe('confident');
+  });
+});
+
+describe('isRuntimeCodeDefectError (r114 fail-fast class)', () => {
+  it('classifies runtime crash types and their stringified messages as code defects', () => {
+    expect(isRuntimeCodeDefectError(new TypeError("Cannot read properties of undefined (reading 'filter')"))).toBe(true);
+    expect(isRuntimeCodeDefectError(new ReferenceError('x is not defined'))).toBe(true);
+    expect(isRuntimeCodeDefectError("All LLM attempts failed: Cannot read properties of undefined (reading 'filter')")).toBe(true);
+    expect(isRuntimeCodeDefectError('normalize crashed: foo.map is not a function')).toBe(true);
+    expect(isRuntimeCodeDefectError(`${ENCOUNTER_CODE_DEFECT_PREFIX} anything`)).toBe(true);
+  });
+
+  it('never classifies content/provider failures as code defects', () => {
+    expect(isRuntimeCodeDefectError('Encounter scene-3 missing authored outcome storylet(s)')).toBe(false);
+    expect(isRuntimeCodeDefectError('truncated llm response (max_tokens)')).toBe(false);
+    expect(isRuntimeCodeDefectError('finishReason=SAFETY')).toBe(false);
+    expect(isRuntimeCodeDefectError('Flat encounter has only 1 beat(s) after normalization')).toBe(false);
+    expect(isRuntimeCodeDefectError(undefined)).toBe(false);
+    expect(isRuntimeCodeDefectError('')).toBe(false);
   });
 });

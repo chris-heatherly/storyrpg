@@ -1,6 +1,6 @@
 import type { AgentResponse } from '../../agents/BaseAgent';
 import type { EncounterArchitectInput, EncounterStructure } from '../../agents/EncounterArchitect';
-import { classifyPhaseError } from '../../agents/EncounterArchitect';
+import { classifyPhaseError, isRuntimeCodeDefectError } from '../../agents/EncounterArchitect';
 
 /**
  * UNIT QUARANTINE (P2, 2026-07-06).
@@ -78,6 +78,18 @@ export async function runQuarantineRetryPass(
 ): Promise<UnrecoveredEncounterUnit[]> {
   const unrecovered: UnrecoveredEncounterUnit[] = [];
   for (const unit of units) {
+    // r114: a deterministic code defect (undefined.filter in normalization)
+    // crashes identically on the escalated retry — the retry runs the same
+    // code. Skip the LLM spend and report the unit unrecovered with the
+    // defect named as a CODE failure, not a content failure.
+    if (isRuntimeCodeDefectError(unit.lastFailure)) {
+      unrecovered.push({
+        sceneId: unit.sceneId,
+        sceneName: unit.sceneName,
+        error: `deterministic code defect — escalated retry skipped (fix the code, not the content): ${unit.lastFailure}`,
+      });
+      continue;
+    }
     try {
       const result = await unit.retry();
       if (result.success && result.data) {

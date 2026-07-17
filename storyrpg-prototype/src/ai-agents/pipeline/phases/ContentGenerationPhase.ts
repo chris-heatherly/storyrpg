@@ -36,6 +36,7 @@ import {
   EncounterStructure,
   EncounterTelemetry,
   classifyPhaseError,
+  isRuntimeCodeDefectError,
 } from '../../agents/EncounterArchitect';
 import {
   QuarantinedEncounterUnit,
@@ -5054,6 +5055,12 @@ export class ContentGenerationPhase {
             phase: 'encounters',
             message: `Encounter generation attempt ${encAttempt}/${maxEncounterAttempts} failed for ${sceneBlueprint.id}: ${lastEncounterFailure}`,
           });
+          // r114: a deterministic code defect crashes identically on every
+          // attempt — further rounds are pure waste. Quarantine immediately.
+          if (isRuntimeCodeDefectError(lastEncounterFailure)) {
+            console.error(`[Pipeline] Encounter ${sceneBlueprint.id} failed on a deterministic code defect — skipping remaining attempt(s).`);
+            break;
+          }
         }
 
         const plantEncounterInfoMarkers = (encounter: EncounterStructure): void => {

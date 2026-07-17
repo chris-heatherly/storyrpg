@@ -94,4 +94,19 @@ describe('runQuarantineRetryPass (non-fatal unit exhaustion)', () => {
     ]);
     expect(unrecovered[0].error).toContain('decomposed ladder failed');
   });
+
+  it('r114: a deterministic code-defect unit SKIPS the escalated retry (no LLM spend) and names the class', async () => {
+    const retry = vi.fn(async () => ({ success: true, data: {} as never }));
+    const unrecovered = await runQuarantineRetryPass([
+      makeUnit({
+        sceneId: 'treatment-enc-1-1',
+        lastFailure: "All LLM attempts failed: Cannot read properties of undefined (reading 'filter')",
+        retry,
+      }),
+    ]);
+    expect(retry).not.toHaveBeenCalled();
+    expect(unrecovered).toHaveLength(1);
+    expect(unrecovered[0].error).toContain('deterministic code defect');
+    expect(unrecovered[0].error).toContain('fix the code, not the content');
+  });
 });

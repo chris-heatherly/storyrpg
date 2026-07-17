@@ -638,4 +638,27 @@ describe('reveal-timing negative contracts (F1.1)', () => {
     expect(tasks[0].evidenceAtoms[0].description).toContain('never signposted');
     expect(tasks[0].evidenceAtoms[1].description).toContain('misdirection beat');
   });
+
+  it('C2: compiles an advisory escalation-budget task on each episode-final scene', () => {
+    const graph = { events: [], dependencies: [] } as unknown as NarrativeContractGraph;
+    const scenes = [
+      { id: 's1-1', episodeNumber: 1, order: 0, kind: 'standard', relationshipPacing: [] },
+      { id: 's1-5', episodeNumber: 1, order: 4, kind: 'standard', relationshipPacing: [] },
+      { id: 's2-3', episodeNumber: 2, order: 2, kind: 'standard', relationshipPacing: [] },
+    ] as never;
+
+    const tasks = compileNarrativeRealizationTasks(graph, scenes);
+    const budgets = tasks.filter((task) => task.id.startsWith('task:escalation-budget:'));
+    expect(budgets.map((task) => [task.id, task.sceneId])).toEqual([
+      ['task:escalation-budget:ep1', 's1-5'],
+      ['task:escalation-budget:ep2', 's2-3'],
+    ]);
+    for (const budget of budgets) {
+      expect(budget.blocking).toBe(false);
+      expect(budget.evidenceAtoms).toHaveLength(2);
+      expect(budget.evidenceAtoms.every((atom) => atom.polarity === 'forbidden' && atom.verificationAuthority === 'semantic_judge')).toBe(true);
+    }
+    expect(budgets[0].evidenceAtoms[0].description).toContain('MORE THAN ONE');
+    expect(budgets[0].evidenceAtoms[1].description).toContain('DISPLACES');
+  });
 });

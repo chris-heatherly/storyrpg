@@ -884,6 +884,67 @@ export function compileNarrativeRealizationTasks(
     });
   }
 
+  // C2 (quality-gap 14-50-23): the G6 escalation budget was prompt-side only
+  // and failed live — the episode-final scene stacked a window photo AND
+  // "Now the real story begins" on top of Kylie's authored victory. The
+  // budget becomes judge-verified forbidden atoms on each episode's final
+  // scene: at most one new threat signal, and the protagonist's authored
+  // ending is never displaced. Advisory (blocking: false) — shadow evidence
+  // before any promotion.
+  {
+    const finalSceneByEpisode = new Map<number, PlannedScene>();
+    for (const scene of scenes) {
+      const current = finalSceneByEpisode.get(scene.episodeNumber);
+      if (!current || scene.order > current.order) finalSceneByEpisode.set(scene.episodeNumber, scene);
+    }
+    for (const [episodeNumber, finalScene] of finalSceneByEpisode) {
+      const execution = resolveTaskExecutionTarget({
+        scene: finalScene,
+        episodeNumber,
+        kind: 'event',
+      });
+      tasks.push({
+        id: `task:escalation-budget:ep${episodeNumber}`,
+        contractId: `escalation-budget:ep${episodeNumber}`,
+        episodeNumber,
+        sourceKinds: ['treatment'],
+        ownerStage: execution.ownerStage,
+        repairHandler: execution.repairHandler,
+        sceneId: finalScene.id,
+        artifactPath: execution.artifactPath,
+        evidenceAtoms: [
+          {
+            id: `escalation-budget:ep${episodeNumber}:threat-stack`,
+            description: 'The closing beats introduce MORE THAN ONE brand-new threat signal (a second unrelated menace, watcher, message, or ominous arrival stacked on top of the first new one). One new threat signal is the budget; escalating an ALREADY-established threat does not count against it.',
+            acceptedPatterns: [],
+            sourceText: 'episode cliffhanger escalation budget',
+            kind: 'semantic',
+            polarity: 'forbidden',
+            producerStage: execution.ownerStage,
+            temporalSlot: execution.temporalSlot,
+            required: true,
+            verificationAuthority: 'semantic_judge',
+          },
+          {
+            id: `escalation-budget:ep${episodeNumber}:ending-displaced`,
+            description: "A late twist or new threat DISPLACES the protagonist's authored climax: the episode's final emotional beat belongs to the new threat instead of the protagonist's own action, decision, or victory.",
+            acceptedPatterns: [],
+            sourceText: 'protagonist owns the ending',
+            kind: 'semantic',
+            polarity: 'forbidden',
+            producerStage: execution.ownerStage,
+            temporalSlot: execution.temporalSlot,
+            required: true,
+            verificationAuthority: 'semantic_judge',
+          },
+        ],
+        target: { scope: 'owner', surfaces: execution.surfaces },
+        sourceContractIds: [`escalation-budget:ep${episodeNumber}`],
+        blocking: false,
+      });
+    }
+  }
+
   for (const premise of graph.premiseContracts ?? []) {
     const feasibility = applySecondPersonPremiseFeasibility(premiseAtoms(premise), graph.narrativeVoice);
     const atoms = feasibility.atoms;

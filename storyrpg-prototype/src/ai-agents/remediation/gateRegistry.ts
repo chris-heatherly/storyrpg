@@ -137,6 +137,10 @@ const RAW_GATE_REGISTRY = [
   // gets one SceneWriter retry with tense feedback at write time, where the
   // fix costs one scene instead of final-contract repair rounds.
   { id: 'GATE_SCENE_TENSE_CHECK', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
+  // G8 prose-mechanics linter: deterministic high-precision detection of
+  // dialogue comma-splices and doubled punctuation routes ONE SceneWriter
+  // micro-rewrite naming the exact defects; residuals are advisory warnings.
+  { id: 'GATE_SCENE_MECHANICS_LINT', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
   // Flag-gated SceneCritic rewrite: a targeted critic pass over scenes that
   // failed incremental voice/POV validation or needed a realization retry
   // (criticFlags), capped at 3/episode. Not a detector — cost-bounded polish.

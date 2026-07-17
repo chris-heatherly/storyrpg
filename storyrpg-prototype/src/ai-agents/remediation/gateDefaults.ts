@@ -160,6 +160,15 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // rewrite route finish the job.
   GATE_SCENE_TENSE_CHECK: true,
 
+  // G8 scene-time prose-mechanics linter (run 20-44-49 shipped "I'm Stela
+  // Pavel, Welcome." and "The man you fled, Was he worth…"). Deterministic
+  // high-precision detection only (dialogue comma-splice-with-capital,
+  // doubled punctuation) routing ONE SceneWriter micro-rewrite that fixes
+  // exactly the named defects; residual findings are advisory warnings.
+  // Deterministic code never authors the fix (typography-safe classes are
+  // auto-normalized separately in proseTypography.ts).
+  GATE_SCENE_MECHANICS_LINT: true,
+
   // Flag-gated SceneCritic (SAR wave 2, R8 — authoring economics). The full
   // sceneCritic config pass doubles SceneWriter token cost per scene, so it
   // stays opt-in. This gate instead runs the critic ONLY over scenes that

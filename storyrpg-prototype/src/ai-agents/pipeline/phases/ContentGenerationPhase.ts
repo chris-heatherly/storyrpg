@@ -67,6 +67,7 @@ import { RemediationLedgerRecord } from '../../remediation/remediationLedger';
 import { isChoiceRegenImprovement, shouldRegenChoices } from '../../remediation/regenChoicesPolicy';
 import { shouldAdoptRegenAttempt } from '../../remediation/regenAdoption';
 import { flagSceneForCritic } from '../../remediation/sceneCriticFlags';
+import { lintSceneMechanics, mechanicsLintFeedback } from '../../utils/proseMechanicsLint';
 import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
 import {
   buildSceneConstructionPromptView,
@@ -2403,6 +2404,65 @@ export class ContentGenerationPhase {
                 phase: 'scenes',
                 message: `Scene ${sceneBlueprint.id} still narrates in past tense after tense retry (${residualBeatDrifts.length} blocking beat(s); ${residualCensus.driftedBeats}/${residualCensus.eligibleBeats} beats) — deferring to the final-contract tense repair route.`,
                 data: { driftedBeatIds: residualBeatDrifts.length > 0 ? residualBeatDrifts.map((drift) => drift.beatId ?? '') : residualCensus.driftedBeatIds },
+              });
+            }
+          }
+        }
+
+        // G8 prose-mechanics lint (GATE_SCENE_MECHANICS_LINT): deterministic
+        // high-precision detection of dialogue comma-splices and doubled
+        // punctuation. Detection only — the fix is ONE SceneWriter micro-rewrite
+        // naming the exact defects (deterministic code never authors prose).
+        // Runs before the realization check for the same reason as the tense
+        // retry: a full-scene rewrite must not drop realization patches.
+        if (isGateEnabled('GATE_SCENE_MECHANICS_LINT')) {
+          const mechanicsFindings = lintSceneMechanics(sceneContent.beats);
+          if (mechanicsFindings.length > 0) {
+            context.emit({
+              type: 'regeneration_triggered',
+              phase: 'scenes',
+              message: `Scene ${sceneBlueprint.id} has ${mechanicsFindings.length} mechanical punctuation defect(s) — retrying with mechanics feedback`,
+              data: { findings: mechanicsFindings.map((finding) => ({ code: finding.code, beatId: finding.beatId, excerpt: finding.excerpt })) },
+            });
+            const mechanicsRetry = await withTimeout(
+              this.deps.sceneWriter.execute({
+                ...sceneWriterInput,
+                storyContext: {
+                  ...sceneWriterInput.storyContext,
+                  userPrompt: `${sceneWriterInput.storyContext.userPrompt || ''}\n\n${mechanicsLintFeedback(mechanicsFindings)}`,
+                },
+              }),
+              PIPELINE_TIMEOUTS.llmAgent,
+              `SceneWriter.execute(${sceneBlueprint.id} mechanics-retry)`,
+            ).catch((err) => ({
+              success: false as const,
+              data: null as SceneContent | null,
+              error: err instanceof Error ? err.message : String(err),
+            }));
+            if (mechanicsRetry.success && mechanicsRetry.data) {
+              const retryFindings = lintSceneMechanics(mechanicsRetry.data.beats ?? []);
+              if (retryFindings.length < mechanicsFindings.length) {
+                Object.assign(sceneContent, mechanicsRetry.data);
+                sceneContent.sceneId = sceneBlueprint.id;
+                sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
+                sceneContent.locationId = sceneSettingContext.locationId;
+                sceneContent.settingContext = sceneSettingContext;
+                sceneContent.requiredBeats = sceneRealizationBlueprint.requiredBeats;
+                sceneContent.signatureMoment = sceneRealizationBlueprint.signatureMoment;
+                context.emit({
+                  type: 'debug',
+                  phase: 'scenes',
+                  message: `Mechanics retry for ${sceneBlueprint.id} adopted: defects ${mechanicsFindings.length} -> ${retryFindings.length}`,
+                });
+              }
+            }
+            const residualMechanics = lintSceneMechanics(sceneContent.beats);
+            if (residualMechanics.length > 0) {
+              context.emit({
+                type: 'warning',
+                phase: 'scenes',
+                message: `Scene ${sceneBlueprint.id} still has ${residualMechanics.length} mechanical punctuation defect(s) after mechanics retry — advisory; SceneCritic/final-contract prose routes may address them.`,
+                data: { findings: residualMechanics.map((finding) => ({ code: finding.code, beatId: finding.beatId, excerpt: finding.excerpt })) },
               });
             }
           }

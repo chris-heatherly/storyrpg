@@ -169,6 +169,13 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // auto-normalized separately in proseTypography.ts).
   GATE_SCENE_MECHANICS_LINT: true,
 
+  // C1 cast-order autofix (second occurrence: Radu staged early in BOTH
+  // 20-44-49 and 14-50-23). When a treatment-anchored first appearance is
+  // violated by an earlier scene's cast metadata, strip the premature
+  // placement at plan time — a deterministic metadata edit, no prose
+  // authored. Presence-derived (non-anchor) findings stay advisory.
+  GATE_ANCHOR_CAST_ORDER_AUTOFIX: true,
+
   // Flag-gated SceneCritic (SAR wave 2, R8 — authoring economics). The full
   // sceneCritic config pass doubles SceneWriter token cost per scene, so it
   // stays opt-in. This gate instead runs the critic ONLY over scenes that

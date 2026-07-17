@@ -146,7 +146,10 @@ describe('narrative contract migration', () => {
       bridgePolicy: 'orientation_only',
       locationRequirement: { canonicalValue: 'Cismigiu Gardens', required: true },
     });
-    expect(migrated.narrativeContractGraph?.realizationTasks?.[0]).toMatchObject({
+    // Find by id — C2's escalation-budget task sorts ahead of transition tasks.
+    const transitionTask = migrated.narrativeContractGraph?.realizationTasks
+      ?.find((task) => task.id.startsWith('task:transition:'));
+    expect(transitionTask).toMatchObject({
       ownerStage: 'encounter_architect', repairHandler: 'encounter_route',
       target: { scope: 'owner', surfaces: ['encounter_entry'] },
       evidenceAtoms: [expect.objectContaining({ verificationAuthority: 'literal' })],

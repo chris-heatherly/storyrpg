@@ -23,6 +23,11 @@
 const ENTITY_STOP_TOKENS = new Set([
   'the', 'a', 'an', 'in', 'at', 'of', 'on', 'near', 'inside', 'outside',
   'her', 'his', 'their', 'your', 's',
+  // Id-scheme prefixes carry no identity: 'char-radu-stoian' names the same
+  // entity as 'Radu Stoian ("The Mountain")' — treating 'char' as content
+  // made that comparison fail and silenced the cast-order preflight in two
+  // consecutive runs (14-50-23, 20-44-49).
+  'char', 'npc', 'loc',
 ]);
 
 /** Normalized content tokens of a free-text entity reference. */

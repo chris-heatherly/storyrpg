@@ -14,7 +14,7 @@
  * through shadow evidence first.
  */
 
-import type { NarrativeAnchorContract } from '../../types/narrativeContract';
+import type { NarrativeAnchorContract, NarrativeFirstAppearanceContract } from '../../types/narrativeContract';
 import { entityTokensMatch } from '../utils/entityIdentity';
 
 export interface AnchorCastOrderFinding {
@@ -62,4 +62,112 @@ export function auditAnchorCastOrder(
     }
   }
   return findings;
+}
+
+/**
+ * C1 (quality-gap 14-50-23): Radu-in-s1-2 recurred because the anchor-based
+ * audit had two failure modes — the graph's anchorContracts can be null while
+ * the season plan's are populated (vacuous source), and the LLM anchor
+ * compiler simply may not emit a first-sighting anchor at all on a given run.
+ * The DETERMINISTIC authority is the compiled first-appearance contract
+ * (presence ∪ anchors): it exists for every named character and already
+ * names the owning scene and every earlier scene. This audit reads it
+ * directly, so cast-order coverage no longer depends on LLM anchor variance.
+ */
+export interface FirstAppearanceCastOrderFinding {
+  contractId: string;
+  characterId: string;
+  characterName: string;
+  owningSceneId: string;
+  earlySceneId: string;
+  /** True when a treatment anchor backs the contract. */
+  anchorBacked: boolean;
+  /**
+   * True when the premature cast is in an EARLIER EPISODE than the compiled
+   * first appearance (the Radu class: presence contracts put him in ep2, the
+   * ep1 plan cast him anyway). The contract itself is blocking tier, so this
+   * is a would-be blocker caught at plan time.
+   */
+  crossEpisode: boolean;
+  message: string;
+}
+
+export interface CastOrderAuditScene {
+  id: string;
+  episodeNumber?: number;
+  npcsPresent?: string[];
+  npcsInvolved?: string[];
+}
+
+export function auditFirstAppearanceCastOrder(
+  contracts: ReadonlyArray<NarrativeFirstAppearanceContract>,
+  scenes: ReadonlyArray<CastOrderAuditScene>,
+): FirstAppearanceCastOrderFinding[] {
+  const findings: FirstAppearanceCastOrderFinding[] = [];
+  const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
+  for (const contract of contracts) {
+    // Within the owning episode, the contract's own earlierSceneIds is the
+    // authority — positional array order would misclassify branch siblings as
+    // "earlier" and make the autofix destructive on branching graphs. Across
+    // episodes, ANY scene in an earlier episode precedes the first appearance
+    // (earlierSceneIds are episode-local, which is exactly how Radu-in-s1-2
+    // evaded the audit while his first appearance was compiled to ep2).
+    const earlierIdSet = new Set(contract.earlierSceneIds ?? []);
+    const candidateScenes = scenes.filter((scene) =>
+      earlierIdSet.has(scene.id)
+      || (scene.episodeNumber !== undefined && scene.episodeNumber < contract.episodeNumber));
+    if (candidateScenes.length === 0) continue;
+    const anchorBacked = (contract.sourceContractIds ?? []).some((id) => id.startsWith('anchor:'));
+    for (const scene of candidateScenes) {
+      if (scene.id === contract.owningSceneId || !sceneById.has(scene.id)) continue;
+      const cast = [...(scene.npcsPresent ?? []), ...(scene.npcsInvolved ?? [])];
+      const earlyRef = cast.find((ref) =>
+        entityTokensMatch(ref, contract.characterId) || entityTokensMatch(ref, contract.characterName));
+      if (!earlyRef) continue;
+      const crossEpisode = scene.episodeNumber !== undefined && scene.episodeNumber < contract.episodeNumber;
+      findings.push({
+        contractId: contract.id,
+        characterId: contract.characterId,
+        characterName: contract.characterName,
+        owningSceneId: contract.owningSceneId,
+        earlySceneId: scene.id,
+        anchorBacked,
+        crossEpisode,
+        message: `${contract.characterName} is cast in ${scene.id} (as "${earlyRef}") before their compiled first appearance at ${contract.owningSceneId}${crossEpisode ? ` (episode ${contract.episodeNumber})` : ''} — an early introduction duplicates and defuses the planned moment.`,
+      });
+    }
+  }
+  return findings;
+}
+
+/**
+ * C1 autofix (second occurrence — shadow evidence from runs 20-44-49 and
+ * 14-50-23): strip the premature cast placement from the earlier scene's
+ * plan metadata. Deterministic plan-metadata edit only — no prose is
+ * authored; the scene simply stops staging a character the treatment
+ * introduces later. Fixed tiers: anchor-backed findings (treatment
+ * authority) and cross-episode findings (the first-appearance contract is
+ * blocking tier — the premature cast is a would-be blocker). Same-episode
+ * presence-derived findings stay advisory.
+ */
+export function applyCastOrderAutofix(
+  findings: ReadonlyArray<FirstAppearanceCastOrderFinding>,
+  scenes: ReadonlyArray<CastOrderAuditScene>,
+): FirstAppearanceCastOrderFinding[] {
+  const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
+  const applied: FirstAppearanceCastOrderFinding[] = [];
+  for (const finding of findings) {
+    if (!finding.anchorBacked && !finding.crossEpisode) continue;
+    const scene = sceneById.get(finding.earlySceneId);
+    if (!scene) continue;
+    const matches = (ref: string) =>
+      entityTokensMatch(ref, finding.characterId) || entityTokensMatch(ref, finding.characterName);
+    const beforePresent = scene.npcsPresent?.length ?? 0;
+    const beforeInvolved = scene.npcsInvolved?.length ?? 0;
+    if (scene.npcsPresent) scene.npcsPresent = scene.npcsPresent.filter((ref) => !matches(ref));
+    if (scene.npcsInvolved) scene.npcsInvolved = scene.npcsInvolved.filter((ref) => !matches(ref));
+    const removed = (beforePresent - (scene.npcsPresent?.length ?? 0)) + (beforeInvolved - (scene.npcsInvolved?.length ?? 0));
+    if (removed > 0) applied.push(finding);
+  }
+  return applied;
 }

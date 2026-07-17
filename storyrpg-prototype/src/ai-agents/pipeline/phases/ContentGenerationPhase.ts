@@ -248,7 +248,7 @@ function describeBoilerplateHits(hits: EncounterProseScanHit[], max = 6): string
   }).join('\n');
 }
 import { CallbackLedger } from '../callbackLedger';
-import { auditAnchorCastOrder } from '../anchorCastOrderPreflight';
+import { auditAnchorCastOrder, auditFirstAppearanceCastOrder, applyCastOrderAutofix, type CastOrderAuditScene } from '../anchorCastOrderPreflight';
 import { auditEarnedBonds, type EarnedBondScene } from '../earnedBondPreflight';
 import { preservePipelineMaterializedBeats } from '../pipelineMaterializedBeats';
 import {
@@ -965,8 +965,15 @@ export class ContentGenerationPhase {
     // duplicates and defuses the planned moment (run 20-44-49: Radu in s1-2
     // before the rooftop). Warnings + diagnostic only — the anchor linkage is
     // LLM-compiled and earns gate trust through shadow evidence first.
+    // C1: the graph's anchorContracts can be null while the season plan's are
+    // populated (run 14-50-23: the audit ran against a vacuous source) —
+    // union both, dedupe by id.
+    const castOrderAnchorSources = [
+      ...(brief.seasonPlan?.scenePlan?.anchorContracts ?? []),
+      ...(brief.seasonPlan?.scenePlan?.narrativeContractGraph?.anchorContracts ?? []),
+    ];
     const anchorCastOrderFindings = auditAnchorCastOrder(
-      brief.seasonPlan?.scenePlan?.narrativeContractGraph?.anchorContracts ?? [],
+      [...new Map(castOrderAnchorSources.map((anchor) => [anchor.id, anchor])).values()],
       blueprint.scenes.map((scene, index) => ({
         id: scene.id,
         episodeNumber: densityEpisodeNumber,
@@ -982,6 +989,49 @@ export class ContentGenerationPhase {
         message: `Anchor cast-order preflight: ${anchorCastOrderFindings.length} NPC(s) cast before their anchored first sighting — ${anchorCastOrderFindings.map((finding) => `${finding.npcName} in ${finding.earlySceneId} (anchored: ${finding.owningSceneId})`).join('; ')}. Advisory.`,
         data: { findings: anchorCastOrderFindings },
       });
+    }
+    // C1: the deterministic cast-order authority — compiled first-appearance
+    // contracts (presence ∪ anchors) exist for every named character, so this
+    // audit does not depend on the LLM anchor compiler emitting a
+    // first-sighting anchor on any given run. Anchor-backed violations are
+    // AUTOFIXED (premature cast stripped from plan metadata — no prose
+    // authored); presence-derived violations stay advisory.
+    const castOrderAuditScenes: CastOrderAuditScene[] = blueprint.scenes.map((scene) => {
+      const auditScene: CastOrderAuditScene = {
+        id: scene.id,
+        episodeNumber: densityEpisodeNumber,
+        npcsPresent: scene.npcsPresent,
+        npcsInvolved: (scene as { npcsInvolved?: string[] }).npcsInvolved,
+      };
+      return auditScene;
+    });
+    const firstAppearanceCastFindings = auditFirstAppearanceCastOrder(
+      brief.seasonPlan?.scenePlan?.narrativeContractGraph?.firstAppearanceContracts ?? [],
+      castOrderAuditScenes,
+    );
+    if (firstAppearanceCastFindings.length > 0) {
+      // Autofix mutates the REAL blueprint scenes (the audit ran on copies).
+      const autofixed = isGateEnabled('GATE_ANCHOR_CAST_ORDER_AUTOFIX')
+        ? applyCastOrderAutofix(firstAppearanceCastFindings, blueprint.scenes as unknown as CastOrderAuditScene[])
+        : [];
+      const autofixedKeys = new Set(autofixed.map((finding) => `${finding.contractId}:${finding.earlySceneId}`));
+      const advisory = firstAppearanceCastFindings.filter((finding) => !autofixedKeys.has(`${finding.contractId}:${finding.earlySceneId}`));
+      if (autofixed.length > 0) {
+        context.emit({
+          type: 'checkpoint',
+          phase: 'scenes',
+          message: `Cast-order autofix: stripped ${autofixed.length} premature cast placement(s) — ${autofixed.map((finding) => `${finding.characterName} removed from ${finding.earlySceneId} (first appearance: ${finding.owningSceneId})`).join('; ')}.`,
+          data: { autofixed },
+        });
+      }
+      if (advisory.length > 0) {
+        context.emit({
+          type: 'warning',
+          phase: 'scenes',
+          message: `First-appearance cast-order preflight: ${advisory.length} NPC(s) cast before their compiled first appearance — ${advisory.map((finding) => `${finding.characterName} in ${finding.earlySceneId} (owner: ${finding.owningSceneId})`).join('; ')}. Advisory.`,
+          data: { findings: advisory },
+        });
+      }
     }
     // B3 advisory: a plan that jumps a relationship to friend+ in one scene
     // without staging an earning path produces declared-not-earned bonds

@@ -154,6 +154,10 @@ export interface StoryCircleQualityScoreReport extends StoryCircleQualityScoreBa
     finalQualityScore: string;
   };
   scoringNotes: string[];
+  /** G9 evidence sync: hash of the packaged episodes this score describes. */
+  candidateStoryHash?: string;
+  /** G9 evidence sync: staleness stamp inherited from the QA report the score consumed. */
+  qaEvidence?: import('./qaEvidenceStamp').QaEvidenceStamp;
 }
 
 export interface StoryCircleQualityScoreResult {

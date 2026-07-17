@@ -97,6 +97,10 @@ export interface QualityLedgerEntry {
   capIds?: string[];
   /** How many of those caps have maxScore < 90 (known shipped defects). */
   blockingCapCount?: number;
+  /** G9 evidence sync: content hash of the packaged story's episodes projection. */
+  candidateStoryHash?: string;
+  /** G9 evidence sync: true when the QA grades in this row scored content that was later mutated. */
+  qaEvidenceStale?: boolean;
   /** Successful rows are only emitted after both retained package files parse. */
   packageVerified?: boolean;
   packageRetention?: 'retain_success_package';

@@ -1170,6 +1170,11 @@ export interface QAReport {
    * (STORYRPG_RESPONSIVENESS_JUDGE=0) or failed.
    */
   responsiveness?: ResponsivenessReport;
+  /**
+   * G9 evidence sync: which content this report actually graded, and whether
+   * that content was mutated after grading (stale). Reporting-only.
+   */
+  qaEvidence?: import('../utils/qaEvidenceStamp').QaEvidenceStamp;
 }
 
 /**

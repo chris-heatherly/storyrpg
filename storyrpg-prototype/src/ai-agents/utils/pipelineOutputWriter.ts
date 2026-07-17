@@ -15,6 +15,7 @@ import { EpisodeBlueprint } from '../agents/StoryArchitect';
 import { SceneContent } from '../agents/SceneWriter';
 import { ChoiceSet } from '../agents/ChoiceAuthor';
 import { QAReport } from '../agents/QAAgents';
+import { fnv1a32Json } from './contentHash';
 import { EncounterStructure } from '../agents/EncounterArchitect';
 import type { EncounterTelemetry } from '../agents/EncounterArchitect';
 import type { SceneValidationResult } from '../validators/IncrementalValidators';
@@ -2296,6 +2297,15 @@ export async function savePipelineOutputs(
   const storyEncounters = storyScenes.map(s => s.encounter).filter(Boolean);
 
   const quality = deriveRunQualityScore(outputs, { outputDir });
+  // G9 evidence sync: the score report names the content it describes and
+  // inherits the QA staleness stamp, so a score derived from stale QA evidence
+  // is legible as such. Reporting-only; never feeds caps.
+  if (outputs.finalStory) {
+    quality.report.candidateStoryHash = fnv1a32Json(outputs.finalStory.episodes ?? []);
+  }
+  if (outputs.qaReport?.qaEvidence) {
+    quality.report.qaEvidence = outputs.qaReport.qaEvidence;
+  }
   const qualityReportPath = outputDir + '07c-quality-score-report.json';
   const qualityReportSize = await writeJsonFile(qualityReportPath, quality.report);
   files.push({
@@ -2413,6 +2423,10 @@ export async function savePipelineOutputs(
       remediationsAttempted: outputs.remediationSummary?.attempted,
       remediationsSucceeded: outputs.remediationSummary?.succeeded,
       remediationsDegraded: outputs.remediationSummary?.degraded,
+      candidateStoryHash: quality.report.candidateStoryHash,
+      ...(outputs.qaReport?.qaEvidence?.stale !== undefined
+        ? { qaEvidenceStale: outputs.qaReport.qaEvidence.stale }
+        : {}),
       memory: outputs.memorySummary,
       secondPersonOpenerRatio: openerRatio,
       openerMonotonyPassages: openerMonotony,

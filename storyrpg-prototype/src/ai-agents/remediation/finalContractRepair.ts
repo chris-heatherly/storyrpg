@@ -25,6 +25,7 @@ import type {
 import type { RemediationLedgerRecord } from './remediationLedger';
 import { StructuralValidator } from '../validators/StructuralValidator';
 import { canonicalizeStoryWitnessReactions } from '../utils/witnessNpcResolver';
+import { fnv1a32Json } from '../utils/contentHash';
 import { buildDesignNoteLeakStripHandler } from './designNoteLeakHandler';
 import { buildPlanningRegisterMetadataRepairHandler } from './planningRegisterMetadataRepairHandler';
 import { buildPlayerFacingProseRepairHandler } from './playerFacingProseRepairHandler';
@@ -247,13 +248,7 @@ function introducedBlockingIssueKeys(
 }
 
 export function finalContractRepairInputHash(value: unknown): string {
-  const text = JSON.stringify(value);
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  return fnv1a32Json(value);
 }
 
 function cloneForRepairEvidence<T>(value: T): T {

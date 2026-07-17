@@ -283,6 +283,12 @@ import {
   OutputManifest,
 } from '../utils/pipelineOutputWriter';
 import {
+  stampQaEvidence,
+  markQaEvidenceStaleness,
+  aggregateQaEvidence,
+  qaGradedContentHash,
+} from '../utils/qaEvidenceStamp';
+import {
   buildEncounterSlotManifest,
   collectMissingSlotsFromManifest,
   encounterSetupIdentifier,
@@ -5795,6 +5801,8 @@ export class FullStoryPipeline {
           ...(aggregatedProseCraft ? { proseCraft: aggregatedProseCraft } : {}),
           ...(aggregatedResponsiveness ? { responsiveness: aggregatedResponsiveness } : {}),
         };
+        const aggregatedEvidence = aggregateQaEvidence(episodeQAReports.map(r => r.qaEvidence));
+        if (aggregatedEvidence) aggregatedQAReport.qaEvidence = aggregatedEvidence;
         this.addCheckpoint('Aggregated QA Report', aggregatedQAReport, !aggregatedQAReport.passesQA);
         await saveEarlyDiagnostic(outputDirectory, '06-qa-report.json', aggregatedQAReport);
       }
@@ -7260,6 +7268,7 @@ export class FullStoryPipeline {
           ]));
           qaReport = qaResult;
           bestPracticesReport = bpResult;
+          stampQaEvidence(qaReport, qaGradedContentHash(sceneContents, choiceSets));
           await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.json`, qaReport);
           if (bestPracticesReport) {
             await saveEarlyDiagnostic(outputDirectory, `episode-${i}-best-practices-report.json`, bestPracticesReport);
@@ -7300,6 +7309,15 @@ export class FullStoryPipeline {
                 ? { forceRevalidation: true, revalidationReason: 'treatment-sourced continuity findings escalate at final contract' }
                 : {}),
             },
+          );
+          // G9 evidence sync: continuity repair mutates prose in place and only
+          // the continuity block conditionally re-derives — if the graded hash no
+          // longer matches, the persisted reports say so instead of presenting as
+          // fresh. Reporting-only; never gates.
+          markQaEvidenceStaleness(
+            qaReport,
+            qaGradedContentHash(sceneContents, choiceSets),
+            'continuity repair mutated prose after grading; voice/stakes/proseCraft/responsiveness were not re-derived',
           );
           await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.json`, qaReport);
           await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.post-repair.json`, qaReport);

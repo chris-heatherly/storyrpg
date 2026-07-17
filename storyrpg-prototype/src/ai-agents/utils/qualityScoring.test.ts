@@ -354,4 +354,29 @@ describe('qualityScoring v4: leakage calibration', () => {
 
     expect(result.basis.caps.some((cap) => cap.id === 'repeated_or_central_leakage')).toBe(true);
   });
+
+  it('D2: divergenceReport presents state and perceptible divergence as distinct measurements', () => {
+    const result = deriveStoryCircleQualityScore({
+      finalStory: syntheticStory(),
+      qaReport: {
+        responsiveness: {
+          overallScore: 62,
+          conceptScores: [
+            { conceptId: 'choice_reflected_in_prose', score: 60, evidence: 'similar openings' },
+            { conceptId: 'npc_reacts_to_player_choice', score: 45, evidence: 'no behavior change' },
+          ],
+        },
+      } as any,
+    }, { now: new Date('2026-01-01T00:00:00Z') });
+
+    const divergence = result.report.divergenceReport;
+    expect(divergence?.state.totalChoices).toBeTypeOf('number');
+    expect(divergence?.state.note).toContain('Deterministic');
+    expect(divergence?.perceptible).toMatchObject({
+      responsivenessScore: 62,
+      choiceReflectedInProse: 60,
+      npcReactsToPlayerChoice: 45,
+    });
+    expect(divergence?.perceptible.note).toContain('FEEL');
+  });
 });

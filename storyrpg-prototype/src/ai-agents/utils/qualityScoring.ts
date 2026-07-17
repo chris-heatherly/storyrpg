@@ -158,6 +158,25 @@ export interface StoryCircleQualityScoreReport extends StoryCircleQualityScoreBa
   candidateStoryHash?: string;
   /** G9 evidence sync: staleness stamp inherited from the QA report the score consumed. */
   qaEvidence?: import('./qaEvidenceStamp').QaEvidenceStamp;
+  /**
+   * D2: state divergence (deterministic — flags/consequences the ENGINE
+   * tracks) and perceptible divergence (judge-graded — what a READER feels)
+   * are different measurements. Both are reported; neither substitutes for
+   * the other. A run can be rich in state and cosmetic on the page.
+   */
+  divergenceReport?: {
+    state: {
+      totalChoices: number;
+      choicesWithConsequences: number;
+      note: string;
+    };
+    perceptible: {
+      responsivenessScore?: number;
+      choiceReflectedInProse?: number;
+      npcReactsToPlayerChoice?: number;
+      note: string;
+    };
+  };
 }
 
 export interface StoryCircleQualityScoreResult {
@@ -586,7 +605,37 @@ export function deriveStoryCircleQualityScore(
         'qaScore, validationScore, and finalStoryContractScore are retained only as diagnostics.',
         'v4: LLM judge grades (prose craft, responsiveness) set concept base scores; evidence-requiring domains are excluded from the average when their judge never ran.',
         'Publishability caps do not replace or weaken final-contract correctness gates; ungrounded judge findings remain advisory.',
+        'D2: divergenceReport separates engine-tracked STATE divergence from judge-graded PERCEPTIBLE divergence; a run can be rich in state and cosmetic on the page.',
       ],
+      divergenceReport: buildDivergenceReport(staticSignals, inputs.qaReport as any),
+    },
+  };
+}
+
+/**
+ * D2 (quality-gap 14-50-23): run 14-50-23 carried hundreds of state
+ * fingerprints while the responsiveness judge read 62 — both true, different
+ * measurements, previously conflated in review. Report them side by side.
+ */
+function buildDivergenceReport(
+  signals: StaticStorySignals,
+  qa: any,
+): NonNullable<StoryCircleQualityScoreReport['divergenceReport']> {
+  const conceptScore = (conceptId: string): number | undefined => {
+    const entry = (qa?.responsiveness?.conceptScores ?? []).find((candidate: any) => candidate?.conceptId === conceptId);
+    return normalizeScore(entry?.score);
+  };
+  return {
+    state: {
+      totalChoices: signals.totalChoices,
+      choicesWithConsequences: signals.choicesWithConsequences,
+      note: 'Deterministic: choices whose flags/consequences the engine tracks. Measures bookkeeping, not reader experience.',
+    },
+    perceptible: {
+      responsivenessScore: normalizeScore(qa?.responsiveness?.overallScore),
+      choiceReflectedInProse: conceptScore('choice_reflected_in_prose'),
+      npcReactsToPlayerChoice: conceptScore('npc_reacts_to_player_choice'),
+      note: 'Judge-graded: whether a reader would FEEL the divergence (prose reflects the choice; NPC behavior changes downstream). This is the number responsiveness caps read.',
     },
   };
 }

@@ -249,6 +249,7 @@ function describeBoilerplateHits(hits: EncounterProseScanHit[], max = 6): string
 }
 import { CallbackLedger } from '../callbackLedger';
 import { auditAnchorCastOrder } from '../anchorCastOrderPreflight';
+import { auditEarnedBonds, type EarnedBondScene } from '../earnedBondPreflight';
 import { preservePipelineMaterializedBeats } from '../pipelineMaterializedBeats';
 import {
   mergeDuplicatePublicAftermathScenes,
@@ -982,6 +983,25 @@ export class ContentGenerationPhase {
         data: { findings: anchorCastOrderFindings },
       });
     }
+    // B3 advisory: a plan that jumps a relationship to friend+ in one scene
+    // without staging an earning path produces declared-not-earned bonds
+    // (run 16-30-16: dusk-club at s1-4). Plan-shape only; the arc ledger
+    // stays the on-page ruler.
+    const earnedBondFindings = auditEarnedBonds(blueprint.scenes.map((scene) => ({
+      id: scene.id,
+      hasChoice: (scene as { hasChoice?: boolean }).hasChoice,
+      choiceType: (scene as { choiceType?: string }).choiceType,
+      behavioralIntents: (scene as { behavioralIntents?: Array<{ kind?: string; intentKind?: string }> }).behavioralIntents,
+      relationshipPacing: (scene as { relationshipPacing?: EarnedBondScene['relationshipPacing'] }).relationshipPacing,
+    })));
+    if (earnedBondFindings.length > 0) {
+      context.emit({
+        type: 'warning',
+        phase: 'scenes',
+        message: `Earned-bond preflight: ${earnedBondFindings.length} planned stage jump(s) to friend+ with no staged earning path — ${earnedBondFindings.map((finding) => `${finding.subject} in ${finding.sceneId} (${finding.startStage}→${finding.targetStage})`).join('; ')}. Advisory.`,
+        data: { findings: earnedBondFindings },
+      });
+    }
     if (outputDirectory) {
       await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-construction-report.json`, {
         episodeNumber: densityEpisodeNumber,
@@ -992,6 +1012,7 @@ export class ContentGenerationPhase {
         sceneOwnershipPreflightIssues,
         routeCueIssues,
         anchorCastOrderFindings,
+        earnedBondFindings,
         sceneConstructionApplications: sceneConstruction.applications,
         profiles: blueprint.scenes.map((scene) => scene.sceneConstructionProfile),
         eventOwnershipProfiles: blueprint.scenes.map((scene) => scene.sceneEventOwnership),

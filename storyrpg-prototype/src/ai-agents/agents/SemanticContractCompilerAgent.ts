@@ -428,6 +428,7 @@ Rules:
 - Whenever firstSighting is true, set appearanceMode to named_on_page only when the source permits the reader to learn the canonical name in that scene; otherwise use anonymous_plant. An anonymous description that corresponds semantically to a cast member remains anonymous even though npcName identifies the contract owner.
 - For anchors that are not character first sightings, set appearanceMode to not_applicable.
 - onPageAction states what the reader must SEE in the owning scene ("Kylie accepts a protective object from Stela"), not what it means for the season.
+- When the anchor is a relationship or bond ("after testing her", "a new alliance"), onPageAction must name the dramatized EXCHANGE that earns it — a test passed, a cost paid, a vulnerability shown — never a declaration that the bond exists.
 - sourceRef quotes the anchor phrase from the likely-consequence line.
 
 CAST: ${input.castNames.join(', ') || '(unknown)'}

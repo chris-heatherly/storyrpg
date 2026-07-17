@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { flagSceneForCritic, sceneCriticFlags } from './sceneCriticFlags';
+import { addCriticNote, flagSceneForCritic, sceneCriticFlags, sceneCriticNotes } from './sceneCriticFlags';
 import type { SceneContent } from '../agents/SceneWriter';
 
 function scene(): SceneContent {
@@ -26,5 +26,27 @@ describe('sceneCriticFlags', () => {
     flagSceneForCritic(sc, 'incremental-validation-regen');
     flagSceneForCritic(sc, 'realization-retry');
     expect(sceneCriticFlags(sc)).toEqual(['incremental-validation-regen', 'realization-retry']);
+  });
+
+  it('accepts the A3 advisory reasons', () => {
+    const sc = scene();
+    flagSceneForCritic(sc, 'advisory-planting-miss');
+    flagSceneForCritic(sc, 'advisory-departure-miss');
+    flagSceneForCritic(sc, 'advisory-relationship-evidence');
+    flagSceneForCritic(sc, 'mechanics-lint-residual');
+    expect(sceneCriticFlags(sc)).toHaveLength(4);
+  });
+
+  it('critic notes accumulate, dedupe, and ignore empty strings', () => {
+    const sc = scene();
+    expect(sceneCriticNotes(sc)).toEqual([]);
+    addCriticNote(sc, 'Work in the crumpled note from Stela.');
+    addCriticNote(sc, 'Work in the crumpled note from Stela.');
+    addCriticNote(sc, '   ');
+    addCriticNote(sc, 'End with a motivated departure toward the rooftop.');
+    expect(sceneCriticNotes(sc)).toEqual([
+      'Work in the crumpled note from Stela.',
+      'End with a motivated departure toward the rooftop.',
+    ]);
   });
 });

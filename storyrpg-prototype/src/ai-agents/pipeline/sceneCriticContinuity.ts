@@ -42,7 +42,7 @@ import {
   type OwnershipPlannedSceneLite,
 } from './continuityRepair';
 import { isGateEnabled } from '../remediation/gateDefaults';
-import { sceneCriticFlags } from '../remediation/sceneCriticFlags';
+import { sceneCriticFlags, sceneCriticNotes } from '../remediation/sceneCriticFlags';
 import { rewriteLosesRequiredMoment } from '../remediation/sceneRealizationGuard';
 import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
@@ -111,7 +111,11 @@ export class SceneCriticContinuity {
     let candidates = [...sceneContents];
 
     if (flagGatedPass) {
-      candidates = candidates.filter(sc => sceneCriticFlags(sc).length > 0);
+      // A3: with more flag sources feeding the pass, spend the bounded budget
+      // on the scenes with the most recorded gaps first.
+      candidates = candidates
+        .filter(sc => sceneCriticFlags(sc).length > 0)
+        .sort((a, b) => (sceneCriticFlags(b).length + sceneCriticNotes(b).length) - (sceneCriticFlags(a).length + sceneCriticNotes(a).length));
       if (candidates.length === 0) return;
     } else if (typeof cfg?.voiceScoreThreshold === 'number') {
       // If a voiceScoreThreshold is configured, prefer scenes with a low score.
@@ -158,15 +162,23 @@ export class SceneCriticContinuity {
         // SceneContent at acceptance) — the season-final validators block on
         // those exact moments. Tell the critic up front…
         const contractSection = buildRequiredBeatsSection(scene);
+        // A3: advisory shadow evidence (planting/departure misses, unearned
+        // relationship jumps, residual mechanics defects) arrives as concrete
+        // per-scene notes — the critic fixes the NAMED gaps, not generic polish.
+        const advisoryNotes = sceneCriticNotes(scene);
+        const advisorySection = advisoryNotes.length > 0
+          ? `ADDRESS THESE SPECIFIC GAPS (advisory findings from generation-time validation):\n${advisoryNotes.map((note) => `- ${note}`).join('\n')}`
+          : '';
+        const directorNotes = [
+          contractSection
+            ? `PRESERVE AUTHORED CONTENT: your rewrite must keep every staged moment below fully on-page — do not paraphrase away proper nouns, places, times, or staged actions.\n${contractSection}`
+            : '',
+          advisorySection,
+        ].filter(Boolean).join('\n\n');
         const critique = await critic.execute({
           scene,
           characterBible,
-          ...(contractSection
-            ? {
-                directorNotes:
-                  `PRESERVE AUTHORED CONTENT: your rewrite must keep every staged moment below fully on-page — do not paraphrase away proper nouns, places, times, or staged actions.\n${contractSection}`,
-              }
-            : {}),
+          ...(directorNotes ? { directorNotes } : {}),
         });
         if (!critique.success || !critique.data) continue;
         const rewrittenById = new Map(critique.data.rewrittenBeats.map(b => [b.id, b]));

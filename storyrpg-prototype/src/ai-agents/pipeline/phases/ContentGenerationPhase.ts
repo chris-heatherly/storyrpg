@@ -66,7 +66,7 @@ import {
 import { RemediationLedgerRecord } from '../../remediation/remediationLedger';
 import { isChoiceRegenImprovement, shouldRegenChoices } from '../../remediation/regenChoicesPolicy';
 import { shouldAdoptRegenAttempt } from '../../remediation/regenAdoption';
-import { flagSceneForCritic } from '../../remediation/sceneCriticFlags';
+import { flagSceneForCritic, addCriticNote } from '../../remediation/sceneCriticFlags';
 import { lintSceneMechanics, mechanicsLintFeedback } from '../../utils/proseMechanicsLint';
 import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
 import {
@@ -2458,10 +2458,14 @@ export class ContentGenerationPhase {
             }
             const residualMechanics = lintSceneMechanics(sceneContent.beats);
             if (residualMechanics.length > 0) {
+              flagSceneForCritic(sceneContent, 'mechanics-lint-residual');
+              for (const finding of residualMechanics.slice(0, 6)) {
+                addCriticNote(sceneContent, `Fix this mechanical punctuation defect in beat ${finding.beatId} without rewording anything else: «${finding.excerpt}»`);
+              }
               context.emit({
                 type: 'warning',
                 phase: 'scenes',
-                message: `Scene ${sceneBlueprint.id} still has ${residualMechanics.length} mechanical punctuation defect(s) after mechanics retry — advisory; SceneCritic/final-contract prose routes may address them.`,
+                message: `Scene ${sceneBlueprint.id} still has ${residualMechanics.length} mechanical punctuation defect(s) after mechanics retry — flagged for the bounded SceneCritic pass.`,
                 data: { findings: residualMechanics.map((finding) => ({ code: finding.code, beatId: finding.beatId, excerpt: finding.excerpt })) },
               });
             }
@@ -2620,6 +2624,54 @@ export class ContentGenerationPhase {
             initialOwnerValidation.findings.filter((finding) => finding.blocking),
             canonicalSceneWriterTasks,
           );
+          // A3: advisory planting/departure misses were previously recorded as
+          // shadow evidence and never acted on. They stay non-blocking, but the
+          // scene is flagged for the bounded critic pass with the exact missing
+          // atom named — a scene-time rewrite is cheap; the same gap at final
+          // scoring is a shipped defect.
+          for (const advisoryFinding of initialOwnerValidation.findings.filter((finding) => !finding.blocking)) {
+            const advisoryKind = advisoryFinding.taskId?.endsWith(':planting')
+              ? 'advisory-planting-miss' as const
+              : advisoryFinding.taskId?.endsWith(':departure')
+                ? 'advisory-departure-miss' as const
+                : undefined;
+            if (!advisoryKind) continue;
+            const advisoryTask = canonicalSceneWriterTasks.find((task) => task.id === advisoryFinding.taskId);
+            const missingDescriptions = (advisoryFinding.missingEvidenceAtoms ?? [])
+              .map((atomId) => advisoryTask?.evidenceAtoms.find((atom) => atom.id === atomId)?.description)
+              .filter((description): description is string => Boolean(description));
+            if (missingDescriptions.length === 0) continue;
+            flagSceneForCritic(sceneContent, advisoryKind);
+            for (const description of missingDescriptions) {
+              addCriticNote(
+                sceneContent,
+                advisoryKind === 'advisory-planting-miss'
+                  ? `Work this planted moment into the scene naturally (do not break anything already depicted): ${description}`
+                  : `The scene must end with a motivated departure: ${description}`,
+              );
+            }
+          }
+          // A3: a scene contracted to jump the relationship to friend+ must EARN
+          // it on the page. Trigger is plan-shape only (stage ranks on the pacing
+          // contract) — deliberately NOT a prose judgment, per the authority
+          // model; the critic note demands the dramatized exchange and the final
+          // relationship-ledger validator remains the ruler of whether it landed.
+          {
+            const stageRank: Record<string, number> = {
+              unmet: 0, noticed: 1, spark: 2, acquaintance: 3, tentative_ally: 4, friend: 5, trusted_ally: 6, intimate: 7,
+            };
+            for (const pacing of sceneBlueprint.relationshipPacing ?? []) {
+              const startRank = stageRank[pacing.startStage] ?? 0;
+              const targetRank = stageRank[pacing.targetStage] ?? 0;
+              if (targetRank < stageRank.friend || targetRank - startRank < 2) continue;
+              const subject = pacing.npcId ?? pacing.groupId ?? 'this relationship';
+              flagSceneForCritic(sceneContent, 'advisory-relationship-evidence');
+              addCriticNote(
+                sceneContent,
+                `This scene is contracted to advance ${subject} from "${pacing.startStage}" to "${pacing.targetStage}" — that bond must be EARNED on the page through a dramatized exchange (a test passed, a cost paid, a vulnerability shown), never declared in narration.${pacing.requiredEvidence.length > 0 ? ` Required evidence: ${pacing.requiredEvidence.join('; ')}` : ''}`,
+              );
+            }
+          }
           let ownerAtomVerdicts = initialOwnerValidation.semanticReceipt.atomVerdicts ?? [];
           let authoredRepairAttempts = 0;
           let patchCallAttempts = 0;

@@ -135,4 +135,23 @@ describe('SceneCriticContinuity.repairContinuityFindings (run-shaped)', () => {
     expect(criticCalls.map((call) => call.sceneId)).toEqual(['s1-2']);
     expect(qaReport.continuity!.issues[0].location).toEqual({ sceneId: 's1-2', beatId: 's1-2-b2' });
   });
+
+  it('A3: flag-gated pass feeds advisory critic notes into directorNotes and prioritizes the most-flagged scene', async () => {
+    const { sceneContents, criticCalls, deps } = makeFixture();
+    const { flagSceneForCritic, addCriticNote } = await import('../remediation/sceneCriticFlags');
+    // s1-1: one bare flag. s1-2: flag + two concrete advisory notes.
+    flagSceneForCritic(sceneContents[0], 'realization-retry');
+    flagSceneForCritic(sceneContents[1], 'advisory-planting-miss');
+    addCriticNote(sceneContents[1], 'Work this planted moment into the scene naturally: Stela slides a business card across the bar.');
+    addCriticNote(sceneContents[1], 'The scene must end with a motivated departure: Kylie decides to head for the rooftop.');
+
+    const pass = new SceneCriticContinuity({ ...deps, config: { agents: {}, sceneCritic: { enabled: false, maxScenesPerEpisode: 1 } } as unknown as PipelineConfig });
+    await pass.runSceneCriticPass(sceneContents, characterBible);
+
+    // Budget of 1: the scene with flag+2 notes wins over the bare flag.
+    expect(criticCalls.map((call) => call.sceneId)).toEqual(['s1-2']);
+    expect(criticCalls[0].directorNotes).toContain('ADDRESS THESE SPECIFIC GAPS');
+    expect(criticCalls[0].directorNotes).toContain('Stela slides a business card');
+    expect(criticCalls[0].directorNotes).toContain('motivated departure');
+  });
 });

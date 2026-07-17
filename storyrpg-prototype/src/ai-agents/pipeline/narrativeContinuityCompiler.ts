@@ -114,6 +114,8 @@ export function compileFirstAppearanceContracts(input: {
     firstSighting?: boolean;
     appearanceMode?: 'named_on_page' | 'anonymous_plant' | 'not_applicable';
   }>;
+  /** B1: immutable treatment signature tokens, matched to contracts by NPC name. */
+  npcVisualIdentities?: Array<{ name: string; visualIdentity: string }>;
 }): NarrativeFirstAppearanceContract[] {
   const candidates = new Map<string, NarrativeFirstAppearanceContract>();
   const sortedScenes = [...input.scenes].sort((a, b) => a.episodeNumber - b.episodeNumber || a.order - b.order || a.id.localeCompare(b.id));
@@ -167,6 +169,18 @@ export function compileFirstAppearanceContracts(input: {
       sourceContractIds: unique([...(existing?.sourceContractIds ?? []), anchor.id]),
       blocking: true,
     });
+  }
+  // B1: attach immutable signature tokens by normalized-name match so the
+  // realization compiler can emit advisory signature atoms on the owning scene.
+  for (const identity of input.npcVisualIdentities ?? []) {
+    const identityKey = normalizedCharacterId(identity.name);
+    for (const contract of candidates.values()) {
+      const nameKey = normalizedCharacterId(contract.characterName);
+      const idKey = normalizedCharacterId(contract.characterId);
+      if (nameKey === identityKey || idKey === identityKey || idKey.endsWith(`-${identityKey}`) || identityKey.endsWith(`-${nameKey}`)) {
+        contract.visualIdentity = identity.visualIdentity;
+      }
+    }
   }
   return [...candidates.values()].sort((a, b) => a.episodeNumber - b.episodeNumber || a.owningSceneId.localeCompare(b.owningSceneId));
 }

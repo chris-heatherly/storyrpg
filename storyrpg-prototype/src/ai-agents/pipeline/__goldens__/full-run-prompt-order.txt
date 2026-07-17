@@ -5,9 +5,9 @@
 4: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=18962b5c50f738c4
 5: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=d198762ce31b43a8
 6: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=d198762ce31b43a8
-7: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=97b33ad1038c99e5
+7: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=600610579ce5579c
 8: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=4596410562c54228
-9: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=97b33ad1038c99e5
+9: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=600610579ce5579c
 10: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=4596410562c54228
 11: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=cd0357f8b0bd9cc9
 12: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=1f400172fb20ef99

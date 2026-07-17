@@ -1292,6 +1292,8 @@ export interface SeasonScenePlan {
   revealContracts?: import('./narrativeContract').NarrativeRevealContract[];
   /** Live season anchors bound to owning scene + on-page action, compiled once at analysis. */
   anchorContracts?: import('./narrativeContract').NarrativeAnchorContract[];
+  /** B1: immutable treatment visual/voice identity tokens per NPC, threaded to first-appearance contracts. */
+  npcVisualIdentities?: Array<{ name: string; visualIdentity: string }>;
   /** Immutable episode-local ownership projections keyed by episode number. */
   episodeEventPlans?: Record<number, EpisodeEventPlan>;
   /** Parsed treatment-field obligations assigned across the scene plan. */

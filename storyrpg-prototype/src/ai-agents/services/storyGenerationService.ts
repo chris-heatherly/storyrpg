@@ -232,6 +232,15 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
           console.info(`[Analysis] Compiled ${anchorContracts.length} season-anchor contract(s): ${anchorContracts.map((anchor) => `${anchor.anchorName}→${anchor.owningSceneId}`).join(', ')}`);
         }
       }
+      // B1 (quality-gap 14-50-23): thread each NPC's immutable treatment
+      // signature tokens onto the plan so first-appearance contracts can
+      // demand them on the page (advisory judge atoms downstream).
+      if (!scenePlan.npcVisualIdentities) {
+        const npcVisualIdentities = (analysisResult.analysis?.treatmentSeasonGuidance?.npcGuidance ?? [])
+          .filter((npc) => npc.name?.trim() && npc.visualIdentity?.trim())
+          .map((npc) => ({ name: npc.name!.trim(), visualIdentity: npc.visualIdentity!.trim() }));
+        if (npcVisualIdentities.length > 0) scenePlan = { ...scenePlan, npcVisualIdentities };
+      }
       scenePlan = compileAndApplyNarrativeContracts(workingPlan, scenePlan);
       workingPlan.scenePlan = scenePlan;
       for (const episode of workingPlan.episodes ?? []) {

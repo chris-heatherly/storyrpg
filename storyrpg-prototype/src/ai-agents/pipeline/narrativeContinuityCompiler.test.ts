@@ -134,6 +134,35 @@ describe('narrativeContinuityCompiler', () => {
     expect(contracts).toEqual([expect.objectContaining({ owningSceneId: 'rooftop', mode: 'anonymous_plant', earlierSceneIds: ['street'] })]);
   });
 
+  it('B1: attaches treatment visual identity to first-appearance contracts by normalized name', () => {
+    const scenes = [scene('club', 0)];
+    const presence: NarrativeCharacterPresenceContract[] = [{
+      id: 'presence:stela',
+      characterId: 'char-stela-pavel',
+      characterName: 'Stela Pavel',
+      episodeNumber: 1,
+      sceneId: 'club',
+      mode: 'named_on_page',
+      readerNameAllowed: true,
+      requiredEvidence: [],
+      forbiddenEvidence: [],
+      sourceContractIds: ['treatment'],
+      provenance: { source: 'treatment', confidence: 'authoritative' },
+    }];
+    const contracts = compileFirstAppearanceContracts({
+      scenes,
+      presenceContracts: presence,
+      npcVisualIdentities: [
+        { name: 'Stela Pavel', visualIdentity: 'platinum bob; stag-crest signet ring' },
+        { name: 'Nobody Matching', visualIdentity: 'never attached' },
+      ],
+    });
+    expect(contracts).toEqual([expect.objectContaining({
+      characterName: 'Stela Pavel',
+      visualIdentity: 'platinum bob; stag-crest signet ring',
+    })]);
+  });
+
   it('requires visible residue for every non-expression planned choice', () => {
     const choiceScene = scene('choice', 0, { hasChoice: true, choiceType: 'relationship' });
     const transition: NarrativeTransitionContract = {

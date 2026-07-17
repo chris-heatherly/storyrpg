@@ -68,6 +68,7 @@ import { isChoiceRegenImprovement, shouldRegenChoices } from '../../remediation/
 import { shouldAdoptRegenAttempt } from '../../remediation/regenAdoption';
 import { flagSceneForCritic, addCriticNote } from '../../remediation/sceneCriticFlags';
 import { lintSceneMechanics, mechanicsLintFeedback } from '../../utils/proseMechanicsLint';
+import { npcSignatureDetails } from '../../utils/npcSignatureDetails';
 import { resolveCharacterProfile } from '../../utils/characterProfileResolver';
 import {
   buildSceneConstructionPromptView,
@@ -1869,6 +1870,7 @@ export class ContentGenerationPhase {
             const availabilityNote = profile?.timeOfDayConstraints?.unavailable?.length
               ? `HARD CONSTRAINT: ${profile.name} can NEVER appear during ${profile.timeOfDayConstraints.unavailable.join(', ')}${profile.timeOfDayConstraints.reason ? ` (${profile.timeOfDayConstraints.reason})` : ''}. If this scene's time of day conflicts, keep them off-page (text, call, note) or shift the scene's clock in prose.`
               : '';
+            const isFirstOnPage = !isIntroducedNpc(introducedBeforeScene, npcId);
             return {
               id: npcId,
               name: profile?.name || npcId,
@@ -1877,7 +1879,10 @@ export class ContentGenerationPhase {
               physicalDescription: profile?.physicalDescription,
               voiceNotes: profile?.voiceProfile?.writingGuidance || '',
               currentMood: profile?.voiceProfile?.whenNervous,
-              isFirstOnPageAppearance: !isIntroducedNpc(introducedBeforeScene, npcId),
+              isFirstOnPageAppearance: isFirstOnPage,
+              // B1: on a first appearance, hand the writer the character's
+              // signature tokens so the introduction is embodied, not wallpaper.
+              ...(isFirstOnPage ? { signatureDetails: npcSignatureDetails(profile) } : {}),
             };
           }),
           // Roster characters the reader hasn't met and who aren't in this scene's
@@ -2630,7 +2635,7 @@ export class ContentGenerationPhase {
           // atom named — a scene-time rewrite is cheap; the same gap at final
           // scoring is a shipped defect.
           for (const advisoryFinding of initialOwnerValidation.findings.filter((finding) => !finding.blocking)) {
-            const advisoryKind = advisoryFinding.taskId?.endsWith(':planting')
+            const advisoryKind = advisoryFinding.taskId?.endsWith(':planting') || advisoryFinding.taskId?.endsWith(':signature')
               ? 'advisory-planting-miss' as const
               : advisoryFinding.taskId?.endsWith(':departure')
                 ? 'advisory-departure-miss' as const

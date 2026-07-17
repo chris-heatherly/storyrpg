@@ -842,6 +842,47 @@ export function compileNarrativeRealizationTasks(
     });
   }
 
+  // B1 (quality-gap 14-50-23): an NPC's first on-page appearance must land
+  // their immutable treatment signature details (voice/visual tokens) through
+  // action or observation — run 14-50-23 introduced NPCs as biographical
+  // wallpaper. Advisory (blocking: false), judge-verified; a miss also feeds
+  // the SceneCritic pass via the A3 advisory routing.
+  for (const appearance of graph.firstAppearanceContracts ?? []) {
+    const identity = appearance.visualIdentity?.trim();
+    if (!identity || appearance.mode !== 'named_on_page') continue;
+    const scene = sceneById.get(appearance.owningSceneId);
+    if (!scene) continue;
+    const execution = resolveTaskExecutionTarget({
+      scene,
+      episodeNumber: appearance.episodeNumber,
+      kind: 'event',
+    });
+    tasks.push({
+      id: `task:${appearance.id}:signature`,
+      contractId: appearance.id,
+      episodeNumber: appearance.episodeNumber,
+      sourceKinds: ['treatment'],
+      ownerStage: execution.ownerStage,
+      repairHandler: execution.repairHandler,
+      sceneId: appearance.owningSceneId,
+      artifactPath: execution.artifactPath,
+      evidenceAtoms: [{
+        id: `${appearance.id}:signature-details`,
+        description: `${appearance.characterName}'s first on-page appearance lands at least two of their immutable signature details (${identity}) through action, dialogue, or the protagonist's observation — never as a checklist or bio summary.`,
+        acceptedPatterns: [],
+        sourceText: identity,
+        kind: 'semantic',
+        producerStage: execution.ownerStage,
+        temporalSlot: execution.temporalSlot,
+        required: true,
+        verificationAuthority: 'semantic_judge',
+      }],
+      target: { scope: 'owner', surfaces: execution.surfaces },
+      sourceContractIds: [appearance.id],
+      blocking: false,
+    });
+  }
+
   for (const premise of graph.premiseContracts ?? []) {
     const feasibility = applySecondPersonPremiseFeasibility(premiseAtoms(premise), graph.narrativeVoice);
     const atoms = feasibility.atoms;

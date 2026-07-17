@@ -561,4 +561,52 @@ describe('reveal-timing negative contracts (F1.1)', () => {
       expect(revealTask.evidenceAtoms.every((atom) => atom.polarity === 'forbidden')).toBe(true);
     }
   });
+
+  it('B1: compiles an advisory judge-verified signature task for a named first appearance carrying visualIdentity', () => {
+    const graph = {
+      firstAppearanceContracts: [
+        {
+          id: 'first-appearance:stela-pavel', characterId: 'stela-pavel', characterName: 'Stela Pavel',
+          episodeNumber: 1, owningSceneId: 's1-2', mode: 'named_on_page', earlierSceneIds: ['s1-1'],
+          sourceContractIds: [], blocking: true,
+          visualIdentity: 'platinum bob; stag-crest signet ring; calls Kylie "iubita mea"',
+        },
+        // No visualIdentity → no signature task.
+        {
+          id: 'first-appearance:radu', characterId: 'radu', characterName: 'Radu',
+          episodeNumber: 1, owningSceneId: 's1-3', mode: 'named_on_page', earlierSceneIds: [],
+          sourceContractIds: [], blocking: true,
+        },
+        // Anonymous plant → no signature task (they are not introduced yet).
+        {
+          id: 'first-appearance:watcher', characterId: 'watcher', characterName: 'The Watcher',
+          episodeNumber: 1, owningSceneId: 's1-4', mode: 'anonymous_plant', earlierSceneIds: [],
+          sourceContractIds: [], blocking: true, visualIdentity: 'woodsmoke scent',
+        },
+      ],
+      events: [], dependencies: [],
+    } as unknown as NarrativeContractGraph;
+    const scenes = [
+      { id: 's1-1', episodeNumber: 1, order: 0, kind: 'standard', relationshipPacing: [] },
+      { id: 's1-2', episodeNumber: 1, order: 1, kind: 'standard', relationshipPacing: [] },
+      { id: 's1-3', episodeNumber: 1, order: 2, kind: 'standard', relationshipPacing: [] },
+      { id: 's1-4', episodeNumber: 1, order: 3, kind: 'standard', relationshipPacing: [] },
+    ] as never;
+
+    const tasks = compileNarrativeRealizationTasks(graph, scenes);
+    const signatureTasks = tasks.filter((task) => task.id.endsWith(':signature'));
+    expect(signatureTasks).toHaveLength(1);
+    expect(signatureTasks[0]).toMatchObject({
+      id: 'task:first-appearance:stela-pavel:signature',
+      sceneId: 's1-2',
+      ownerStage: 'scene_writer',
+      blocking: false,
+    });
+    expect(signatureTasks[0].evidenceAtoms[0]).toMatchObject({
+      verificationAuthority: 'semantic_judge',
+      required: true,
+    });
+    expect(signatureTasks[0].evidenceAtoms[0].description).toContain('platinum bob');
+    expect(signatureTasks[0].evidenceAtoms[0].description).toContain('never as a checklist');
+  });
 });

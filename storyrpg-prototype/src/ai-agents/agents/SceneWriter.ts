@@ -201,6 +201,12 @@ export interface SceneWriterInput {
      * they drive the action.
      */
     isFirstOnPageAppearance?: boolean;
+    /**
+     * B1: this character's immutable signature details (visual tokens, verbal
+     * tics, signature lines). On a first appearance the prose must LAND 2-3 of
+     * them through action/dialogue/observation — never as a checklist.
+     */
+    signatureDetails?: string[];
   }>;
 
   /**
@@ -2021,7 +2027,7 @@ Return exactly one complete SceneContent JSON object with:
   - Pronouns: ${npc.pronouns}
   - Description: ${npc.description}${npc.physicalDescription ? `\n  - Physical Appearance (CANONICAL — use these exact details): ${npc.physicalDescription}` : ''}
   - Voice: ${npc.voiceNotes}
-      ${npc.currentMood ? `- Current Mood: ${npc.currentMood}` : ''}${npc.isFirstOnPageAppearance ? `\n  - **FIRST APPEARANCE (CRITICAL)**: the reader has NEVER met ${npc.name}. Before they drive the action, INTRODUCE them on-page: show who they are and what the protagonist notices about them — through action and dialogue, not a bio dump. Do NOT write them as already-familiar, and NEVER invent an off-page prior meeting the reader did not see (no "the woman from the bookstore", "the man from the train" appositives unless that meeting happened in an earlier scene or is authored backstory). If they are a stranger, meet them as a stranger.` : ''}`)
+      ${npc.currentMood ? `- Current Mood: ${npc.currentMood}` : ''}${npc.isFirstOnPageAppearance ? `\n  - **FIRST APPEARANCE (CRITICAL)**: the reader has NEVER met ${npc.name}. Before they drive the action, INTRODUCE them on-page: show who they are and what the protagonist notices about them — through action and dialogue, not a bio dump. Do NOT write them as already-familiar, and NEVER invent an off-page prior meeting the reader did not see (no "the woman from the bookstore", "the man from the train" appositives unless that meeting happened in an earlier scene or is authored backstory). If they are a stranger, meet them as a stranger.${npc.signatureDetails?.length ? ` Land 2-3 of ${npc.name}'s signature details on this first appearance — through what they do, say, or what the protagonist notices, NEVER as a checklist or bio dump: ${npc.signatureDetails.join('; ')}.` : ''}` : ''}`)
       .join('\n');
 
     const presenceContracts = (input.sceneBlueprint.characterPresenceContracts ?? [])

@@ -588,6 +588,8 @@ export interface NarrativeFirstAppearanceContract {
   earlierSceneIds: string[];
   sourceContractIds: string[];
   blocking: boolean;
+  /** B1: immutable treatment signature tokens (voice/visual) to land on first on-page appearance. */
+  visualIdentity?: string;
 }
 
 export interface NarrativeRouteRealizationContract {

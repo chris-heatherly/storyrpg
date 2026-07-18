@@ -56,7 +56,17 @@ const ROUTE_CUE_ORDER: Partial<Record<SceneEventOwnershipCue, number>> = {
   walkHome: 60,
 };
 
-const DUPLICATE_SENSITIVE_CUES = new Set<SceneEventOwnershipCue>([
+/**
+ * Cues where two scenes owning the same one are a real "restage" candidate —
+ * a one-time reveal or transition, not something a story can dramatize twice
+ * without it reading as a duplicated event. Exported for
+ * `FinalStoryContractValidator`'s `duplicate_high_pressure_event` check: two
+ * scenes whose owned events share no cue here can never be restaging each
+ * other, so the structural check can skip the prose-signature comparison
+ * entirely (r118 postmortem, 2026-07-18 — s1-4/s1-5 own disjoint cues but were
+ * flagged as a duplicate purely from shared vocabulary).
+ */
+export const DUPLICATE_SENSITIVE_CUES = new Set<SceneEventOwnershipCue>([
   'venueDoor',
   'objectHandoff',
   'threatEncounter',

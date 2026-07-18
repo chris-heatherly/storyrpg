@@ -51,6 +51,7 @@ import { planResidueConsumption } from '../pipeline/residueConsumption';
 import { reconcileFlagVocabulary } from '../pipeline/flagVocabulary';
 import { rebalanceStoryEncounterSkills } from '../utils/encounterSkillRebalance';
 import { buildEncounterEventSignature, compareEncounterEventSignatures } from '../utils/encounterEventSignature';
+import { DUPLICATE_SENSITIVE_CUES } from '../utils/sceneEventOwnership';
 import type { SerializedCallbackLedger } from '../pipeline/callbackLedger';
 import { CallbackLedger } from '../pipeline/callbackLedger';
 import { validateObligationLedger } from './ObligationLedgerValidator';
@@ -148,6 +149,29 @@ function plannedLocationNamedInStagedText(plannedLocation: string, stagedText: s
   if (plannedTokens.length === 0) return false;
   const staged = ` ${normalizedLocationText(stagedText)} `;
   return plannedTokens.some((token) => staged.includes(` ${token} `));
+}
+
+/**
+ * The restage-sensitive cues a scene's compiled `sceneEventOwnership` says it
+ * owns, or `undefined` if the scene has no ownership data at all (older/
+ * non-canonical generation runs). Distinguishing "no data" from "owns nothing
+ * sensitive" matters: the former must fall back to the prose-signature check
+ * unchanged; the latter can safely skip it (the scene owns no restage-
+ * sensitive event, so it cannot be duplicating one).
+ */
+function duplicateSensitiveOwnedCues(scene: Scene): Set<string> | undefined {
+  const ownedEvents = scene.sceneEventOwnership?.ownedEvents;
+  if (!ownedEvents) return undefined;
+  const cues = new Set<string>();
+  for (const event of ownedEvents) {
+    if (DUPLICATE_SENSITIVE_CUES.has(event.cue)) cues.add(event.cue);
+  }
+  return cues;
+}
+
+function hasSharedCue(a: Set<string>, b: Set<string>): boolean {
+  for (const cue of a) if (b.has(cue)) return true;
+  return false;
 }
 
 interface FidelitySeverityMetadata {
@@ -1535,6 +1559,22 @@ export class FinalStoryContractValidator {
         const second = staged[j];
         const pairKey = `${first.scene.id}->${second.scene.id}`;
         if (seenPairs.has(pairKey)) continue;
+        // Structural pre-filter (r118 postmortem, 2026-07-18): when BOTH scenes
+        // carry compiled sceneEventOwnership data, check whether they actually
+        // own the SAME kind of restage-sensitive narrative event before ever
+        // comparing prose vocabulary. Two scenes owning disjoint events cannot
+        // be restaging each other regardless of shared wording — this is how
+        // s1-4 ("the three become friends") and s1-5 (the rooftop stranger)
+        // were flagged as duplicates: same location/night/an incidental "vanish"
+        // word, but genuinely different planned events. When ownership data is
+        // absent (older/legacy runs) or the scenes DO share a sensitive cue
+        // (a real ambiguous case — two separately-planned same-cue events, or
+        // legacy-path cue-only identity), fall through to the existing
+        // prose-signature comparison as the tiebreaker; this can only narrow
+        // what the check flags, never widen it.
+        const firstCues = duplicateSensitiveOwnedCues(first.scene);
+        const secondCues = duplicateSensitiveOwnedCues(second.scene);
+        if (firstCues && secondCues && !hasSharedCue(firstCues, secondCues)) continue;
         const match = compareEncounterEventSignatures(first.signature, second.signature);
         if (!match.matched) continue;
         seenPairs.add(pairKey);

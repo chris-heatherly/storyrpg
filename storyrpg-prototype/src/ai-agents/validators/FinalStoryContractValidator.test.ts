@@ -1825,6 +1825,119 @@ describe('FinalStoryContractValidator repeated high-pressure event gate', () => 
     expect(report.blockingIssues.some((issue) => issue.type === 'duplicate_high_pressure_event')).toBe(false);
   });
 
+  it('does not flag two scenes owning disjoint sensitive events, even with matching prose vocabulary (r118 s1-4/s1-5)', async () => {
+    // Reconstructs the actual r118 false positive (bite-me-r118_2026-07-18T18-36-05):
+    // s1-4 and s1-5 are one continuous rooftop conversation split across two
+    // scene records. Both mention "rooftop"/"night" and (before the r118
+    // wording fixes) a benign "vanish" — enough shared vocabulary to match the
+    // prose signature — but they own genuinely different planned events
+    // (venueDoor vs. antagonistContact), so the structural pre-filter must
+    // skip the pair before prose is ever compared.
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 's1-4',
+        scenes: [
+          {
+            id: 's1-4',
+            name: 'The Dusk Club',
+            startingBeatId: 's1-4-b1',
+            leadsTo: ['s1-5'],
+            timeline: { location: 'Valescu Club rooftop', timeOfDay: 'night' },
+            sceneEventOwnership: {
+              id: 's1-4-event-ownership',
+              ownedEvents: [{ key: 'cue:venueDoor', cue: 'venueDoor', text: 'The three become friends and form the Dusk Club.', sourceContractIds: [] }],
+              forbiddenRestageEvents: [],
+              sourceContractIds: [],
+            },
+            beats: [{
+              id: 's1-4-b1',
+              text: 'The elevator doors part onto the Valescu rooftop. A waiter appears and vanishes, leaving a trio of champagne flutes in his wake.',
+            } as any],
+          },
+          {
+            id: 's1-5',
+            name: 'The Watcher',
+            startingBeatId: 's1-5-b1',
+            leadsTo: [],
+            timeline: { location: 'Valescu Club rooftop', timeOfDay: 'night' },
+            sceneEventOwnership: {
+              id: 's1-5-event-ownership',
+              ownedEvents: [{ key: 'cue:antagonistContact', cue: 'antagonistContact', text: 'A man in a charcoal suit watches from across the rooftop.', sourceContractIds: [] }],
+              forbiddenRestageEvents: [],
+              sourceContractIds: [],
+            },
+            beats: [{
+              id: 's1-5-b1',
+              text: 'The last of the champagne bubbles vanish on your tongue. Pinned between two stares, you feel a chill cut through the warm rooftop night.',
+            } as any],
+          },
+        ],
+      }],
+    } as any);
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues.some((issue) => issue.type === 'duplicate_high_pressure_event')).toBe(false);
+  });
+
+  it('still flags two scenes that share a genuinely sensitive owned event, even with structural data present', async () => {
+    // The structural pre-filter can only narrow the check, never widen it: when
+    // both scenes own the SAME sensitive cue (a real restage candidate), the
+    // existing prose-signature comparison still runs and still catches an
+    // actual duplicated attack.
+    const encounter = validEncounter() as any;
+    encounter.description = 'A Cișmigiu Gardens chase where unseen attackers lunge from the fog and Victor rescues you.';
+    encounter.phases[0].beats[0].setupText = 'Fog closes over Cișmigiu Gardens. Unseen attackers lunge, and Victor rescues you from the chase.';
+
+    const story = validStory({
+      episodes: [{
+        ...validStory().episodes[0],
+        startingSceneId: 's1-5',
+        scenes: [
+          {
+            id: 's1-5',
+            name: 'Cișmigiu Attack',
+            startingBeatId: 's1-5-b1',
+            leadsTo: ['enc-1'],
+            timeline: { location: 'Cișmigiu Gardens', timeOfDay: 'night' },
+            sceneEventOwnership: {
+              id: 's1-5-event-ownership',
+              ownedEvents: [{ key: 'cue:threatEncounter', cue: 'threatEncounter', text: 'A shadow attacks in the gardens.', sourceContractIds: [] }],
+              forbiddenRestageEvents: [],
+              sourceContractIds: [],
+            },
+            beats: [{
+              id: 's1-5-b1',
+              text: 'In Cișmigiu Gardens, a shadow attacks you, pins you to a tree, and a man in a charcoal suit rescues you.',
+            } as any],
+          },
+          {
+            id: 'enc-1',
+            name: 'Cișmigiu Chase',
+            startingBeatId: '',
+            leadsTo: [],
+            timeline: { location: 'Cișmigiu Gardens', timeOfDay: 'night' },
+            sceneEventOwnership: {
+              id: 'enc-1-event-ownership',
+              ownedEvents: [{ key: 'cue:threatEncounter', cue: 'threatEncounter', text: 'A second attack in the gardens.', sourceContractIds: [] }],
+              forbiddenRestageEvents: [],
+              sourceContractIds: [],
+            },
+            beats: [],
+            encounter,
+          },
+        ],
+      }],
+    } as any);
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'duplicate_high_pressure_event', sceneId: 'enc-1' }),
+    ]));
+  });
+
   it('blocks a high-pressure scene whose prose contradicts its planned location', async () => {
     const story = validStory({
       episodes: [{

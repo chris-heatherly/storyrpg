@@ -18,7 +18,8 @@
 export type ProseMechanicsCode =
   | 'dialogue_comma_splice'
   | 'doubled_punctuation'
-  | 'adjacent_comma_period';
+  | 'adjacent_comma_period'
+  | 'malformed_honorific_punctuation';
 
 export interface ProseMechanicsFinding {
   code: ProseMechanicsCode;
@@ -47,6 +48,9 @@ const DIALOGUE_SPAN_RE = /["“]([^"“”]{2,400})["”]/g;
 const SPLICE_CANDIDATE_RE = /,\s+([A-Z][a-z]*(?:['’][a-z]+)?)/g;
 const DOUBLED_PUNCT_RE = /,,+|;;+|::+|(?<![.!?])\.\.(?!\.)/g;
 const ADJACENT_COMMA_PERIOD_RE = /,\.|\.,/g;
+// High-precision syntax defect: a comma cannot terminate an abbreviated
+// honorific immediately before a proper name ("Mr, Midnight").
+const MALFORMED_HONORIFIC_RE = /\b(?:Mr|Mrs|Ms|Dr|Prof|St|Sr|Jr),\s+(?=[A-Z])/g;
 
 function excerptAround(text: string, index: number, length: number): string {
   const start = Math.max(0, index - 20);
@@ -73,6 +77,9 @@ export function lintProseMechanics(text: string): ProseMechanicsFinding[] {
   }
   for (const match of text.matchAll(ADJACENT_COMMA_PERIOD_RE)) {
     findings.push({ code: 'adjacent_comma_period', excerpt: excerptAround(text, match.index ?? 0, match[0].length) });
+  }
+  for (const match of text.matchAll(MALFORMED_HONORIFIC_RE)) {
+    findings.push({ code: 'malformed_honorific_punctuation', excerpt: excerptAround(text, match.index ?? 0, match[0].length) });
   }
   return findings;
 }
@@ -104,6 +111,8 @@ const CODE_INSTRUCTIONS: Record<ProseMechanicsCode, string> = {
     'a comma splices two sentences inside dialogue (capitalized continuation after a comma). Replace the comma with a period, em dash, or conjunction — whichever reads naturally in the speaker\'s voice',
   doubled_punctuation: 'doubled punctuation marks. Collapse to a single mark (a true ellipsis must be three dots)',
   adjacent_comma_period: 'a comma directly adjacent to a period. Keep exactly one correct mark',
+  malformed_honorific_punctuation:
+    'a comma incorrectly terminates an abbreviated honorific before a proper name. Replace only that comma with a period',
 };
 
 /** Feedback for the bounded SceneWriter micro-rewrite. Names each exact defect; forbids rewording. */

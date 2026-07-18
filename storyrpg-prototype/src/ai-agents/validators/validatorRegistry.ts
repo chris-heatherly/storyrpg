@@ -301,7 +301,7 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // Protagonist pronoun integrity: the resolver ALWAYS repairs safe wrong-gender cases
   // in place at the final contract; GATE_PROTAGONIST_PRONOUN promotes ambiguous residue
   // to a blocking issue routed to scene/encounter regen.
-  { validator: 'protagonistPronounResolver (ambiguous-residue class)', stage: 'final', tier: 'advisory', remediation: 'regen-scene', rolloutFlag: 'GATE_PROTAGONIST_PRONOUN', dispatchedFrom: 'FinalStoryContractValidator' },
+  { validator: 'protagonistPronounResolver (ambiguous-residue class)', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_PROTAGONIST_PRONOUN', dispatchedFrom: 'FinalStoryContractValidator' },
   // Encounter-outcome state: flags are always seeded; this flags a reconvergence scene
   // that ignores the outcome (no outcome-conditioned variant) for regen.
   { validator: 'encounterOutcomeFlags (reconvergence-desync class)', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_ENCOUNTER_OUTCOME_VARIANT', dispatchedFrom: 'FinalStoryContractValidator' },

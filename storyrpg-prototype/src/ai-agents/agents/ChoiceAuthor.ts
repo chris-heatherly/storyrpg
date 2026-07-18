@@ -1212,6 +1212,9 @@ Return ONLY a JSON object mapping each tier to its passage: {${tiers.map((tier) 
     sceneName?: string;
     sceneLocation?: string;
     needTiers: Array<'success' | 'partial' | 'failure'>;
+    previousOutcomeTexts?: Partial<Record<'success' | 'partial' | 'failure', string>>;
+    siblingChoiceTexts?: string[];
+    repairDirective?: string;
   }): Promise<Partial<Record<'success' | 'partial' | 'failure', string>>> {
     const tiers = ctx.needTiers.length ? ctx.needTiers : (['success', 'partial', 'failure'] as const);
     const stakesLines = ctx.stakes
@@ -1220,13 +1223,24 @@ Return ONLY a JSON object mapping each tier to its passage: {${tiers.map((tier) 
     const settingLine = ctx.sceneLocation
       ? `SETTING (the outcome MUST stay physically consistent with this place — only reference objects/surroundings that plausibly exist here): ${ctx.sceneLocation}\n`
       : '';
-    const prompt = `You are revising the outcome prose for ONE choice in an interactive story. The previous outcomes were placeholder stubs; replace them with scene-specific fiction.
+    const previousLines = ctx.previousOutcomeTexts
+      ? `PREVIOUS OUTCOMES TO REPLACE:\n${tiers.map((tier) => `${tier}: ${ctx.previousOutcomeTexts?.[tier] ?? '(missing)'}`).join('\n')}\n`
+      : '';
+    const siblingLines = ctx.siblingChoiceTexts?.length
+      ? `SIBLING CHOICES THIS OPTION MUST FEEL DIFFERENT FROM:\n${ctx.siblingChoiceTexts.map((text) => `- ${text}`).join('\n')}\n`
+      : '';
+    const repairLine = ctx.repairDirective
+      ? `FOCUSED REPAIR DIRECTIVE: ${ctx.repairDirective}\n`
+      : '';
+    const prompt = `You are revising the outcome prose for ONE choice in an interactive story. Replace weak, repetitive, missing, or placeholder outcomes with scene-specific fiction.
 
 CHOICE the player takes: "${ctx.choiceText}"
 ${ctx.sceneName ? `SCENE: ${ctx.sceneName}\n` : ''}${settingLine}${stakesLines}
+${previousLines}${siblingLines}${repairLine}
 
 Write a 1–3 sentence fiction-first outcome for each requested tier. Each MUST:
 - dramatize what concretely happens in the fiction (action, sensory detail, a line of dialogue if it fits) — never restate the choice or the want/cost annotation;
+- make this option's immediate action and NPC/world response unmistakably specific to THIS choice, rather than interchangeable with a sibling option;
 - stay grounded in the SETTING above — do not introduce furniture or surroundings from a different kind of place (e.g. no indoor furniture in an outdoor scene);
 - be distinct from the other tiers and begin with a different opening word;
 - never mention stats, dice, percentages, DCs, or any game mechanic;

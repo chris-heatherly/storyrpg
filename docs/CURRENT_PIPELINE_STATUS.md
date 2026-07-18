@@ -28,6 +28,25 @@ The generator target is the active UI surface for `PipelineClient` and worker
 jobs. The reader target must remain isolated from generation modules; that
 boundary is enforced by `npm run check:reader-boundary`.
 
+## Canonical Job Launch Boundary
+
+Generator UX and headless worker tools prepare jobs through
+`src/ai-agents/launch/GenerationLaunchService.ts`. That service owns model-family
+resolution, provider-policy enforcement, episode scope, manifest commitment,
+generation preflight, immutable request snapshots, and launch fingerprints.
+Callers submit the resulting protocol-v2 request through `WorkerJobClient`; they
+must not assemble `/worker-jobs/start` payloads or import private screen/hook
+configuration modules. `npm run check:launch-boundary` enforces that ownership,
+and `tsconfig.tools.json` typechecks operational generation tools.
+
+The proxy validates the complete versioned request before it creates a job or
+spawns a worker. Generation requests always carry the same manifest both in the
+worker input and embedded creative brief. Completed worker results are written
+under `.worker-results/<jobId>/result.json`, hashed at commit, and reloaded from
+disk when the in-memory cache is empty, including after a proxy restart. Result
+retention follows the worker-job retention window rather than the short memory
+cache TTL.
+
 ## Current Generation Flow
 
 ### Authored-lite treatments (`sourceKind === 'authored_lite'`)

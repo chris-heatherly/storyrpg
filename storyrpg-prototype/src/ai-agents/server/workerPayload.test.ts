@@ -3,19 +3,21 @@ import {
   assertValidWorkerPayload,
   assertWorkerJobConfigHash,
   computeWorkerJobConfigHash,
+  type WorkerPayload,
 } from './workerPayload';
 
 describe('assertValidWorkerPayload', () => {
   it('freezes hydrated job settings with a deterministic hash', () => {
     const config = { imageGen: { enabled: false }, agents: { writer: { provider: 'gemini', model: 'gemini-2.5-pro', apiKey: 'secret' } } };
     const hash = computeWorkerJobConfigHash('generation', config);
-    const payload = { mode: 'generation', config, jobConfigHash: hash, resultPath: '/tmp/result.json', generationInput: { brief: {} } } as const;
+    const payload: WorkerPayload = { protocolVersion: 2, mode: 'generation', config, jobConfigHash: hash, resultPath: '/tmp/result.json', generationInput: { brief: {}, manifest: { version: 1, sourceKind: 'invent', requestedEpisodes: [1] } } };
     expect(() => assertWorkerJobConfigHash(payload)).not.toThrow();
     expect(() => assertWorkerJobConfigHash({ ...payload, config: { ...config, imageGen: { enabled: true } } })).toThrow(/hash mismatch/i);
   });
 
   it('accepts a valid generation payload', () => {
     const payload = {
+      protocolVersion: 2,
       mode: 'generation',
       config: {},
       resultPath: '/tmp/result.json',
@@ -23,6 +25,7 @@ describe('assertValidWorkerPayload', () => {
         brief: {
           story: { title: 'Test' },
         },
+        manifest: { version: 1, sourceKind: 'invent', requestedEpisodes: [1] },
       },
     };
 
@@ -31,6 +34,7 @@ describe('assertValidWorkerPayload', () => {
 
   it('accepts an immutable generation manifest and rejects malformed episode scope', () => {
     const payload = {
+      protocolVersion: 2,
       mode: 'generation',
       config: {},
       resultPath: '/tmp/result.json',
@@ -48,6 +52,7 @@ describe('assertValidWorkerPayload', () => {
 
   it('accepts optional worker display labels', () => {
     const payload = {
+      protocolVersion: 2,
       mode: 'generation',
       config: {},
       resultPath: '/tmp/result.json',
@@ -57,6 +62,7 @@ describe('assertValidWorkerPayload', () => {
         brief: {
           story: { title: 'Bite Me' },
         },
+        manifest: { version: 1, sourceKind: 'invent', requestedEpisodes: [1] },
       },
     };
 
@@ -65,6 +71,7 @@ describe('assertValidWorkerPayload', () => {
 
   it('accepts a valid image-generation payload', () => {
     const payload = {
+      protocolVersion: 2,
       mode: 'image-generation',
       config: {},
       resultPath: '/tmp/result.json',
@@ -79,6 +86,7 @@ describe('assertValidWorkerPayload', () => {
 
   it('accepts spot image-generation target slots', () => {
     const payload = {
+      protocolVersion: 2,
       mode: 'image-generation',
       config: {},
       resultPath: '/tmp/result.json',
@@ -98,6 +106,7 @@ describe('assertValidWorkerPayload', () => {
 
   it('accepts a valid compile-episode payload', () => {
     const payload = {
+      protocolVersion: 2,
       mode: 'compile-episode',
       config: {},
       resultPath: '/tmp/result.json',
@@ -118,6 +127,7 @@ describe('assertValidWorkerPayload', () => {
 
   it('rejects malformed spot image-generation target slots', () => {
     const payload = {
+      protocolVersion: 2,
       mode: 'image-generation',
       config: {},
       resultPath: '/tmp/result.json',
@@ -133,6 +143,7 @@ describe('assertValidWorkerPayload', () => {
 
   it('rejects a malformed analysis payload', () => {
     const payload = {
+      protocolVersion: 2,
       mode: 'analysis',
       config: {},
       resultPath: '/tmp/result.json',
@@ -146,6 +157,7 @@ describe('assertValidWorkerPayload', () => {
 
   it('rejects image-generation without an output directory', () => {
     const payload = {
+      protocolVersion: 2,
       mode: 'image-generation',
       config: {},
       resultPath: '/tmp/result.json',
@@ -157,6 +169,7 @@ describe('assertValidWorkerPayload', () => {
 
   it('rejects compile-episode without a request', () => {
     const payload = {
+      protocolVersion: 2,
       mode: 'compile-episode',
       config: {},
       resultPath: '/tmp/result.json',

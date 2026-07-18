@@ -18,7 +18,11 @@ import { resolveArtStyleProfile, composeCanonicalStyleString } from '../images/a
 import type { ArtStyleProfile } from '../images/artStyleProfile';
 import { StyleArchitect } from '../agents/StyleArchitect';
 import type { PreapprovedAnchor } from '../config';
-import type { GenerationSettings } from '../../components/GenerationSettingsPanel';
+import type {
+  GenerationSettings,
+  GeneratorNarrationSettings,
+  GeneratorVideoSettings,
+} from '../../config/generatorRuntimeSettings';
 import {
   DEFAULT_LLM_MODELS,
   GenerationMode,
@@ -26,10 +30,6 @@ import {
   GeneratorLlmProvider,
 } from '../../config/generatorLlmOptions';
 import type { PipelineTask, TaskModelAssignment } from '../../config/modelFamilies';
-import type {
-  GeneratorNarrationSettings,
-  GeneratorVideoSettings,
-} from '../../hooks/useGeneratorSettings';
 import { clampSceneCount } from '../../constants/pipeline';
 
 export interface BuildPipelineConfigInput {

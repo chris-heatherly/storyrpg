@@ -21,6 +21,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { publicCheckpoint, publicJobState, publicResumeContext, sanitizeJobState } = require('./sanitizeJobState');
 const { spawnTsNodeWorker } = require('./tsNodeSpawn');
+const { validateWorkerJobStartRequest } = require('./workerJobContract');
 
 const WORKER_STALE_RUNNING_MS = 3 * 60 * 1000;
 const WORKER_MAX_TIMELINE = 200;
@@ -133,11 +134,20 @@ function publicWorkerStatus(job, { includeTimeline = false } = {}) {
   const {
     timeline,
     result,
+    resultArtifact,
     checkpoint,
     resumeCheckpoint,
     ...rest
   } = job;
   void result;
+  const publicResultArtifact = resultArtifact
+    ? {
+        schemaVersion: resultArtifact.schemaVersion,
+        mode: resultArtifact.mode,
+        sha256: resultArtifact.sha256,
+        committedAt: resultArtifact.committedAt,
+      }
+    : undefined;
   const compactTimeline = includeTimeline && Array.isArray(timeline)
     ? timeline.slice(-WORKER_PUBLIC_TIMELINE_TAIL).map(compactWorkerTimelineEntry)
     : undefined;
@@ -145,6 +155,7 @@ function publicWorkerStatus(job, { includeTimeline = false } = {}) {
     ...rest,
     checkpoint: compactWorkerCheckpoint(checkpoint),
     resumeCheckpoint: compactWorkerCheckpoint(resumeCheckpoint),
+    ...(publicResultArtifact ? { resultArtifact: publicResultArtifact } : {}),
     timelineLength: Array.isArray(timeline) ? timeline.length : 0,
     ...(compactTimeline ? { timeline: compactTimeline } : {}),
   });
@@ -648,6 +659,7 @@ function createWorkerLifecycle({
   workerCheckpointsFile,
   workerDeadLetterFile,
   workerCheckpointOutputDir: workerCheckpointOutputDirInput,
+  workerResultsDir: workerResultsDirInput,
   port,
   cachedJsonStore,
   createStoryCatalogApi, // unused directly; retained for callers that need listLatestStoryRecords
@@ -667,6 +679,8 @@ function createWorkerLifecycle({
   const WORKER_DEAD_LETTER_FILE = workerDeadLetterFile || path.join(runtimeRoot, '.worker-dead-letter.json');
   const WORKER_CHECKPOINT_OUTPUT_DIR = workerCheckpointOutputDirInput
     || path.join(runtimeRoot, '.worker-checkpoint-outputs');
+  const WORKER_RESULTS_DIR = workerResultsDirInput || path.join(runtimeRoot, '.worker-results');
+  fs.mkdirSync(WORKER_RESULTS_DIR, { recursive: true, mode: 0o700 });
 
   const jobsStore = cachedJsonStore(JOBS_FILE, 'generation-jobs');
   const workerJobsStore = cachedJsonStore(WORKER_JOBS_FILE, 'worker-jobs');
@@ -676,6 +690,36 @@ function createWorkerLifecycle({
   const activeWorkers = new Map();
   const workerStreamClients = new Map();
   const workerResultCache = new Map();
+
+  function workerResultDir(jobId) {
+    const safeJobId = String(jobId || '').replace(/[^a-z0-9._-]+/gi, '-');
+    return path.join(WORKER_RESULTS_DIR, safeJobId);
+  }
+
+  function durableWorkerResultPath(jobId) {
+    const dir = workerResultDir(jobId);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return path.join(dir, 'result.json');
+  }
+
+  function readDurableWorkerResult(job) {
+    const resultPath = job?.resultArtifact?.path || durableWorkerResultPath(job?.id);
+    if (!resultPath || !fs.existsSync(resultPath)) return null;
+    const raw = fs.readFileSync(resultPath, 'utf8');
+    const hash = crypto.createHash('sha256').update(raw).digest('hex');
+    if (job?.resultArtifact?.sha256 && job.resultArtifact.sha256 !== hash) {
+      throw new Error(`Durable worker result hash mismatch for ${job.id}`);
+    }
+    return { result: JSON.parse(raw), path: resultPath, sha256: hash };
+  }
+
+  function removeWorkerResult(jobId) {
+    workerResultCache.delete(jobId);
+    const dir = workerResultDir(jobId);
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {
+      // Retention cleanup is best effort.
+    }
+  }
 
   const loadJobs = () => jobsStore.get();
   const saveJobs = (jobs) => jobsStore.set(jobs);
@@ -1389,7 +1433,7 @@ function createWorkerLifecycle({
   function startWorkerProcess(workerJob, payload) {
     const runnerPath = path.resolve(appRoot, 'src/ai-agents/server/worker-runner.ts');
     const payloadPath = path.join(os.tmpdir(), `storyrpg-worker-${workerJob.id}.payload.json`);
-    const resultPath = path.join(os.tmpdir(), `storyrpg-worker-${workerJob.id}.result.json`);
+    const resultPath = durableWorkerResultPath(workerJob.id);
     // mode 0o600: the payload carries provider API keys (config.agents.*.apiKey)
     // and os.tmpdir() is world-readable on shared hosts.
     fs.writeFileSync(payloadPath, JSON.stringify({
@@ -1786,14 +1830,26 @@ function createWorkerLifecycle({
         updateCheckpoint(workerJob.id, { failureContext });
         syncGenerationMirrorFromWorker(failed);
       } else if (code === 0 && result) {
+        try { fs.chmodSync(resultPath, 0o600); } catch {
+          // Best effort on filesystems that do not support POSIX modes.
+        }
+        const resultRaw = fs.readFileSync(resultPath, 'utf8');
+        const resultArtifact = {
+          schemaVersion: 1,
+          mode: workerJob.mode,
+          path: resultPath,
+          sha256: crypto.createHash('sha256').update(resultRaw).digest('hex'),
+          committedAt: new Date().toISOString(),
+        };
         const completed = upsertWorkerJob(workerJob.id, {
           status: 'completed',
           progress: 100,
           finishedAt: new Date().toISOString(),
           resultSummary: { success: true },
+          resultArtifact,
         });
         workerResultCache.set(workerJob.id, { result, storedAt: Date.now() });
-        markArtifactCommitted(workerJob.id, 'job:result', { resultPath });
+        markArtifactCommitted(workerJob.id, 'job:result', resultArtifact);
         syncGenerationMirrorFromWorker(completed);
       } else {
         const currentJob = loadWorkerJobs().find((j) => j.id === workerJob.id);
@@ -1836,9 +1892,6 @@ function createWorkerLifecycle({
 
       try { fs.unlinkSync(payloadPath); } catch {
         // best-effort cleanup; temp file may already be gone
-      }
-      try { fs.unlinkSync(resultPath); } catch {
-        // best-effort cleanup
       }
       scheduleQueuedWorkers();
     });
@@ -1966,10 +2019,24 @@ function createWorkerLifecycle({
 
   function registerWorkerLifecycleRoutes(app) {
     app.post('/worker-jobs/start', (req, res) => {
-      const { mode, payload, idempotencyKey, storyTitle, episodeCount, resumeFromJobId } = req.body || {};
-      if (!mode || !payload || (mode !== 'analysis' && mode !== 'generation' && mode !== 'image-generation' && mode !== 'compile-episode')) {
-        return res.status(400).json({ error: 'Invalid worker start payload' });
+      const admission = validateWorkerJobStartRequest(req.body);
+      if (!admission.ok) {
+        return res.status(400).json({
+          error: 'Invalid worker start request',
+          failureCode: admission.issues[0]?.code || 'worker_request_invalid',
+          issues: admission.issues,
+        });
       }
+      const {
+        protocolVersion,
+        mode,
+        payload,
+        idempotencyKey,
+        storyTitle,
+        episodeCount,
+        resumeFromJobId,
+        launchMetadata,
+      } = req.body;
 
       const jobs = loadWorkerJobs();
       const { normalized: normalizedJobs, changed: normalizedChanged } = normalizeStaleWorkerJobs(jobs);
@@ -2021,6 +2088,7 @@ function createWorkerLifecycle({
         ? hydrateCheckpointOutputs(loadCheckpoints().find((c) => c.jobId === resumeFromJobId))
         : undefined;
       const hydratedPayload = hydrateWorkerConfigApiKeys(payload);
+      hydratedPayload.protocolVersion = protocolVersion;
       const priorOutputDir = getOutputDirectoryFromCheckpoint(resumeCheckpoint);
       if (priorOutputDir && mode === 'image-generation') {
         hydratedPayload.imageGenerationInput = {
@@ -2060,6 +2128,8 @@ function createWorkerLifecycle({
       hydratedPayload.jobConfigHash = jobConfigHash;
       const requestSnapshot = buildWorkerRequestSnapshot(mode, hydratedPayload, storyTitle);
       requestSnapshot.jobConfigHash = jobConfigHash;
+      requestSnapshot.protocolVersion = protocolVersion;
+      requestSnapshot.launchMetadata = launchMetadata;
       const friendlyName = buildWorkerFriendlyName(mode, hydratedPayload, storyTitle, episodeCount, { resumeFromJobId });
       const processTitle = buildWorkerProcessTitle(mode, friendlyName);
       const resumeOutputs = priorOutputDir
@@ -2078,6 +2148,8 @@ function createWorkerLifecycle({
         resumeFromJobId: resumeFromJobId || undefined,
         requestSnapshot,
         jobConfigHash,
+        protocolVersion,
+        launchMetadata,
         resumeCheckpoint,
         resumeContext: {
           mode,
@@ -2087,6 +2159,8 @@ function createWorkerLifecycle({
           processTitle,
           episodeCount: episodeCount || 1,
           resumeFromJobId: resumeFromJobId || undefined,
+          protocolVersion,
+          launchMetadata,
           ...(priorOutputDir ? { outputDirectory: priorOutputDir } : {}),
         },
         ...(priorOutputDir ? { outputDirectory: priorOutputDir, outputDir: priorOutputDir } : {}),
@@ -2113,6 +2187,8 @@ function createWorkerLifecycle({
           processTitle,
           episodeCount: workerJob.episodeCount,
           resumeFromJobId: resumeFromJobId || undefined,
+          protocolVersion,
+          launchMetadata,
           ...(priorOutputDir ? { outputDirectory: priorOutputDir } : {}),
         },
       });
@@ -2159,15 +2235,23 @@ function createWorkerLifecycle({
       }
 
       const cached = workerResultCache.get(job.id);
-      if (!cached) {
-        return res.status(410).json({ error: 'Worker result is no longer available' });
-      }
-      if (Date.now() - cached.storedAt > WORKER_RESULT_TTL_MS) {
+      if (cached && Date.now() - cached.storedAt > WORKER_RESULT_TTL_MS) {
         workerResultCache.delete(job.id);
-        return res.status(410).json({ error: 'Worker result is no longer available' });
       }
-
-      res.json(sanitizeJobState(cached.result));
+      const freshCached = workerResultCache.get(job.id);
+      if (freshCached) return res.json(sanitizeJobState(freshCached.result));
+      try {
+        const durable = readDurableWorkerResult(job);
+        if (!durable) return res.status(410).json({ error: 'Worker result is no longer available' });
+        workerResultCache.set(job.id, { result: durable.result, storedAt: Date.now() });
+        return res.json(sanitizeJobState(durable.result));
+      } catch (error) {
+        return res.status(500).json({
+          error: 'Durable worker result is invalid',
+          failureCode: 'worker_result_integrity_failure',
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
     });
 
     app.get('/worker-jobs/:jobId/failure-context', (req, res) => {
@@ -2389,8 +2473,27 @@ function createWorkerLifecycle({
       const storyTitle = body.storyTitle || resumeContext.storyTitle || sourceJob.storyTitle;
       const episodeCount = body.episodeCount || resumeContext.episodeCount || sourceJob.episodeCount;
       const idempotencyKey = body.idempotencyKey || `${sourceJob.id}:resume:${Date.now()}`;
+      const protocolVersion = patchedPayload.protocolVersion || sourceJob.protocolVersion;
+      const resumeAdmission = validateWorkerJobStartRequest({
+        protocolVersion,
+        mode,
+        payload: patchedPayload,
+        idempotencyKey,
+        storyTitle,
+        episodeCount,
+        resumeFromJobId: sourceJob.id,
+        launchMetadata: sourceJob.launchMetadata,
+      });
+      if (!resumeAdmission.ok) {
+        return res.status(400).json({
+          error: 'Stored resume request no longer satisfies the worker launch contract',
+          failureCode: resumeAdmission.issues[0]?.code || 'worker_request_invalid',
+          issues: resumeAdmission.issues,
+        });
+      }
       const requestSnapshot = buildWorkerRequestSnapshot(mode, patchedPayload, storyTitle);
       requestSnapshot.jobConfigHash = jobConfigHash;
+      requestSnapshot.protocolVersion = protocolVersion;
       const jobId = `worker-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       const projectId = sourceJob.projectId
         || sourceJob.resumeFromJobId
@@ -2417,6 +2520,8 @@ function createWorkerLifecycle({
         resumeFromJobId: sourceJob.id,
         requestSnapshot,
         jobConfigHash,
+        protocolVersion,
+        launchMetadata: sourceJob.launchMetadata,
         ...(priorOutputDir ? { outputDirectory: priorOutputDir, outputDir: priorOutputDir } : {}),
         resumeContext: {
           mode,
@@ -2488,6 +2593,8 @@ function createWorkerLifecycle({
     activeWorkers,
     workerStreamClients,
     workerResultCache,
+    readDurableWorkerResult,
+    removeWorkerResult,
     // helpers
     loadJobs,
     saveJobs,

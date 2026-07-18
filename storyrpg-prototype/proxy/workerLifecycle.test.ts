@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
 
 const require = createRequire(import.meta.url);
 const { createWorkerLifecycle, __test__ } = require('./workerLifecycle.js');
@@ -14,11 +18,11 @@ function createInMemoryStore(initial = []) {
   };
 }
 
-function makeLifecycle() {
+function makeLifecycle(runtimeRoot = process.cwd()) {
   const stores = new Map();
   return createWorkerLifecycle({
     rootDir: process.cwd(),
-    runtimeRoot: process.cwd(),
+    runtimeRoot,
     port: 3001,
     cachedJsonStore: (file, label) => {
       if (!stores.has(label)) stores.set(label, createInMemoryStore([]));
@@ -265,6 +269,54 @@ describe('workerLifecycle public progress transport', () => {
       statusCode: 200,
       body: { success: true, seasonPlan: { id: 'season-plan-1' } },
     });
+  });
+
+  it('reloads a hash-verified durable result when the memory cache is empty', () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'storyrpg-worker-result-'));
+    try {
+      const lifecycle = makeLifecycle(runtimeRoot);
+      const routes = registerRouteHarness(lifecycle);
+      const resultPath = path.join(runtimeRoot, 'analysis-result.json');
+      const raw = JSON.stringify({ success: true, seasonPlan: { id: 'durable-plan' } });
+      fs.writeFileSync(resultPath, raw, 'utf8');
+      lifecycle.saveWorkerJobs([{
+        id: 'worker-durable',
+        mode: 'analysis',
+        status: 'completed',
+        progress: 100,
+        resultArtifact: {
+          schemaVersion: 1,
+          path: resultPath,
+          sha256: crypto.createHash('sha256').update(raw).digest('hex'),
+        },
+      }]);
+
+      const response = invokeJsonRoute(
+        routes.get.get('/worker-jobs/:jobId/result'),
+        { params: { jobId: 'worker-durable' } },
+      );
+
+      expect(response).toEqual({
+        statusCode: 200,
+        body: { success: true, seasonPlan: { id: 'durable-plan' } },
+      });
+      expect(lifecycle.workerResultCache.get('worker-durable')?.result).toEqual(response.body);
+    } finally {
+      fs.rmSync(runtimeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malformed start requests without creating a job', () => {
+    const lifecycle = makeLifecycle();
+    const routes = registerRouteHarness(lifecycle);
+    const response = invokeJsonRoute(
+      routes.post.get('/worker-jobs/start'),
+      { body: { protocolVersion: 1, mode: 'generation', payload: {} } },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.failureCode).toBe('launch_protocol_unsupported');
+    expect(lifecycle.loadWorkerJobs()).toEqual([]);
   });
 
   it('migrates bulky persisted mirrors without changing authoritative checkpoints', () => {

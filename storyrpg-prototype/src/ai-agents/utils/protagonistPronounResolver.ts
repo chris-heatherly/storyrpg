@@ -43,6 +43,7 @@ export interface ProtagonistPronounResult {
 // situations). Agent-facing planning fields are deliberately excluded.
 const TEXT_KEYS = new Set([
   'text', 'narrativeText', 'setupText', 'outcomeText', 'reactionText',
+  'success', 'partial', 'failure',
   'lockedText', 'description', 'visualMoment', 'primaryAction',
   // G12: encounter stakes ("two suitors leaning toward him") and escalation prose
   // are reader-facing but were never scanned — the misgendered clock/stakes text
@@ -117,7 +118,22 @@ export function canonicalizeProtagonistPronouns(
 
   const repairField = (value: string, location: string): string => {
     result.fieldsScanned += 1;
-    if (!nameRe.test(value)) return value; // protagonist not referenced here
+    if (!nameRe.test(value)) {
+      // Choice outcome tiers are structurally authored as the result of the
+      // player's action, but may also include an NPC reaction. A bare wrong-
+      // gender pronoun with no second-person anchor therefore needs semantic
+      // coreference rather than deterministic coercion. Surface it to the
+      // PronounDisambiguator; do not guess here.
+      const unanchoredChoiceOutcome = /\/outcomeTexts\/(?:success|partial|failure)$/.test(location)
+        && wrongTest.test(value)
+        && !/\b(?:you|your|yours|yourself)\b/i.test(value);
+      if (unanchoredChoiceOutcome) {
+        for (const sentence of splitSentences(value)) {
+          if (wrongTest.test(sentence)) result.ambiguous.push({ location, sentence: sentence.trim() });
+        }
+      }
+      return value;
+    }
     if (!wrongTest.test(value)) return value; // no wrong-gender pronoun
 
     // Reflexive wrong-gender pronoun for this target (himself when canon is female).

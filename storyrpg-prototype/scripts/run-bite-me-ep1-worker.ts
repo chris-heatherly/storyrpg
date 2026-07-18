@@ -1,15 +1,28 @@
 /**
  * Bite Me EP1 worker launcher (text-only).
  *
- * LLM policy:
- * - Primary (from .env): runs BOTH structural analysis and generation (Gemini by default).
- * - Fable is NEVER used for generation. If primary analysis fails, retry analysis once
- *   with ANALYSIS_FALLBACK_* (default anthropic/claude-fable-5), cache the result, then
- *   run generation on the primary model only.
+ * LLM policy: Gemini-only analysis and generation, text-only, Quality Council off.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfig, type AgentConfig, type PipelineConfig } from '../src/ai-agents/config';
+import {
+  DEFAULT_GEMINI_SETTINGS,
+  DEFAULT_MIDJOURNEY_SETTINGS,
+  DEFAULT_OPENAI_SETTINGS,
+  DEFAULT_VIDEO_SETTINGS,
+  type PipelineConfig,
+} from '../src/ai-agents/config';
+import {
+  buildGeneratorPipelineConfig,
+  prepareAnalysisJob,
+  prepareGenerationJob,
+  submitWorkerJob,
+  type GeneratorPipelineConfigInput,
+} from '../src/ai-agents/launch';
+import type { WorkerJobStartRequest } from '../src/ai-agents/server/workerPayload';
+import { DEFAULT_GENERATION_SETTINGS } from '../src/config/generatorRuntimeSettings';
+import type { SourceMaterialAnalysis } from '../src/types/sourceAnalysis';
+import type { SeasonPlan } from '../src/types/seasonPlan';
 import { parseDocument } from '../src/ai-agents/utils/documentParser';
 import { readAnalysisCache, writeAnalysisCache, type AnalysisCacheIdentity } from './analysisCache';
 
@@ -90,24 +103,20 @@ function log(msg: string): void {
   console.log(`[${ts}] ${msg}`);
 }
 
-async function startJob(body: Record<string, unknown>): Promise<string> {
-  const resp = await fetch(`${PROXY}/worker-jobs/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    throw new Error(`worker start failed (${resp.status}): ${await resp.text()}`);
-  }
-  const data = await resp.json() as { jobId: string };
-  if (!data.jobId) throw new Error('worker start missing jobId');
-  return data.jobId;
+async function startJob(body: WorkerJobStartRequest): Promise<string> {
+  return (await submitWorkerJob(body, { proxyUrl: PROXY })).jobId;
 }
 
-async function getJob(jobId: string): Promise<(WorkerJob & { result?: Record<string, unknown> }) | null> {
+async function getJob(jobId: string): Promise<WorkerJob | null> {
   const resp = await fetch(`${PROXY}/worker-jobs/${jobId}`);
   if (!resp.ok) return null;
-  return await resp.json() as WorkerJob & { result?: Record<string, unknown> };
+  return await resp.json() as WorkerJob;
+}
+
+async function getJobResult(jobId: string): Promise<Record<string, unknown>> {
+  const resp = await fetch(`${PROXY}/worker-jobs/${jobId}/result`);
+  if (!resp.ok) throw new Error(`worker result unavailable (${resp.status}): ${await resp.text()}`);
+  return await resp.json() as Record<string, unknown>;
 }
 
 async function waitForJob(jobId: string, label: string): Promise<Record<string, unknown>> {
@@ -121,10 +130,7 @@ async function waitForJob(jobId: string, label: string): Promise<Record<string, 
       lastPhase = phase;
     }
     if (job.status === 'completed') {
-      if (job.result && typeof job.result === 'object') {
-        return job.result;
-      }
-      throw new Error(`${label}: completed but proxy result cache is empty (retry soon or check /worker-jobs/${jobId})`);
+      return getJobResult(jobId);
     }
     if (job.status === 'failed' || job.status === 'cancelled') {
       throw new Error(`${label}: ${job.status} — ${job.error || '(no error message)'}`);
@@ -133,39 +139,61 @@ async function waitForJob(jobId: string, label: string): Promise<Record<string, 
   }
 }
 
-function resolveProviderApiKey(provider: AgentConfig['provider']): string {
-  if (provider === 'gemini') return process.env.GEMINI_API_KEY || '';
-  if (provider === 'openai') return process.env.OPENAI_API_KEY || '';
-  if (provider === 'openrouter') return process.env.OPENROUTER_API_KEY || '';
-  return process.env.ANTHROPIC_API_KEY || '';
-}
-
-/** Patch every narrative agent slot to a single provider/model (analysis fallback only). */
-function applyLlmProfile(config: PipelineConfig, provider: AgentConfig['provider'], model: string): PipelineConfig {
-  const apiKey = resolveProviderApiKey(provider);
-  const patched: PipelineConfig = JSON.parse(JSON.stringify(config));
-  for (const agent of Object.values(patched.agents)) {
-    if (agent && typeof agent === 'object' && 'provider' in agent) {
-      agent.provider = provider;
-      agent.model = model;
-      agent.apiKey = apiKey;
-    }
-  }
-  return patched;
-}
-
-function buildConfig() {
-  const config = loadConfig();
+function buildConfig(): PipelineConfig {
+  const geminiKey = process.env.GEMINI_API_KEY || process.env.EXPO_PUBLIC_GEMINI_API_KEY || '';
+  const forcedModel = process.env.STORY_LLM_MODEL?.trim();
+  const taskModelOverrides: GeneratorPipelineConfigInput['taskModelOverrides'] = forcedModel
+    ? Object.fromEntries(['architect', 'scene', 'choice', 'qa', 'image', 'video'].map((task) => [
+        task,
+        { provider: 'gemini', model: forcedModel },
+      ])) as GeneratorPipelineConfigInput['taskModelOverrides']
+    : undefined;
+  const config = buildGeneratorPipelineConfig({
+    llmProvider: 'gemini',
+    llmModel: forcedModel || 'gemini-3.1-pro-preview',
+    modelFamily: 'gemini',
+    taskModelOverrides,
+    imageLlmProvider: 'gemini',
+    imageLlmModel: 'gemini-2.5-flash',
+    videoLlmProvider: 'gemini',
+    videoLlmModel: 'gemini-2.5-flash',
+    memoryLlmProvider: 'gemini',
+    memoryLlmModel: 'gemini-2.5-pro',
+    apiKey: '',
+    openaiApiKey: '',
+    openRouterApiKey: '',
+    geminiApiKey: geminiKey,
+    elevenLabsApiKey: '',
+    atlasCloudApiKey: '',
+    atlasCloudModel: '',
+    midapiToken: '',
+    imageProvider: 'nano-banana',
+    imageStrategy: 'all-beats',
+    panelMode: 'single',
+    artStyle: '',
+    geminiSettings: { ...DEFAULT_GEMINI_SETTINGS },
+    midjourneySettings: { ...DEFAULT_MIDJOURNEY_SETTINGS },
+    openaiSettings: { ...DEFAULT_OPENAI_SETTINGS },
+    generationSettings: {
+      ...DEFAULT_GENERATION_SETTINGS,
+      generateImages: false,
+      qualityCouncilEnabled: false,
+    },
+    generationMode: 'advisory',
+    narrationSettings: {
+      enabled: false,
+      provider: 'elevenlabs',
+      autoPlay: false,
+      preGenerateAudio: false,
+      voiceId: '',
+      voiceCastingEnabled: true,
+      performanceTagsEnabled: false,
+      highlightMode: 'word',
+    },
+    videoSettings: { ...DEFAULT_VIDEO_SETTINGS, enabled: false },
+  }, undefined, 'gemini-only');
   config.generation = { ...(config.generation ?? {}), assetGenerationMode: 'story-only' };
-  if (config.imageGen) config.imageGen.enabled = false;
-  if (config.videoGen) config.videoGen.enabled = false;
-  if (config.qualityCouncil) config.qualityCouncil.enabled = false;
-  if (config.narration) config.narration.enabled = false;
-  // Story runs are Gemini text-only. .env may point agents at Anthropic for
-  // interactive use; override here so Ep1 jobs stay on the intended provider.
-  const provider = (process.env.STORY_LLM_PROVIDER || 'gemini') as AgentConfig['provider'];
-  const model = process.env.STORY_LLM_MODEL || 'gemini-2.5-pro';
-  return applyLlmProfile(config, provider, model);
+  return config;
 }
 
 async function runAnalysisJob(
@@ -174,19 +202,14 @@ async function runAnalysisJob(
   briefTitle: string,
   analysisCachePath: string,
 ): Promise<Record<string, unknown>> {
-  const analysisJobId = await startJob({
-    mode: 'analysis',
-    storyTitle: 'Bite Me',
-    idempotencyKey: `analysis:bite-me:${Date.now()}`,
-    payload: {
-      config,
-      analysisInput: {
-        sourceText: treatment,
-        title: briefTitle,
-        preferences: ANALYSIS_OPTIONS,
-      },
-    },
-  });
+  const analysisJobId = await startJob(prepareAnalysisJob({
+    config,
+    sourceText: treatment,
+    title: briefTitle,
+    preferences: ANALYSIS_OPTIONS,
+    providerPolicy: 'gemini-only',
+    runId: String(Date.now()),
+  }));
   const architect = config.agents?.storyArchitect;
   log(`analysis job started: ${analysisJobId} (provider=${architect?.provider} model=${architect?.model})`);
   const analysisResult = await waitForJob(analysisJobId, 'analysis');
@@ -212,10 +235,8 @@ async function main(): Promise<void> {
   const architect = primaryConfig.agents?.storyArchitect;
   log(`generation LLM (primary): provider=${architect?.provider} model=${architect?.model} assets=story-only council=off`);
 
-  // Analysis results are expensive (~10 min of LLM calls) and deterministic
-  // inputs to generation — persist them on disk so a failed generation attempt
-  // can be retried without re-running analysis (the proxy's in-memory job
-  // result cache is purged too aggressively to rely on).
+  // Keep a content-addressed analysis cache so a generation retry does not need
+  // to repeat an otherwise unchanged analysis phase.
   const analysisCachePath = path.resolve(__dirname, '../generated-stories/.analysis-cache/bite-me-ep1.json');
   const resumeAnalysisJobId = process.env.SKIP_ANALYSIS_JOB_ID?.trim();
   const briefTitle = parsed.brief.story?.title || 'Bite Me';
@@ -223,10 +244,8 @@ async function main(): Promise<void> {
   if (resumeAnalysisJobId) {
     log(`reusing completed analysis job: ${resumeAnalysisJobId}`);
     const job = await getJob(resumeAnalysisJobId);
-    if (!job || job.status !== 'completed' || !job.result) {
-      throw new Error(`analysis job ${resumeAnalysisJobId} not completed with cached result`);
-    }
-    analysisResult = job.result;
+    if (!job || job.status !== 'completed') throw new Error(`analysis job ${resumeAnalysisJobId} is not completed`);
+    analysisResult = await getJobResult(resumeAnalysisJobId);
   } else if (process.env.REUSE_ANALYSIS === '1' && fs.existsSync(analysisCachePath)) {
     const cached = readAnalysisCache<Record<string, unknown>>(
       analysisCachePath,
@@ -239,25 +258,12 @@ async function main(): Promise<void> {
       log(`analysis cache is stale or incompatible; regenerating: ${analysisCachePath}`);
       analysisResult = await runAnalysisJob(primaryConfig, treatment, briefTitle, analysisCachePath);
     }
-  } else {
-    try {
-      analysisResult = await runAnalysisJob(primaryConfig, treatment, briefTitle, analysisCachePath);
-    } catch (primaryErr) {
-      const fallbackProvider = (process.env.ANALYSIS_FALLBACK_PROVIDER || 'anthropic') as AgentConfig['provider'];
-      const fallbackModel = process.env.ANALYSIS_FALLBACK_MODEL || 'claude-fable-5';
-      log(
-        `primary analysis failed: ${primaryErr instanceof Error ? primaryErr.message : primaryErr}; `
-        + `retrying structural analysis only with ${fallbackProvider}/${fallbackModel} (generation stays on primary)`,
-      );
-      const fallbackConfig = applyLlmProfile(primaryConfig, fallbackProvider, fallbackModel);
-      analysisResult = await runAnalysisJob(fallbackConfig, treatment, briefTitle, analysisCachePath);
-    }
-  }
+  } else analysisResult = await runAnalysisJob(primaryConfig, treatment, briefTitle, analysisCachePath);
 
   if (!analysisResult.success) {
     throw new Error(`analysis failed: ${String(analysisResult.error || 'unknown')}`);
   }
-  const seasonPlan = analysisResult.seasonPlan as Record<string, unknown> | undefined;
+  const seasonPlan = analysisResult.seasonPlan as SeasonPlan | undefined;
   if (!seasonPlan) {
     throw new Error(`analysis missing seasonPlan: ${String(analysisResult.seasonPlanError || 'unknown')}`);
   }
@@ -278,20 +284,19 @@ async function main(): Promise<void> {
   log(`run numbering: ${humanRunId} (BITE_ME_RUN_NUMBER=${runNumber}; folder slug from title="${labeledTitle}")`);
   persistRunIdFiles(runNumber);
 
-  // Generation always uses the primary LLM profile — never the Fable analysis fallback.
+  // Generation uses the same locked Gemini-only policy as analysis.
+  const prepared = prepareGenerationJob({
+    config: primaryConfig,
+    brief,
+    sourceAnalysis: analysisResult.sourceAnalysis as SourceMaterialAnalysis,
+    seasonPlan,
+    requestedEpisodes: [1],
+    providerPolicy: 'gemini-only',
+    runId: `${runLabel}:${Date.now()}`,
+  });
   const generationJobId = await startJob({
-    mode: 'generation',
+    ...prepared.request,
     storyTitle: humanRunId,
-    episodeCount: 1,
-    idempotencyKey: `generation:bite-me:ep1:${runLabel}:${Date.now()}`,
-    payload: {
-      config: primaryConfig,
-      generationInput: {
-        brief,
-        sourceAnalysis: analysisResult.sourceAnalysis,
-        episodeRange: { start: 1, end: 1 },
-      },
-    },
   });
   log(`generation job started: ${generationJobId} (${humanRunId})`);
 

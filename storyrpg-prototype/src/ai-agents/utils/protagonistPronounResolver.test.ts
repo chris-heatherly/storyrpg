@@ -113,6 +113,41 @@ describe('canonicalizeProtagonistPronouns', () => {
     canonicalizeProtagonistPronouns(story2, KYLIE, ['Victor']);
     expect(beat0(story2).narrativeText).toContain('His instinct');
   });
+
+  it('routes unanchored wrong-gender choice outcomes to semantic disambiguation', () => {
+    const story = storyWith([], [{
+      id: 'b1',
+      choices: [{
+        id: 'c1',
+        text: 'Study the stranger.',
+        outcomeTexts: {
+          success: "He files the stranger's face away.",
+          partial: 'His attention catches one useful detail.',
+          failure: 'The stranger notices him staring.',
+        },
+      }],
+    }]);
+
+    const result = canonicalizeProtagonistPronouns(story, KYLIE, []);
+    expect(result.repaired).toBe(0);
+    expect(result.ambiguous.map((finding) => finding.location)).toEqual([
+      '/episodes[0]/scenes[0]/beats[0]/choices[0]/outcomeTexts/success',
+      '/episodes[0]/scenes[0]/beats[0]/choices[0]/outcomeTexts/partial',
+      '/episodes[0]/scenes[0]/beats[0]/choices[0]/outcomeTexts/failure',
+    ]);
+
+    const applied = applyPronounDisambiguations(story, new Map([
+      ["He files the stranger's face away.", "Kylie files the stranger's face away."],
+      ['His attention catches one useful detail.', 'Her attention catches one useful detail.'],
+      ['The stranger notices him staring.', 'The stranger notices Kylie staring.'],
+    ]));
+    expect(applied).toBe(3);
+    expect((beat0(story).choices as any[])[0].outcomeTexts).toEqual({
+      success: "Kylie files the stranger's face away.",
+      partial: 'Her attention catches one useful detail.',
+      failure: 'The stranger notices Kylie staring.',
+    });
+  });
 });
 
 describe('canonicalizeProtagonistPronouns — reflexive in ambiguous sentence (gen-5 clock bug)', () => {

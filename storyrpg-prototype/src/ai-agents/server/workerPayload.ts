@@ -4,6 +4,8 @@ import type { GenerationManifest } from '../pipeline/generationPreflight';
 
 type EndingMode = 'single' | 'multiple';
 
+export const WORKER_JOB_PROTOCOL_VERSION = 2 as const;
+
 export type WorkerMode = 'analysis' | 'generation' | 'image-generation' | 'compile-episode';
 
 export type ResumeCheckpointPayload = {
@@ -12,6 +14,7 @@ export type ResumeCheckpointPayload = {
 };
 
 export type WorkerPayload = {
+  protocolVersion: typeof WORKER_JOB_PROTOCOL_VERSION;
   mode: WorkerMode;
   config: Record<string, unknown>;
   externalJobId?: string;
@@ -36,7 +39,7 @@ export type WorkerPayload = {
     brief: Record<string, unknown>;
     sourceAnalysis?: Record<string, unknown>;
     episodeRange?: { start: number; end: number; specific?: number[] };
-    manifest?: GenerationManifest;
+    manifest: GenerationManifest;
   };
   imageGenerationInput?: {
     outputDirectory: string;
@@ -54,16 +57,54 @@ export type WorkerPayload = {
   };
 };
 
-export type WorkerJobStartPayload = Omit<WorkerPayload, 'mode' | 'resumeCheckpoint'>;
+export type WorkerJobStartPayload = Omit<
+  WorkerPayload,
+  | 'protocolVersion'
+  | 'mode'
+  | 'externalJobId'
+  | 'friendlyName'
+  | 'processTitle'
+  | 'resultPath'
+  | 'jobConfigHash'
+  | 'resumeCheckpoint'
+>;
 
-export type WorkerJobStartRequest = {
-  mode: WorkerMode;
-  payload: WorkerJobStartPayload;
+export type WorkerLaunchMetadata = {
+  launchServiceVersion: number;
+  providerPolicy: 'configured' | 'gemini-only';
+  configHash?: string;
+  manifestHash?: string;
+};
+
+type WorkerJobStartRequestBase = {
+  protocolVersion: typeof WORKER_JOB_PROTOCOL_VERSION;
   idempotencyKey: string;
   storyTitle: string;
   episodeCount?: number;
   resumeFromJobId?: string;
 };
+
+export type WorkerJobStartRequest =
+  | (WorkerJobStartRequestBase & {
+      mode: 'analysis';
+      payload: Pick<WorkerJobStartPayload, 'config' | 'analysisInput'> & Required<Pick<WorkerJobStartPayload, 'analysisInput'>>;
+      launchMetadata: WorkerLaunchMetadata;
+    })
+  | (WorkerJobStartRequestBase & {
+      mode: 'generation';
+      payload: Pick<WorkerJobStartPayload, 'config' | 'generationInput'> & Required<Pick<WorkerJobStartPayload, 'generationInput'>>;
+      launchMetadata: WorkerLaunchMetadata;
+    })
+  | (WorkerJobStartRequestBase & {
+      mode: 'image-generation';
+      payload: Pick<WorkerJobStartPayload, 'config' | 'imageGenerationInput'> & Required<Pick<WorkerJobStartPayload, 'imageGenerationInput'>>;
+      launchMetadata?: WorkerLaunchMetadata;
+    })
+  | (WorkerJobStartRequestBase & {
+      mode: 'compile-episode';
+      payload: Pick<WorkerJobStartPayload, 'config' | 'compileEpisodeInput'> & Required<Pick<WorkerJobStartPayload, 'compileEpisodeInput'>>;
+      launchMetadata?: WorkerLaunchMetadata;
+    });
 
 export type WorkerJobStartResponse = {
   success: boolean;
@@ -141,6 +182,9 @@ export function assertValidWorkerPayload(value: unknown): asserts value is Worke
   if (!isRecord(value)) {
     throw new Error('Worker payload must be an object.');
   }
+  if (value.protocolVersion !== WORKER_JOB_PROTOCOL_VERSION) {
+    throw new Error(`Worker payload protocolVersion must be ${WORKER_JOB_PROTOCOL_VERSION}.`);
+  }
   if (value.mode !== 'analysis' && value.mode !== 'generation' && value.mode !== 'image-generation' && value.mode !== 'compile-episode') {
     throw new Error('Worker payload mode must be "analysis", "generation", "image-generation", or "compile-episode".');
   }
@@ -179,7 +223,7 @@ export function assertValidWorkerPayload(value: unknown): asserts value is Worke
     if (!isRecord(value.generationInput.brief)) {
       throw new Error('generationInput.brief is required for generation mode.');
     }
-    if (value.generationInput.manifest != null && !isValidGenerationManifest(value.generationInput.manifest)) {
+    if (!isValidGenerationManifest(value.generationInput.manifest)) {
       throw new Error('generationInput.manifest is malformed.');
     }
   }

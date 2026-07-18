@@ -85,7 +85,13 @@ import {
 } from '../config/modelFamilies';
 import type { GeneratorLlmProvider } from '../config/generatorLlmOptions';
 import { useGeneratorRunner } from '../hooks/useGeneratorRunner';
-import { buildPipelineConfig, PipelineConfigExtras } from '../ai-agents/config/buildPipelineConfig';
+import type { PipelineConfigExtras } from '../ai-agents/config/buildPipelineConfig';
+import {
+  buildGeneratorPipelineConfig,
+  prepareAnalysisJob,
+  prepareGenerationJob,
+} from '../ai-agents/launch';
+import { WORKER_JOB_PROTOCOL_VERSION } from '../ai-agents/server/workerPayload';
 import { StyleArchitect } from '../ai-agents/agents/StyleArchitect';
 import { ImageGenerationService } from '../ai-agents/services/imageGenerationService';
 import { useStyleSetup, AnchorRole } from './generator/hooks/useStyleSetup';
@@ -95,10 +101,8 @@ import { runStoryAnalysis, runStoryGeneration } from '../ai-agents/services/stor
 import { buildGeneratorCreativeBrief } from './generator/buildCreativeBrief';
 import { resolveGenerationSeasonPlan } from './generator/resolveGenerationSeasonPlan';
 import {
-  buildGenerationManifest,
   inferGenerationSourceKind,
   requiresCanonicalSeasonPlan,
-  validateGenerationPreflight,
 } from '../ai-agents/pipeline/generationPreflight';
 import {
   applyCanonToSeasonPlan,
@@ -1627,7 +1631,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
   const buildPipelineConfigInput = () => ({
     llmProvider,
     llmModel,
-    taskAssignments: effectiveTaskAssignments,
+    modelFamily,
+    taskModelOverrides,
     imageLlmProvider,
     imageLlmModel,
     videoLlmProvider,
@@ -1777,7 +1782,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       styleReferenceStrength:
         extraOverrides?.styleReferenceStrength || styleReferenceStrength,
     };
-    const config = buildPipelineConfig(buildPipelineConfigInput(), extras);
+    const config = buildGeneratorPipelineConfig(buildPipelineConfigInput(), extras);
     config.generation = {
       ...(config.generation || {}),
       assetGenerationMode: runGenerateImages ? 'story-and-images' : 'story-only',
@@ -1824,27 +1829,21 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
           const config = createPipelineConfig();
           const title = customStoryTitle || parsedDocument?.title || documentBrief?.story.title || 'Untitled Story';
           let analysisJobIdForUpdates: string | null = null;
+          const analysisRequest = prepareAnalysisJob({
+            config,
+            sourceText,
+            title,
+            prompt,
+            preferences: buildAnalysisPreferences(),
+            runId: String(Date.now()),
+          });
           const worker = await runWorkerJob<{
             success: boolean;
             analysisResult: SourceAnalysisResult;
             sourceAnalysis: SourceMaterialAnalysis;
             seasonPlan?: SeasonPlan;
             seasonPlanError?: string;
-          }>({
-            mode: 'analysis',
-            payload: {
-              config,
-              analysisInput: {
-                sourceText,
-                title,
-                prompt,
-                preferences: buildAnalysisPreferences(),
-              },
-            },
-            idempotencyKey: `analysis:${title}:${sourceText.length}:${prompt || ''}`,
-            storyTitle: title,
-            episodeCount: 1,
-          }, (evt) => handleEvent(evt), (statusData) => {
+          }>(analysisRequest, (evt) => handleEvent(evt), (statusData) => {
             const progress = Math.max(0, Math.min(100, Number(statusData?.progress ?? 0)));
             const phase = typeof statusData?.currentPhase === 'string'
               ? statusData.currentPhase
@@ -2115,29 +2114,27 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       }
     }
     const episodesToGenerate = getEpisodesToGenerate();
-    const episodeRange = updatedSourceAnalysis && (selectedEpisodes.length > 0 || selectedEpisodeCount > 0)
-      ? (selectedEpisodes.length > 0
-        ? { start: Math.min(...selectedEpisodes), end: Math.max(...selectedEpisodes), specific: selectedEpisodes }
-        : { start: 1, end: selectedEpisodeCount })
-      : undefined;
-    const brief = buildCreativeBrief(updatedSourceAnalysis, generationSeasonPlan);
-    if (!brief) { Alert.alert('Error', 'Failed to build story brief.'); return; }
-    brief.generationManifest = buildGenerationManifest({
-      sourceAnalysis: updatedSourceAnalysis,
-      seasonPlan: generationSeasonPlan,
-      requestedEpisodes: episodesToGenerate,
-    });
-    const preflightIssues = validateGenerationPreflight({
-      brief,
-      sourceAnalysis: updatedSourceAnalysis,
-      episodeRange,
-      manifest: brief.generationManifest,
-      fallbackEpisode: brief.episode.number,
-    });
-    if (preflightIssues.length > 0) {
-      Alert.alert('Generation Plan Invalid', preflightIssues.map((issue) => issue.message).join('\n\n'));
+    const draftBrief = buildCreativeBrief(updatedSourceAnalysis, generationSeasonPlan);
+    if (!draftBrief) { Alert.alert('Error', 'Failed to build story brief.'); return; }
+    const continuationJobId = getContinuationJobId();
+    let preparedGeneration;
+    let config: PipelineConfig;
+    try {
+      config = createPipelineConfig();
+      preparedGeneration = prepareGenerationJob({
+        config,
+        brief: draftBrief,
+        sourceAnalysis: updatedSourceAnalysis,
+        seasonPlan: generationSeasonPlan,
+        requestedEpisodes: episodesToGenerate,
+        runId: String(Date.now()),
+        resumeFromJobId: continuationJobId,
+      });
+    } catch (prepareError) {
+      Alert.alert('Generation Plan Invalid', prepareError instanceof Error ? prepareError.message : String(prepareError));
       return;
     }
+    const brief = preparedGeneration.brief;
     const proxyAvailable = await ensureProxyAvailable();
     if (!proxyAvailable) {
       Alert.alert(
@@ -2162,30 +2159,12 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     generationStartedAtRef.current = Date.now();
     if (USE_SERVER_WORKER) {
       try {
-        const config = createPipelineConfig();
         const workerEpisodeCount = episodesToGenerate.length;
         let workerJobIdForUpdates: string | null = null;
-        const continuationJobId = getContinuationJobId();
-        const worker = await runWorkerJob<FullPipelineResult>({
-          mode: 'generation',
-          payload: {
-            config,
-            generationInput: {
-              brief,
-              sourceAnalysis: updatedSourceAnalysis || undefined,
-              episodeRange,
-              manifest: brief.generationManifest,
-            },
-          },
-          idempotencyKey:
-            `generation:${brief.story.title}:${brief.generationManifest.seasonPlanHash || brief.generationManifest.sourceAnalysisHash || 'invent'}:` +
-            `${brief.generationManifest.requestedEpisodes.join(',')}`,
-          storyTitle: brief.story.title || 'Untitled Story',
-          episodeCount: workerEpisodeCount,
-          resumeFromJobId: continuationJobId,
-        },
-        (evt) => handleEvent(evt),
-        (statusData) => {
+        const worker = await runWorkerJob<FullPipelineResult>(
+          preparedGeneration.request,
+          (evt) => handleEvent(evt),
+          (statusData) => {
           const progress = Math.max(0, Math.min(100, Number(statusData?.progress ?? 0)));
           const currentPhaseFromStatus = statusData?.currentPhase;
           setPipelineRuntime(buildPipelineRuntimeSnapshot(statusData, workerJobIdForUpdates));
@@ -2233,8 +2212,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
               subphaseLabel: typeof statusData?.subphaseLabel === 'string' ? statusData.subphaseLabel : undefined,
             });
           }
-        },
-        async (jobId, startData) => {
+          },
+          async (jobId, startData) => {
           workerJobIdForUpdates = jobId;
           setCurrentJobId(jobId);
           setActiveJobId(jobId);
@@ -2251,7 +2230,8 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
             currentEpisode: 1,
             events: [],
           });
-        });
+          },
+        );
 
         const result = worker.result;
         if (!result || !result.success) {
@@ -2308,7 +2288,6 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       events: [],
     });
     try {
-      const config = createPipelineConfig();
       let result: FullPipelineResult;
       if (updatedSourceAnalysis && (selectedEpisodes.length > 0 || selectedEpisodeCount > 0)) {
         // Use selected episodes from season plan if available, otherwise fall back to count
@@ -2480,6 +2459,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       generationStartedAtRef.current = Date.now();
 
       const worker = await runWorkerJob<FullPipelineResult>({
+        protocolVersion: WORKER_JOB_PROTOCOL_VERSION,
         mode: 'image-generation',
         payload: {
           config,

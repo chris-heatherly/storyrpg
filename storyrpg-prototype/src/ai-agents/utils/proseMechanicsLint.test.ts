@@ -48,6 +48,18 @@ describe('proseMechanicsLint (G8)', () => {
     });
   });
 
+  describe('malformed honorific punctuation', () => {
+    it('flags a comma used where an abbreviated honorific requires a period', () => {
+      const findings = lintProseMechanics('The caller ID reads Mr, Midnight.');
+      expect(findings.map((finding) => finding.code)).toContain('malformed_honorific_punctuation');
+    });
+
+    it('does not flag a correctly punctuated honorific or an ordinary vocative', () => {
+      expect(lintProseMechanics('The caller ID reads Mr. Midnight.')).toEqual([]);
+      expect(lintProseMechanics('Listen, Midnight, we need to talk.')).toEqual([]);
+    });
+  });
+
   describe('scene-level walk + feedback', () => {
     it('collects findings across beat surfaces with beat ids', () => {
       const findings = lintSceneMechanics([

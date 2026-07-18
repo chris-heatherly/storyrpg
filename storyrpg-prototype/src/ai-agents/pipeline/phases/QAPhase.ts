@@ -119,7 +119,7 @@ export interface QAPhaseDeps {
   integratedValidator: Pick<IntegratedBestPracticesValidator, 'runFullValidation'>;
   distributionValidator: Pick<ChoiceDistributionValidator, 'validate' | 'computeMetrics'>;
   sceneWriter: Pick<SceneWriter, 'execute'>;
-  choiceAuthor: Pick<ChoiceAuthor, 'execute'>;
+  choiceAuthor: Pick<ChoiceAuthor, 'execute' | 'reauthorOutcomeTexts'>;
 
   // --- Run-scoped state (accessor-backed; reads see the monolith's current values) ---
   readonly incrementalValidator: IncrementalValidationRunner | null;
@@ -295,6 +295,46 @@ function collectTargetedJudgeSceneRepairs(
     }
   }
   return repairs;
+}
+
+function collectTargetedResponsiveChoiceSets(
+  report: QAReport,
+  choiceSets: ChoiceSet[],
+): Array<{ choiceSet: ChoiceSet; feedback: string }> {
+  const responsivenessIssues = (report.responsiveness?.issues ?? [])
+    .filter((issue) => !isUngroundedJudgeIssue(issue));
+  const weakProbes = (report.responsiveness?.probeVerdicts ?? [])
+    .filter((probe) => probe.verdict === 'cosmetic' || probe.npcReaction === 'static');
+  const targetedProbeIds = new Set([
+    ...weakProbes.map((probe) => probe.probeId),
+    ...responsivenessIssues
+      .filter((issue) => issue.location?.sceneId && issue.location?.beatId)
+      .map((issue) => `${issue.location!.sceneId}:${issue.location!.beatId}`),
+  ]);
+  const belowFloor = typeof report.responsiveness?.overallScore === 'number'
+    && report.responsiveness.overallScore < QUALITY_REPAIR_THRESHOLDS.responsiveness;
+  if (!belowFloor && responsivenessIssues.every((issue) => issue.severity !== 'error') && weakProbes.length === 0) {
+    return [];
+  }
+
+  return choiceSets
+    .filter((choiceSet) => targetedProbeIds.has(`${choiceSet.sceneId ?? 'scene'}:${choiceSet.beatId}`))
+    .slice(0, 2)
+    .map((choiceSet) => {
+      const probeId = `${choiceSet.sceneId ?? 'scene'}:${choiceSet.beatId}`;
+      const probeNotes = weakProbes
+        .filter((probe) => probe.probeId === probeId)
+        .map((probe) => probe.notes)
+        .filter(Boolean);
+      const issueNotes = responsivenessIssues
+        .filter((issue) => `${issue.location?.sceneId}:${issue.location?.beatId}` === probeId)
+        .map((issue) => issue.description);
+      return {
+        choiceSet,
+        feedback: [...probeNotes, ...issueNotes].join(' ') ||
+          'Make each option produce a distinct immediate action, reaction, and consequence before any downstream route callback.',
+      };
+    });
 }
 
 function incomingChoiceFlagsForScene(choiceSets: ChoiceSet[], sceneId: string): string[] {
@@ -561,8 +601,52 @@ export class QAPhase {
           }
         }
 
+        // Responsiveness has two realization surfaces: the immediate outcome
+        // and the downstream route callback. Repair both in one QA transaction
+        // so the next judge pass evaluates a coherent option-to-consequence arc.
+        const responsiveChoiceRepairs = collectTargetedResponsiveChoiceSets(qaReport, choiceSets);
+        for (const { choiceSet, feedback } of responsiveChoiceRepairs) {
+          const sceneBlueprint = episodeBlueprint.scenes.find((scene) => scene.id === choiceSet.sceneId);
+          if (!sceneBlueprint) continue;
+          const location = worldBible.locations.find((candidate) => candidate.id === sceneBlueprint.location);
+          const siblingTexts = choiceSet.choices
+            .map((choice) => choice.text)
+            .filter((text): text is string => typeof text === 'string' && text.trim().length > 0);
+          for (const choice of choiceSet.choices.slice(0, 4)) {
+            if (!choice.text?.trim()) continue;
+            let authored: Partial<Record<'success' | 'partial' | 'failure', string>>;
+            try {
+              authored = await withTimeout(this.deps.choiceAuthor.reauthorOutcomeTexts({
+                choiceText: choice.text,
+                stakes: choice.stakesAnnotation ?? choice.stakes,
+                sceneName: sceneBlueprint.name,
+                sceneLocation: location?.fullDescription || sceneBlueprint.location,
+                needTiers: ['success', 'partial', 'failure'],
+                previousOutcomeTexts: choice.outcomeTexts,
+                siblingChoiceTexts: siblingTexts.filter((text) => text !== choice.text),
+                repairDirective: feedback,
+              }), PIPELINE_TIMEOUTS.llmAgent, `ChoiceAuthor.reauthorOutcomeTexts(${choice.id} responsiveness-${qaRepairPass + 1})`);
+            } catch (error) {
+              context.emit({
+                type: 'warning',
+                phase: 'qa_repair',
+                message: `Immediate responsiveness repair failed for choice ${choice.id}; preserving the current outcomes: ${error instanceof Error ? error.message : String(error)}`,
+              });
+              continue;
+            }
+            const replacements = Object.entries(authored)
+              .filter((entry): entry is ['success' | 'partial' | 'failure', string] =>
+                typeof entry[1] === 'string' && entry[1].trim().length >= 12,
+              );
+            if (replacements.length === 0) continue;
+            choice.outcomeTexts = { ...(choice.outcomeTexts ?? {}) } as NonNullable<typeof choice.outcomeTexts>;
+            for (const [tier, text] of replacements) choice.outcomeTexts[tier] = text.trim();
+            repairsMade++;
+          }
+        }
+
         // Publishability judges use explicit floors. Prose misses rewrite only
-        // their named/sampled scenes; responsiveness misses rewrite the paired
+        // their named/sampled scenes; responsiveness also rewrites the paired
         // downstream route openings, never the whole episode.
         const targetedJudgeRepairs = collectTargetedJudgeSceneRepairs(qaReport, choiceSets);
         for (const [sceneId, feedback] of targetedJudgeRepairs) {

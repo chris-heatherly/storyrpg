@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "esModuleInterop": true
+  },
+  "include": [
+    "scripts/run-bite-me-ep1-worker.ts",
+    "scripts/analysisCache.ts",
+    "scripts/reconstruct-resume-context.ts"
+  ]
+}

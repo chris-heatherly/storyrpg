@@ -38,6 +38,7 @@ function createRuntimeLayout(appRootDir) {
       : path.join(runtimeRoot, 'pipeline-memories'),
     deletedStoriesFile: path.join(storiesDir, '.deleted-stories.json'),
     workerCheckpointOutputDir: path.join(runtimeRoot, '.worker-checkpoint-outputs'),
+    workerResultsDir: path.join(runtimeRoot, '.worker-results'),
     generationJobsFile: path.join(runtimeRoot, '.generation-jobs.json'),
     workerJobsFile: path.join(runtimeRoot, '.worker-jobs.json'),
     workerCheckpointsFile: path.join(runtimeRoot, '.worker-checkpoints.json'),
@@ -53,6 +54,7 @@ function createRuntimeLayout(appRootDir) {
     layout.refImagesDir,
     layout.pipelineMemoryRoot,
     layout.workerCheckpointOutputDir,
+    layout.workerResultsDir,
   ]) {
     fs.mkdirSync(dir, { recursive: true });
   }

@@ -14,7 +14,12 @@ import {
   OpenAISettings,
   StableDiffusionSettings,
 } from '../ai-agents/config';
-import { GenerationSettings, DEFAULT_GENERATION_SETTINGS } from '../components/GenerationSettingsPanel';
+import {
+  DEFAULT_GENERATION_SETTINGS,
+  type GenerationSettings,
+  type GeneratorNarrationSettings,
+  type GeneratorVideoSettings,
+} from '../config/generatorRuntimeSettings';
 import { PROXY_CONFIG } from '../config/endpoints';
 import { createLogger } from '../utils/logger';
 
@@ -37,26 +42,7 @@ import {
   resolveTaskAssignments,
 } from '../config/modelFamilies';
 
-export interface GeneratorNarrationSettings {
-  enabled: boolean;
-  provider?: 'elevenlabs' | 'gemini';
-  autoPlay: boolean;
-  preGenerateAudio: boolean;
-  voiceId: string;
-  geminiModel?: string;
-  voiceCastingEnabled?: boolean;
-  performanceTagsEnabled?: boolean;
-  highlightMode: 'none' | 'word' | 'sentence';
-}
-
-export interface GeneratorVideoSettings {
-  enabled: boolean;
-  model: string;
-  durationSeconds: number;
-  resolution: string;
-  aspectRatio: string;
-  strategy: string;
-}
+export type { GeneratorNarrationSettings, GeneratorVideoSettings } from '../config/generatorRuntimeSettings';
 
 export const GENERATOR_STORAGE_KEYS = {
   anthropicApiKey: '@storyrpg_anthropic_api_key',

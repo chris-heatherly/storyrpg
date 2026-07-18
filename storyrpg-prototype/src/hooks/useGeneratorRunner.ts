@@ -8,6 +8,7 @@ import { PROXY_CONFIG } from '../config/endpoints';
 import type { PipelineEvent } from '../ai-agents/pipeline';
 import { applyWorkerTimelineEvent, normalizeVideoJobStatus } from './workerJobTimeline';
 import { safeParseWorkerFrame } from '../ai-agents/codec/workerEvent';
+import { submitWorkerJob } from '../ai-agents/launch/WorkerJobClient';
 
 export function useGeneratorRunner() {
   const { addJob, updateJob, removeJob } = useImageJobStore();
@@ -93,19 +94,10 @@ export function useGeneratorRunner() {
     onStatusUpdate?: (status: any) => void,
     onJobStarted?: (jobId: string, startData: WorkerJobStartResponse) => void | Promise<void>,
   ): Promise<{ jobId: string; result: T }> => {
-    const startResp = await fetch(`${PROXY_CONFIG.workerJobs}/start`, {
-      method: 'POST',
-      // Send the logged-in session cookie so an auth-gated proxy
-      // (PROXY_REQUIRE_AUTH=1) authorizes the request (req.user).
+    const startData = await submitWorkerJob(request, {
+      proxyUrl: PROXY_CONFIG.getProxyUrl(),
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
     });
-    if (!startResp.ok) {
-      throw new Error(`Failed to start worker job (${startResp.status})`);
-    }
-
-    const startData = await startResp.json() as WorkerJobStartResponse;
     const jobId = startData.jobId;
     if (!jobId) {
       throw new Error('Worker start response missing jobId');

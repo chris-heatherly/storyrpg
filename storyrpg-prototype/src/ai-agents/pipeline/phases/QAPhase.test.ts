@@ -50,7 +50,10 @@ function makeDeps(overrides: Partial<QAPhaseDeps> = {}): QAPhaseDeps {
       })),
     } as any,
     sceneWriter: { execute: vi.fn(async () => ({ success: false })) } as any,
-    choiceAuthor: { execute: vi.fn(async () => ({ success: false })) } as any,
+    choiceAuthor: {
+      execute: vi.fn(async () => ({ success: false })),
+      reauthorOutcomeTexts: vi.fn(async () => ({})),
+    } as any,
     incrementalValidator: null,
     sceneValidationResults: [],
     cachedPipelineMemory: null,
@@ -255,6 +258,83 @@ describe('QAPhase', () => {
     expect((deps.sceneWriter.execute as any).mock.calls.map((call: any[]) => call[0].sceneBlueprint.id))
       .toEqual(['scene-2', 'scene-3']);
     expect(result.qaReport?.responsiveness?.overallScore).toBe(78);
+  });
+
+  it('repairs immediate outcomes and downstream callbacks for a cosmetic choice probe', async () => {
+    const lowResponsiveness = makeQAReport({
+      responsiveness: {
+        overallScore: 58,
+        issues: [],
+        probeVerdicts: [{
+          probeId: 'scene-1:beat-1',
+          verdict: 'cosmetic',
+          npcReaction: 'static',
+          notes: 'all options receive the same immediate response',
+        }],
+      },
+    });
+    const runFullQA = vi.fn()
+      .mockResolvedValueOnce(lowResponsiveness)
+      .mockResolvedValue(makeQAReport({
+        responsiveness: { overallScore: 80, issues: [], probeVerdicts: [] },
+      }));
+    const reauthorOutcomeTexts = vi.fn(async ({ choiceText }: { choiceText: string }) => ({
+      success: `${choiceText} earns a distinct immediate answer from Mika.`,
+      partial: `${choiceText} lands, but Mika names its cost.`,
+      failure: `${choiceText} fails and Mika reacts to that exact attempt.`,
+    }));
+    const deps = makeDeps({
+      qaRunner: { runFullQA } as any,
+      choiceAuthor: { execute: vi.fn(), reauthorOutcomeTexts } as any,
+      sceneWriter: {
+        execute: vi.fn(async (request: any) => ({
+          success: true,
+          data: {
+            sceneId: request.sceneBlueprint.id,
+            sceneName: request.sceneBlueprint.name,
+            beats: [{ id: 'opening', text: 'Mika remembers how you answered.' }],
+          },
+        })),
+      } as any,
+    });
+    const input = makeInput({
+      episodeBlueprint: {
+        scenes: [
+          {
+            id: 'scene-1', name: 'Choice', location: 'loc-1', npcsPresent: ['mika'],
+            leadsTo: ['scene-2'], choicePoint: { optionHints: ['bold', 'gentle'] },
+          },
+          { id: 'scene-2', name: 'Aftermath', location: 'loc-1', npcsPresent: ['mika'], leadsTo: [] },
+        ],
+        suggestedFlags: [], suggestedScores: [], suggestedTags: [],
+      } as any,
+      sceneContents: [
+        { sceneId: 'scene-1', sceneName: 'Choice', beats: [{ id: 'beat-1', text: 'Choose.' }] },
+        { sceneId: 'scene-2', sceneName: 'Aftermath', beats: [{ id: 'opening', text: 'Same response.' }] },
+      ] as any,
+      choiceSets: [{
+        sceneId: 'scene-1', beatId: 'beat-1', choiceType: 'relationship',
+        choices: [
+          {
+            id: 'c1', text: 'Answer boldly.', nextSceneId: 'scene-2',
+            outcomeTexts: { success: 'Same.', partial: 'Same.', failure: 'Same.' },
+          },
+          {
+            id: 'c2', text: 'Answer gently.', nextSceneId: 'scene-2',
+            outcomeTexts: { success: 'Same.', partial: 'Same.', failure: 'Same.' },
+          },
+        ],
+      }] as any,
+    });
+
+    const result = await new QAPhase(deps).run(input, makeContext([]));
+
+    expect(reauthorOutcomeTexts).toHaveBeenCalledTimes(2);
+    expect((reauthorOutcomeTexts.mock.calls[0]?.[0] as any).repairDirective).toContain('same immediate response');
+    expect(input.choiceSets[0].choices[0].outcomeTexts?.success).toContain('Answer boldly');
+    expect(input.choiceSets[0].choices[1].outcomeTexts?.success).toContain('Answer gently');
+    expect((deps.sceneWriter.execute as any)).toHaveBeenCalledTimes(1);
+    expect(result.qaReport?.responsiveness?.overallScore).toBe(80);
   });
 
   it('repairs same-target cosmetic choices with condition-gated opening callback residue', async () => {

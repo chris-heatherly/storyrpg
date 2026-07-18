@@ -276,6 +276,17 @@ function parseMarkdownDocument(content: string): ParsedDocument {
   };
 
   for (const line of lines) {
+    // Authored treatment metadata often follows a generic format heading:
+    //   # StoryRPG Lite Treatment
+    //   - **Title:** Bite Me
+    // The explicit field is authoritative and must be allowed to replace the
+    // first H1. Keep this structured rather than guessing from prose.
+    const boldBulletKvMatch = line.match(/^\s*[-*]\s+\*\*([^:*]+):\*\*\s*(.+?)\s*$/);
+    if (boldBulletKvMatch) {
+      const [, key, value] = boldBulletKvMatch;
+      assignKeyValue(parsed, key.toLowerCase().trim(), value.trim());
+    }
+
     // Check for title (first h1)
     const titleMatch = line.match(/^#\s+(.+)$/);
     if (titleMatch && !parsed.title) {

@@ -126,6 +126,7 @@ const lifecycle = createWorkerLifecycle({
   workerCheckpointsFile: RUNTIME.workerCheckpointsFile,
   workerDeadLetterFile: RUNTIME.workerDeadLetterFile,
   workerCheckpointOutputDir: WORKER_CHECKPOINT_OUTPUT_DIR,
+  workerResultsDir: RUNTIME.workerResultsDir,
   port: PORT,
   cachedJsonStore: createCachedStore,
   createSyncGenerationMirrorFromWorker,
@@ -194,6 +195,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
         if (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled') {
           const fin = new Date(j.finishedAt || j.updatedAt || 0).getTime();
           if (Number.isFinite(fin) && now - fin > lifecycle.constants.WORKER_COMPLETED_PRUNE_MS) {
+            lifecycle.removeWorkerResult(j.id);
             pruned++;
             return false;
           }

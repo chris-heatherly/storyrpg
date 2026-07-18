@@ -607,6 +607,43 @@ describe('NarrativeContractCompiler', () => {
     expect(graph.realizationTasks?.some((task) => task.id === 'task:presence:ep1:s1-3:char-stela:named-introduction')).toBe(true);
   });
 
+  it('r115 (2026-07-18): retargets a presence contract when a treatment anchor moves the character\'s first appearance to a later scene', () => {
+    // Live regression: bite-me-r115_2026-07-18T03-49-37 hard-failed episode
+    // architecture with PLAN_CHARACTER_PRESENCE_OWNER_CONFLICT. Mika Dragan's
+    // presence contract was compiled to s1-3 (her name appears in that scene's
+    // turn text), but a treatment anchor put her actual first sighting at
+    // s1-4 (the club) — compileFirstAppearanceContracts correctly let the
+    // anchor win, but the LOSING presence contract still claimed s1-3, and
+    // the blueprint (built to match the winning first-appearance contract)
+    // never cast her there. The stale presence contract shipped to the
+    // architecture preflight with no repair path.
+    const planned = plan([1]);
+    planned.protagonist = { id: 'char-kylie', name: 'Kylie Marinescu', description: '' };
+    planned.characterIntroductions = [
+      { characterId: 'char-mika', characterName: 'Mika Dragan', introducedInEpisode: 1, role: 'ally' },
+    ];
+    const scenes = [
+      scene({
+        id: 's1-3', episodeNumber: 1, order: 2, npcsInvolved: ['char-mika'],
+        dramaticPurpose: 'Stela introduces Kylie to the club scene and her other friend Mika.',
+      }),
+      scene({ id: 's1-4', episodeNumber: 1, order: 3, npcsInvolved: ['char-mika'], dramaticPurpose: 'At the club, Mika holds court.' }),
+    ];
+    const plan_ = scenePlan(scenes);
+    plan_.anchorContracts = [{
+      id: 'anchor:1:5:mika-s-placement', anchorName: "Mika's placement", episodeNumber: 1, owningSceneId: 's1-4',
+      onPageAction: 'Stela introduces Kylie to Mika, who is already established at the club.',
+      npcName: 'Mika Dragan', firstSighting: true, appearanceMode: 'named_on_page',
+    }];
+
+    const graph = compileNarrativeContractGraph(planned, plan_);
+
+    const mikaAppearance = graph.firstAppearanceContracts?.find((contract) => contract.characterId === 'char-mika');
+    expect(mikaAppearance?.owningSceneId).toBe('s1-4');
+    const mikaPresence = graph.characterPresenceContracts.find((contract) => contract.characterId === 'char-mika');
+    expect(mikaPresence?.sceneId).toBe('s1-4');
+  });
+
   it('compiles premise, canonical state, downstream seed, and transition projections together', () => {
     const planned = plan([1, 2]);
     planned.protagonist = { id: 'protagonist', name: 'Avery', description: '' };

@@ -2122,6 +2122,32 @@ export function compileNarrativeContractGraph(
     firstSightingAnchors: scenePlan.anchorContracts,
     npcVisualIdentities: scenePlan.npcVisualIdentities,
   });
+  // r115 (2026-07-18): a treatment anchor's first-sighting scene can outrank
+  // a presence contract's text-mention scene for the same character (see
+  // compileFirstAppearanceContracts) — but that only moves the WINNER in
+  // firstAppearanceContracts. The losing presence contract still claims its
+  // original, now-disagreeing scene, and nothing else in the graph re-derives
+  // it, so it ships to the blueprint verbatim and the architecture preflight
+  // (presenceConflicts) hard-fails with no repair path (Mika staged at s1-3,
+  // first appearance compiled to s1-4). Retarget rather than drop: dropping
+  // would leave the character with zero presence contracts anywhere, losing
+  // the requirement that she's actually evidenced on page at all. Each
+  // firstAppearanceContract's sourceContractIds already lists the presence
+  // contract(s) that fed it, so no new character-identity matching is needed.
+  const reconciledSceneByPresenceContractId = new Map<string, { sceneId: string; episodeNumber: number }>();
+  for (const contract of firstAppearanceContracts) {
+    for (const sourceId of contract.sourceContractIds) {
+      reconciledSceneByPresenceContractId.set(sourceId, {
+        sceneId: contract.owningSceneId,
+        episodeNumber: contract.episodeNumber,
+      });
+    }
+  }
+  const reconciledCharacterPresenceContracts = characterPresenceContracts.map((contract) => {
+    const winner = reconciledSceneByPresenceContractId.get(contract.id);
+    if (!winner || (winner.sceneId === contract.sceneId && winner.episodeNumber === contract.episodeNumber)) return contract;
+    return { ...contract, sceneId: winner.sceneId, episodeNumber: winner.episodeNumber };
+  });
   const routeRealizationContracts: NarrativeRouteRealizationContract[] = compileRouteRealizationContracts({
     scenes,
     events,
@@ -2137,7 +2163,7 @@ export function compileNarrativeContractGraph(
     knownLocationNames: knownLocations,
     semanticEventIr: scenePlan.semanticEventIr,
     events,
-    characterPresenceContracts,
+    characterPresenceContracts: reconciledCharacterPresenceContracts,
     identityScheduleContracts,
     characterRoleConstraints: compileCharacterRoleConstraints(plan, identityScheduleContracts),
     episodeTopologyContracts: compileEpisodeTopologyContracts(plan),

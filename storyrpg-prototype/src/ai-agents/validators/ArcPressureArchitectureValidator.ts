@@ -64,9 +64,20 @@ const TURN_TYPES_BY_BEAT: Partial<Record<StoryCircleBeat, ReadonlySet<ArcEpisode
   change: new Set(['finale', 'revelation', 'choice']),
 };
 
-function hasText(value: unknown): value is string {
+/**
+ * The completeness predicate this validator judges turnout text by: non-empty
+ * AND not a placeholder ("TBD", "none", "unknown", ...). Exported so the
+ * SeasonPlanner normalizer backfills against the SAME definition — r119
+ * (2026-07-18, worker-1784411845734-fy0bmr4g) aborted a season-plan analysis
+ * because the normalizer's `||` fallbacks treated a truthy placeholder string
+ * as "filled" while this predicate rejected it: the remedy and the checker
+ * disagreed on what counts as text, so the repairable defect reached the gate.
+ */
+export function hasSubstantiveArcText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && !EMPTY_PLACEHOLDER.test(value);
 }
+
+const hasText = hasSubstantiveArcText;
 
 function expectedArcEpisodes(arc: SeasonArc): number[] {
   const start = arc.episodeRange?.start || 1;

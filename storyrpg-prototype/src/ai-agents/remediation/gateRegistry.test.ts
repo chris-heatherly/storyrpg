@@ -52,17 +52,35 @@ describe('gate registry policy (repair-first, CI-enforced)', () => {
     }
   });
 
-  it('does NOT fire the repair-first rule for shadow (defaultOn=false) gates', () => {
+  it('fires the repair-first rule for shadow (defaultOn=false) blocking gates too (r119)', () => {
+    // r119 (2026-07-18): GATE_ARC_PRESSURE was registered defaultOn:false, so
+    // the old defaultOn-scoped policy never demanded a repair route — then the
+    // gate fired anyway via config enablement and aborted a season-plan
+    // analysis run on three missing turnout text fields. Default-OFF blocking
+    // gates are reachable in production; they carry the same obligation.
     const shadowGate: GateSpec = { id: 'GATE_TEST_SHADOW', placement: 'season-final', kind: 'blocking', defaultOn: false };
     const repairedPlan: GateSpec = { id: 'GATE_TEST_PLAN_REPAIRED', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' };
     GATE_REGISTRY.push(shadowGate, repairedPlan);
     try {
-      const violations = validateGateRegistry({
+      const bare = validateGateRegistry({
         ...GATE_DEFAULTS,
         GATE_TEST_SHADOW: false,
         GATE_TEST_PLAN_REPAIRED: true,
       });
-      expect(violations.filter((v) => v.gateId.startsWith('GATE_TEST_'))).toEqual([]);
+      expect(bare.some((v) => v.gateId === 'GATE_TEST_SHADOW' && v.problem.includes('repair-first policy'))).toBe(true);
+      expect(bare.filter((v) => v.gateId === 'GATE_TEST_PLAN_REPAIRED')).toEqual([]);
+
+      // With a written exception, the shadow gate is compliant.
+      GATE_REGISTRY[GATE_REGISTRY.length - 2] = {
+        ...shadowGate,
+        policyException: 'Test-only shadow gate. Planned fix: not applicable — synthetic registry entry for this unit test.',
+      };
+      const excepted = validateGateRegistry({
+        ...GATE_DEFAULTS,
+        GATE_TEST_SHADOW: false,
+        GATE_TEST_PLAN_REPAIRED: true,
+      });
+      expect(excepted.filter((v) => v.gateId.startsWith('GATE_TEST_'))).toEqual([]);
     } finally {
       GATE_REGISTRY.pop();
       GATE_REGISTRY.pop();
@@ -97,8 +115,15 @@ describe('gate registry policy (repair-first, CI-enforced)', () => {
 
   it('every policy exception is substantive and names a planned fix', () => {
     const exceptions = GATE_REGISTRY.filter((g) => g.policyException);
-    // Exceptions are allowed but must stay rare and explicit.
-    expect(exceptions.length).toBeLessThanOrEqual(4);
+    // Default-ON exceptions are live abort surface — they must stay rare.
+    // Default-OFF exceptions document shelved gates (the r119 policy extension
+    // requires every blocking gate to declare its story); bounded so the
+    // shelf cannot silently grow past the number it held when the policy
+    // landed — retiring a shelved gate or wiring its repair shrinks it.
+    const defaultOnExceptions = exceptions.filter((g) => g.defaultOn);
+    const defaultOffExceptions = exceptions.filter((g) => !g.defaultOn);
+    expect(defaultOnExceptions.length).toBeLessThanOrEqual(4);
+    expect(defaultOffExceptions.length).toBeLessThanOrEqual(15);
     for (const g of exceptions) {
       expect(g.policyException!.length).toBeGreaterThanOrEqual(40);
       expect(g.policyException).toMatch(/Planned fix/);

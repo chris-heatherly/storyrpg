@@ -948,3 +948,75 @@ describe('SeasonPlannerAgent.refetchMissingPlanFields (truncated-plan recovery)'
     expect(planData.arcs).toBeUndefined(); // deterministic fill will cover it downstream
   });
 });
+
+describe('SeasonPlannerAgent.normalizeArcEpisodeTurnouts placeholder repair (r119)', () => {
+  // r119 (2026-07-18, worker-1784411845734-fy0bmr4g): the LLM emitted an arc
+  // turnout whose description/leavesProtagonistWith/whyThisCannotMoveLater
+  // were truthy placeholders. The normalizer's bare `||` fallbacks treated
+  // them as filled; ArcPressureArchitectureValidator's hasText rejected them;
+  // the whole season-plan analysis aborted at the ArcPressure gate on a
+  // defect this normalizer exists to repair. The fix: candidate selection
+  // shares the validator's own hasSubstantiveArcText predicate.
+  const arcEpisode = {
+    episodeNumber: 1,
+    title: 'Dating After Dusk',
+    synopsis: 'Kylie arrives in Bucharest and falls in with the Dusk Club.',
+    storyCircleRole: [{ beat: 'you', roleKind: 'primary' }],
+  } as any;
+  const anchors = { start: 1, end: 3, midpointEpisode: 2, crisisEpisode: 3 };
+
+  it('repairs placeholder-valued turnout fields to substantive text the gate accepts', async () => {
+    const { hasSubstantiveArcText } = await import('../validators/ArcPressureArchitectureValidator');
+    const agent: any = makePlanner();
+    const [turnout] = agent.normalizeArcEpisodeTurnouts(
+      [{
+        episodeNumber: 1,
+        storyCircleBeat: 'you',
+        storyCircleRoleKind: 'primary',
+        turnType: 'setup',
+        description: 'TBD',
+        leavesProtagonistWith: 'none',
+        whyThisCannotMoveLater: 'unknown',
+      }],
+      [arcEpisode],
+      anchors,
+    );
+
+    expect(hasSubstantiveArcText(turnout.description)).toBe(true);
+    expect(hasSubstantiveArcText(turnout.leavesProtagonistWith)).toBe(true);
+    expect(hasSubstantiveArcText(turnout.whyThisCannotMoveLater)).toBe(true);
+    // The placeholder was replaced by real fallback content, not passed through.
+    expect(turnout.description).not.toMatch(/\bTBD\b/i);
+  });
+
+  it('keeps genuinely substantive LLM turnout text untouched', async () => {
+    const agent: any = makePlanner();
+    const [turnout] = agent.normalizeArcEpisodeTurnouts(
+      [{
+        episodeNumber: 1,
+        storyCircleBeat: 'you',
+        storyCircleRoleKind: 'primary',
+        turnType: 'setup',
+        description: 'Stela pulls Kylie into the Dusk Club orbit.',
+        leavesProtagonistWith: 'A protector she did not ask for.',
+        whyThisCannotMoveLater: 'The club invitation only makes sense before the rooftop night.',
+      }],
+      [arcEpisode],
+      anchors,
+    );
+
+    expect(turnout.description).toBe('Stela pulls Kylie into the Dusk Club orbit.');
+    expect(turnout.leavesProtagonistWith).toBe('A protector she did not ask for.');
+    expect(turnout.whyThisCannotMoveLater).toBe('The club invitation only makes sense before the rooftop night.');
+  });
+
+  it('fills fields for an episode with no raw turnout at all (existing behavior preserved)', async () => {
+    const { hasSubstantiveArcText } = await import('../validators/ArcPressureArchitectureValidator');
+    const agent: any = makePlanner();
+    const [turnout] = agent.normalizeArcEpisodeTurnouts(undefined, [arcEpisode], anchors);
+
+    expect(hasSubstantiveArcText(turnout.description)).toBe(true);
+    expect(hasSubstantiveArcText(turnout.leavesProtagonistWith)).toBe(true);
+    expect(hasSubstantiveArcText(turnout.whyThisCannotMoveLater)).toBe(true);
+  });
+});

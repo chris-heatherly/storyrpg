@@ -85,7 +85,7 @@ import {
   StoryCircleCoverageValidator,
   seasonPlanToStoryCircleCoverageInput,
 } from '../validators/StoryCircleCoverageValidator';
-import { ArcPressureArchitectureValidator } from '../validators/ArcPressureArchitectureValidator';
+import { ArcPressureArchitectureValidator, hasSubstantiveArcText } from '../validators/ArcPressureArchitectureValidator';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { gateEnabledPredicate, isGateEnabled } from '../remediation/gateDefaults';
 import { CharacterArchitectureValidator } from '../validators/CharacterArchitectureValidator';
@@ -3058,11 +3058,17 @@ CRITICAL RULES:
     const crisisEpisode = range
       ? Math.max(range.start, Math.min(range.end, Math.ceil(range.start + Math.max(1, range.end - range.start) * (2 / 3))))
       : rawArc.lateArcCrisis?.episodeNumber;
+    // Same shared-predicate discipline as normalizeArcEpisodeTurnouts: a
+    // placeholder-valued description ("TBD"/"none") must not shadow the real
+    // authored sourceText, or the ArcPressure gate rejects the field this
+    // merge claims to have filled (r119 defect class).
+    const substantiveOrUndefined = (value: string | undefined): string | undefined =>
+      hasSubstantiveArcText(value) ? value : undefined;
     const turnouts = guidance.episodeTurnouts?.map((turnout) => ({
       episodeNumber: turnout.episodeNumber,
       turnType: this.normalizeAuthoredArcTurnoutType(turnout.turnType),
-      description: turnout.description || turnout.sourceText,
-      leavesProtagonistWith: turnout.description || turnout.sourceText,
+      description: substantiveOrUndefined(turnout.description) ?? turnout.sourceText,
+      leavesProtagonistWith: substantiveOrUndefined(turnout.description) ?? turnout.sourceText,
       whyThisCannotMoveLater: `Authored turnout from the treatment for Episode ${turnout.episodeNumber}: ${turnout.sourceText}`,
     })) as ArcEpisodeTurnout[] | undefined;
     return {
@@ -3476,23 +3482,35 @@ CRITICAL RULES:
       const inferredTurnType = this.inferArcTurnoutType(episode, storyCircleBeat, anchors);
       const turnType = this.normalizeArcTurnoutType(existing?.turnType, inferredTurnType);
       const cliffhanger = episode.cliffhangerPlan;
+      // Candidate selection uses the ArcPressure validator's OWN completeness
+      // predicate, not bare `||` truthiness: a truthy placeholder like "TBD"
+      // or "none" used to survive these fallbacks "filled" and then fail the
+      // validator's hasText, aborting the whole season-plan run on a defect
+      // this very function exists to repair (r119, 2026-07-18,
+      // worker-1784411845734-fy0bmr4g: arc "Champagne" episode-1 turnout).
+      // The trailing template is always substantive, so every field passes
+      // the gate by construction after normalization.
+      const firstSubstantive = (...candidates: Array<string | undefined>): string | undefined =>
+        candidates.find((candidate) => hasSubstantiveArcText(candidate));
       return {
         episodeNumber: episode.episodeNumber,
         storyCircleBeat,
         storyCircleRoleKind,
         turnType,
-        description: existing?.description
-          || cliffhanger?.hook
-          || episode.narrativeFunction?.conflict
-          || episode.synopsis
-          || `Episode ${episode.episodeNumber} turns the arc.`,
-        leavesProtagonistWith: existing?.leavesProtagonistWith
-          || cliffhanger?.nextEpisodePressure
-          || cliffhanger?.emotionalCharge
-          || episode.narrativeFunction?.resolution
-          || `New consequence residue from Episode ${episode.episodeNumber}.`,
-        whyThisCannotMoveLater: existing?.whyThisCannotMoveLater
-          || `Episode ${episode.episodeNumber}'s turnout follows from its Story Circle role (${storyCircleBeat}) and cliffhanger pressure; moving it later would break causal order.`,
+        description: firstSubstantive(
+          existing?.description,
+          cliffhanger?.hook,
+          episode.narrativeFunction?.conflict,
+          episode.synopsis,
+        ) ?? `Episode ${episode.episodeNumber} turns the arc.`,
+        leavesProtagonistWith: firstSubstantive(
+          existing?.leavesProtagonistWith,
+          cliffhanger?.nextEpisodePressure,
+          cliffhanger?.emotionalCharge,
+          episode.narrativeFunction?.resolution,
+        ) ?? `New consequence residue from Episode ${episode.episodeNumber}.`,
+        whyThisCannotMoveLater: firstSubstantive(existing?.whyThisCannotMoveLater)
+          ?? `Episode ${episode.episodeNumber}'s turnout follows from its Story Circle role (${storyCircleBeat}) and cliffhanger pressure; moving it later would break causal order.`,
       };
     });
   }

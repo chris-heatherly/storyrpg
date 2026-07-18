@@ -125,7 +125,7 @@ const RAW_GATE_REGISTRY = [
   // Escalation switch for the above: hard-abort the run at scene time when the
   // realization retry still misses (two-tier policy: default is warn + defer
   // to the season-final realization gate's bounded repair).
-  { id: 'GATE_SCENE_REALIZATION_ABORT', placement: 'scene', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_SCENE_REALIZATION_ABORT', placement: 'scene', kind: 'blocking', defaultOn: false, policyException: 'Shadow-only escalation switch: turns advisory scene-realization findings into hard aborts; the non-abort path IS the repair (sceneRealizationGuard + owner-task patches). Planned fix: none needed while debugging-only — wire a route before any default-ON promotion.' },
   // No-boilerplate abort split (2026-07-06): controls ONLY the 'template'
   // (EncounterArchitect build-collapse) abort at encounter generation time.
   // Registry-fallback (deterministic-injection) hits never abort — they get
@@ -171,23 +171,31 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_CALLBACK_COVERAGE', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix' },
   // R2.1: craft density/budget/pressure demoted from default-ON hard abort →
   // QualityScore / advisory (re-enable via env). No repair route existed.
-  { id: 'GATE_CHOICE_DENSITY', placement: 'plan', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_CONSEQUENCE_BUDGET', placement: 'plan', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_CHOICE_DENSITY', placement: 'plan', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF plan-shape audit with no repair route yet; enabling it makes findings hard-abort at plan time unremediated. Planned fix: a plan-rebalance autofix (redistribute choice beats) before any production enablement.' },
+  { id: 'GATE_CONSEQUENCE_BUDGET', placement: 'plan', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF plan-shape audit with no repair route yet. Planned fix: a plan-rebalance autofix (clamp/redistribute consequence budget) before any production enablement.' },
   { id: 'GATE_PROP_INTRODUCTION', placement: 'plan', kind: 'blocking', defaultOn: false, repair: 'autofix' },
-  { id: 'GATE_CHOICE_DISTRIBUTION', placement: 'plan', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_ARC_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_CHOICE_DISTRIBUTION', placement: 'plan', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF plan-shape audit with no repair route yet. Planned fix: a plan-rebalance autofix (re-slot choice types across scenes) before any production enablement.' },
+  // NOTE: fires for treatment-sourced arc plans regardless of defaultOn
+  // (SeasonPlannerAgent substitutes an always-true predicate when
+  // arcPressureContracts carry source:'treatment') — the r119 abort path.
+  // repair: the deterministic turnout backfill in normalizeArcEpisodeTurnouts /
+  // applyAuthoredArcGuidance now selects fallback text with the validator's own
+  // hasSubstantiveArcText predicate, so placeholder-valued fields ("TBD",
+  // "none") are repaired before the gate instead of surviving `||` truthiness
+  // and aborting the run.
+  { id: 'GATE_ARC_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false, repair: 'autofix' },
 
   // ── 2026-07-01 audit 4.2: formerly unregistered live flags (see gateDefaults) ──
-  { id: 'GATE_SEASON_BUDGETS', placement: 'plan', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_CHARGE_MATERIALIZATION', placement: 'episode', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_INTENSITY_DISTRIBUTION', placement: 'scene', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_SEASON_BUDGETS', placement: 'plan', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF plan-shape audit with no repair route yet. Planned fix: a season-budget rebalance autofix before any production enablement.' },
+  { id: 'GATE_CHARGE_MATERIALIZATION', placement: 'episode', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF (consequence-intel Phase 6, shipped dormant), no repair route. Planned fix: route charge-materialization misses to scene-prose repair (author the missing on-page evidence) before any production enablement.' },
+  { id: 'GATE_INTENSITY_DISTRIBUTION', placement: 'scene', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF pacing audit; the deterministic remedy already runs unconditionally (ensureDominantBeat), the gate only adds an abort on residuals. Planned fix: wire intensity retiering into scene-prose repair before any enablement.' },
   { id: 'GATE_MECHANICS_LEAKAGE_REGEN', placement: 'scene', kind: 'remediation', defaultOn: false, repair: 'regen' },
   { id: 'GATE_REGEN_CHOICES', placement: 'scene', kind: 'remediation', defaultOn: false, repair: 'regen' },
-  { id: 'GATE_TREATMENT_FIDELITY', placement: 'plan', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_THEME_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_EPISODE_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_TREATMENT_FIDELITY', placement: 'plan', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF umbrella flip for the treatment-fidelity family; individual fidelity validators already route via gateRepairRouter when findings carry scene targets. Planned fix: confirm per-validator routes cover the umbrella surface before enabling.' },
+  { id: 'GATE_THEME_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF plan-time craft audit with no repair route yet. Planned fix: a targeted plan-revision re-ask for theme-pressure fields before any production enablement.' },
+  { id: 'GATE_EPISODE_PRESSURE', placement: 'plan', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF plan-time craft audit with no repair route yet. Planned fix: a targeted plan-revision re-ask for episode-pressure fields before any production enablement.' },
   // R2.1: craft fanout demoted — score/advisory until a plan-repair route lands.
-  { id: 'GATE_BRANCH_FANOUT', placement: 'plan', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_BRANCH_FANOUT', placement: 'plan', kind: 'blocking', defaultOn: false, policyException: 'Structural branch-shape invariant; fail-fast at generation time is intentional (a bad fan-out needs replanning, not prose repair — see repairRouteCoverage CLOSURE_SWEEP_EXEMPTIONS). Planned fix: a blueprint-rebalance path before any enablement.' },
   { id: 'GATE_SCENE_CONSTRUCTION_PREFLIGHT', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // Bounded architecture re-run when the SceneConstructionGate blocks content
   // generation (2026-07-07: the gate's error said "Re-run architecture…" but no
@@ -214,7 +222,7 @@ const RAW_GATE_REGISTRY = [
   // ── Wave 5: final-contract-class gates ──
   { id: 'GATE_DUPLICATE_ESTABLISHING_BEAT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_PROTAGONIST_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_NPC_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_NPC_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Held default-OFF as FP-prone (G10 shadow audit 2026-06-09); findings ship as warnings via npcPronounResolver today. Planned fix: an LLM coreference-judge confirmation step routing confirmed findings to scene-prose repair, before blocking enablement.' },
   // WS0.3: deterministic name-anchored coercion (with verb agreement) repairs the break in
   // place, so this is blocking + autofix — residue the coercion can't safely clear (same-gender
   // NPC ambiguity) is reported for the EncounterArchitect regen route.
@@ -257,15 +265,15 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_CHARACTER_TREATMENT_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_FAILURE_MODE_AUDIT_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_CHARACTER_INTRODUCTION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_FLAG_CONTRACT', placement: 'season-final', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_FLAG_CONTRACT', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF, but treatmentSourced runs escalate unset_flag_condition to error through a side door (FinalStoryContractValidator blockFlags || treatmentSourced) with no flag-wiring repair handler (see repairRouteCoverage NATIVE_DIAGNOSTIC_STOP_ALLOWLIST). Planned fix: a deterministic setFlag wiring autofix.' },
   // WS0.2: deterministic generative half (inject a flag-gated read for every unread
   // consequential set-flag), so this is remediation + autofix, not a blocking abort.
   { id: 'GATE_RESIDUE_CONSUME', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'remediation', defaultOn: false, repair: 'autofix' },
   { id: 'GATE_WITNESS_BAKE', placement: 'episode', kind: 'remediation', defaultOn: true, repair: 'autofix' },
   { id: 'GATE_ENCOUNTER_OUTCOME_VARIANT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_CONTINUITY_REMEDIATION', placement: 'episode', kind: 'remediation', defaultOn: false, repair: 'regen' },
-  { id: 'GATE_QA_CRITICAL_BLOCK', placement: 'season-final', kind: 'blocking', defaultOn: false },
-  { id: 'GATE_ENDING_REACHABILITY', placement: 'season-final', kind: 'blocking', defaultOn: false },
+  { id: 'GATE_QA_CRITICAL_BLOCK', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF promotion switch for QA criticals (F3: advisory by default); when enabled, scene-localized findings already route via the QARunner branch (same_scene_retry) and unlocalized aggregates defer. Planned fix: none needed — routes exist; kept as exception only because the umbrella itself declares no single repair kind.' },
+  { id: 'GATE_ENDING_REACHABILITY', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF structural audit; an unreachable authored ending is topology, not prose — fail-fast is intentional (same class as broken_navigation). Planned fix: an episode-replan path before any enablement; never route to prose repair.' },
 
   // ── §4 treatment-fidelity dispatch ──
   // WS1 (2026-06-12): relocated from season-final to plan placement — the
@@ -427,19 +435,25 @@ export function validateGateRegistry(defaults: Record<string, boolean> = GATE_DE
     if (spec.policyException !== undefined && spec.policyException.trim().length < 40) {
       violations.push({ gateId: spec.id, problem: 'policyException must be a substantive written rationale (>= 40 chars) naming the planned fix' });
     }
-    // Repair-first: default-ON blockers at plan/scene/episode/season-final
-    // (primary placement OR auditPlacements) need a repair route or exception.
+    // Repair-first: EVERY blocking gate at plan/scene/episode/season-final
+    // (primary placement OR auditPlacements) needs a repair route or a written
+    // exception — including default-OFF gates. defaultOn used to scope this
+    // policy, which let a default-OFF blocking gate escape the completeness
+    // discipline entirely and then fire anyway via config/env enablement with
+    // no repair route (r119, 2026-07-18: GATE_ARC_PRESSURE — registered
+    // defaultOn:false — aborted a season-plan analysis run on three missing
+    // turnout text fields that a targeted completion could have filled).
     const executionPlacements = new Set<GatePlacement>([
       spec.placement,
       ...(spec.auditPlacements ?? []),
     ]);
     const blocksAtRepairFirstPlacement = [...executionPlacements].some((p) => repairFirstPlacements.has(p));
     const violatesRepairFirst =
-      spec.kind === 'blocking' && spec.defaultOn && blocksAtRepairFirstPlacement && !spec.repair && !spec.policyException;
+      spec.kind === 'blocking' && blocksAtRepairFirstPlacement && !spec.repair && !spec.policyException;
     if (violatesRepairFirst) {
       violations.push({
         gateId: spec.id,
-        problem: 'repair-first policy: a default-ON blocking gate at plan/scene/episode/season-final (placement or auditPlacements) must declare a repair route (autofix/regen/judge) or carry a written policyException',
+        problem: 'repair-first policy: a blocking gate at plan/scene/episode/season-final (placement or auditPlacements) must declare a repair route (autofix/regen/judge) or carry a written policyException — default-OFF gates included, because config/env enablement makes them fire in production (r119 GATE_ARC_PRESSURE)',
       });
     }
   }

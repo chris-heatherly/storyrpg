@@ -461,6 +461,24 @@ export function clearOwnerAtomReceiptsForTest(): void {
   ownerFulfilledAtomReceipts.clear();
 }
 
+/**
+ * r115 gap analysis (2026-07-18): the causal-restage forbidden atom
+ * ("source-restaged-after-consequence", realizationTaskCompiler.ts) already
+ * tells the judge that "memory, aftermath, or reference is allowed" — but a
+ * live run still flagged unambiguous memory-framed prose ("The memory of the
+ * park plays on a loop behind your eyes...") as a forbidden restage. The
+ * judge misread its own stated exemption. A stated memory/aftermath frame is
+ * a strong enough signal to trust deterministically rather than hoping the
+ * judge honors its own instructions on every call — bypass the judge outright
+ * for this one atom class when every excerpt carries the frame.
+ */
+const MEMORY_OR_AFTERMATH_FRAME_RE =
+  /\b(?:the memory of|you remember(?:ed)?|remembers?|recall(?:s|ed|ing)?|replays?(?: in your (?:mind|head))?|plays? on a loop|flash(?:es|ed)? back(?: to)?|think(?:s|ing)? back to|in the aftermath of|now that it(?:'s| is) (?:over|done)|looking back(?: on)?)\b/i;
+
+function isCausalRestageAtom(atomId: string): boolean {
+  return atomId.endsWith(':source-restaged-after-consequence');
+}
+
 export async function validateSemanticRealizationTasks(input: {
   sceneId: string;
   tasks?: NarrativeRealizationTask[];
@@ -489,24 +507,38 @@ export async function validateSemanticRealizationTasks(input: {
   // forbidden meaning; it cannot un-fulfill a positive one).
   const honorReceipts = input.mode === 'final_regression' && isGateEnabled('GATE_SEMANTIC_RECEIPT_CONTINUITY');
   const honored: Array<{ taskId: string; atomId: string; groupKey: string }> = [];
-  let toJudge = built;
-  if (honorReceipts) {
-    toJudge = [];
-    for (const item of built) {
-      const finalHashes = new Set(item.claim.excerpts.map((excerpt) => excerpt.textHash));
-      if (item.atom.polarity !== 'forbidden' && hasFulfilledOwnerReceipt(item.claim.taskId, item.atom.id, finalHashes)) {
-        honored.push({
-          taskId: item.claim.taskId,
-          atomId: item.atom.id,
-          groupKey: item.claim.id.split('::').at(-1) ?? 'owner:1',
-        });
-      } else {
-        toJudge.push(item);
-      }
+  const memoryFramed: Array<{ taskId: string; atomId: string; groupKey: string }> = [];
+  let toJudge: typeof built = [];
+  for (const item of built) {
+    if (
+      item.atom.polarity === 'forbidden'
+      && isCausalRestageAtom(item.atom.id)
+      && item.claim.excerpts.length > 0
+      && item.claim.excerpts.every((excerpt) => MEMORY_OR_AFTERMATH_FRAME_RE.test(excerpt.text))
+    ) {
+      memoryFramed.push({
+        taskId: item.claim.taskId,
+        atomId: item.atom.id,
+        groupKey: item.claim.id.split('::').at(-1) ?? 'owner:1',
+      });
+      continue;
     }
-    if (honored.length > 0) {
-      console.info(`[SemanticValidation] Honoring ${honored.length} owner-stage receipt(s) at final regression for ${input.sceneId} (owner excerpts ⊆ final excerpts).`);
+    const finalHashes = new Set(item.claim.excerpts.map((excerpt) => excerpt.textHash));
+    if (honorReceipts && item.atom.polarity !== 'forbidden' && hasFulfilledOwnerReceipt(item.claim.taskId, item.atom.id, finalHashes)) {
+      honored.push({
+        taskId: item.claim.taskId,
+        atomId: item.atom.id,
+        groupKey: item.claim.id.split('::').at(-1) ?? 'owner:1',
+      });
+      continue;
     }
+    toJudge.push(item);
+  }
+  if (honored.length > 0) {
+    console.info(`[SemanticValidation] Honoring ${honored.length} owner-stage receipt(s) at final regression for ${input.sceneId} (owner excerpts ⊆ final excerpts).`);
+  }
+  if (memoryFramed.length > 0) {
+    console.info(`[SemanticValidation] ${memoryFramed.length} causal-restage atom(s) for ${input.sceneId} are memory/aftermath-framed on every excerpt — skipping the judge, not a violation.`);
   }
   const consensus = await evaluateClaims(input.judge, toJudge.map(({ claim }) => claim), atomsByClaimId);
   if ((input.mode ?? 'owner') === 'owner') {
@@ -522,7 +554,7 @@ export async function validateSemanticRealizationTasks(input: {
     }
   }
   const semanticVerdictsByTaskAndGroup = new Map<string, NarrativeAtomVerdict[]>();
-  for (const entry of honored) {
+  for (const entry of [...honored, ...memoryFramed]) {
     const key = `${entry.taskId}::${entry.groupKey}`;
     semanticVerdictsByTaskAndGroup.set(key, [...(semanticVerdictsByTaskAndGroup.get(key) ?? []), {
       taskId: entry.taskId,

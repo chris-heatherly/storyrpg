@@ -405,6 +405,68 @@ describe('semanticValidationCoordinator', () => {
   });
 });
 
+describe('causal-restage memory/aftermath bypass (r115 gap analysis, 2026-07-18)', () => {
+  function restageTask(): NarrativeRealizationTask {
+    return task({
+      id: 'task:event:park-restage:causal-restage',
+      evidenceAtoms: [{
+        id: 'event:park-restage:source-restaged-after-consequence',
+        description: 'This consequence scene must not actively perform the already-completed causal event "you are attacked in the park" as a new action. Memory, aftermath, or reference is allowed.',
+        acceptedPatterns: [],
+        kind: 'semantic',
+        verificationAuthority: 'semantic_judge',
+        polarity: 'forbidden',
+        required: true,
+      }],
+    });
+  }
+
+  it('never invokes the judge when every excerpt is memory-framed', async () => {
+    const judge = new FakeJudge((claim) => verdict(claim, 'fulfilled', 'plays on a loop'));
+    const prose = 'The memory of the park plays on a loop behind your eyes, too sharp and vivid for the dark.';
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1-6', tasks: [restageTask()], sceneContent: { beats: [{ text: prose }] }, judge,
+    });
+
+    expect(judge.calls).toBe(0);
+    expect(result.findings).toEqual([]);
+  });
+
+  it('still judges when the excerpt is NOT memory/aftermath-framed', async () => {
+    const judge = new FakeJudge((claim) => verdict(claim, 'fulfilled', 'you are attacked'));
+    const prose = 'A rough hand grabs your shoulder in the park, spinning you around.';
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1-6', tasks: [restageTask()], sceneContent: { beats: [{ text: prose }] }, judge,
+    });
+
+    expect(judge.calls).toBeGreaterThan(0);
+    expect(result.findings[0]).toMatchObject({ code: 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT' });
+  });
+
+  it('does not bypass a forbidden atom outside the causal-restage class, even with memory framing', async () => {
+    const judge = new FakeJudge((claim) => verdict(claim, 'fulfilled', 'plays on a loop'));
+    const unrelatedForbidden = task({
+      evidenceAtoms: [{
+        id: 'reveal:1:forbidden:1',
+        description: 'The rescue is staged.',
+        acceptedPatterns: [],
+        kind: 'semantic',
+        verificationAuthority: 'semantic_judge',
+        polarity: 'forbidden',
+        required: true,
+      }],
+    });
+    const prose = 'The memory of that night plays on a loop: my father will be pleased, the bait worked.';
+
+    await validateSemanticRealizationTasks({
+      sceneId: 's1', tasks: [unrelatedForbidden], sceneContent: { beats: [{ text: prose }] }, judge,
+    });
+
+    expect(judge.calls).toBeGreaterThan(0);
+  });
+});
 
 describe('reveal-timing enforcement (F1.1)', () => {
   const revealTask = () => task({

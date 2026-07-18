@@ -675,6 +675,76 @@ describe('reveal-timing negative contracts (F1.1)', () => {
     });
   });
 
+  it('r115 gap analysis (2026-07-18): forbids the full introduction ritual before a named first appearance', () => {
+    // Live regression: the bookshop scene (s1-3) staged "Mika, this is Kylie.
+    // Kylie, Mika." — a complete first-meeting exchange — one scene before
+    // Mika's compiled owning scene (the club, s1-4), which repeated it.
+    const graph = {
+      firstAppearanceContracts: [{
+        id: 'first-appearance:mika', characterId: 'char-mika-dragan', characterName: 'Mika Dragan',
+        episodeNumber: 1, owningSceneId: 's1-4', mode: 'named_on_page', earlierSceneIds: ['s1-1', 's1-2', 's1-3'],
+        sourceContractIds: ['presence:ep1:s1-4:char-mika-dragan'], blocking: true,
+      }],
+      events: [], dependencies: [],
+    } as unknown as NarrativeContractGraph;
+    const scenes = [
+      { id: 's1-1', episodeNumber: 1, order: 0, kind: 'standard' },
+      { id: 's1-2', episodeNumber: 1, order: 1, kind: 'standard' },
+      { id: 's1-3', episodeNumber: 1, order: 2, kind: 'standard' },
+      { id: 's1-4', episodeNumber: 1, order: 3, kind: 'standard' },
+    ] as any;
+
+    const tasks = compileNarrativeRealizationTasks(graph, scenes);
+    const prematureRitualTasks = tasks.filter((task) => task.id.includes(':premature-ritual:'));
+
+    expect(prematureRitualTasks.map((task) => task.sceneId)).toEqual(['s1-1', 's1-2', 's1-3']);
+    for (const task of prematureRitualTasks) {
+      expect(task.blocking).toBe(false);
+      expect(task.evidenceAtoms[0]).toMatchObject({ polarity: 'forbidden', verificationAuthority: 'semantic_judge' });
+    }
+    expect(prematureRitualTasks[0].evidenceAtoms[0].description).toContain('introduction ritual');
+    expect(prematureRitualTasks[0].evidenceAtoms[0].description).toContain('Mentioning or referencing');
+  });
+
+  it('r115 gap analysis (2026-07-18): forbids restaging a named first appearance in a later same-episode scene', () => {
+    // Live regression: Mika Dragan got the full "X, this is Y" introduction
+    // ritual twice — the compiled owner scene (bookshop, s1-3) and again at
+    // the club (s1-4) — with no acknowledgment they'd already met.
+    const graph = {
+      firstAppearanceContracts: [{
+        id: 'first-appearance:mika', characterId: 'char-mika-dragan', characterName: 'Mika Dragan',
+        episodeNumber: 1, owningSceneId: 's1-3', mode: 'named_on_page', earlierSceneIds: ['s1-1', 's1-2'],
+        sourceContractIds: ['presence:ep1:s1-3:char-mika-dragan'], blocking: true,
+      }],
+      events: [], dependencies: [],
+    } as unknown as NarrativeContractGraph;
+    const scenes = [
+      { id: 's1-1', episodeNumber: 1, order: 0, kind: 'standard' },
+      { id: 's1-2', episodeNumber: 1, order: 1, kind: 'standard' },
+      { id: 's1-3', episodeNumber: 1, order: 2, kind: 'standard' },
+      { id: 's1-4', episodeNumber: 1, order: 3, kind: 'standard' },
+      { id: 's1-5', episodeNumber: 1, order: 4, kind: 'standard' },
+      { id: 's2-1', episodeNumber: 2, order: 0, kind: 'standard' },
+    ] as any;
+
+    const tasks = compileNarrativeRealizationTasks(graph, scenes);
+    const reintroductionTasks = tasks.filter((task) => task.id.includes(':reintroduction:'));
+
+    // Only later scenes IN THE SAME EPISODE are protected — not the owning
+    // scene itself, not earlier scenes, not a later episode.
+    expect(reintroductionTasks.map((task) => task.sceneId).sort()).toEqual(['s1-4', 's1-5']);
+    for (const task of reintroductionTasks) {
+      // New task class, zero shadow-evidence period — same discipline as the
+      // premature-appearance block above.
+      expect(task.blocking).toBe(false);
+      expect(task.enforcementPhase).toBe('final_regression');
+      expect(task.evidenceAtoms).toHaveLength(1);
+      expect(task.evidenceAtoms[0]).toMatchObject({ polarity: 'forbidden', verificationAuthority: 'semantic_judge' });
+      expect(task.evidenceAtoms[0].description).toContain('Mika Dragan');
+      expect(task.evidenceAtoms[0].description).toContain('already introduced');
+    }
+  });
+
   it('B4: compiles advisory foreshadow atoms per owning scene from twist-plan directives', () => {
     const tasks = compileForeshadowRealizationTasks({
       episodeNumber: 1,

@@ -776,7 +776,9 @@ export function compileNarrativeRealizationTasks(
   // the character anonymous. Protect every earlier scene with a semantic
   // negative contract so an uncatalogued "rugged stranger" cannot pre-play a
   // later rooftop/corridor/doorway plant merely because no canonical name was
-  // used. Named introductions remain covered by the literal identity schedule.
+  // used. (Named introductions get their own, narrower premature-ritual check
+  // below — a name may legitimately be mentioned early; only the full
+  // introduction ritual is an ownership violation for them.)
   // ADVISORY (r115 postmortem): a new check earns blocking tier through a
   // shadow-evidence period, not on day one. This is a NEW task class with zero
   // live runs behind it — landing it blocking here would repeat the exact
@@ -806,6 +808,103 @@ export function compileNarrativeRealizationTasks(
           description: `This scene must not stage ${appearance.characterName}'s first visual appearance before canonical owner scene ${appearance.owningSceneId}. A character matching the distinctive identity (${appearance.visualIdentity}) counts even when unnamed; an unrelated incidental person does not.`,
           acceptedPatterns: [],
           sourceText: appearance.visualIdentity,
+          kind: 'semantic',
+          polarity: 'forbidden',
+          required: true,
+          verificationAuthority: 'semantic_judge',
+        }],
+        target: { scope: 'owner', surfaces: execution.surfaces },
+        sourceContractIds: [...appearance.sourceContractIds],
+        blocking: false,
+      });
+    }
+  }
+
+  // A named character can legitimately be MENTIONED before their owning
+  // scene (Stela name-drops "her other friend Mika" — that's setup, not a
+  // violation), so this is narrower than the anonymous_plant premature check
+  // above: it forbids performing the full introduction RITUAL early, not
+  // merely naming the character. r115 gap analysis (2026-07-18): the
+  // bookshop scene (s1-3) staged "Mika, this is Kylie. Kylie, Mika." — a
+  // complete first-meeting exchange — one scene before Mika's compiled
+  // owning scene (the club, s1-4), which repeated the same ritual. ADVISORY:
+  // new task class, zero shadow evidence.
+  for (const appearance of graph.firstAppearanceContracts ?? []) {
+    if (appearance.mode !== 'named_on_page') continue;
+    for (const earlierSceneId of appearance.earlierSceneIds) {
+      const earlierScene = sceneById.get(earlierSceneId);
+      if (!earlierScene) continue;
+      const execution = resolveTaskExecutionTarget({
+        scene: earlierScene,
+        episodeNumber: earlierScene.episodeNumber,
+        kind: 'presence',
+      });
+      tasks.push({
+        id: `task:${appearance.id}:premature-ritual:${earlierSceneId}`,
+        contractId: appearance.id,
+        episodeNumber: earlierScene.episodeNumber,
+        sourceKinds: ['treatment'],
+        ownerStage: execution.ownerStage,
+        repairHandler: execution.repairHandler,
+        sceneId: earlierSceneId,
+        artifactPath: execution.artifactPath,
+        enforcementPhase: 'final_regression',
+        evidenceAtoms: [{
+          id: `${appearance.id}:premature-ritual:${earlierSceneId}`,
+          description: `This scene must not perform ${appearance.characterName}'s formal first-meeting introduction ritual (a name exchange like "X, this is ${appearance.characterName}", or staging them as a stranger being newly presented) before their canonical owner scene ${appearance.owningSceneId}. Mentioning or referencing ${appearance.characterName} by name in passing (e.g. as someone the protagonist has heard of but not yet met) is fine; restaging the on-page first-meeting ritual itself is forbidden.`,
+          acceptedPatterns: [],
+          sourceText: appearance.characterName,
+          kind: 'semantic',
+          polarity: 'forbidden',
+          required: true,
+          verificationAuthority: 'semantic_judge',
+        }],
+        target: { scope: 'owner', surfaces: execution.surfaces },
+        sourceContractIds: [...appearance.sourceContractIds],
+        blocking: false,
+      });
+    }
+  }
+
+  // Mirror image of the premature-appearance check above: a NAMED first
+  // appearance is also an ownership boundary going FORWARD. r115 gap
+  // analysis (2026-07-18): Mika Dragan got the full "X, this is Y" formal
+  // introduction ritual twice — once at her compiled owning scene (the
+  // bookshop, s1-3) and again a scene later at the club (s1-4) — with no
+  // acknowledgment they'd already met. The identity-schedule contract only
+  // guards against a canonical name appearing BEFORE its scheduled episode;
+  // nothing guarded against RE-introducing an already-introduced character
+  // within the same episode. ADVISORY: brand-new task class, zero shadow
+  // evidence yet — same discipline as the anonymous_plant block above.
+  for (const appearance of graph.firstAppearanceContracts ?? []) {
+    if (appearance.mode !== 'named_on_page') continue;
+    const owningScene = sceneById.get(appearance.owningSceneId);
+    if (!owningScene) continue;
+    const laterScenes = scenes.filter((scene) =>
+      scene.episodeNumber === appearance.episodeNumber
+      && scene.id !== appearance.owningSceneId
+      && scene.order > owningScene.order);
+    for (const laterScene of laterScenes) {
+      const execution = resolveTaskExecutionTarget({
+        scene: laterScene,
+        episodeNumber: laterScene.episodeNumber,
+        kind: 'presence',
+      });
+      tasks.push({
+        id: `task:${appearance.id}:reintroduction:${laterScene.id}`,
+        contractId: appearance.id,
+        episodeNumber: laterScene.episodeNumber,
+        sourceKinds: ['treatment'],
+        ownerStage: execution.ownerStage,
+        repairHandler: execution.repairHandler,
+        sceneId: laterScene.id,
+        artifactPath: execution.artifactPath,
+        enforcementPhase: 'final_regression',
+        evidenceAtoms: [{
+          id: `${appearance.id}:reintroduction:${laterScene.id}`,
+          description: `This scene must not restage ${appearance.characterName}'s first-meeting introduction: a formal name exchange ("X, this is ${appearance.characterName}") or treating them as a stranger being newly presented. They were already introduced by name at ${appearance.owningSceneId}. Referencing, greeting, or continuing to interact with ${appearance.characterName} naturally is fine and expected — only restaging the FIRST-MEETING ritual itself is forbidden.`,
+          acceptedPatterns: [],
+          sourceText: appearance.characterName,
           kind: 'semantic',
           polarity: 'forbidden',
           required: true,

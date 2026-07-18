@@ -2154,3 +2154,146 @@ describe('buildSourceMaterialFidelitySection', () => {
     expect(withoutGuidance).not.toContain('Tone & Perception Lens');
   });
 });
+
+describe('SceneWriter deterministic beat splitting (r116 beat-cap pass)', () => {
+  const blueprint = { sceneBlueprint: { id: 'scene-caps', name: 'Cap Scene' }, targetBeatCount: 1 };
+  const sceneShell = {
+    sceneId: 'scene-caps',
+    sceneName: 'Cap Scene',
+    startingBeatId: 'beat-1',
+    moodProgression: ['uneasy'],
+    charactersInvolved: ['Kylie', 'Stela'],
+    keyMoments: ['The bell rings'],
+    continuityNotes: [],
+  };
+  const visualFields = {
+    visualMoment: 'Stela watches Kylie across the counter.',
+    primaryAction: 'watches from the counter',
+    emotionalRead: 'guarded and curious',
+    relationshipDynamic: 'Stela holds the information advantage',
+    mustShowDetail: 'the counter between them',
+  };
+  // 8 sentences x 13 words = 104 words: over the 70-word cap, splittable at
+  // sentence boundaries into chunks each within both caps.
+  const overWordCapText = Array.from(
+    { length: 8 },
+    (_, i) => `Sentence number ${i} keeps rolling forward with plenty of extra words attached here.`,
+  ).join(' ');
+
+  it('clears the r116 choppy-fragment shape (9 runs + trailing fragment) without an LLM', () => {
+    const writer = createWriter();
+    const normalized = (writer as any).normalizeContent({
+      ...sceneShell,
+      beats: [{
+        id: 'beat-1',
+        text:
+          'Behind the counter, a woman looks up. Her plait is dark. Her gaze is steady. She does not smile. '
+          + '"You are new," she says. "The city watches." She sets down her pen. The bell goes quiet. You wait. and then',
+        ...visualFields,
+        intensityTier: 'supporting',
+        isChoicePoint: false,
+      }],
+    });
+
+    const issues = (writer as any).collectIssues(normalized, blueprint);
+    expect(issues.some((issue: string) => issue.includes('BEATS EXCEED CAP'))).toBe(false);
+  });
+
+  it('splits an over-word-cap beat into chained beats; the first keeps the id and metadata', () => {
+    const writer = createWriter();
+    const normalized = (writer as any).normalizeContent({
+      ...sceneShell,
+      beats: [
+        {
+          id: 'beat-1',
+          text: overWordCapText,
+          ...visualFields,
+          intensityTier: 'dominant',
+          nextBeatId: 'beat-2',
+        },
+        { id: 'beat-2', text: 'The bell rings once and goes still.', ...visualFields },
+      ],
+    });
+
+    expect(normalized.beats.length).toBeGreaterThan(2);
+    const first = normalized.beats[0];
+    expect(first.id).toBe('beat-1');
+    // Exact visualMoment text is owned by the visual normalizers (they rewrite
+    // weak/abstract moments); the split contract is that the first chunk keeps
+    // carrying beat metadata at all.
+    expect(typeof first.visualMoment).toBe('string');
+    expect(first.visualMoment.length).toBeGreaterThan(0);
+    expect(first.intensityTier).toBe('dominant');
+    // Chain: beat-1 -> its split continuation(s) -> beat-2, no dangling links.
+    let current = first;
+    const visited = [first.id];
+    while (current.nextBeatId && current.nextBeatId !== 'beat-2') {
+      const next = normalized.beats.find((beat: any) => beat.id === current.nextBeatId);
+      expect(next, `nextBeatId ${current.nextBeatId} must resolve`).toBeDefined();
+      visited.push(next.id);
+      current = next;
+    }
+    expect(current.nextBeatId).toBe('beat-2');
+    expect(visited.length).toBeGreaterThan(1);
+
+    const issues = (writer as any).collectIssues(normalized, blueprint);
+    expect(issues.some((issue: string) => issue.includes('BEATS EXCEED CAP'))).toBe(false);
+  });
+
+  it('moves isChoicePoint and nextSceneId to the last split chunk only', () => {
+    const writer = createWriter();
+    const normalized = (writer as any).normalizeContent({
+      ...sceneShell,
+      beats: [{
+        id: 'beat-1',
+        text: overWordCapText,
+        ...visualFields,
+        isChoicePoint: true,
+        nextSceneId: 'scene-2',
+      }],
+    });
+
+    expect(normalized.beats.length).toBeGreaterThan(1);
+    const last = normalized.beats[normalized.beats.length - 1];
+    expect(last.isChoicePoint).toBe(true);
+    expect(last.nextSceneId).toBe('scene-2');
+    for (const beat of normalized.beats.slice(0, -1)) {
+      expect(beat.isChoicePoint).not.toBe(true);
+      expect(beat.nextSceneId).toBeUndefined();
+    }
+    expect(normalized.startingBeatId).toBe('beat-1');
+  });
+
+  it('does not split a variant-bearing beat — the LLM revision path keeps ownership', () => {
+    const writer = createWriter();
+    const normalized = (writer as any).normalizeContent({
+      ...sceneShell,
+      beats: [{
+        id: 'beat-1',
+        text: overWordCapText,
+        ...visualFields,
+        textVariants: [{
+          condition: { type: 'flag', flag: 'met_stela', value: true },
+          text: 'Stela nods as if you had never left.',
+        }],
+      }],
+    });
+
+    expect(normalized.beats.length).toBe(1);
+    const issues = (writer as any).collectIssues(normalized, blueprint);
+    expect(issues.some((issue: string) => issue.includes('BEATS EXCEED CAP'))).toBe(true);
+  });
+
+  it('leaves a single mega-sentence to the LLM revision path — the hard backstop survives', () => {
+    const writer = createWriter();
+    const megaSentence = `${Array.from({ length: 80 }, (_, i) => `word${i}`).join(' ')}.`;
+    const normalized = (writer as any).normalizeContent({
+      ...sceneShell,
+      beats: [{ id: 'beat-1', text: megaSentence, ...visualFields }],
+    });
+
+    expect(normalized.beats.length).toBe(1);
+    const issues = (writer as any).collectIssues(normalized, blueprint);
+    expect(issues.some((issue: string) => issue.includes('BEATS EXCEED CAP'))).toBe(true);
+  });
+});

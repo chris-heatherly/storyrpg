@@ -11,6 +11,11 @@
  */
 
 import { AgentConfig, GenerationSettingsConfig } from '../config';
+import {
+  compactOverFragmentedText,
+  countSentencesBounded,
+  splitBeatTextForCaps,
+} from './beatTextCaps';
 import { formatForbiddenRevealsSection } from '../utils/forbiddenReveals';
 import { BaseAgent, AgentResponse, TruncatedLLMResponseError } from './BaseAgent';
 import { SceneBlueprint } from './StoryArchitect';
@@ -1723,10 +1728,103 @@ Return exactly one complete SceneContent JSON object with:
       console.log(`[SceneWriter] Set default startingBeatId to: ${content.startingBeatId}`);
     }
 
+    // Deterministic split for beats still over their word/sentence cap after
+    // the per-beat merge had its chance. Runs last (links are normalized, so
+    // this pass owns its own re-linking) and before timing annotation so split
+    // beats get their own timing.
+    this.splitOverCapBeats(content);
+
     // Add timing annotations to beats
     this.annotateBeatsWithTiming(content);
 
     return content;
+  }
+
+  /**
+   * Split any beat still exceeding its word/sentence cap into chained beats,
+   * redistributing whole existing sentences — no new prose is authored.
+   *
+   * The BEATS EXCEED CAP hard check used to be reachable by mechanically
+   * fixable prose: the merge net declines over-word-cap text by design, and
+   * the LLM revision is unreliable at cap arithmetic, so a fixable defect
+   * could abort a whole episode (bite-me-r116_2026-07-18T20-48-58, s1-3-b4).
+   * After this pass the hard check fires only for the genuinely LLM-required
+   * residue: variant-bearing beats (splitting the base text would orphan the
+   * per-beat alternate renderings) and single sentences over the word cap.
+   *
+   * Split contract (everything downstream that keys on beat ids keeps
+   * working because the FIRST chunk keeps the original id):
+   * - first chunk: original id + all metadata except navigation/choice flags;
+   * - continuation chunks: bare text carriers (same shape sceneSemanticPatch's
+   *   insert_beat_after already ships) + inherited intensityTier; never
+   *   isClimaxBeat/isKeyStoryBeat (duplicating those trips the per-scene
+   *   count caps);
+   * - nextBeatId chain relinked first -> ... -> last; nextSceneId,
+   *   isChoicePoint, isChoiceBridge move to the LAST chunk (ChoiceAuthor
+   *   finds the choice point by flag later; choices don't exist yet here);
+   *   onShow stays on the first chunk.
+   */
+  private splitOverCapBeats(content: SceneContent): void {
+    const beats = content.beats;
+    if (!Array.isArray(beats) || beats.length === 0) return;
+    const existingIds = new Set(beats.map((beat) => beat.id));
+
+    for (let index = 0; index < beats.length; index += 1) {
+      const beat = beats[index];
+      if (typeof beat.text !== 'string' || !beat.text.trim()) continue;
+      if ((beat.textVariants || []).length > 0) continue;
+      const maxWords = beat.isClimaxBeat
+        ? TEXT_LIMITS.maxClimaxBeatWordCount
+        : beat.isKeyStoryBeat
+          ? TEXT_LIMITS.maxKeyStoryBeatWordCount
+          : TEXT_LIMITS.maxBeatWordCount;
+      const chunks = splitBeatTextForCaps(beat.text, { maxWords, maxSentences: 4 });
+      if (!chunks) continue;
+
+      const sentencesBefore = this.countSentencesBounded(beat.text);
+      const wordsBefore = this.wordCount(beat.text);
+
+      const continuationBeats: GeneratedBeat[] = chunks.slice(1).map((chunk, chunkIndex) => {
+        let splitNumber = chunkIndex + 2;
+        let id = `${beat.id}-split-${splitNumber}`;
+        while (existingIds.has(id)) {
+          splitNumber += 1;
+          id = `${beat.id}-split-${splitNumber}`;
+        }
+        existingIds.add(id);
+        const continuation = {
+          id,
+          text: chunk,
+          intensityTier: beat.intensityTier,
+        } as GeneratedBeat;
+        // This pass runs after the visual-contract loop; derive the same
+        // deterministic metadata for the new beat so image planning gets a
+        // real visualMoment instead of a bare text carrier.
+        this.ensureBeatVisualContract(continuation);
+        return continuation;
+      });
+      const lastChunk = continuationBeats[continuationBeats.length - 1];
+
+      lastChunk.nextBeatId = beat.nextBeatId;
+      lastChunk.nextSceneId = beat.nextSceneId;
+      if (beat.isChoicePoint) lastChunk.isChoicePoint = true;
+      if (beat.isChoiceBridge) lastChunk.isChoiceBridge = true;
+      beat.text = chunks[0];
+      beat.nextSceneId = undefined;
+      beat.isChoicePoint = undefined;
+      beat.isChoiceBridge = undefined;
+      for (let chained = 0; chained < continuationBeats.length; chained += 1) {
+        const previous = chained === 0 ? beat : continuationBeats[chained - 1];
+        previous.nextBeatId = continuationBeats[chained].id;
+      }
+
+      beats.splice(index + 1, 0, ...continuationBeats);
+      console.warn(
+        `[SceneWriter] Split over-cap beat ${beat.id} (${sentencesBefore} sentences, ${wordsBefore} words) `
+        + `into ${chunks.length} beats within the ${maxWords}-word/4-sentence caps.`,
+      );
+      index += continuationBeats.length;
+    }
   }
 
   private boundOverlongContentForProcessing(content: SceneContent): SceneContent {
@@ -1778,7 +1876,7 @@ Return exactly one complete SceneContent JSON object with:
   }
 
   private countSentencesBounded(text: string): number {
-    return (text.match(/[.!?]+/g) || []).length;
+    return countSentencesBounded(text);
   }
 
   private wordCount(text: string): number {
@@ -1786,42 +1884,26 @@ Return exactly one complete SceneContent JSON object with:
     return trimmed ? trimmed.split(/\s+/).length : 0;
   }
 
+  /**
+   * Delegates to the shared merge in beatTextCaps.ts, and — unlike the
+   * pre-r116 version — logs every decline: the silent bails are how a 9/4-
+   * sentence beat survived normalization twice with no trace and aborted the
+   * episode (bite-me-r116_2026-07-18T20-48-58). A decline is not a failure
+   * here; the scene-level split pass in normalizeContent has the fallback.
+   */
   private compactShortOverFragmentedText(
     text: string,
     maxWords: number,
     maxSentences: number,
     label: string,
   ): string {
-    if (!text || this.countSentencesBounded(text) <= maxSentences) return text;
-    if (this.wordCount(text) > maxWords) return text;
-    if (text.length > 700) return text;
-
-    const fragments = text
-      .match(/[^.!?]+[.!?]+|[^.!?]+$/g)
-      ?.map((fragment) => fragment.trim())
-      .filter(Boolean);
-    if (!fragments || fragments.length <= maxSentences || fragments.length > 9) return text;
-
-    const groups: string[][] = Array.from({ length: maxSentences }, () => []);
-    fragments.forEach((fragment, index) => {
-      groups[Math.min(maxSentences - 1, Math.floor(index * maxSentences / fragments.length))].push(fragment);
-    });
-
-    const compacted = groups
-      .filter((group) => group.length > 0)
-      .map((group) => group.map((fragment, index) => {
-        const cleaned = fragment.replace(/[.!?]+$/g, '').trim();
-        if (index < group.length - 1) return `${cleaned},`;
-        const terminal = fragment.match(/[.!?]+$/)?.[0]?.slice(-1) || '.';
-        return `${cleaned}${terminal}`;
-      }).join(' '))
-      .join(' ');
-
-    if (this.countSentencesBounded(compacted) <= maxSentences) {
-      console.warn(`[SceneWriter] Compacted over-fragmented ${label}: ${fragments.length} sentence fragments -> ${this.countSentencesBounded(compacted)} sentences`);
-      return compacted;
+    const result = compactOverFragmentedText(text, maxWords, maxSentences);
+    if (result.applied) {
+      console.warn(`[SceneWriter] Compacted over-fragmented ${label}: ${result.fragmentCount} sentence fragments -> ${countSentencesBounded(result.text)} sentences`);
+    } else if (result.bailReason) {
+      console.warn(`[SceneWriter] Fragment merge declined for ${label} (${result.bailReason}${result.fragmentCount ? `, ${result.fragmentCount} fragments` : ''}); deferring to the beat splitter.`);
     }
-    return text;
+    return result.text;
   }
 
   private isMeaningfulVariantCondition(condition: unknown): boolean {
@@ -2663,7 +2745,7 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
       } else {
         // Check if beat exceeds its cap (varies by beat type)
         const wordCount = text.trim().split(/\s+/).length;
-        const sentenceCount = (text.match(/[.!?]+/g) || []).length;
+        const sentenceCount = this.countSentencesBounded(text);
         const maxWords = beat.isClimaxBeat
           ? TEXT_LIMITS.maxClimaxBeatWordCount
           : beat.isKeyStoryBeat
@@ -3298,7 +3380,7 @@ Key requirements:
 - If an issue says OVERLONG, rewrite that beat from the scene blueprint and nearby context. Do not copy generation notes, placeholders, schema examples, or compacted excerpt markers into the revised JSON.
 - Preserve existing beat IDs, choice-point flags, visual contract fields, thread IDs, callback IDs, and nextBeatId navigation unless a listed issue explicitly requires splitting or relinking beats${input.sceneBlueprint.realizationTasks?.some((task) => task.ownerStage === 'scene_writer') ? '; also preserve claimed event IDs and event-evidence claims' : ''}
 - For POV clarity issues, rewrite only prose/textVariants needed to anchor the first non-empty beat to the player character with you/your, the protagonist's actual name, or a concrete pronoun.
-- If a beat is too long, split it into multiple beats
+- If a beat has too many words, split it into multiple beats. If a beat has too many SENTENCES but few words (choppy fragments), merge the fragments into fewer, fuller sentences instead of splitting
 - Maintain the narrative flow when splitting
 - Keep beat IDs logical (beat-1, beat-2, etc.)
 - Update nextBeatId references to maintain the chain

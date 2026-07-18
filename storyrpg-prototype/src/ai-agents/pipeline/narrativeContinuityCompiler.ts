@@ -19,6 +19,30 @@ function normalizedCharacterId(value: string): string {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
+function canonicalCharacterKey(value: string): string {
+  return normalizedCharacterId(
+    value
+      .replace(/\([^)]*\)/g, ' ')
+      .replace(/^char(?:acter)?[\s:_-]+/i, ''),
+  );
+}
+
+function sameCharacterIdentity(left: { characterId: string; characterName: string }, right: string): boolean {
+  const target = canonicalCharacterKey(right);
+  const id = canonicalCharacterKey(left.characterId);
+  const name = canonicalCharacterKey(left.characterName);
+  return target === id
+    || target === name
+    || id.endsWith(`-${target}`)
+    || target.endsWith(`-${id}`)
+    || name.endsWith(`-${target}`)
+    || target.endsWith(`-${name}`);
+}
+
+function normalizedLexicalValue(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
 export function compileLexicalArtifactContracts(input: {
   semanticIr?: AuthoredEventSemanticIR;
   events: NarrativeEventContract[];
@@ -26,19 +50,16 @@ export function compileLexicalArtifactContracts(input: {
 }): NarrativeLexicalArtifactContract[] {
   if (!input.semanticIr) return [];
   const eventById = new Map(input.events.map((event) => [event.id, event]));
-  const scenesByEpisode = new Map<number, PlannedScene[]>();
-  for (const scene of input.scenes) {
-    const list = scenesByEpisode.get(scene.episodeNumber) ?? [];
-    list.push(scene);
-    scenesByEpisode.set(scene.episodeNumber, list);
-  }
-  for (const list of scenesByEpisode.values()) list.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  const orderedScenes = [...input.scenes].sort((left, right) =>
+    left.episodeNumber - right.episodeNumber
+    || left.order - right.order
+    || left.id.localeCompare(right.id));
+  const sceneIndex = new Map(orderedScenes.map((scene, index) => [scene.id, index]));
 
-  return input.semanticIr.events.flatMap((semanticEvent) => {
+  const compiled = input.semanticIr.events.flatMap((semanticEvent) => {
     const event = eventById.get(semanticEvent.eventId);
     if (!event?.ownerSceneId) return [];
-    const orderedScenes = scenesByEpisode.get(event.episodeNumber) ?? [];
-    const ownerIndex = orderedScenes.findIndex((scene) => scene.id === event.ownerSceneId);
+    const ownerIndex = sceneIndex.get(event.ownerSceneId) ?? -1;
     return semanticEvent.propositions.flatMap((proposition) =>
       (proposition.createdLexicalArtifacts ?? []).map((artifact): NarrativeLexicalArtifactContract => ({
         id: `lexical:${artifact.id}`,
@@ -57,6 +78,36 @@ export function compileLexicalArtifactContracts(input: {
       })),
     );
   });
+
+  // r115 (transactional lexical chronology): the semantic-contract LLM
+  // compiled TWO creation claims for "Dating After Dusk" — Episode 1
+  // correctly naming the blog, and Episode 5 wrongly re-claiming creation
+  // when the source only has Victor asking Kylie to wind it down. Episode 5's
+  // forbiddenBeforeSceneIds (computed purely from ITS OWN position) then
+  // forbade the term in the Episode 1 scene the first contract required it
+  // in — a contradiction that shipped uncaught because the one existing
+  // duplicate-creator check is scoped per-episode
+  // (narrativeContractCompiler.ts's validateGraph groups by
+  // `${episodeNumber}:${slug(canonicalValue)}`), which structurally cannot
+  // see a cross-episode collision. Reconcile globally here instead: only the
+  // EARLIEST creator survives as a creation contract; every later claim on
+  // the same canonical value was never a creation and is dropped outright
+  // (no forbidden-atom task is compiled for it) — fail-open by construction,
+  // never worse than shipping the contradiction.
+  const earliestByValue = new Map<string, NarrativeLexicalArtifactContract>();
+  for (const contract of compiled) {
+    const key = normalizedLexicalValue(contract.canonicalValue);
+    const existing = earliestByValue.get(key);
+    if (!existing) {
+      earliestByValue.set(key, contract);
+      continue;
+    }
+    const existingIndex = sceneIndex.get(existing.creatorSceneId) ?? Number.MAX_SAFE_INTEGER;
+    const candidateIndex = sceneIndex.get(contract.creatorSceneId) ?? Number.MAX_SAFE_INTEGER;
+    if (candidateIndex < existingIndex) earliestByValue.set(key, contract);
+  }
+  const survivorIds = new Set([...earliestByValue.values()].map((contract) => contract.id));
+  return compiled.filter((contract) => survivorIds.has(contract.id));
 }
 
 export function compileSceneStateContracts(input: {
@@ -118,6 +169,7 @@ export function compileFirstAppearanceContracts(input: {
   npcVisualIdentities?: Array<{ name: string; visualIdentity: string }>;
 }): NarrativeFirstAppearanceContract[] {
   const candidates = new Map<string, NarrativeFirstAppearanceContract>();
+  const anchorOwnedCharacters = new Set<string>();
   const sortedScenes = [...input.scenes].sort((a, b) => a.episodeNumber - b.episodeNumber || a.order - b.order || a.id.localeCompare(b.id));
   const sceneIndex = new Map(sortedScenes.map((scene, index) => [scene.id, index]));
   const presenceByCharacter = new Map<string, NarrativeCharacterPresenceContract[]>();
@@ -149,15 +201,18 @@ export function compileFirstAppearanceContracts(input: {
     const key = normalizedCharacterId(anchor.npcName);
     const scene = sortedScenes.find((candidate) => candidate.id === anchor.owningSceneId);
     if (!scene) continue;
-    const existingEntry = [...candidates.entries()].find(([candidateKey, candidate]) => {
-      const nameKey = normalizedCharacterId(candidate.characterName);
-      return candidateKey === key || nameKey === key || candidateKey.endsWith(`-${key}`) || key.endsWith(`-${nameKey}`);
-    });
+    const existingEntry = [...candidates.entries()].find(([, candidate]) =>
+      sameCharacterIdentity(candidate, anchor.npcName!));
     const existing = existingEntry?.[1];
-    if (existingEntry && existingEntry[0] !== key) candidates.delete(existingEntry[0]);
     const ownerIndex = sceneIndex.get(scene.id) ?? 0;
-    candidates.set(key, {
-      id: `first-appearance:${key}`,
+    const existingOwnerIndex = existing ? (sceneIndex.get(existing.owningSceneId) ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER;
+    const candidateKey = existingEntry?.[0] ?? key;
+    if (existing && anchorOwnedCharacters.has(candidateKey) && existingOwnerIndex <= ownerIndex) {
+      existing.sourceContractIds = unique([...existing.sourceContractIds, anchor.id]);
+      continue;
+    }
+    candidates.set(candidateKey, {
+      id: existing?.id ?? `first-appearance:${candidateKey}`,
       characterId: existing?.characterId ?? key,
       characterName: existing?.characterName ?? anchor.npcName,
       episodeNumber: anchor.episodeNumber,
@@ -169,6 +224,7 @@ export function compileFirstAppearanceContracts(input: {
       sourceContractIds: unique([...(existing?.sourceContractIds ?? []), anchor.id]),
       blocking: true,
     });
+    anchorOwnedCharacters.add(candidateKey);
   }
   // B1: attach immutable signature tokens by normalized-name match so the
   // realization compiler can emit advisory signature atoms on the owning scene.

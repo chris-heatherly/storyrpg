@@ -95,6 +95,119 @@ describe('narrativeContinuityCompiler', () => {
     ]);
   });
 
+  it('forbids a coined term in every earlier episode', () => {
+    const scenes = [
+      scene('ep1-a', 0),
+      scene('ep1-b', 1),
+      scene('ep2-a', 0, { episodeNumber: 2 }),
+      scene('ep2-b', 1, { episodeNumber: 2 }),
+    ];
+    const events = [{ ...event('event-name', 1, 'ep2-b'), episodeNumber: 2 }];
+    const semanticIr: AuthoredEventSemanticIR = {
+      version: 1,
+      policyVersion: 'semantic-contract-ir-v2',
+      provider: 'test',
+      model: 'test',
+      sourceHash: 'hash',
+      events: [{
+        eventId: 'event-name',
+        sourceText: 'Kylie coins The Mountain.',
+        sources: [{ id: 'source', text: 'Kylie coins The Mountain.' }],
+        propositions: [{
+          id: 'event-name:semantic:1',
+          sourceId: 'source',
+          sourceSpan: 'Kylie coins The Mountain.',
+          proposition: 'Kylie coins The Mountain.',
+          semanticRole: 'decision',
+          participantIds: ['kylie'],
+          semanticCriteria: ['Kylie originates the exact name.'],
+          prerequisitePropositionIds: [],
+          referencedLocations: [],
+          required: true,
+          createdLexicalArtifacts: [{
+            id: 'event-name:semantic:1:lexical:1',
+            kind: 'codeword',
+            canonicalValue: 'The Mountain',
+            creatorParticipantId: 'kylie',
+            routePolicy: 'source_invariant',
+            allowedAlternatives: [],
+          }],
+        }],
+      }],
+    };
+
+    expect(compileLexicalArtifactContracts({ semanticIr, events, scenes })[0].forbiddenBeforeSceneIds)
+      .toEqual(['ep1-a', 'ep1-b', 'ep2-a']);
+  });
+
+  it('r115: a later episode wrongly re-claiming creation of an earlier value is dropped, not shipped as a second contradicting contract', () => {
+    // Exact shape of the run r115 blocker: Episode 1 genuinely creates
+    // "Dating After Dusk" (naming the blog); Episode 5's proposition
+    // merely REFERENCES the already-existing blog ("Victor asks Kylie to
+    // wind down Dating After Dusk") but the semantic-contract LLM tagged it
+    // as createdLexicalArtifacts too. Before this fix, the per-episode-only
+    // duplicate check in narrativeContractCompiler.ts's validateGraph could
+    // never see this collision, and Episode 5's forbiddenBeforeSceneIds
+    // (computed from ITS OWN position) forbade the term in the Episode 1
+    // scene the first contract required it in — unsatisfiable by
+    // construction.
+    const scenes = [
+      scene('s1-1', 0),
+      scene('s1-6', 1),
+      scene('s5-2', 0, { episodeNumber: 5 }),
+    ];
+    const events = [
+      event('event-ep1-u7', 0, 's1-6'),
+      { ...event('event-ep5-u2', 0, 's5-2'), episodeNumber: 5 },
+    ];
+    const makeArtifactEvent = (eventId: string, episodeNumber: number, ownerSceneId: string) => ({
+      eventId,
+      sourceText: eventId,
+      sources: [{ id: 'source', text: eventId }],
+      propositions: [{
+        id: `${eventId}:semantic:1`,
+        sourceId: 'source',
+        sourceSpan: eventId,
+        proposition: eventId,
+        semanticRole: 'action' as const,
+        participantIds: ['kylie'],
+        semanticCriteria: [eventId],
+        prerequisitePropositionIds: [],
+        referencedLocations: [],
+        required: true,
+        createdLexicalArtifacts: [{
+          id: `${eventId}:semantic:1:lexical:1`,
+          kind: 'title' as const,
+          canonicalValue: 'Dating After Dusk',
+          creatorParticipantId: 'kylie',
+          routePolicy: 'source_invariant' as const,
+          allowedAlternatives: [],
+        }],
+      }],
+    });
+    const semanticIr: AuthoredEventSemanticIR = {
+      version: 1,
+      policyVersion: 'semantic-contract-ir-v2',
+      provider: 'test',
+      model: 'test',
+      sourceHash: 'hash',
+      events: [
+        makeArtifactEvent('event-ep1-u7', 1, 's1-6'),
+        makeArtifactEvent('event-ep5-u2', 5, 's5-2'),
+      ],
+    };
+
+    const contracts = compileLexicalArtifactContracts({ semanticIr, events, scenes });
+
+    // Only the EARLIEST (Episode 1) creator survives.
+    expect(contracts).toHaveLength(1);
+    expect(contracts[0]).toMatchObject({ creatorEventId: 'event-ep1-u7', creatorSceneId: 's1-6' });
+    // The scene the surviving contract requires the term in is NOT in its
+    // own forbidden list (self-consistency), and the dropped Episode-5
+    // "creator" can never contradict it.
+    expect(contracts[0].forbiddenBeforeSceneIds).not.toContain('s1-6');
+  });
+
   it('projects local history without crossing episode boundaries', () => {
     const scenes = [
       scene('ep1-a', 0),
@@ -132,6 +245,60 @@ describe('narrativeContinuityCompiler', () => {
       firstSightingAnchors: [{ id: 'anchor:radu', episodeNumber: 1, owningSceneId: 'rooftop', npcName: 'Radu', firstSighting: true, appearanceMode: 'anonymous_plant' }],
     });
     expect(contracts).toEqual([expect.objectContaining({ owningSceneId: 'rooftop', mode: 'anonymous_plant', earlierSceneIds: ['street'] })]);
+  });
+
+  it('matches parenthetical aliases to canonical cast ids and keeps the earliest anchor owner', () => {
+    const scenes = [
+      scene('street', 0),
+      scene('rooftop', 1),
+      scene('cab', 0, { episodeNumber: 2 }),
+    ];
+    const contracts = compileFirstAppearanceContracts({
+      scenes,
+      presenceContracts: [{
+        id: 'presence-radu',
+        characterId: 'char-radu-stoian',
+        characterName: 'Radu Stoian',
+        episodeNumber: 2,
+        sceneId: 'cab',
+        mode: 'named_on_page',
+        readerNameAllowed: true,
+        requiredEvidence: ['Radu Stoian'],
+        forbiddenEvidence: [],
+        sourceContractIds: [],
+        provenance: { source: 'season_plan', confidence: 'authoritative' },
+      }],
+      firstSightingAnchors: [{
+        id: 'anchor-ep1-radu',
+        episodeNumber: 1,
+        owningSceneId: 'rooftop',
+        npcName: 'Radu Stoian ("The Mountain")',
+        firstSighting: true,
+        appearanceMode: 'anonymous_plant',
+      }, {
+        id: 'anchor-ep2-radu',
+        episodeNumber: 2,
+        owningSceneId: 'cab',
+        npcName: 'Radu Stoian ("The Mountain")',
+        firstSighting: true,
+        appearanceMode: 'named_on_page',
+      }],
+    });
+
+    expect(contracts).toHaveLength(1);
+    expect(contracts[0]).toMatchObject({
+      characterId: 'char-radu-stoian',
+      characterName: 'Radu Stoian',
+      episodeNumber: 1,
+      owningSceneId: 'rooftop',
+      mode: 'anonymous_plant',
+      earlierSceneIds: ['street'],
+    });
+    expect(contracts[0].sourceContractIds).toEqual(expect.arrayContaining([
+      'presence-radu',
+      'anchor-ep1-radu',
+      'anchor-ep2-radu',
+    ]));
   });
 
   it('B1: attaches treatment visual identity to first-appearance contracts by normalized name', () => {

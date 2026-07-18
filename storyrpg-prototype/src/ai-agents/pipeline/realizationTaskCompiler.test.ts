@@ -704,7 +704,7 @@ describe('reveal-timing negative contracts (F1.1)', () => {
     expect(tasks[0].evidenceAtoms[1].description).toContain('misdirection beat');
   });
 
-  it('C2: compiles an advisory escalation-budget task on each episode-final scene', () => {
+  it('C2: compiles a blocking escalation-budget task on each episode-final scene', () => {
     const graph = { events: [], dependencies: [] } as unknown as NarrativeContractGraph;
     const scenes = [
       { id: 's1-1', episodeNumber: 1, order: 0, kind: 'standard', relationshipPacing: [] },
@@ -719,10 +719,11 @@ describe('reveal-timing negative contracts (F1.1)', () => {
       ['task:escalation-budget:ep2', 's2-3'],
     ]);
     for (const budget of budgets) {
-      // r115 postmortem: advisory until it earns blocking tier through a
-      // shadow-evidence period — the r114 justification for this flip was
-      // false (r114 never reached this check).
-      expect(budget.blocking).toBe(false);
+      // r115 gap analysis (2026-07-18): re-promoted after a second
+      // independently-confirmed true positive (bite-me-r115_2026-07-18T04-37-51
+      // — the victory beat overridden by a geolocation-threat "Run." coda)
+      // past the shadow-evidence bar; see realizationTaskCompiler.ts.
+      expect(budget.blocking).toBe(true);
       expect(budget.evidenceAtoms).toHaveLength(2);
       expect(budget.evidenceAtoms.every((atom) => atom.polarity === 'forbidden' && atom.verificationAuthority === 'semantic_judge')).toBe(true);
     }

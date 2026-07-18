@@ -1008,12 +1008,19 @@ export function compileNarrativeRealizationTasks(
   // "Now the real story begins" on top of Kylie's authored victory. The
   // budget becomes judge-verified forbidden atoms on each episode's final
   // scene: at most one new threat signal, and the protagonist's authored
-  // ending is never displaced. ADVISORY (r115 postmortem): a prior commit
-  // here cited "confirmed r114 evidence" — false; r114 crashed on an
-  // unrelated bug before reaching this check, so there is no live evidence
-  // behind this task at all. Also exposed to the owner-scope textVariant
-  // union bug (Phase 4) like the causal-restage task above. Returns to
-  // blocking only after a genuine shadow-evidence pass.
+  // ending is never displaced. Was demoted advisory (r115 postmortem,
+  // 2026-07-17): a prior commit here cited "confirmed r114 evidence" —
+  // false; r114 crashed on an unrelated bug before reaching this check.
+  // RE-PROMOTED (r115 gap analysis, 2026-07-18): a completed run
+  // (bite-me-r115_2026-07-18T04-37-51) confirmed the exact 14-50-23 shape
+  // again — the victory beat ("You did it. You took back your own story.")
+  // immediately overridden by a geolocation-threat text ending in "Run." —
+  // the second independently-confirmed true positive, now past the
+  // shadow-evidence bar. The Phase 4 owner-scope textVariant union bug that
+  // motivated the demotion is fixed; this task's repair route
+  // (SemanticRealizationJudge → same_scene_retry) is the same generic,
+  // already-proven path many other blocking realization tasks use, not new
+  // infrastructure.
   {
     const finalSceneByEpisode = new Map<number, PlannedScene>();
     for (const scene of scenes) {
@@ -1063,7 +1070,7 @@ export function compileNarrativeRealizationTasks(
         ],
         target: { scope: 'owner', surfaces: execution.surfaces },
         sourceContractIds: [`escalation-budget:ep${episodeNumber}`],
-        blocking: false,
+        blocking: true,
       });
     }
   }

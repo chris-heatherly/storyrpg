@@ -34,6 +34,8 @@ import { isGateEnabledAt } from '../remediation/gateRegistry';
 import { isTreatmentFidelityFinding } from './treatmentFidelityGate';
 import { findBeatIdCollisions } from './beatIdCollisions';
 import { collectReaderFacingTexts, collectEncounterMetaTexts } from './EncounterAnchorContentValidator';
+import { collectNarrativeEvidenceSurfaceIndex } from './encounterTextSurfaces';
+import type { NarrativeRealizationSurface } from '../../types/narrativeContract';
 import { EncounterProseIntegrityValidator } from './EncounterProseIntegrityValidator';
 import { PlanningRegisterLeakValidator } from './PlanningRegisterLeakValidator';
 import { EmptyPlayableSceneValidator } from './EmptyPlayableSceneValidator';
@@ -68,6 +70,15 @@ import {
  * contract must recognize these as valid endings — not broken navigation to a
  * missing scene. Matched case-insensitively.
  */
+// r115 postmortem: POV scanning must only ever see narration — player choice
+// text is first person by schema (the player is speaking) and must never be
+// judged as a narrator POV break. Every surface except choice_text/
+// choice_outcome.
+const NARRATION_SURFACES: NarrativeRealizationSurface[] = [
+  'transition_in', 'beat_text', 'dialogue', 'text_variant',
+  'encounter_entry', 'encounter_setup', 'encounter_phase', 'encounter_outcome', 'terminal_storylet',
+];
+
 const TERMINAL_SCENE_TARGETS = new Set([
   'episode-end', 'story-end', 'season-end', 'end', 'the-end', 'ending',
 ]);
@@ -1171,9 +1182,22 @@ export class FinalStoryContractValidator {
         // ("my laptop… I have to choose") and 3rd-person ep3 maze storylets
         // ("She smooths the lapel") in a second-person story. Advisory until
         // GATE_PROTAGONIST_PRONOUN is promoted.
+        //
+        // r115 postmortem: player choice text ("Absolutely. I'm in. Where do
+        // we start?") is FIRST PERSON BY SCHEMA — the player is speaking, not
+        // the narrator. collectReaderFacingTexts folds choice_text/
+        // choice_outcome into the same array as narration, forcing
+        // isLikelyPlayerChoiceUtterance to guess surface identity from string
+        // shape (its sentence-count cap misfires on genuine multi-sentence
+        // choices). The surface index below already knows which bucket each
+        // string came from; scan narration surfaces only.
         if (protagonistName) {
+          const surfaceIndex = collectNarrativeEvidenceSurfaceIndex({
+            sceneContent: scene,
+            encounter: scene.encounter,
+          });
           const povTexts = [
-            ...collectReaderFacingTexts(scene),
+            ...NARRATION_SURFACES.flatMap((surface) => surfaceIndex[surface]),
             ...(scene.encounter ? collectEncounterMetaTexts(scene) : []),
           ];
           const povBlocking = scene.encounter

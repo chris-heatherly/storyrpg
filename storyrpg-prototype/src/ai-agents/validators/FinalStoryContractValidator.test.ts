@@ -599,6 +599,54 @@ describe('FinalStoryContractValidator', () => {
     expect(beat.choices[0].outcomes.success.narrativeText).toBe('You straighten your collar as Victor watches.');
   });
 
+  it('r115: a 3-sentence first-person player choice never triggers pov_break', async () => {
+    // Exact shape of the run r115 false positive: legitimate player choice
+    // text, first person because the PLAYER is speaking, three short
+    // sentences — isLikelyPlayerChoiceUtterance's sentence-count cap used to
+    // reject anything over 2 sentences as "not choice-shaped" and let it fall
+    // through to narration POV scanning.
+    const story = validStory({
+      npcs: [{
+        id: 'char-kylie',
+        name: 'Kylie Marinescu',
+        description: 'The protagonist.',
+        role: 'protagonist',
+        pronouns: 'she/her',
+      }],
+    });
+    story.episodes[0].scenes[0].beats[0].choices = [
+      { id: 'c1', text: "Absolutely. I'm in. Where do we start?", nextBeatId: 'beat-2', consequences: [] } as any,
+      { id: 'c2', text: "I feel it too. Who is watching? Let's go through Cismigiu.", nextBeatId: 'beat-2', consequences: [] } as any,
+      { id: 'c3', text: 'Stay quiet and wait.', nextBeatId: 'beat-2', consequences: [] } as any,
+    ];
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.warnings.some((i) => i.type === 'pov_break')).toBe(false);
+    expect(report.blockingIssues.some((i) => i.type === 'pov_break')).toBe(false);
+  });
+
+  it('still catches genuine first-person NARRATION breaks outside choice text', async () => {
+    const story = validStory({
+      npcs: [{
+        id: 'char-kylie',
+        name: 'Kylie Marinescu',
+        description: 'The protagonist.',
+        role: 'protagonist',
+        pronouns: 'she/her',
+      }],
+    });
+    // 4 sentences — outside isLikelyPlayerChoiceUtterance's ≤2-sentence
+    // exemption window (matching the bite-me-g16 shape: a first-person coda
+    // that is genuinely narration, not a short choice-shaped utterance).
+    story.episodes[0].scenes[0].beats[0].text =
+      'My laptop clicks shut. I have to choose which door to open next. I can\'t decide alone. I never could.';
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.warnings.some((i) => i.type === 'pov_break')).toBe(true);
+  });
+
   it('flags a routing contradiction: a choice targets a real scene not in scene.leadsTo', async () => {
     const mkScene = (id: string, leadsTo: string[], choiceTarget?: string) => ({
       id,

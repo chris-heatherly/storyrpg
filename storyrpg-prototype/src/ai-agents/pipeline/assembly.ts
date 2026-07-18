@@ -308,7 +308,13 @@ export class Assembly {
         branchType: content.branchType,
         // Planned time/place + the writer's transition phrase, persisted so the
         // SceneTransitionContinuityValidator can verify the prose honored them.
-        timeline: sceneTimelineMetaForScene(sceneBlueprint, content.transitionIn),
+        // The authored prose is passed so an explicit clock mention ("4 AM")
+        // can correct stale plan-time timeOfDay metadata (r115 gap analysis).
+        timeline: sceneTimelineMetaForScene(
+          sceneBlueprint,
+          content.transitionIn,
+          content.beats.map(b => b.text).filter(Boolean).join(' '),
+        ),
         turnContract: sceneBlueprint.turnContract,
         relationshipPacing: resolveSceneRelationshipPacing(
           sceneBlueprint.id,
@@ -596,7 +602,11 @@ export class Assembly {
         isConvergencePoint,
         // Keep the multi-episode assembly path aligned with assembleStory so
         // final-gate transition validators can read planned time/place.
-        timeline: sceneTimelineMetaForScene(sb, content.transitionIn),
+        timeline: sceneTimelineMetaForScene(
+          sb,
+          content.transitionIn,
+          content.beats.map(b => b.text).filter(Boolean).join(' '),
+        ),
         turnContract: sb.turnContract,
         relationshipPacing: resolveSceneRelationshipPacing(sb.id, sb.relationshipPacing, brief),
         mechanicPressure: sb.mechanicPressure,

@@ -100,6 +100,40 @@ export function inferTimeOfDayFromText(text: string | undefined): SceneTimeOfDay
   return undefined;
 }
 
+/** Maps an explicit clock hour (24h) to the canonical time-of-day bucket. */
+function timeOfDayForHour(hour: number): SceneTimeOfDay {
+  if (hour >= 5 && hour < 7) return 'dawn';
+  if (hour >= 7 && hour < 12) return 'morning';
+  if (hour === 12) return 'midday';
+  if (hour >= 13 && hour < 17) return 'afternoon';
+  if (hour >= 17 && hour < 19) return 'dusk';
+  if (hour >= 19 && hour < 22) return 'evening';
+  return 'night'; // 22:00–04:59
+}
+
+const EXPLICIT_CLOCK_TIME_RE = /\b(midnight|noon)\b|\b(1[0-2]|[1-9])(?::[0-5]\d)?\s?([ap])\.?m\.?\b/i;
+
+/**
+ * Infer a time-of-day from an EXPLICIT numeric clock mention only ("4 AM",
+ * "11:30 p.m.", "midnight", "noon") — deliberately narrower than
+ * {@link inferTimeOfDayFromText}'s atmospheric word patterns (morning,
+ * evening, dusk, ...), which can describe a memory, a mood, or a different
+ * moment than the scene's actual current clock time. A stated clock time is
+ * (almost always) the author asserting the diegetic present, so it is the
+ * one signal safe to trust as an AUTHORITATIVE override of planned metadata,
+ * not just an advisory hint.
+ */
+export function inferExplicitClockTimeFromText(text: string | undefined): SceneTimeOfDay | undefined {
+  if (!text) return undefined;
+  const match = EXPLICIT_CLOCK_TIME_RE.exec(text);
+  if (!match) return undefined;
+  if (match[1]) return match[1].toLowerCase() === 'midnight' ? 'night' : 'midday';
+  const hour12 = Number(match[2]);
+  const isPm = match[3].toLowerCase() === 'p';
+  const hour24 = isPm ? (hour12 === 12 ? 12 : hour12 + 12) : (hour12 === 12 ? 0 : hour12);
+  return timeOfDayForHour(hour24);
+}
+
 /**
  * Minimal structural view of a blueprint scene — keeps this util free of an
  * import on StoryArchitect (which imports the {@link SceneTimeOfDay} type from
@@ -276,14 +310,26 @@ export interface SceneTimelineMeta {
  * The timeline metadata to persist on the final assembled Scene, so validators
  * and audits can compare PLANNED time/place against the generated prose.
  * Returns undefined when there is nothing worth persisting.
+ *
+ * `authoredProseText` (r115 gap analysis, 2026-07-18): planned `timeOfDay` is
+ * assigned at blueprint time, before SceneWriter has written a word — a run
+ * shipped a scene tagged `timeOfDay: "dusk"` whose beat text explicitly reads
+ * "the blue twilight of 4 AM". When the authored prose states an explicit
+ * clock time that disagrees with the plan, the prose wins: it is what the
+ * reader actually sees, and stale metadata can silently contaminate
+ * downstream continuity checks and image generation. Only an EXPLICIT clock
+ * mention overrides — see {@link inferExplicitClockTimeFromText}.
  */
 export function sceneTimelineMetaForScene(
   scene: TimelineScene,
   transitionIn?: string,
+  authoredProseText?: string,
 ): SceneTimelineMeta | undefined {
   const meta: SceneTimelineMeta = {};
   if (String(scene.location || '').trim()) meta.location = scene.location;
   if (scene.timeOfDay) meta.timeOfDay = scene.timeOfDay;
+  const explicitClockTime = inferExplicitClockTimeFromText(authoredProseText);
+  if (explicitClockTime && explicitClockTime !== meta.timeOfDay) meta.timeOfDay = explicitClockTime;
   if (String(scene.timeJumpFromPrevious || '').trim()) meta.timeJumpFromPrevious = scene.timeJumpFromPrevious;
   if (String(transitionIn || '').trim()) meta.transitionIn = transitionIn;
   return Object.keys(meta).length > 0 ? meta : undefined;

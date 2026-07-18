@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   assignBlueprintTimeline,
   buildSceneTimelineHandoff,
+  inferExplicitClockTimeFromText,
   inferTimeOfDayFromText,
   normalizeTimeOfDay,
   sceneTimelineMetaForScene,
@@ -119,5 +120,52 @@ describe('sceneTimelineMetaForScene', () => {
 
   it('returns undefined when there is nothing to persist', () => {
     expect(sceneTimelineMetaForScene(scene({ id: 's1', location: '' }))).toBeUndefined();
+  });
+
+  it('r115 (2026-07-18): an explicit clock time in the authored prose overrides stale planned metadata', () => {
+    // Live regression: bite-me-r115_2026-07-18T04-37-51 shipped s1-6 tagged
+    // timeOfDay "dusk" while the beat text read "...illuminated in the blue
+    // twilight of 4 AM."
+    const meta = sceneTimelineMetaForScene(
+      scene({ id: 's1-6', location: 'apartment', timeOfDay: 'dusk' }),
+      undefined,
+      'It\'s finished. The story sits complete on the screen, illuminated in the blue twilight of 4 AM.',
+    );
+    expect(meta?.timeOfDay).toBe('night');
+  });
+
+  it('keeps planned timeOfDay when the prose has no explicit clock mention', () => {
+    const meta = sceneTimelineMetaForScene(
+      scene({ id: 's1-3', location: 'bookshop', timeOfDay: 'afternoon' }),
+      undefined,
+      'The bell above the door chimes as you step inside the dusty bookshop.',
+    );
+    expect(meta?.timeOfDay).toBe('afternoon');
+  });
+
+  it('fills in missing planned timeOfDay from an explicit clock mention', () => {
+    const meta = sceneTimelineMetaForScene(
+      scene({ id: 's2-1', location: 'kitchen' }),
+      undefined,
+      'At 7 AM the kitchen is already loud with breakfast.',
+    );
+    expect(meta?.timeOfDay).toBe('morning');
+  });
+});
+
+describe('inferExplicitClockTimeFromText', () => {
+  it('maps explicit clock hours to the canonical bucket', () => {
+    expect(inferExplicitClockTimeFromText('the blue twilight of 4 AM')).toBe('night');
+    expect(inferExplicitClockTimeFromText('at 7am the kitchen is loud')).toBe('morning');
+    expect(inferExplicitClockTimeFromText('11:30 p.m. and the bar is closing')).toBe('night');
+    expect(inferExplicitClockTimeFromText('at noon the square empties')).toBe('midday');
+    expect(inferExplicitClockTimeFromText('midnight strikes')).toBe('night');
+    expect(inferExplicitClockTimeFromText('a 6pm reservation')).toBe('dusk');
+  });
+
+  it('ignores atmospheric words with no numeric clock mention', () => {
+    expect(inferExplicitClockTimeFromText('dusk settles over the pass')).toBeUndefined();
+    expect(inferExplicitClockTimeFromText('a knight rides at dawn')).toBeUndefined();
+    expect(inferExplicitClockTimeFromText(undefined)).toBeUndefined();
   });
 });

@@ -17,6 +17,7 @@ import {
   type SemanticContractEventSeed,
   type SemanticContractPremiseSeed,
 } from '../pipeline/semanticContractIr';
+import { entityTokensMatch } from '../utils/entityIdentity';
 
 type RawSemanticProposition = {
   propositionId: string;
@@ -248,7 +249,33 @@ function revealContractSchema(maxEpisode: number) {
   };
 }
 
-function anchorContractSchema(sceneIds: string[], castNames: string[]) {
+/**
+ * r115 owner-plan feasibility: does a compiled anchor's declared staging
+ * location actually belong to its owning scene? Compares STRUCTURED,
+ * enum-constrained fields only (never tokenizes onPageAction's semantic-judge
+ * prose — the standing guard rule from the v27 feasibility incident). A
+ * missing/"unspecified" stagedLocation, or a scene with no location data,
+ * always passes (nothing to contradict).
+ */
+export function anchorLocationIsFeasible(
+  stagedLocation: string | undefined,
+  owningSceneLocations: readonly string[],
+): boolean {
+  const staged = stagedLocation?.trim();
+  if (!staged || staged === 'unspecified') return true;
+  if (owningSceneLocations.length === 0) return true;
+  return owningSceneLocations.some((location) => entityTokensMatch(staged, location));
+}
+
+function anchorContractSchema(sceneIds: string[], castNames: string[], knownLocations: string[]) {
+  // r115: stagedLocation is a STRUCTURED field (enum-constrained to the
+  // episode's known locations, exactly like ordinary depiction events'
+  // referencedLocations), not free text — it lets the compiler deterministically
+  // cross-check the LLM's chosen location against the owning scene's actual
+  // locations WITHOUT tokenizing onPageAction's semantic-judge prose (the
+  // standing guard rule from the v27 feasibility incident: no deterministic
+  // check may consume semantic_judge text as wording).
+  const locationEnum = [...knownLocations, 'unspecified'];
   return {
     name: 'season_anchor_contracts',
     description: 'Live season anchors bound to their owning scene and an on-page planting action.',
@@ -266,11 +293,12 @@ function anchorContractSchema(sceneIds: string[], castNames: string[]) {
           items: {
             type: 'object',
             additionalProperties: false,
-            required: ['anchorName', 'owningSceneId', 'onPageAction', 'appearanceMode'],
+            required: ['anchorName', 'owningSceneId', 'onPageAction', 'appearanceMode', 'stagedLocation'],
             properties: {
               anchorName: { type: 'string', maxLength: 120 },
               owningSceneId: { type: 'string', enum: sceneIds },
               onPageAction: { type: 'string', maxLength: 240 },
+              stagedLocation: locationEnum.length > 1 ? { type: 'string', enum: locationEnum } : { type: 'string', maxLength: 80 },
               npcName: castNames.length > 0 ? { type: 'string', enum: castNames } : { type: 'string', maxLength: 80 },
               firstSighting: { type: 'boolean' },
               appearanceMode: { type: 'string', enum: ['named_on_page', 'anonymous_plant', 'not_applicable'] },
@@ -412,11 +440,19 @@ ${input.npcSecretNotes.map((note) => `- ${note}`).join('\n') || '(none)'}`;
     episodeNumber: number;
     episodeOutline: string;
     likelyConsequence: string;
-    scenes: Array<{ id: string; order: number; summary: string }>;
+    scenes: Array<{ id: string; order: number; summary: string; locations?: string[] }>;
     castNames: string[];
   }): Promise<import('../../types/narrativeContract').NarrativeAnchorContract[]> {
     if (!input.likelyConsequence?.trim() || input.scenes.length === 0) return [];
     const orderedScenes = [...input.scenes].sort((left, right) => left.order - right.order);
+    // r115: the compiler previously had NO location data for any scene — it
+    // could only guess a scene's physical location from the free-text
+    // `summary` label, so nothing stopped it from inventing an action set at
+    // a location the owning scene never visits (a bare anchor phrase like
+    // "Stela's protection" became "guides Kylie past the Valescu Club
+    // threshold" — assigned to the bookshop scene). Ground every scene in
+    // its actual locations.
+    const knownLocations = collectKnownSemanticLocations(orderedScenes.flatMap((scene) => scene.locations ?? []));
     const prompt = `You are binding SEASON ANCHORS for a serialized interactive story. You do not write prose.
 
 The episode outline ends with a likely-consequence line naming things that "become live season anchors" — promises the season builds on. For each anchor, name the ONE scene in this episode that owns planting it, and the concrete READER-VISIBLE ACTION that plants it: something a judge can test the prose against (an object accepted, a threshold crossed, a person first seen, a pact spoken), never a mood or a metadata fact.
@@ -427,8 +463,10 @@ Rules:
 - When the anchor is about a cast member, set npcName to their canonical name, and firstSighting: true when the owning scene is the reader's FIRST on-page look at them.
 - Whenever firstSighting is true, set appearanceMode to named_on_page only when the source permits the reader to learn the canonical name in that scene; otherwise use anonymous_plant. An anonymous description that corresponds semantically to a cast member remains anonymous even though npcName identifies the contract owner.
 - For anchors that are not character first sightings, set appearanceMode to not_applicable.
-- onPageAction states what the reader must SEE in the owning scene ("Kylie accepts a protective object from Stela"), not what it means for the season.
+- onPageAction states what the reader must SEE in the owning scene ("Kylie accepts a protective object from Stela"), not what it means for the season. The action MUST take place at the owning scene's own listed location(s) — never send the reader somewhere the scene doesn't go. If the anchor phrase gives no location detail at all, keep the action location-neutral (a gesture, an object, a spoken line) rather than inventing a place.
+- stagedLocation names the ONE location (from the SCENES list below) where onPageAction physically happens — it must be one of the owning scene's own locations, or "unspecified" if the action has no particular place (a spoken line, a handed-over object, a look).
 - When the anchor is a relationship or bond ("after testing her", "a new alliance"), onPageAction must name the dramatized EXCHANGE that earns it — a test passed, a cost paid, a vulnerability shown — never a declaration that the bond exists.
+- Match the action to the anchor's FUNCTION, not merely to the same character. A protection/safety/sanctuary anchor requires an actual protective intervention, ward, boundary, warning, resource, or accepted safeguard; friendliness, an invitation, or appearing in the scene is not protection. Apply the same discipline to leverage, betrayal, placement, debt, authorship, and other functional anchors.
 - sourceRef quotes the anchor phrase from the likely-consequence line.
 
 CAST: ${input.castNames.join(', ') || '(unknown)'}
@@ -439,21 +477,34 @@ ${input.episodeOutline}
 LIKELY CONSEQUENCE (the anchor list):
 ${input.likelyConsequence}
 
-SCENES (in order):
-${orderedScenes.map((scene) => `- ${scene.id}: ${scene.summary}`).join('\n')}`;
+SCENES (in order, with their actual location(s)):
+${orderedScenes.map((scene) => `- ${scene.id} [${(scene.locations ?? []).join(', ') || 'unspecified'}]: ${scene.summary}`).join('\n')}`;
     try {
       const { data } = await this.callLLMForJson<{ anchorContracts: Array<{
-        anchorName: string; owningSceneId: string; onPageAction: string;
+        anchorName: string; owningSceneId: string; onPageAction: string; stagedLocation?: string;
         npcName?: string; firstSighting?: boolean; appearanceMode: 'named_on_page' | 'anonymous_plant' | 'not_applicable'; sourceRef?: string;
       }> }>([{ role: 'user', content: prompt }], {
-        jsonSchema: anchorContractSchema(orderedScenes.map((scene) => scene.id), input.castNames),
+        jsonSchema: anchorContractSchema(orderedScenes.map((scene) => scene.id), input.castNames, knownLocations),
       });
-      const sceneIds = new Set(orderedScenes.map((scene) => scene.id));
-      return (data?.anchorContracts ?? [])
+      const sceneById = new Map(orderedScenes.map((scene) => [scene.id, scene]));
+      const dropped: string[] = [];
+      const contracts = (data?.anchorContracts ?? [])
         .filter((anchor) => anchor
           && typeof anchor.anchorName === 'string' && anchor.anchorName.trim()
           && typeof anchor.onPageAction === 'string' && anchor.onPageAction.trim()
-          && typeof anchor.owningSceneId === 'string' && sceneIds.has(anchor.owningSceneId))
+          && typeof anchor.owningSceneId === 'string' && sceneById.has(anchor.owningSceneId))
+        .filter((anchor) => {
+          // A mismatch means the compiler invented a location the owning
+          // scene cannot host; drop the anchor rather than ship an
+          // unsatisfiable task (fail-open, per the standing "no valid
+          // content can satisfy it" family of fixes).
+          const owningLocations = sceneById.get(anchor.owningSceneId)?.locations ?? [];
+          const feasible = anchorLocationIsFeasible(anchor.stagedLocation, owningLocations);
+          if (!feasible) {
+            dropped.push(`${anchor.anchorName} (stagedLocation "${anchor.stagedLocation}" not among ${anchor.owningSceneId}'s locations [${owningLocations.join(', ')}])`);
+          }
+          return feasible;
+        })
         .slice(0, 10)
         .map((anchor, index) => ({
           id: `anchor:${input.episodeNumber}:${index + 1}:${anchor.anchorName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48)}`,
@@ -466,6 +517,10 @@ ${orderedScenes.map((scene) => `- ${scene.id}: ${scene.summary}`).join('\n')}`;
           appearanceMode: anchor.appearanceMode,
           sourceRef: anchor.sourceRef?.trim() || undefined,
         }));
+      if (dropped.length > 0) {
+        console.warn(`[Semantic Contract Compiler] dropped ${dropped.length} anchor(s) with an owner-scene location mismatch: ${dropped.join('; ')}`);
+      }
+      return contracts;
     } catch (error) {
       console.warn(`[Semantic Contract Compiler] anchor-contract compilation failed (continuing without): ${error instanceof Error ? error.message : String(error)}`);
       return [];

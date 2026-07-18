@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { NarrativeContractGraph } from '../../types/narrativeContract';
 import type { SeasonScenePlan } from '../../types/scenePlan';
-import { SemanticContractCompilerAgent } from './SemanticContractCompilerAgent';
+import { SemanticContractCompilerAgent, anchorLocationIsFeasible } from './SemanticContractCompilerAgent';
 import { TruncatedLLMResponseError } from './BaseAgent';
 
 function scenePlan(): SeasonScenePlan {
@@ -400,5 +400,25 @@ describe('SemanticContractCompilerAgent', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('Semantic contract batch failed bounded structured correction');
     expect(call).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('anchorLocationIsFeasible (r115: owner-plan feasibility)', () => {
+  it('r115: rejects a compiled action staged at a location the owning scene never visits', () => {
+    // Exact shape of the run r115 blocker: "Stela's protection" compiled to
+    // an action at the Valescu Club, assigned to the bookshop scene (whose
+    // only location is Lumina Books).
+    expect(anchorLocationIsFeasible('Valescu Club', ['Lumina Books'])).toBe(false);
+  });
+
+  it('accepts a staged location that matches (including loose phrasing)', () => {
+    expect(anchorLocationIsFeasible('Valescu Club', ['Valescu Club on Calea Victoriei'])).toBe(true);
+    expect(anchorLocationIsFeasible('the Valescu Club', ['Valescu Club'])).toBe(true);
+  });
+
+  it('never rejects when there is nothing structured to contradict', () => {
+    expect(anchorLocationIsFeasible(undefined, ['Lumina Books'])).toBe(true);
+    expect(anchorLocationIsFeasible('unspecified', ['Lumina Books'])).toBe(true);
+    expect(anchorLocationIsFeasible('Valescu Club', [])).toBe(true);
   });
 });

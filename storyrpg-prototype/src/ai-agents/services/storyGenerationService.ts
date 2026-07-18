@@ -217,7 +217,15 @@ export async function runStoryAnalysis(request: StoryAnalysisRequest): Promise<S
           if (!likelyConsequence.trim()) continue;
           const scenes = scenePlan.scenes
             .filter((scene) => scene.episodeNumber === episode.episodeNumber)
-            .map((scene) => ({ id: scene.id, order: scene.order, summary: `${scene.title}: ${scene.dramaticPurpose}` }));
+            .map((scene) => ({
+              id: scene.id,
+              order: scene.order,
+              summary: `${scene.title}: ${scene.dramaticPurpose}`,
+              // r115: ground the anchor compiler in each scene's actual
+              // location so it cannot invent an action set somewhere the
+              // scene never visits.
+              locations: scene.locations,
+            }));
           if (scenes.length === 0) continue;
           anchorContracts.push(...await anchorCompiler.compileAnchorContracts({
             episodeNumber: episode.episodeNumber,

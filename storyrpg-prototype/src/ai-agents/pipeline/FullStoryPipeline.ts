@@ -462,7 +462,7 @@ export type { PipelineEvent } from './events';
 
 // PipelineError moved to ./errors (pure move) so pipeline/phases/* can use it
 // without importing this monolith. Re-exported here for existing consumers.
-import { PipelineError } from './errors';
+import { PipelineError, type PipelineFailureMetadata } from './errors';
 import { assertCanonicalPlanAttached } from './generationPreflight';
 export { PipelineError };
 
@@ -1201,6 +1201,7 @@ export class FullStoryPipeline {
       agent?: string;
       context?: Record<string, unknown>;
       originalError?: Error;
+      failure?: Partial<PipelineFailureMetadata>;
     }
   ): void {
     if (!this.isFailFastEnabled()) return;

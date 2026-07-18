@@ -274,7 +274,7 @@ import {
   resolveSceneBranchAxes,
   resolveSceneTreatmentSeeds,
 } from '../episodePlantContext';
-import { PipelineError } from '../errors';
+import { PipelineError, type PipelineFailureMetadata } from '../errors';
 import { isEncounterNarrativelyHollow } from '../encounterCompleteness';
 import { collectEncounterParticipantRefs, filterProtagonistEncounterRefs } from '../encounterParticipants';
 import { assessEncounterTurnRealization, formatEncounterTurnRealizationFeedback } from '../encounterTurnRealizationGuard';
@@ -577,6 +577,7 @@ export interface ContentGenerationPhaseDeps {
       agent?: string;
       cause?: unknown;
       context?: Record<string, unknown>;
+      failure?: Partial<PipelineFailureMetadata>;
     }
   ) => void;
   trackEncounterFlagConsequences: (encounter: EncounterStructure) => void;
@@ -2409,6 +2410,22 @@ export class ContentGenerationPhase {
                 sceneId: sceneBlueprint.id,
                 sceneName: sceneBlueprint.name,
                 failureKind: 'content',
+              },
+              // Was falling through to PipelineError's generic defaults
+              // (code:'unknown', ownerStage:'episode_plan', retryClass:'none')
+              // because no `failure` was ever populated here — this is a
+              // scene-writer-owned defect (SceneWriter's own revision pass
+              // already exhausted its one-shot budget for a hard issue like
+              // BEATS EXCEED CAP), not an episode-plan problem. retryClass
+              // stays 'none' honestly: by this point both the in-agent
+              // revision and this outer retry have already failed, and
+              // nothing downstream re-attempts a scene-writer hard-issue
+              // failure today (bite-me-r116_2026-07-18T20-48-58).
+              failure: {
+                code: 'prose_realization_failed',
+                ownerStage: 'scene_writer',
+                retryClass: 'none',
+                repairTarget: sceneBlueprint.id,
               },
             });
 

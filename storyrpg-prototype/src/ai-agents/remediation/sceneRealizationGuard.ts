@@ -588,18 +588,52 @@ export function realizationRetryFeedback(missing: MissingMoment[]): string {
  * Does a rewrite LOSE an authored moment the previous beats depicted?
  * Returns the first lost moment, or undefined when the rewrite is safe.
  * Deterministic and free — every polish/regen pass should ask this before
- * replacing prose.
+ * replacing prose. `extraMoments` (r117 gap analysis, 2026-07-18) lets a
+ * caller fold in moments from a different contract system (see
+ * {@link realizationTaskMomentsFor}) without this function needing to know
+ * about it.
  */
 export function rewriteLosesRequiredMoment(
   source: SceneContractSource | undefined,
   beforeBeats: RealizableBeat[] | undefined,
   afterBeats: RealizableBeat[] | undefined,
+  extraMoments: RequiredMoment[] = [],
 ): RequiredMoment | undefined {
-  const moments = requiredMomentsFor(source);
+  const moments = [...requiredMomentsFor(source), ...extraMoments];
   if (moments.length === 0) return undefined;
   const before = proseOfBeats(beforeBeats);
   const after = proseOfBeats(afterBeats);
   return moments.find(
     (m) => momentOrAlternateDepicted(m, before) && !momentOrAlternateDepicted(m, after),
   );
+}
+
+/**
+ * Bridges the NarrativeRealizationTask/SemanticRealizationJudge evidence-atom
+ * system (premise role-facts, event owner-tasks) into this module's
+ * before/after moment check, which otherwise only knows about
+ * requiredBeats/signatureMoment/storyCircleBeatContracts/turnContract/
+ * arcPressureContracts. r117 gap analysis (2026-07-18): a premise role-fact
+ * ("34-year-old American food writer turned blogger") and an event owner-task
+ * ("Testing Kylie") both passed scene-writer-stage realization, then the
+ * SceneCritic flag-gated pass rewrote those same scenes with no knowledge of
+ * either contract and silently dropped both — shipping as final-contract
+ * blockers minutes later. Scoped to owner-scope, scene-writer-stage,
+ * non-forbidden required atoms only: forbidden atoms are a different
+ * regression (content gained, not lost) this function doesn't check, and
+ * choice/route-scoped atoms aren't evaluated from beat prose.
+ */
+export function realizationTaskMomentsFor(
+  tasks: ReadonlyArray<{
+    ownerStage?: string;
+    target?: { scope?: string };
+    evidenceAtoms: ReadonlyArray<{ description: string; polarity?: string; required?: boolean }>;
+  }> | undefined,
+): RequiredMoment[] {
+  if (!tasks?.length) return [];
+  return tasks
+    .filter((task) => task.ownerStage === 'scene_writer' && task.target?.scope === 'owner')
+    .flatMap((task) => task.evidenceAtoms)
+    .filter((atom) => atom.polarity !== 'forbidden' && atom.required !== false && atom.description?.trim())
+    .map((atom) => ({ moment: atom.description, validator: 'RequiredBeatRealizationValidator' as const, tier: 'realization-task' }));
 }

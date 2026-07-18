@@ -558,7 +558,11 @@ export interface ContentGenerationPhaseDeps {
     sceneBlueprint: Pick<SceneBlueprint, 'location' | 'name' | 'description'>,
     worldBible: WorldBible
   ) => WorldBible['locations'][number] | undefined;
-  runSceneCriticPass: (sceneContents: SceneContent[], characterBible: CharacterBible) => Promise<void>;
+  runSceneCriticPass: (
+    sceneContents: SceneContent[],
+    characterBible: CharacterBible,
+    realizationTasksBySceneId?: Map<string, NarrativeRealizationTask[]>,
+  ) => Promise<void>;
   sanitizeReaderFacingSceneName: (name: string | undefined, fallback?: string) => string;
   saveResumeUnit: <T>(
     outputDirectory: string | undefined,
@@ -5848,7 +5852,13 @@ export class ContentGenerationPhase {
     // later SceneWriter uses (final-contract regens, repair handlers).
     this.deps.sceneWriter.setContractLoadTemperature(undefined);
 
-    await this.deps.runSceneCriticPass(sceneContents, characterBible);
+    // r117 gap analysis (2026-07-18): give the critic pass visibility into
+    // each scene's assigned premise/event realization tasks so it can refuse
+    // a rewrite that silently drops content those tasks already confirmed.
+    const realizationTasksBySceneId = new Map(
+      blueprint.scenes.map((sceneBlueprint) => [sceneBlueprint.id, sceneBlueprint.realizationTasks ?? []]),
+    );
+    await this.deps.runSceneCriticPass(sceneContents, characterBible, realizationTasksBySceneId);
     const twistMaterialization = materializeTwistPlan(
       this.deps.episodeTwistPlans.get(episodeNumber ?? brief.episode.number),
       sceneContents,

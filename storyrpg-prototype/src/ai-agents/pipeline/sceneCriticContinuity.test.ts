@@ -188,4 +188,45 @@ describe('SceneCriticContinuity.repairContinuityFindings (run-shaped)', () => {
     expect(sceneContents[0].beats[0].text).toBe('You unpack alone in the Lipscani apartment.');
     expect(emitted.join('\n')).toContain('dropped the opening player anchor');
   });
+
+  it('r117 gap analysis (2026-07-18): rejects a critic rewrite that drops a premise/event realization-task moment', async () => {
+    // Live regression: the same run shipped s1-1 missing its premise
+    // role-fact ("34-year-old American food writer turned blogger") and
+    // s1-4 missing its event owner-task ("Testing Kylie") at final contract,
+    // even though both had already passed scene-writer-stage realization —
+    // both scenes were rewritten by this same pass in between.
+    const { sceneContents, deps } = makeFixture();
+    sceneContents[0].beats[0].text = 'You are a 34-year-old American food writer turned blogger, starting over in Bucharest.';
+    const { flagSceneForCritic } = await import('../remediation/sceneCriticFlags');
+    flagSceneForCritic(sceneContents[0], 'realization-retry');
+
+    const sceneCritic = {
+      execute: vi.fn(async () => ({
+        success: true,
+        data: {
+          rewrittenBeats: [{ id: 's1-1-b1', text: 'You step into your new life in Bucharest, ready to start over.' }],
+          overallCommentary: '',
+        },
+      })),
+    } as unknown as SceneCritic;
+
+    const emitted: string[] = [];
+    const pass = new SceneCriticContinuity({
+      ...deps,
+      sceneCritic,
+      emit: (event) => emitted.push(String((event as { message?: string }).message ?? '')),
+      config: { agents: {}, sceneCritic: { enabled: false, maxScenesPerEpisode: 1 } } as unknown as PipelineConfig,
+    });
+    const realizationTasksBySceneId = new Map([
+      ['s1-1', [{
+        ownerStage: 'scene_writer',
+        target: { scope: 'owner' },
+        evidenceAtoms: [{ description: 'Role in the world: You are a 34-year-old American food writer turned blogger.', required: true }],
+      }]],
+    ] as never);
+    await pass.runSceneCriticPass(sceneContents, characterBible, realizationTasksBySceneId);
+
+    expect(sceneContents[0].beats[0].text).toBe('You are a 34-year-old American food writer turned blogger, starting over in Bucharest.');
+    expect(emitted.join('\n')).toContain('realization-task');
+  });
 });

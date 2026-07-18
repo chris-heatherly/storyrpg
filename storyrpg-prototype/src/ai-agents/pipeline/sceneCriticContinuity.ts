@@ -43,8 +43,9 @@ import {
 } from './continuityRepair';
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { sceneCriticFlags, sceneCriticNotes } from '../remediation/sceneCriticFlags';
-import { rewriteLosesRequiredMoment } from '../remediation/sceneRealizationGuard';
+import { realizationTaskMomentsFor, rewriteLosesRequiredMoment } from '../remediation/sceneRealizationGuard';
 import { hasPlayerReference } from '../validators/PovClarityValidator';
+import type { NarrativeRealizationTask } from '../../types/narrativeContract';
 import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
@@ -96,6 +97,10 @@ export class SceneCriticContinuity {
   async runSceneCriticPass(
     sceneContents: SceneContent[],
     characterBible: CharacterBible,
+    // r117 gap analysis (2026-07-18): scene-scoped premise/event realization
+    // tasks, keyed by sceneId, so a rewrite here can't silently drop content
+    // those tasks already confirmed — see realizationTaskMomentsFor.
+    realizationTasksBySceneId?: Map<string, NarrativeRealizationTask[]>,
   ): Promise<void> {
     const cfg = this.deps.config.sceneCritic;
     if (!sceneContents.length) return;
@@ -196,8 +201,13 @@ export class SceneCriticContinuity {
         });
         // …and verify afterwards (deterministic, free): refuse a polish that
         // LOSES a depicted authored moment (GATE_SCENE_REQUIRED_BEAT_CHECK).
+        // r117 gap analysis (2026-07-18): also covers premise role-facts and
+        // event owner-tasks assigned to this scene — see
+        // realizationTaskMomentsFor for why this pass can't trust the
+        // narrower requiredBeats/signatureMoment contract alone.
         if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')) {
-          const lost = rewriteLosesRequiredMoment(scene, scene.beats, proposedBeats);
+          const extraMoments = realizationTaskMomentsFor(realizationTasksBySceneId?.get(scene.sceneId));
+          const lost = rewriteLosesRequiredMoment(scene, scene.beats, proposedBeats, extraMoments);
           if (lost) {
             this.deps.emit({
               type: 'warning',

@@ -24,6 +24,7 @@ import {
   CONCURRENCY_DEFAULTS,
 } from '../../constants/pipeline';
 import { TEXT_LIMITS } from '../../constants/validation';
+import type { NarrativeRealizationTask } from '../../types/narrativeContract';
 import { WorldBuilder, WorldBible } from '../agents/WorldBuilder';
 import { CharacterDesigner, CharacterBible, CharacterProfile } from '../agents/CharacterDesigner';
 import {
@@ -4471,8 +4472,9 @@ export class FullStoryPipeline {
   private runSceneCriticPass(
     sceneContents: SceneContent[],
     characterBible: CharacterBible,
+    realizationTasksBySceneId?: Map<string, NarrativeRealizationTask[]>,
   ): Promise<void> {
-    return this.sceneCriticContinuity().runSceneCriticPass(sceneContents, characterBible);
+    return this.sceneCriticContinuity().runSceneCriticPass(sceneContents, characterBible, realizationTasksBySceneId);
   }
 
   // Extracted to phases/QAPhase.ts (pure move): the QARunner full-QA pass

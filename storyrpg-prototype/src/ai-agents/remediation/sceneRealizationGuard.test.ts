@@ -5,6 +5,7 @@ import {
   isNonStageableRequiredMomentSource,
   missingRequiredMoments,
   realizationRetryFeedback,
+  realizationTaskMomentsFor,
   requiredMomentsFor,
   rewriteLosesRequiredMoment,
 } from './sceneRealizationGuard';
@@ -754,5 +755,61 @@ describe('rewriteLosesRequiredMoment', () => {
     const unrealized = [{ id: 'b1', text: 'Breakfast is quiet.' }];
     const polished = [{ id: 'b1', text: 'Breakfast is quiet and the coffee is bitter.' }];
     expect(rewriteLosesRequiredMoment(source, unrealized, polished)).toBeUndefined();
+  });
+
+  it('r117 gap analysis (2026-07-18): catches a lost moment supplied via extraMoments even with no SceneContractSource fields', () => {
+    // Live regression: SceneCritic dropped a premise role-fact and an event
+    // owner-task while polishing scenes whose SceneContractSource had no
+    // requiredBeats/signatureMoment covering either — realizationTaskMomentsFor
+    // is how those get folded in.
+    const extraMoments = realizationTaskMomentsFor([{
+      ownerStage: 'scene_writer',
+      target: { scope: 'owner' },
+      evidenceAtoms: [{ description: 'Role in the world: You are a 34-year-old American food writer turned blogger.', required: true }],
+    }]);
+    const realized = [{ id: 'b1', text: 'You are a 34-year-old American food writer turned blogger, starting over in Bucharest.' }];
+    const polished = [{ id: 'b1', text: 'You step into your new life in Bucharest, ready to start over.' }];
+
+    expect(rewriteLosesRequiredMoment(undefined, realized, polished, extraMoments)).toBeDefined();
+    expect(rewriteLosesRequiredMoment(undefined, realized, realized, extraMoments)).toBeUndefined();
+  });
+});
+
+describe('realizationTaskMomentsFor', () => {
+  it('extracts moments from owner-scope, scene-writer-stage, non-forbidden required atoms', () => {
+    const moments = realizationTaskMomentsFor([
+      {
+        ownerStage: 'scene_writer',
+        target: { scope: 'owner' },
+        evidenceAtoms: [{ description: 'Testing Kylie.', required: true }],
+      },
+      // Forbidden atoms are a different regression class (content gained,
+      // not lost) — not covered by this function.
+      {
+        ownerStage: 'scene_writer',
+        target: { scope: 'owner' },
+        evidenceAtoms: [{ description: 'The rescue was staged.', polarity: 'forbidden', required: true }],
+      },
+      // Optional atoms don't need to survive a polish.
+      {
+        ownerStage: 'scene_writer',
+        target: { scope: 'owner' },
+        evidenceAtoms: [{ description: 'An optional flourish.', required: false }],
+      },
+      // Choice-scoped atoms aren't evaluated from beat prose.
+      {
+        ownerStage: 'choice_author',
+        target: { scope: 'all_choice_outcomes' },
+        evidenceAtoms: [{ description: 'The three become friends.', required: true }],
+      },
+    ]);
+
+    expect(moments).toHaveLength(1);
+    expect(moments[0]).toMatchObject({ moment: 'Testing Kylie.', validator: 'RequiredBeatRealizationValidator', tier: 'realization-task' });
+  });
+
+  it('returns an empty array for undefined or empty task lists', () => {
+    expect(realizationTaskMomentsFor(undefined)).toEqual([]);
+    expect(realizationTaskMomentsFor([])).toEqual([]);
   });
 });

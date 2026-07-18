@@ -311,6 +311,104 @@ describe('compileNarrativeRealizationTasks', () => {
     });
   });
 
+  it('r115 gap analysis (2026-07-18): compiles an advisory companion-continuity task when cast members drop out entering an encounter', () => {
+    // Live regression: s1-5 ends with the whole group ("Come on. Let's walk,
+    // the air in Cismigiu is better") heading toward Cismigiu together, but
+    // the encounter opens with Kylie alone — no farewell, parting, or reason
+    // Stela/Mika don't come along.
+    const graph = {
+      events: [],
+      dependencies: [],
+      transitionContracts: [{
+        id: 'transition:s1-5-to-attack', episodeNumber: 1, fromSceneId: 's1-5', toSceneId: 'treatment-enc-1-1',
+        fromLocation: 'rooftop bar', toLocation: 'Cismigiu Gardens', bridgePolicy: 'orientation_only',
+        locationRequirement: { canonicalValue: 'Cismigiu Gardens', acceptedAliases: [], required: true },
+        requiredBridgeEvidence: ['Cismigiu Gardens'], stateContracts: [], blocking: true,
+        sourceContractIds: ['scene:s1-5', 'scene:treatment-enc-1-1'],
+      }],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 's1-5', episodeNumber: 1, order: 0, kind: 'standard', npcsInvolved: ['Kylie Marinescu', 'Stela Pavel', 'Mika Dragan'] },
+      { id: 'treatment-enc-1-1', episodeNumber: 1, order: 1, kind: 'encounter', encounter: {}, npcsInvolved: ['Kylie Marinescu'] },
+    ] as any, 'Kylie Marinescu');
+
+    const companion = tasks.find((task) => task.id === 'task:transition:s1-5-to-attack:companion-continuity');
+    expect(companion).toMatchObject({
+      sceneId: 's1-5',
+      blocking: false,
+      evidenceAtoms: [expect.objectContaining({
+        verificationAuthority: 'semantic_judge',
+        semanticRole: 'transition_bridge',
+        required: true,
+      })],
+    });
+    expect(companion!.evidenceAtoms[0].description).toContain('Stela Pavel');
+    expect(companion!.evidenceAtoms[0].description).toContain('Mika Dragan');
+    expect(companion!.evidenceAtoms[0].description).not.toContain('Kylie');
+    expect(companion!.evidenceAtoms[0].description).toContain('part ways');
+  });
+
+  it('still requires the check even when the encounter\'s OWN metadata claims the same cast (r115: metadata lied)', () => {
+    // r115's actual encounter scene declared all three characters "involved"
+    // in its own plan-time npcsInvolved even though only the protagonist
+    // appeared in any generated beat — a metadata-vs-metadata diff would have
+    // missed exactly this case. The check must not trust the destination's
+    // cast claim; it asks the judge to verify the real prose either way.
+    const graph = {
+      events: [],
+      dependencies: [],
+      transitionContracts: [{
+        id: 'transition:same-cast', episodeNumber: 1, fromSceneId: 's1-a', toSceneId: 's1-b-encounter',
+        fromLocation: 'street', toLocation: 'alley', bridgePolicy: 'orientation_only',
+        locationRequirement: { canonicalValue: 'alley', acceptedAliases: [], required: true },
+        requiredBridgeEvidence: ['alley'], stateContracts: [], blocking: true,
+        sourceContractIds: ['scene:s1-a', 'scene:s1-b-encounter'],
+      }],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 's1-a', episodeNumber: 1, order: 0, kind: 'standard', npcsInvolved: ['Kylie Marinescu', 'Stela Pavel'] },
+      { id: 's1-b-encounter', episodeNumber: 1, order: 1, kind: 'encounter', encounter: {}, npcsInvolved: ['Kylie Marinescu', 'Stela Pavel'] },
+    ] as any, 'Kylie Marinescu');
+
+    const companion = tasks.find((task) => task.id === 'task:transition:same-cast:companion-continuity');
+    expect(companion).toBeDefined();
+    expect(companion!.evidenceAtoms[0].description).toContain('Stela Pavel');
+    expect(companion!.evidenceAtoms[0].description).not.toContain('Kylie Marinescu');
+  });
+
+  it('compiles no companion-continuity task when the arrival is not an encounter, or the departing scene has no companions beyond the protagonist fixture', () => {
+    const graph = {
+      events: [],
+      dependencies: [],
+      transitionContracts: [
+        {
+          id: 'transition:not-encounter', episodeNumber: 1, fromSceneId: 's1-c', toSceneId: 's1-d',
+          fromLocation: 'street', toLocation: 'cafe', bridgePolicy: 'orientation_only',
+          locationRequirement: { canonicalValue: 'cafe', acceptedAliases: [], required: true },
+          requiredBridgeEvidence: ['cafe'], stateContracts: [], blocking: true,
+          sourceContractIds: ['scene:s1-c', 'scene:s1-d'],
+        },
+        {
+          id: 'transition:alone', episodeNumber: 2, fromSceneId: 's2-a', toSceneId: 's2-b-encounter',
+          fromLocation: 'street', toLocation: 'alley', bridgePolicy: 'orientation_only',
+          locationRequirement: { canonicalValue: 'alley', acceptedAliases: [], required: true },
+          requiredBridgeEvidence: ['alley'], stateContracts: [], blocking: true,
+          sourceContractIds: ['scene:s2-a', 'scene:s2-b-encounter'],
+        },
+      ],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 's1-c', episodeNumber: 1, order: 0, kind: 'standard', npcsInvolved: ['Kylie Marinescu', 'Mika Dragan'] },
+      { id: 's1-d', episodeNumber: 1, order: 1, kind: 'standard', npcsInvolved: ['Kylie Marinescu'] },
+      // Episode 2: only the protagonist ever appears — no companions to lose.
+      { id: 's2-a', episodeNumber: 2, order: 0, kind: 'standard', npcsInvolved: ['Kylie Marinescu'] },
+      { id: 's2-b-encounter', episodeNumber: 2, order: 1, kind: 'encounter', encounter: {}, npcsInvolved: ['Kylie Marinescu'] },
+    ] as any, 'Kylie Marinescu');
+
+    expect(tasks.find((task) => task.id === 'task:transition:not-encounter:companion-continuity')).toBeUndefined();
+    expect(tasks.find((task) => task.id === 'task:transition:alone:companion-continuity')).toBeUndefined();
+  });
+
   it('compiles no departure task when the transition stays in the same location', () => {
     const graph = {
       events: [],

@@ -12,6 +12,7 @@ import type {
 import { withNarrativeVerificationAuthority } from './realizationVerificationAuthority';
 import { CANONICAL_ROUTE_TIERS } from '../validators/encounterTextSurfaces';
 import { satisfactionExpressionForTask } from './realizationTaskSatisfaction';
+import { entityTokensMatch } from '../utils/entityIdentity';
 
 type SceneOwnedTaskKind = 'event' | 'premise' | 'presence' | 'transition' | 'story_circle' | 'relationship';
 
@@ -681,6 +682,7 @@ function targetForEventRequirement(
 export function compileNarrativeRealizationTasks(
   graph: NarrativeContractGraph,
   scenes: PlannedScene[],
+  protagonistName?: string,
 ): NarrativeRealizationTask[] {
   const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
   const tasks: NarrativeRealizationTask[] = [];
@@ -1442,6 +1444,68 @@ export function compileNarrativeRealizationTasks(
         sourceContractIds: [...transition.sourceContractIds],
         blocking: false,
       });
+    }
+
+    // Companion continuity (r115 gap analysis, 2026-07-18): a
+    // location-changing transition into an ENCOUNTER can silently drop cast
+    // members present in the departing scene — s1-5 ends with the whole
+    // group ("Come on. Let's walk, the air in Cismigiu is better") heading
+    // toward Cismigiu together, but the encounter opens with the protagonist
+    // alone, and none of the "involved" companions appear in any encounter
+    // beat. Deliberately does NOT gate on whether the encounter's OWN
+    // npcsInvolved also lists the companions — r115's actual encounter scene
+    // still declared all three as "involved" in its plan-time metadata even
+    // though only the protagonist appears anywhere in its generated beats,
+    // so a metadata-vs-metadata diff would have missed the exact case this
+    // exists for. The semantic judge checks the real final prose instead;
+    // code only decides which scenes need asking. The protagonist (matched
+    // by name, not by appearance frequency — a first attempt tried inferring
+    // "who's a fixture" from how often a name recurs across the episode, but
+    // season plans routinely blanket-cast the same 2-3 names onto every scene
+    // verbatim, which made a real companion group statistically
+    // indistinguishable from the protagonist herself) is excluded so the
+    // check never asks her to "part ways" from herself. Scoped narrowly to
+    // encounter arrivals — the shape this defect actually took, and where a
+    // solo confrontation is most narratively load-bearing — rather than
+    // every scene-to-scene cast change, which would false-positive on
+    // ordinary "you leave the shopkeeper behind" breaks. ADVISORY: new task
+    // class, zero shadow evidence.
+    const toScene = sceneById.get(transition.toSceneId);
+    if (fromScene && toScene?.kind === 'encounter') {
+      const companions = (fromScene.npcsInvolved ?? [])
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0 && !(protagonistName && entityTokensMatch(name, protagonistName)));
+      if (companions.length > 0) {
+        const companionExecution = resolveTaskExecutionTarget({
+          scene: fromScene,
+          episodeNumber: transition.episodeNumber,
+          kind: 'transition',
+        });
+        tasks.push({
+          id: `task:${transition.id}:companion-continuity`,
+          contractId: transition.id,
+          episodeNumber: transition.episodeNumber,
+          sourceKinds: ['transition'],
+          ownerStage: companionExecution.ownerStage,
+          repairHandler: companionExecution.repairHandler,
+          sceneId: transition.fromSceneId,
+          artifactPath: companionExecution.artifactPath,
+          evidenceAtoms: [{
+            id: `${transition.id}:companion-continuity:parting`,
+            description: `Before this scene ends, ${companions.join(' and ')} — present here — must either travel into the following encounter with the protagonist, or visibly part ways: a farewell, a decision to separate, or an explicit reason they don't come along. A silent disappearance with no acknowledgment either way is a miss.`,
+            acceptedPatterns: [],
+            kind: 'semantic',
+            semanticRole: 'transition_bridge',
+            producerStage: companionExecution.ownerStage,
+            temporalSlot: companionExecution.temporalSlot,
+            required: true,
+            verificationAuthority: 'semantic_judge',
+          }],
+          target: { scope: 'owner', surfaces: companionExecution.surfaces },
+          sourceContractIds: [...transition.sourceContractIds],
+          blocking: false,
+        });
+      }
     }
   }
 

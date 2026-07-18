@@ -2226,7 +2226,7 @@ export function compileNarrativeContractGraph(
       })));
     }
   }
-  graph.realizationTasks = compileNarrativeRealizationTasks(graph, scenes);
+  graph.realizationTasks = compileNarrativeRealizationTasks(graph, scenes, plan.protagonist?.name);
   graph.sourceHash = stableHash({
     compilerVersion: graph.compilerVersion,
     scenePlanSourceHash: scenePlan.sourceHash,

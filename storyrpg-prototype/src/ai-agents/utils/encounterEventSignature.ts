@@ -30,7 +30,11 @@ const LOCATION_ALIASES: Array<[string, RegExp]> = [
   ['apartment', /\b(?:apartment|walk-up|deadbolt|welcome\s+mat)\b/i],
   ['club', /\b(?:club|booth|velvet\s+rope|front\s+line|side\s+entrance|venue)\b/i],
   ['rooftop', /\b(?:rooftop|roof|terrace)\b/i],
-  ['bookshop', /\b(?:bookshop|bookstore|book\s+shop|books)\b/i],
+  // Bare "books" is deliberately case-sensitive (capital B only): it exists to catch the
+  // shop's proper name ("Lumina Books"), not a lowercase mention of reading material in
+  // unrelated dialogue ("your taste in books") — that FP registered an unrelated rooftop
+  // scene as taking place at the bookshop (r118 bite-me-r118_2026-07-18T18-36-05, s1-4).
+  ['bookshop', /\b(?:[Bb]ookshop|[Bb]ookstore|[Bb]ook\s+[Ss]hop|Books)\b/],
   ['street', /\b(?:street|sidewalk|alley|courtyard|boulevard)\b/i],
   ['estate', /\b(?:estate|house|manor|villa)\b/i],
   ['maze', /\b(?:maze|hedge\s+maze|labyrinth)\b/i],
@@ -42,18 +46,36 @@ const PARTICIPANT_ALIASES: Array<[string, RegExp]> = [
   ['attacker', /\b(?:attacker|attackers|adversary|enemy|unseen)\b/i],
 ];
 
+// Shared by 'escape' (below) and 'vanish' (in RESOLUTION_ACTIONS): the physical-escape
+// context an ambiguous verb must be anchored to before it counts as a staged event, not
+// an idiom ("the ones who get away" as a toast, r118 bite-me-r118_2026-07-18T18-36-05 s1-4).
+const ESCAPE_CONTEXT = '(?:from|through|into|out|past|before|after|him|her|them|attacker|attackers|shadow|fog|park|maze|street|garden|club|room|night)';
+
 const PRESSURE_ACTIONS: Array<[string, RegExp]> = [
   ['attack', /\b(?:attack|attacks|attacked|attacker|attackers|ambush|assault|strike|strikes|struck|lunges?|grab|grabs|grabbed|(?:hand|hands|finger|fingers|grip)\s+(?:closes?|tightens?|clamps?|wraps?)\s+(?:around|on)\s+(?:your|her|his|their|the)?\s*throat)\b/i],
   ['chase', /\b(?:chase|chases|chased|pursue|pursues|pursued|pursuit)\b/i],
-  ['escape', /\b(?:escaped|get\s+away|breaks?\s+free|escapes?\s+(?:from|through|into|out|past|before|after|him|her|them|attacker|attackers|shadow|fog|park|maze|street|garden|club|room|night))\b/i],
+  ['escape', new RegExp(
+    `\\b(?:escaped|breaks?\\s+free|get\\s+away\\s+${ESCAPE_CONTEXT}|escapes?\\s+${ESCAPE_CONTEXT})\\b`,
+    'i',
+  )],
   ['pinned', /\b(?:pin|pins|pinned|trap|traps|trapped|cornered|corners?\s+(?!(?:of|booth|table|seat|room|bar|street|hall|corridor|with|onto|into|near|beside|by|at|in|on|from|toward|towards)\b)(?:you|her|him|them|[A-Z][a-z]+|kylie|mika|stela|victor|radu|attacker|the\s+(?:protagonist|woman|man|figure|shadow))|pressed\s+against)\b/i],
   ['confront', /\b(?:confront|confronts|showdown|duel)\b/i],
 ];
 
+// Anchors "vanish"/"disappear"/"gone" to an actual person/figure reference so incidental
+// or sensory uses of the bare verb ("a waiter appears and vanishes", "champagne bubbles
+// vanish on your tongue" — r118 bite-me-r118_2026-07-18T18-36-05, s1-4/s1-5) don't register
+// as a staged disappearance event. Matches the anchoring the "gone" variant already had.
+const VANISH_PERSON = '(?:he|she|they|victor|mika|radu|stela|attacker|figure|shadow|man|woman)';
+
 const RESOLUTION_ACTIONS: Array<[string, RegExp]> = [
   ['rescue', /\b(?:rescue|rescues|rescued|save|saves|saved|intervene|intervenes|intervened)\b/i],
   ['walk_home', /\b(?:walks?\s+(?:you|her|him|them)?\s*home|takes?\s+(?:you|her|him|them)?\s*home|sees?\s+(?:you|her|him|them)?\s*home)\b/i],
-  ['vanish', /\b(?:vanish|vanishes|vanished|disappear|disappears)\b|\b(?:he|she|they|victor|mika|radu|stela|attacker|figure|shadow|man|woman)\s+(?:is\s+|are\s+|was\s+|were\s+)?gone\b/i],
+  ['vanish', new RegExp(
+    `\\b${VANISH_PERSON}\\s+(?:has\\s+|had\\s+|simply\\s+|just\\s+)?(?:vanish(?:es|ed)?|disappear(?:s|ed)?)\\b`
+    + `|\\b${VANISH_PERSON}\\s+(?:is\\s+|are\\s+|was\\s+|were\\s+)?gone\\b`,
+    'i',
+  )],
   ['defeat', /\b(?:defeat|defeats|defeated|overcome|survive|survives|survived)\b/i],
 ];
 

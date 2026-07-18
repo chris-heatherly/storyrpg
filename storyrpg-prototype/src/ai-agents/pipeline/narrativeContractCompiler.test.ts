@@ -644,6 +644,49 @@ describe('NarrativeContractCompiler', () => {
     expect(mikaPresence?.sceneId).toBe('s1-4');
   });
 
+  it('r115 (2026-07-18, run 2): an anonymous-plant first sighting never captures the named presence contract', () => {
+    // Live regression: bite-me-r115_2026-07-18T04-16-20. Radu's first
+    // sighting is an UNNAMED watcher at s1-5 (anonymous_plant; the scene's
+    // cast is deliberately Kylie/Stela/Mika only) while his named
+    // introduction and cast placement live in ep4 (s4-1). The first fix
+    // retargeted his named_on_page presence contract onto s1-5 — demanding
+    // his name in the one scene planned to withhold it, and recreating the
+    // cast/ownership preflight conflict one scene over. An anonymous plant
+    // precedes the introduction; it does not own it.
+    const planned = plan([1, 4]);
+    planned.protagonist = { id: 'char-kylie', name: 'Kylie Marinescu', description: '' };
+    planned.characterIntroductions = [
+      { characterId: 'char-radu', characterName: 'Radu Stoian', introducedInEpisode: 4, role: 'love_interest' },
+    ];
+    const scenes = [
+      scene({
+        id: 's1-5', episodeNumber: 1, order: 4, npcsInvolved: ['Kylie Marinescu', 'Stela Pavel'],
+        dramaticPurpose: 'At a rooftop bar a rougher man watches her from the shadows.',
+      }),
+      scene({ id: 's4-1', episodeNumber: 4, order: 0, npcsInvolved: ['Radu Stoian'], dramaticPurpose: 'Radu leans close in the firelight.' }),
+    ];
+    const plan_ = scenePlan(scenes);
+    plan_.anchorContracts = [{
+      id: 'anchor:1:6:radu-s-first-sighting', anchorName: "Radu's first sighting", episodeNumber: 1, owningSceneId: 's1-5',
+      onPageAction: 'Kylie spots a rougher, heavily built man observing her from the shadows.',
+      npcName: 'Radu Stoian', firstSighting: true, appearanceMode: 'anonymous_plant',
+    }];
+
+    const graph = compileNarrativeContractGraph(planned, plan_);
+
+    // The first-appearance authority still records the anonymous plant as the
+    // earliest perceptible appearance (cast-order enforcement needs that)...
+    const raduAppearance = graph.firstAppearanceContracts?.find((contract) => contract.characterName === 'Radu Stoian');
+    expect(raduAppearance?.owningSceneId).toBe('s1-5');
+    expect(raduAppearance?.mode).toBe('anonymous_plant');
+    // ...but the named presence contract stays on the scene that actually
+    // casts and names him.
+    const raduPresence = graph.characterPresenceContracts.find((contract) => contract.characterId === 'char-radu');
+    expect(raduPresence?.sceneId).toBe('s4-1');
+    expect(raduPresence?.episodeNumber).toBe(4);
+    expect(raduPresence?.mode).toBe('named_on_page');
+  });
+
   it('compiles premise, canonical state, downstream seed, and transition projections together', () => {
     const planned = plan([1, 2]);
     planned.protagonist = { id: 'protagonist', name: 'Avery', description: '' };

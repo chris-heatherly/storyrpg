@@ -37,6 +37,7 @@ import { detectPrimaryStoryEventCues, isQuestionShapedAnchor, type StoryEventCue
 import { isGenericScenePlannerText, isQuestionShapedTurnText } from '../utils/sceneContractBuilders';
 import { PipelineError } from './errors';
 import { resolveCharacterIntroMode, resolveRosterCharacter } from '../utils/npcIntroductionLedger';
+import { entityTokensMatch } from '../utils/entityIdentity';
 import { buildCharacterTreatmentContractsForPlan } from '../utils/characterTreatmentContracts';
 import { compileNarrativeRealizationTasks } from './realizationTaskCompiler';
 import { plannedGroupFormation } from '../utils/relationshipPacingStagePolicy';
@@ -2134,8 +2135,24 @@ export function compileNarrativeContractGraph(
   // the requirement that she's actually evidenced on page at all. Each
   // firstAppearanceContract's sourceContractIds already lists the presence
   // contract(s) that fed it, so no new character-identity matching is needed.
+  //
+  // Retarget ONLY toward a named appearance whose scene actually casts the
+  // character. A presence contract is the NAMED-INTRODUCTION requirement; an
+  // anonymous_plant first sighting precedes the introduction, it does not own
+  // it (second live run, same day: Radu's first sighting is an unnamed
+  // watcher at s1-5 with no Radu in the cast — moving his named_on_page
+  // contract there demanded his name in the one scene planned to withhold
+  // it, and re-created the cast/ownership conflict one scene over). The
+  // no-retarget path keeps the contract on its original scene, whose cast
+  // includes the character by construction (contracts are only compiled from
+  // npcsInvolved refs).
   const reconciledSceneByPresenceContractId = new Map<string, { sceneId: string; episodeNumber: number }>();
   for (const contract of firstAppearanceContracts) {
+    if (contract.mode !== 'named_on_page') continue;
+    const winnerScene = scenes.find((candidate) => candidate.id === contract.owningSceneId);
+    const winnerCastsCharacter = (winnerScene?.npcsInvolved ?? []).some((ref) =>
+      entityTokensMatch(ref, contract.characterId) || entityTokensMatch(ref, contract.characterName));
+    if (!winnerCastsCharacter) continue;
     for (const sourceId of contract.sourceContractIds) {
       reconciledSceneByPresenceContractId.set(sourceId, {
         sceneId: contract.owningSceneId,

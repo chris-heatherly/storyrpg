@@ -49,6 +49,7 @@ import {
 import { isTenseDriftIssue } from './tenseDriftRepairHandler';
 import { VALIDATOR_REGISTRY } from '../validators/validatorRegistry';
 import { validateEncounterProducerOutput } from '../pipeline/producerBlockerChecks';
+import type { FinalStoryContractIssueType } from '../validators/FinalStoryContractValidator';
 import type { Story } from '../../types/story';
 
 interface BlockingClassCase {
@@ -891,6 +892,357 @@ describe('blocking-validator closure sweep', () => {
       .map((entry) => normalized(entry.validator))
       .filter((name) => !coveredNames.has(name) && !preFinal.has(name) && !(name in CLOSURE_SWEEP_EXEMPTIONS));
     expect(missing, `Blocking final-stage validator(s) with no routing row: ${missing.join(', ')} — add a BLOCKING_CLASSES case with its repair route (or a written exemption).`).toEqual([]);
+  });
+});
+
+/**
+ * R6 (2026-07-18, r118 postmortem): the closure sweep above is keyed on
+ * VALIDATOR NAME via VALIDATOR_REGISTRY, which has exactly one row for
+ * `FinalStoryContractValidator` covering its entire native issue-type union —
+ * so the sweep goes green the moment ANY one of that validator's ~35 native
+ * types is exercised anywhere in this file (today that's `echo_summary_variant`
+ * via GATE_DESIGN_NOTE_LEAK), while `duplicate_high_pressure_event` sat with
+ * zero repair route for the whole session undetected. This sweep is keyed on
+ * TYPE instead, so a validator-name match can no longer hide an unrouted type.
+ *
+ * `ALL_FINAL_STORY_CONTRACT_ISSUE_TYPES` is compiler-checked against
+ * `FinalStoryContractIssueType` (a missing or extra key fails to compile), so a
+ * newly-added union member forces a triage decision here — either a case below
+ * or an entry in `NATIVE_TYPE_EXEMPTIONS` with a written reason.
+ */
+const ALL_FINAL_STORY_CONTRACT_ISSUE_TYPES: Record<FinalStoryContractIssueType, true> = {
+  empty_scene: true,
+  empty_encounter_scene: true,
+  placeholder_scene: true,
+  invalid_encounter: true,
+  missing_runtime_encounter: true,
+  broken_navigation: true,
+  routing_contradiction: true,
+  choice_bridge_skips_required_setup: true,
+  choice_count_contract: true,
+  supernatural_canon_contradiction: true,
+  beat_id_collision: true,
+  encounter_template_collapse: true,
+  encounter_malformed_prose: true,
+  encounter_one_click_win: true,
+  encounter_clock_coverage_gap: true,
+  missing_requested_episode: true,
+  failed_incremental_validation: true,
+  unrepaired_callback_debt: true,
+  callback_opportunity_advisory: true,
+  planned_residue_debt: true,
+  obligation_ledger_debt: true,
+  source_role_mismatch: true,
+  partial_season_scope: true,
+  treatment_fidelity_violation: true,
+  ambiguous_protagonist_pronoun: true,
+  npc_pronoun_inconsistency: true,
+  outcome_text_stub: true,
+  echo_summary_variant: true,
+  planning_register_prose: true,
+  prose_style_violation: true,
+  unset_flag_condition: true,
+  promised_clue_absent: true,
+  choice_type_plan_nonconformance: true,
+  consequence_tier_plan_nonconformance: true,
+  skill_plan_nonconformance: true,
+  sentence_opener_monotony: true,
+  encounter_prose_integrity: true,
+  encounter_pov_break: true,
+  pov_break: true,
+  pov_anchor_missing: true,
+  protagonist_as_npc: true,
+  encounter_outcome_desync: true,
+  continuity_error: true,
+  transition_continuity_violation: true,
+  scene_turn_realization_violation: true,
+  semantic_realization_violation: true,
+  mechanic_pressure_violation: true,
+  treatment_field_utilization_violation: true,
+  treatment_event_ledger_violation: true,
+  season_promise_realization_violation: true,
+  character_treatment_realization_violation: true,
+  narrative_failure_mode_violation: true,
+  duplicate_high_pressure_event: true,
+  scene_location_event_mismatch: true,
+  route_chronology_violation: true,
+  choice_bridge_sibling_leak: true,
+  route_duplicate_event: true,
+  unsafe_fallback_prose: true,
+  role_fidelity_violation: true,
+  qa_blocker_present: true,
+};
+
+interface NativeTypeCase {
+  name: string;
+  issue: BlockingClassCase['issue'];
+}
+
+/**
+ * Newly-triaged native types (r118 postmortem, 2026-07-18) — each constructed
+ * from the exact shape `FinalStoryContractValidator.ts` emits (validator field,
+ * or its absence, verified against the real push site). Every one of these
+ * fell to `diagnostic_stop` before this pass; each now routes to an actionable
+ * directive with an admitting handler.
+ */
+const NATIVE_TYPE_ROUTES: NativeTypeCase[] = [
+  {
+    name: 'duplicate_high_pressure_event: later scene restages an earlier staged event',
+    issue: {
+      validator: 'FinalStoryContractValidator',
+      type: 'duplicate_high_pressure_event',
+      severity: 'error',
+      message: 'Reachable scenes "s1-4" and "s1-5" appear to restage the same high-pressure event (rooftop, named_person, vanish, night).',
+      sceneId: 's1-5',
+      episodeNumber: 1,
+    },
+  },
+  {
+    name: 'scene_location_event_mismatch: staged event names a different location than the scene plan',
+    issue: {
+      validator: 'FinalStoryContractValidator',
+      type: 'scene_location_event_mismatch',
+      severity: 'error',
+      message: 'Scene "Cismigiu Attack" is planned at "Kylie\'s Lipscani Apartment" but its staged high-pressure event names a different location signal (park).',
+      sceneId: 's1-7',
+      episodeNumber: 1,
+    },
+  },
+  {
+    name: 'supernatural_canon_contradiction: vampire character scheduled for a daytime meal',
+    issue: {
+      validator: 'FinalStoryContractValidator',
+      type: 'supernatural_canon_contradiction',
+      severity: 'error',
+      message: 'Canon contradiction in s1-2-b3: vampire/strigoi character scheduled for a daytime meal ("Victor invites you to brunch").',
+      sceneId: 's1-2',
+      beatId: 's1-2-b3',
+      episodeNumber: 1,
+    },
+  },
+  {
+    name: 'empty_scene (native, no validator tag): non-encounter scene with zero reader-facing beats',
+    issue: {
+      type: 'empty_scene',
+      severity: 'error',
+      message: 'Non-encounter scene "s1-4" has no reader-facing beats.',
+      sceneId: 's1-4',
+      episodeNumber: 1,
+    },
+  },
+  {
+    name: 'placeholder_scene: scene is only placeholder or branch-residue text',
+    issue: {
+      type: 'placeholder_scene',
+      severity: 'error',
+      message: 'Scene "s1-4" is only placeholder or branch-residue text.',
+      sceneId: 's1-4',
+      episodeNumber: 1,
+    },
+  },
+  {
+    name: 'qa_blocker_present (MechanicsLeakageValidator tag): design-note/mechanics leak in reader-facing text',
+    issue: {
+      validator: 'MechanicsLeakageValidator',
+      type: 'qa_blocker_present',
+      severity: 'error',
+      message: 'Design-note leak in s1-3:b2: "[remember: Stela is cold here]".',
+      sceneId: 's1-3',
+      episodeNumber: 1,
+    },
+  },
+];
+
+/**
+ * Genuinely fine to diagnostic_stop today: structural/graph-integrity or
+ * episode-scope defects with no scene-local prose fix (a rewrite cannot repair
+ * a dangling scene pointer or a missing episode), OR types that can never
+ * reach `severity: 'error'` in the first place (hardcoded warning-only
+ * telemetry). Each entry states which, and — for the repairable-in-principle
+ * ones — the shift-left follow-up that would actually close the gap.
+ */
+const NATIVE_DIAGNOSTIC_STOP_ALLOWLIST: Record<string, { rationale: string; issue: BlockingClassCase['issue'] }> = {
+  broken_navigation: {
+    rationale:
+      'Scene-graph corruption (missing/dangling startingSceneId, or a scene unreachable from the episode start). No '
+      + 'prose rewrite can repair a broken graph pointer — this indicates an upstream generation or repair-round bug '
+      + 'and should hard-abort for investigation rather than being silently patched.',
+    issue: {
+      type: 'broken_navigation',
+      severity: 'error',
+      message: 'Episode startingSceneId "s1-1" does not point at a scene.',
+      episodeNumber: 1,
+    },
+  },
+  beat_id_collision: {
+    rationale:
+      'Cross-scene beat-id collision. StructuralValidator already runs a deterministic autofix (namespacing) before '
+      + 'this gate; anything still reaching here is unrepaired residue from a failed autofix, not a prose defect — '
+      + 'the correct response is to hard-abort and fix the autofix, not to reattempt via LLM rewrite.',
+    issue: {
+      type: 'beat_id_collision',
+      severity: 'error',
+      message: 'Beat id "b1" in scene "s1-4" duplicates "b1" in scene "s1-5".',
+      sceneId: 's1-4',
+      episodeNumber: 1,
+    },
+  },
+  missing_runtime_encounter: {
+    rationale:
+      'A scene that failed encounter validation but shipped with no runtime `scene.encounter` object at all — data '
+      + 'loss between incremental validation and final assembly, not a prose gap. No text exists to rewrite; this '
+      + 'needs investigation of the assembly step that dropped the encounter, a shift-left fix, not a repair route.',
+    issue: {
+      type: 'missing_runtime_encounter',
+      severity: 'error',
+      message: 'Scene "treatment-enc-1-1" failed encounter validation but has no runtime encounter in the final story.',
+      sceneId: 'treatment-enc-1-1',
+      episodeNumber: 1,
+    },
+  },
+  missing_requested_episode: {
+    rationale:
+      'An entire requested episode is absent from the final story — there is no scene to target because the episode '
+      + 'was never generated. The fix is re-running generation for that episode at the orchestration layer, which is '
+      + 'outside the final-contract repair loop\'s scope (bounded per-scene/per-cluster prose rewrites).',
+    issue: {
+      type: 'missing_requested_episode',
+      severity: 'error',
+      message: 'Requested episode 2 is missing from the final story.',
+      episodeNumber: 2,
+    },
+  },
+  partial_season_scope: {
+    rationale:
+      'Treatment-sourced output is missing planned episodes relative to the source season plan — season-scope '
+      + 'architecture, not a scene-local defect, and (in full-season mode) has no scene target at all. Regenerating '
+      + 'the missing episodes is an orchestration-layer action, not a same-scene or cluster prose rewrite.',
+    issue: {
+      type: 'partial_season_scope',
+      severity: 'error',
+      message: 'Treatment-sourced output is missing planned episode(s): generated episode(s) 1 of 3 source episode(s). Full-season mode cannot pass.',
+    },
+  },
+  source_role_mismatch: {
+    rationale:
+      'Generated episode title differs from the source season plan\'s title for that episode number — a season-plan '
+      + 'reconciliation drift, not a scene prose defect; there is no beat text to rewrite to fix a title mismatch.',
+    issue: {
+      type: 'source_role_mismatch',
+      severity: 'error',
+      message: 'Episode 1 title differs from the source plan: "Dating After Dark" vs "Dating After Dusk".',
+      episodeNumber: 1,
+    },
+  },
+  routing_contradiction: {
+    rationale:
+      'A beat/choice explicit next-scene target contradicts the scene\'s own `leadsTo` list — a routing-pointer '
+      + 'defect. Rewriting this scene\'s prose cannot change where a choice or beat routes; the correct fix is a '
+      + 'deterministic pointer correction, which does not exist as a repair handler today (shift-left candidate).',
+    issue: {
+      type: 'routing_contradiction',
+      severity: 'error',
+      message: 'Choice "c1" routes to "s1-6", which is not in scene "s1-4".leadsTo [s1-5].',
+      sceneId: 's1-4',
+      beatId: 's1-4-b4',
+      episodeNumber: 1,
+    },
+  },
+  choice_bridge_skips_required_setup: {
+    rationale:
+      'A choice bridge jumps over one or more scenes that carry required, un-authored-as-skippable setup content — a '
+      + 'branch-routing defect. The fix is re-routing through (or past) the skipped scenes, not rewriting this '
+      + 'scene\'s own prose, which a same-scene or cluster rewrite cannot do safely.',
+    issue: {
+      type: 'choice_bridge_skips_required_setup',
+      severity: 'error',
+      message: 'Choice "c1" jumps from "s1-2" to "s1-5", skipping required setup scene(s): s1-3, s1-4.',
+      sceneId: 's1-2',
+      beatId: 's1-2-b4',
+      episodeNumber: 1,
+    },
+  },
+  invalid_encounter: {
+    rationale:
+      'Encounter scene fails the deterministic playable-encounter contract (phase/storylet/routing structure), the '
+      + 'same architecture-class defect as GATE_ENCOUNTER_SETPIECE_DEPTH above ("missing encounter STRUCTURE — no '
+      + 'prose rewrite can add it"). The generative fix lives in EncounterArchitect at build time; no scene-prose '
+      + 'repair handler can safely restructure phases/storylets after the fact.',
+    issue: {
+      validator: 'IncrementalEncounterValidator',
+      type: 'invalid_encounter',
+      severity: 'error',
+      message: 'Encounter scene "treatment-enc-1-1" does not satisfy the playable encounter contract.',
+      sceneId: 'treatment-enc-1-1',
+      episodeNumber: 1,
+    },
+  },
+  choice_count_contract: {
+    rationale:
+      'A choice surface has the wrong number of options (not 3-4) — a choice-SET-cardinality defect, not resolution '
+      + 'text. The existing choice-resolution repair handler re-authors a choice\'s shared resolution TEXT '
+      + '(repairHandler: choice_reauthor); it does not add or remove options from the set. No handler exists today '
+      + 'that safely regenerates choice cardinality — shift-left candidate for ChoiceAuthor.',
+    issue: {
+      validator: 'FinalStoryContractValidator',
+      type: 'choice_count_contract',
+      severity: 'error',
+      message: 'Choice surface at episodes[0].scenes[3].beats[3].choices has 2 choice(s); reader-facing story and encounter beats must have 3-4 choices.',
+      sceneId: 's1-4',
+      beatId: 's1-4-b4',
+      episodeNumber: 1,
+    },
+  },
+  unset_flag_condition: {
+    rationale:
+      'A choice/beat condition reads a flag nothing in the generated scope ever sets — a flag-wiring defect. No '
+      + 'deterministic flag-repair handler exists (unlike ObligationLedgerValidator\'s callback/setup-payoff class); '
+      + 'a prose rewrite cannot wire a missing setFlag consequence onto an unrelated earlier choice.',
+    issue: {
+      validator: 'FlagContractValidator',
+      type: 'unset_flag_condition',
+      severity: 'error',
+      message: 'Condition reads flag "blog_post_timing" but no choice in generated scope sets it.',
+      episodeNumber: 1,
+    },
+  },
+};
+
+describe('R6: every native FinalStoryContractValidator issue type routes or is allowlisted', () => {
+  const router = new GateRepairRouter({});
+  void ALL_FINAL_STORY_CONTRACT_ISSUE_TYPES; // exhaustiveness check only; not iterated directly (see comment above)
+
+  for (const testCase of NATIVE_TYPE_ROUTES) {
+    it(`routes "${testCase.name}" to an actionable repair (not diagnostic_stop)`, () => {
+      const route = router.routeIssue(testCase.issue);
+      expect(
+        route.kind,
+        `(${testCase.issue.validator ?? '(none)'}/${testCase.issue.type}) fell to ${route.kind}: ${route.reason}`,
+      ).not.toBe('diagnostic_stop');
+    });
+  }
+
+  for (const [type, entry] of Object.entries(NATIVE_DIAGNOSTIC_STOP_ALLOWLIST)) {
+    it(`${type}: diagnostic_stop is intended (allowlisted with rationale)`, () => {
+      expect(entry.rationale.length).toBeGreaterThanOrEqual(80);
+      const route = router.routeIssue(entry.issue);
+      expect(
+        route.kind,
+        `${type} routes to ${route.kind} now, not diagnostic_stop — move it from NATIVE_DIAGNOSTIC_STOP_ALLOWLIST to NATIVE_TYPE_ROUTES.`,
+      ).toBe('diagnostic_stop');
+    });
+  }
+
+  it('every NATIVE_TYPE_ROUTES / NATIVE_DIAGNOSTIC_STOP_ALLOWLIST case routed to an LLM prose directive is admitted by a handler', () => {
+    for (const testCase of NATIVE_TYPE_ROUTES) {
+      const route = router.routeIssue(testCase.issue);
+      if (!LLM_PROSE_DIRECTIVES.has(route.kind)) continue;
+      const claims = llmHandlerClaims(testCase.issue);
+      expect(
+        claims,
+        `(${testCase.issue.validator ?? '(none)'}/${testCase.issue.type}) routes ${route.kind} but no handler admission accepts it.`,
+      ).not.toEqual([]);
+    }
   });
 });
 

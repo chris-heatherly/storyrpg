@@ -753,17 +753,57 @@ export class GateRepairRouter {
       return directive('blueprint_rebalance', issue, 'Sustained set-piece depth is encounter structure (phases/tension curve); prose rewrite cannot add escalation structure — enforce/regen at encounter build time.');
     }
 
-    if (validator === 'EmptyPlayableSceneValidator') {
+    if (validator === 'EmptyPlayableSceneValidator' || issue.type === 'empty_scene') {
       // An empty playable scene is exactly what an LLM scene re-author fixes.
       // The scene-prose repair handler seeds an EMPTY beat scaffold (ids and
       // wiring only — never reader-facing text) and SceneCritic authors the
       // prose. Previously this always-blocking class fell to diagnostic_stop
       // with no targeted handler — a guaranteed run-killer after full
       // generation. Findings always carry the sceneId (the validator sets it).
+      // FinalStoryContractValidator also pushes a second, unattributed
+      // `empty_scene` finding (the treatment-sourced 0-beat-encounter case) with
+      // no `validator` field at all — same fix, so matched by type too (r118
+      // postmortem, 2026-07-18: this native emission had zero repair route).
       if (issue.sceneId) {
         return directive('same_scene_retry', issue, 'Empty playable scene is scene-local: scaffold empty beats and have the LLM author the scene prose.');
       }
       return directive('diagnostic_stop', issue, 'Empty-scene finding carries no sceneId; nothing to target.');
+    }
+
+    if (issue.type === 'placeholder_scene') {
+      // A scene whose only content is placeholder/branch-residue text is the
+      // same fix shape as empty_scene above — SceneCritic authors real prose
+      // in place of the placeholder. r118 postmortem (2026-07-18): this native
+      // FinalStoryContractValidator emission (no `validator` field) had zero
+      // repair route.
+      if (issue.sceneId) {
+        return directive('same_scene_retry', issue, 'Placeholder-only scene is scene-local: rewrite the placeholder text into authored prose.');
+      }
+      return directive('diagnostic_stop', issue, 'Placeholder-scene finding carries no sceneId; nothing to target.');
+    }
+
+    if (
+      validator === 'FinalStoryContractValidator'
+      && (issue.type === 'duplicate_high_pressure_event'
+        || issue.type === 'scene_location_event_mismatch'
+        || issue.type === 'supernatural_canon_contradiction')
+    ) {
+      // Three native FinalStoryContractValidator checks whose fix is always a
+      // same-scene prose rewrite (r118 postmortem, 2026-07-18 — these had zero
+      // repair route for the whole session, discovered only by a live-run
+      // abort):
+      //  - duplicate_high_pressure_event: rewrite the named LATER scene as
+      //    consequence/recap/aftermath rather than a second staged event.
+      //  - scene_location_event_mismatch: rewrite the scene so its staged event
+      //    matches its planned location (or reads as aftermath/recap).
+      //  - supernatural_canon_contradiction: move the offending beat's meal/
+      //    daytime reference to a night-appropriate framing.
+      // All three name the exact scene to rewrite and describe the fix in
+      // prose terms; none require topology or structural changes.
+      if (issue.sceneId) {
+        return directive('same_scene_retry', issue, 'Finding is a scene-local prose defect; rewrite the named scene per its suggestion.');
+      }
+      return directive('diagnostic_stop', issue, 'Finding carries no sceneId; nothing to target.');
     }
 
     if (validator === 'FinalStoryContractValidator' && issue.type === 'echo_summary_variant') {

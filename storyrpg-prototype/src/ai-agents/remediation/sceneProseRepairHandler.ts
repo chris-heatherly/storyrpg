@@ -182,6 +182,27 @@ export function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
   // — deterministic code never writes reader-facing text) and SceneCritic
   // authors the prose. See scaffoldEmptySceneBeats.
   if (issue.validator === 'EmptyPlayableSceneValidator') return true;
+  // FinalStoryContractValidator's own native `empty_scene`/`placeholder_scene`
+  // findings (the treatment-sourced 0-beat-encounter case and the placeholder-
+  // residue case) carry NO `validator` field at all, so they never matched
+  // SCENE_PROSE_REPAIRABLE_VALIDATORS or the EmptyPlayableSceneValidator check
+  // above — same fix shape (scaffold/rewrite the scene's prose), just an
+  // inconsistently-tagged emission (r118 postmortem, 2026-07-18: these had a
+  // routed same_scene_retry directive with zero admitting handler).
+  if (issue.type === 'empty_scene' || issue.type === 'placeholder_scene') return true;
+  // Three more native FinalStoryContractValidator checks whose fix is always a
+  // same-scene prose rewrite (r118 postmortem, 2026-07-18 — routed but
+  // unclaimed the same way): rewrite the named scene as consequence/recap
+  // (duplicate_high_pressure_event), realign it with its planned location or
+  // frame it as aftermath (scene_location_event_mismatch), or move a canon-
+  // contradicting meal reference to a night-appropriate framing
+  // (supernatural_canon_contradiction).
+  if (
+    issue.validator === 'FinalStoryContractValidator'
+    && (issue.type === 'duplicate_high_pressure_event'
+      || issue.type === 'scene_location_event_mismatch'
+      || issue.type === 'supernatural_canon_contradiction')
+  ) return true;
   if (issue.validator === 'PovClarityValidator' && issue.type === 'pov_anchor_missing') return true;
   // Third/first-person protagonist narration (r115 gap analysis 2026-07-18):
   // same class of scene-local prose fix as pov_anchor_missing above — a

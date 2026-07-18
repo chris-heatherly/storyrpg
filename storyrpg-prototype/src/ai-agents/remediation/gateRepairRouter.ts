@@ -938,6 +938,16 @@ export class GateRepairRouter {
       // the deterministic pronoun-coercion cleanup via the catch-all below.
     }
 
+    if (validator === 'protagonistPronounResolver') {
+      // Ambiguous wrong-gender-pronoun residue the deterministic resolver
+      // couldn't safely coerce (no second-person anchor, e.g. an unanchored
+      // choice-outcome tier that may be an NPC reaction) — scene-local LLM
+      // rewrite, same shape as PovClarityValidator's pov_anchor_missing route.
+      if (issue.type === 'ambiguous_protagonist_pronoun' && issue.sceneId) {
+        return directive('same_scene_retry', issue, 'Ambiguous protagonist-pronoun residue needs a scene-local LLM rewrite to disambiguate the referent.');
+      }
+    }
+
     if (validator === 'RelationshipArcLedgerValidator') {
       // Label-class findings (unearned friend/trusted/intimate language,
       // custom blocked labels, compressed familiarity) are prose-repairable:

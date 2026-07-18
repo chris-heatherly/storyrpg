@@ -358,6 +358,44 @@ describe('compileNarrativeRealizationTasks', () => {
     });
   });
 
+  it('blocks active restaging of a causal source event inside its consequence scene', () => {
+    const graph = {
+      events: [{
+        id: 'event:publish', episodeNumber: 1, sourceOrder: 1, sourceText: 'Kylie publishes the post.',
+        sourceContractIds: ['publish'], realizationMode: 'depiction', ownershipPolicy: 'exactly_one_scene',
+        prerequisiteEventIds: [], targetSceneIds: ['writing'], targetSpineUnitIds: [], ownerSceneId: 'writing',
+        provenance: { source: 'episode_spine', confidence: 'authoritative' },
+      }, {
+        id: 'event:viral', episodeNumber: 1, sourceOrder: 2, sourceText: 'The post goes viral.',
+        sourceContractIds: ['viral'], realizationMode: 'depiction', ownershipPolicy: 'exactly_one_scene',
+        prerequisiteEventIds: ['event:publish'], targetSceneIds: ['aftermath'], targetSpineUnitIds: [], ownerSceneId: 'aftermath',
+        provenance: { source: 'episode_spine', confidence: 'authoritative' },
+      }],
+      dependencies: [{
+        id: 'dependency:publish:viral', fromEventId: 'event:publish', toEventId: 'event:viral', relation: 'causes',
+        sourceEpisodeNumber: 1, targetEpisodeNumbers: [1], targetSceneIds: ['aftermath'], branchConditionKeys: [],
+        requiredSurfaces: ['scene_turn'], priority: 'major', sourceContractIds: ['treatment'],
+      }],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 'writing', episodeNumber: 1, order: 0, kind: 'standard' },
+      { id: 'aftermath', episodeNumber: 1, order: 1, kind: 'standard' },
+    ] as any);
+
+    // r115 postmortem: advisory until Phase 4 (route/variant-aware evidence)
+    // ships — today's owner-scope collection unions every flag-gated
+    // textVariant on the target beat, so 6 mutually-exclusive aftermath
+    // retellings of the same beat can misread as restaging.
+    expect(tasks.find((task) => task.id === 'task:dependency:publish:viral:causal-restage')).toMatchObject({
+      sceneId: 'aftermath',
+      blocking: false,
+      evidenceAtoms: [expect.objectContaining({
+        polarity: 'forbidden',
+        verificationAuthority: 'semantic_judge',
+      })],
+    });
+  });
+
   it('skips anchor tasks whose owning scene is not in the compiled slice', () => {
     const graph = {
       events: [],
@@ -610,6 +648,33 @@ describe('reveal-timing negative contracts (F1.1)', () => {
     expect(signatureTasks[0].evidenceAtoms[0].description).toContain('never as a checklist');
   });
 
+  it('blocks an anonymous first appearance from being staged in an earlier scene', () => {
+    const graph = {
+      firstAppearanceContracts: [{
+        id: 'first-appearance:radu', characterId: 'radu', characterName: 'Radu Stoian',
+        episodeNumber: 1, owningSceneId: 'rooftop', mode: 'anonymous_plant', earlierSceneIds: ['street'],
+        sourceContractIds: ['anchor:radu'], blocking: true,
+        visualIdentity: 'broad, bearded, scarred inside the forearm, in a hand-knit sweater',
+      }],
+      events: [], dependencies: [],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 'street', episodeNumber: 1, order: 0, kind: 'standard' },
+      { id: 'rooftop', episodeNumber: 1, order: 1, kind: 'standard' },
+    ] as any);
+
+    // r115 postmortem: new task class, zero shadow-evidence period — advisory
+    // until a live run proves the detector's false-positive rate.
+    expect(tasks.find((task) => task.id === 'task:first-appearance:radu:premature:street')).toMatchObject({
+      sceneId: 'street',
+      blocking: false,
+      evidenceAtoms: [expect.objectContaining({
+        polarity: 'forbidden',
+        verificationAuthority: 'semantic_judge',
+      })],
+    });
+  });
+
   it('B4: compiles advisory foreshadow atoms per owning scene from twist-plan directives', () => {
     const tasks = compileForeshadowRealizationTasks({
       episodeNumber: 1,
@@ -654,6 +719,9 @@ describe('reveal-timing negative contracts (F1.1)', () => {
       ['task:escalation-budget:ep2', 's2-3'],
     ]);
     for (const budget of budgets) {
+      // r115 postmortem: advisory until it earns blocking tier through a
+      // shadow-evidence period — the r114 justification for this flip was
+      // false (r114 never reached this check).
       expect(budget.blocking).toBe(false);
       expect(budget.evidenceAtoms).toHaveLength(2);
       expect(budget.evidenceAtoms.every((atom) => atom.polarity === 'forbidden' && atom.verificationAuthority === 'semantic_judge')).toBe(true);

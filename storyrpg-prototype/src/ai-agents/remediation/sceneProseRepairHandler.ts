@@ -182,7 +182,12 @@ export function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
   // — deterministic code never writes reader-facing text) and SceneCritic
   // authors the prose. See scaffoldEmptySceneBeats.
   if (issue.validator === 'EmptyPlayableSceneValidator') return true;
-  return issue.validator === 'PovClarityValidator' && issue.type === 'pov_anchor_missing';
+  if (issue.validator === 'PovClarityValidator' && issue.type === 'pov_anchor_missing') return true;
+  // Ambiguous protagonist-pronoun residue (GATE_PROTAGONIST_PRONOUN): the
+  // deterministic resolver already handled every structurally-safe case;
+  // what's left needs a human-shaped judgment call on referent, same as the
+  // POV-anchor case above.
+  return issue.validator === 'protagonistPronounResolver' && issue.type === 'ambiguous_protagonist_pronoun';
 }
 
 const SCENE_CLUSTER_REPAIRABLE_VALIDATORS = new Set([

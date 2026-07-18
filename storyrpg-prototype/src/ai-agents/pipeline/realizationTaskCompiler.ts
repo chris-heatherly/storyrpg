@@ -698,11 +698,11 @@ export function compileNarrativeRealizationTasks(
         id: `task:${artifact.id}:forbidden:${sceneId}`,
         contractId: artifact.id,
         sourceKinds: ['treatment'],
-        episodeNumber: artifact.episodeNumber,
+        episodeNumber: scene.episodeNumber,
         ownerStage: 'scene_writer',
         repairHandler: 'scene_prose',
         sceneId,
-        artifactPath: `episodes[${artifact.episodeNumber}].scenes[${sceneId}]`,
+        artifactPath: `episodes[${scene.episodeNumber}].scenes[${sceneId}]`,
         enforcementPhase: 'final_regression',
         evidenceAtoms: [{
           id: `${artifact.id}:forbidden:${sceneId}`,
@@ -754,10 +754,122 @@ export function compileNarrativeRealizationTasks(
         producerStage: execution.ownerStage,
         temporalSlot: execution.temporalSlot,
         required: true,
+      }, {
+        id: `${artifact.id}:creation-reference-integrity`,
+        description: `The sentence or exchange that creates "${artifact.canonicalValue}" assigns it to the intended person, group, work, or object with internally consistent grammar and pronouns. A target swap, contradictory pronoun, or malformed version of the canonical value is a miss.`,
+        acceptedPatterns: [],
+        sourceText: artifact.canonicalValue,
+        kind: 'semantic',
+        verificationAuthority: 'semantic_judge',
+        semanticCriteria: [`The creation of "${artifact.canonicalValue}" is grammatically coherent and unmistakably names the intended referent.`],
+        producerStage: execution.ownerStage,
+        temporalSlot: execution.temporalSlot,
+        required: true,
       }],
       target: { scope: 'owner', surfaces: execution.surfaces },
       sourceContractIds: [...artifact.sourceContractIds],
       blocking: artifact.blocking,
+    });
+  }
+
+  // A first appearance is an ownership boundary even when the treatment keeps
+  // the character anonymous. Protect every earlier scene with a semantic
+  // negative contract so an uncatalogued "rugged stranger" cannot pre-play a
+  // later rooftop/corridor/doorway plant merely because no canonical name was
+  // used. Named introductions remain covered by the literal identity schedule.
+  // ADVISORY (r115 postmortem): a new check earns blocking tier through a
+  // shadow-evidence period, not on day one. This is a NEW task class with zero
+  // live runs behind it — landing it blocking here would repeat the exact
+  // mistake this postmortem is about.
+  for (const appearance of graph.firstAppearanceContracts ?? []) {
+    if (appearance.mode !== 'anonymous_plant' || !appearance.visualIdentity?.trim()) continue;
+    for (const earlierSceneId of appearance.earlierSceneIds) {
+      const earlierScene = sceneById.get(earlierSceneId);
+      if (!earlierScene) continue;
+      const execution = resolveTaskExecutionTarget({
+        scene: earlierScene,
+        episodeNumber: earlierScene.episodeNumber,
+        kind: 'presence',
+      });
+      tasks.push({
+        id: `task:${appearance.id}:premature:${earlierSceneId}`,
+        contractId: appearance.id,
+        episodeNumber: earlierScene.episodeNumber,
+        sourceKinds: ['treatment'],
+        ownerStage: execution.ownerStage,
+        repairHandler: execution.repairHandler,
+        sceneId: earlierSceneId,
+        artifactPath: execution.artifactPath,
+        enforcementPhase: 'final_regression',
+        evidenceAtoms: [{
+          id: `${appearance.id}:premature:${earlierSceneId}`,
+          description: `This scene must not stage ${appearance.characterName}'s first visual appearance before canonical owner scene ${appearance.owningSceneId}. A character matching the distinctive identity (${appearance.visualIdentity}) counts even when unnamed; an unrelated incidental person does not.`,
+          acceptedPatterns: [],
+          sourceText: appearance.visualIdentity,
+          kind: 'semantic',
+          polarity: 'forbidden',
+          required: true,
+          verificationAuthority: 'semantic_judge',
+        }],
+        target: { scope: 'owner', surfaces: execution.surfaces },
+        sourceContractIds: [...appearance.sourceContractIds],
+        blocking: false,
+      });
+    }
+  }
+
+  // A causal target scene begins after its source event is complete. Prompt-side
+  // "do not restage" guidance is insufficient when the target scene depicts the
+  // consequence first and performs the causal action later (publish after views,
+  // unlock after entry, send after reply). The judge verifies meaning; code only
+  // routes the explicit graph edge to the target owner.
+  // ADVISORY (r115 postmortem): this task's evidence collection unions every
+  // flag-gated textVariant on the target beat into one pool (owner scope has no
+  // route/variant concept today — encounterTextSurfaces.ts's collectVariants
+  // ignores TextVariant.condition entirely), so 6 mutually-exclusive aftermath
+  // retellings of "you arrived home" read to the judge as suspicious repetition
+  // and tripped a false restage verdict in r115. Returns to blocking once the
+  // evidence layer evaluates variants independently (see the evidence-
+  // architecture redesign) and gets a fresh shadow-evidence pass.
+  const eventById = new Map(graph.events.map((event) => [event.id, event]));
+  for (const dependency of graph.dependencies) {
+    if (dependency.relation !== 'causes' || !dependency.toEventId) continue;
+    const source = eventById.get(dependency.fromEventId);
+    const target = eventById.get(dependency.toEventId);
+    if (!source?.ownerSceneId || !target?.ownerSceneId || source.ownerSceneId === target.ownerSceneId) continue;
+    if (source.episodeNumber !== target.episodeNumber) continue;
+    const targetScene = sceneById.get(target.ownerSceneId);
+    if (!targetScene) continue;
+    const execution = resolveTaskExecutionTarget({
+      scene: targetScene,
+      episodeNumber: target.episodeNumber,
+      kind: 'event',
+    });
+    tasks.push({
+      id: `task:${dependency.id}:causal-restage`,
+      contractId: dependency.id,
+      canonicalEventId: target.id,
+      episodeNumber: target.episodeNumber,
+      sourceKinds: ['event'],
+      ownerStage: execution.ownerStage,
+      repairHandler: execution.repairHandler,
+      sceneId: target.ownerSceneId,
+      eventId: target.id,
+      artifactPath: execution.artifactPath,
+      enforcementPhase: 'final_regression',
+      evidenceAtoms: [{
+        id: `${dependency.id}:source-restaged-after-consequence`,
+        description: `This consequence scene must not actively perform the already-completed causal event "${source.sourceText}" as a new action. The source event must be complete before the scene begins depicting "${target.sourceText}"; memory, aftermath, or reference is allowed.`,
+        acceptedPatterns: [],
+        sourceText: source.sourceText,
+        kind: 'semantic',
+        polarity: 'forbidden',
+        required: true,
+        verificationAuthority: 'semantic_judge',
+      }],
+      target: { scope: 'owner', surfaces: execution.surfaces },
+      sourceContractIds: [...dependency.sourceContractIds, source.id, target.id],
+      blocking: false,
     });
   }
 
@@ -806,8 +918,15 @@ export function compileNarrativeRealizationTasks(
   // G5: season anchors must be PLANTED on-page in their owning scene — a
   // reader-visible action, judge-verified, never satisfied by character
   // metadata (run 20-44-49: "Stela's protection" was a pendant description;
-  // Kylie never accepted anything). Advisory (blocking: false) — shadow
-  // evidence before any promotion.
+  // Kylie never accepted anything). ADVISORY (r115 postmortem): a prior
+  // commit here cited "confirmed r114 evidence" for promoting this to
+  // blocking — false; r114 crashed on an unrelated bug before reaching this
+  // check. r115 then showed the compiler inventing unsupported location
+  // specificity for bare anchor phrases (e.g. "Stela's protection" →
+  // "guides Kylie past the Valescu Club threshold" assigned to the
+  // bookshop scene) — an unfixable-by-prose defect that blocked a run for
+  // nothing. Returns to blocking once Phase 5/6 (anchor-compiler honesty +
+  // owner-plan feasibility) land and get a fresh shadow-evidence pass.
   for (const anchor of graph.anchorContracts ?? []) {
     const scene = sceneById.get(anchor.owningSceneId);
     if (!scene || !anchor.onPageAction?.trim()) continue;
@@ -889,8 +1008,12 @@ export function compileNarrativeRealizationTasks(
   // "Now the real story begins" on top of Kylie's authored victory. The
   // budget becomes judge-verified forbidden atoms on each episode's final
   // scene: at most one new threat signal, and the protagonist's authored
-  // ending is never displaced. Advisory (blocking: false) — shadow evidence
-  // before any promotion.
+  // ending is never displaced. ADVISORY (r115 postmortem): a prior commit
+  // here cited "confirmed r114 evidence" — false; r114 crashed on an
+  // unrelated bug before reaching this check, so there is no live evidence
+  // behind this task at all. Also exposed to the owner-scope textVariant
+  // union bug (Phase 4) like the causal-restage task above. Returns to
+  // blocking only after a genuine shadow-evidence pass.
   {
     const finalSceneByEpisode = new Map<number, PlannedScene>();
     for (const scene of scenes) {

@@ -127,6 +127,17 @@ const BLOCKING_CLASSES: BlockingClassCase[] = [
     },
   },
   {
+    name: 'ambiguous protagonist-pronoun residue',
+    issue: {
+      validator: 'protagonistPronounResolver',
+      type: 'ambiguous_protagonist_pronoun',
+      severity: 'error',
+      message: 'Scene "s1-4" has ambiguous wrong-gender pronoun residue with no second-person anchor.',
+      sceneId: 's1-4',
+      episodeNumber: 1,
+    },
+  },
+  {
     name: 'deterministic stub outcome tier on a choice',
     issue: {
       validator: 'OutcomeTextQualityValidator',

@@ -348,22 +348,23 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // Seeds are emitted deterministically upstream, so this is a pure backstop.
   GATE_TREATMENT_SEED_ONPAGE: true,
   //
-  // STILL OFF — detection-only / fix-side deferred. Their detection runs regardless
-  // (warnings + metrics); promoting to BLOCKING here would hard-fail runs until the
-  // generative repair lands (or, for pronouns, false-positive on correct prose):
+  // Precision-sensitive final-contract gates. Each entry documents its own
+  // rollout state and repair route; detection and telemetry run regardless.
   //
   // Duplicate establishing-beat: prose heuristic promoted after clean shadow +
   // replay evidence (local ledger: 291 records across 129 runs, 0 would-gate rows;
   // replay:gates clean). Registered with an autofix route and reversible via =0.
   GATE_DUPLICATE_ESTABLISHING_BEAT: true,
-  // Protagonist pronoun integrity: the deterministic resolver ALWAYS repairs the
-  // safe (protagonist-only-sentence) wrong-gender cases (ungated). The regen route for
-  // AMBIGUOUS residue now exists — when this gate is on, disambiguateProtagonistPronouns
-  // hands each ambiguous sentence ("Kylie watches Mika lift HIS glass") to the
-  // PronounDisambiguator agent before the contract re-scans, so the gate blocks only on
-  // residue the rewrite could not resolve, not on every shared-pronoun sentence. STILL
-  // OFF: needs one live run to confirm the disambiguator clears real residue (the LLM
-  // path can't be exercised offline). Flip to true after that; reversible via =0.
+  // Protagonist pronoun integrity: deterministic repair handles only structurally
+  // unambiguous cases. Shared-reference sentences and unanchored choice outcome tiers
+  // route through PronounDisambiguator, then the contract re-scans and blocks only on
+  // unresolved residue. ADVISORY (r115 postmortem): a prior commit here cited "the
+  // r114 failure confirmed" this needed to block — false; r114 crashed on an
+  // unrelated undefined.filter bug in EncounterArchitect before generation ever
+  // reached content this check could exercise. This promotion also shipped with
+  // no repair-router entry (repairRouteCoverage.test.ts caught it immediately) —
+  // exactly the failure mode a shadow-evidence period exists to prevent. Detection
+  // and telemetry still run; only the season-final block is deferred.
   GATE_PROTAGONIST_PRONOUN: false,
   // G10: NPC pronoun inconsistencies (a uniquely-named gendered NPC paired with a wrong
   // binary or singular-they pronoun — Endsong ep3 narrated he/him Thorne as "their

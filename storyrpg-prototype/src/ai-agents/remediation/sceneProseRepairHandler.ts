@@ -183,6 +183,13 @@ export function isSceneProseRepairableIssue(issue: RepairableIssue): boolean {
   // authors the prose. See scaffoldEmptySceneBeats.
   if (issue.validator === 'EmptyPlayableSceneValidator') return true;
   if (issue.validator === 'PovClarityValidator' && issue.type === 'pov_anchor_missing') return true;
+  // Third/first-person protagonist narration (r115 gap analysis 2026-07-18):
+  // same class of scene-local prose fix as pov_anchor_missing above — a
+  // named third-person aside or a leaked first-person coda needs the
+  // sentence restructured into second person, which only an LLM rewrite can
+  // do safely. This handler already flattens encounter phase/storylet beats,
+  // so encounter_pov_break is covered by the same admission.
+  if (issue.validator === 'PovClarityValidator' && (issue.type === 'pov_break' || issue.type === 'encounter_pov_break')) return true;
   // Ambiguous protagonist-pronoun residue (GATE_PROTAGONIST_PRONOUN): the
   // deterministic resolver already handled every structurally-safe case;
   // what's left needs a human-shaped judgment call on referent, same as the

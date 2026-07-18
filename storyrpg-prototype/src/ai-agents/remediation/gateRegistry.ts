@@ -210,7 +210,7 @@ const RAW_GATE_REGISTRY = [
 
   // ── Wave 5: final-contract-class gates ──
   { id: 'GATE_DUPLICATE_ESTABLISHING_BEAT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
-  { id: 'GATE_PROTAGONIST_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
+  { id: 'GATE_PROTAGONIST_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_NPC_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: false },
   // WS0.3: deterministic name-anchored coercion (with verb agreement) repairs the break in
   // place, so this is blocking + autofix — residue the coercion can't safely clear (same-gender

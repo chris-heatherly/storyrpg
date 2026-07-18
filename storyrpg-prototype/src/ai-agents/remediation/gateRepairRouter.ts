@@ -934,8 +934,19 @@ export class GateRepairRouter {
       if (issue.type === 'pov_anchor_missing' && issue.sceneId) {
         return directive('same_scene_retry', issue, 'Opening beat must anchor the player character; scene-local LLM rewrite of the opening prose.');
       }
-      // pov_break person findings (third/first person narration) fall through to
-      // the deterministic pronoun-coercion cleanup via the catch-all below.
+      // r115 gap analysis (2026-07-18): pov_break/encounter_pov_break (third/
+      // first person narration) had NO route here — they fell through every
+      // rule to the diagnostic_stop default, a dead end no repair could ever
+      // claim. GATE_PROTAGONIST_PRONOUN stayed advisory specifically because
+      // promoting a blocking gate with no repair route recreates the outcome-
+      // stub starvation class. Same-scene LLM rewrite is the correct fix — a
+      // third-person aside ("Kylie Marinescu steps into her new apartment")
+      // needs the sentence restructured into second person, not a pronoun
+      // swap. sceneProseRepairHandler already flattens encounter phase/
+      // storylet beats, so the same route covers both issue types.
+      if ((issue.type === 'pov_break' || issue.type === 'encounter_pov_break') && issue.sceneId) {
+        return directive('same_scene_retry', issue, 'Third/first-person narration is a scene-local POV break; rewrite the flagged prose in second person.');
+      }
     }
 
     if (validator === 'protagonistPronounResolver') {

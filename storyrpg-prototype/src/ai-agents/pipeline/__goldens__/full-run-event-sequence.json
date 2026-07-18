@@ -375,6 +375,11 @@
     },
     {
       "type": "debug",
+      "phase": "pronoun_disambiguation",
+      "message": "Protagonist pronoun disambiguation: 2 ambiguous sentence(s), 0 rewritten, 0 field replacement(s)."
+    },
+    {
+      "type": "debug",
       "phase": "final_story_contract",
       "message": "Choice residue planning-register leakage normalized 6 hint(s)."
     },

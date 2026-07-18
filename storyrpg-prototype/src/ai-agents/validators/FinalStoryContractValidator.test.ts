@@ -644,7 +644,9 @@ describe('FinalStoryContractValidator', () => {
 
     const report = await new FinalStoryContractValidator().validate({ story });
 
-    expect(report.warnings.some((i) => i.type === 'pov_break')).toBe(true);
+    // GATE_PROTAGONIST_PRONOUN is blocking (r115 gap analysis, 2026-07-18),
+    // so a genuine break now lands in blockingIssues, not warnings.
+    expect(report.blockingIssues.some((i) => i.type === 'pov_break')).toBe(true);
   });
 
   it('flags a routing contradiction: a choice targets a real scene not in scene.leadsTo', async () => {

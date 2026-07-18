@@ -460,6 +460,11 @@
     },
     {
       "type": "debug",
+      "phase": "pronoun_disambiguation",
+      "message": "Protagonist pronoun disambiguation: 2 ambiguous sentence(s), 0 rewritten, 0 field replacement(s)."
+    },
+    {
+      "type": "debug",
       "phase": "encounter_outcome_variants",
       "message": "Encounter outcome variants: 1 desync(s), 0 variant(s) authored."
     },

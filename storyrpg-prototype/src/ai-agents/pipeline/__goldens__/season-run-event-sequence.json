@@ -432,6 +432,11 @@
     },
     {
       "type": "debug",
+      "phase": "pronoun_disambiguation",
+      "message": "Protagonist pronoun disambiguation: 2 ambiguous sentence(s), 0 rewritten, 0 field replacement(s)."
+    },
+    {
+      "type": "debug",
       "phase": "incremental_contract_ep_1",
       "message": "Choice residue planning-register leakage normalized 6 hint(s)."
     },
@@ -807,6 +812,11 @@
     },
     {
       "type": "debug",
+      "phase": "pronoun_disambiguation",
+      "message": "Protagonist pronoun disambiguation: 3 ambiguous sentence(s), 0 rewritten, 0 field replacement(s)."
+    },
+    {
+      "type": "debug",
       "phase": "incremental_contract_ep_2",
       "message": "Choice residue planning-register leakage normalized 6 hint(s)."
     },
@@ -919,6 +929,11 @@
       "type": "phase_complete",
       "phase": "story_authoring",
       "message": "Story authoring complete for 2 episode(s)."
+    },
+    {
+      "type": "debug",
+      "phase": "pronoun_disambiguation",
+      "message": "Protagonist pronoun disambiguation: 5 ambiguous sentence(s), 0 rewritten, 0 field replacement(s)."
     },
     {
       "type": "debug",

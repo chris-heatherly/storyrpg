@@ -17,3 +17,4 @@
 16: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=5ce4b9de84c30537
 17: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=aaf2f4c09b95a80a
 18: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=5ce4b9de84c30537
+19: Pronoun Disambiguator [anthropic/claude-sonnet-4-6] msgs=1 prompt=f19826b48c3ee69d

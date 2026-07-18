@@ -358,14 +358,19 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // Protagonist pronoun integrity: deterministic repair handles only structurally
   // unambiguous cases. Shared-reference sentences and unanchored choice outcome tiers
   // route through PronounDisambiguator, then the contract re-scans and blocks only on
-  // unresolved residue. ADVISORY (r115 postmortem): a prior commit here cited "the
-  // r114 failure confirmed" this needed to block — false; r114 crashed on an
-  // unrelated undefined.filter bug in EncounterArchitect before generation ever
-  // reached content this check could exercise. This promotion also shipped with
-  // no repair-router entry (repairRouteCoverage.test.ts caught it immediately) —
-  // exactly the failure mode a shadow-evidence period exists to prevent. Detection
-  // and telemetry still run; only the season-final block is deferred.
-  GATE_PROTAGONIST_PRONOUN: false,
+  // unresolved residue. Was demoted advisory (r115 postmortem, 2026-07-17): a prior
+  // commit here cited "the r114 failure confirmed" this needed to block — false; r114
+  // crashed on an unrelated undefined.filter bug in EncounterArchitect before
+  // generation ever reached content this check could exercise. That promotion also
+  // shipped with no repair-router entry (repairRouteCoverage.test.ts caught it
+  // immediately). RE-PROMOTED (r115 gap analysis, 2026-07-18): a completed run
+  // (bite-me-r115_2026-07-18T04-37-51) hit a genuine, cleanly-quoted third-person
+  // leak in s1-1's transitionIn ("Kylie Marinescu steps into her new apartment") —
+  // the first real shadow-evidence data point, a true positive, not a false one.
+  // The missing repair-router entry that blocked the first promotion is now fixed
+  // (pov_break/encounter_pov_break route to same_scene_retry and are admitted by
+  // sceneProseRepairHandler), so this promotion doesn't repeat the same mistake.
+  GATE_PROTAGONIST_PRONOUN: true,
   // G10: NPC pronoun inconsistencies (a uniquely-named gendered NPC paired with a wrong
   // binary or singular-they pronoun — Endsong ep3 narrated he/him Thorne as "their
   // shoulder"). STAYS OFF (advisory only) — the 2026-06-09 audit (memory:

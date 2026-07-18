@@ -32,4 +32,5 @@
 31: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=b6a0e9bb3187e011
 32: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=758798f2c783b969
 33: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=4a2fe44df173d303
-34: Outcome Variant Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=09de5454964ec25b
+34: Pronoun Disambiguator [anthropic/claude-sonnet-4-6] msgs=1 prompt=f19826b48c3ee69d
+35: Outcome Variant Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=09de5454964ec25b

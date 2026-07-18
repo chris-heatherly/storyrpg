@@ -268,17 +268,45 @@ const FINAL_GATE_ROUTES: Record<string, RoutedGateCase[]> = {
     architectureNote: 'Consequence architecture (a setFlag wire), not prose. Earlier placement exists: plan-time TreatmentSeedOnPageValidator fail-fast (primary placement).',
   }],
   GATE_ENCOUNTER_POV: [{
-    name: 'third-person protagonist narration in a second-person story (pov_break)',
+    // r115 gap analysis (2026-07-18): this fixture previously used the bare
+    // `pov_break` type and expected `deterministic_cleanup` — but
+    // FinalStoryContractValidator only ever emits `encounter_pov_break` for
+    // encounter scenes, and the `deterministic_cleanup` classification was an
+    // accident of the message text containing the word "protagonist" (a
+    // fragile validator+text regex catch-all), not a real executed route —
+    // no file in the pipeline dispatches on `deterministic_cleanup` at all.
+    // Third/first-person narration is residue that already survived the
+    // deterministic pronoun resolver; only an LLM rewrite can fix it.
+    name: 'third-person protagonist narration in a second-person encounter (encounter_pov_break)',
     issue: {
       validator: 'PovClarityValidator',
-      type: 'pov_break',
+      type: 'encounter_pov_break',
       severity: 'error',
       message: 'Beat narrates the protagonist in the third person ("Kylie… she…") in a second-person story — a POV break.',
       sceneId: 's1-2',
       beatId: 's1-2-b4',
       episodeNumber: 1,
     },
-    expected: 'deterministic_cleanup', // name-anchored pronoun coercion autofix
+    expected: 'same_scene_retry',
+  }],
+  GATE_PROTAGONIST_PRONOUN: [{
+    // Live regression: bite-me-r115_2026-07-18T04-37-51 shipped s1-1 with
+    // `timeline.transitionIn` = 'The story begins as Kylie Marinescu steps
+    // into her new apartment...' — full-name third-person narration in a
+    // second-person story. This is the exact non-encounter counterpart of
+    // the GATE_ENCOUNTER_POV case above (bare `pov_break`, not
+    // `encounter_pov_break`), re-promoted to blocking after this run supplied
+    // the first genuine shadow-evidence data point (see gateDefaults.ts).
+    name: 'third-person protagonist narration in a second-person story (pov_break)',
+    issue: {
+      validator: 'PovClarityValidator',
+      type: 'pov_break',
+      severity: 'error',
+      message: 'Scene "s1-1" narrates the protagonist in the third person in 1 place(s) — a POV break in a second-person story. e.g. "The story begins as Kylie Marinescu steps into her new apartment in Bucharest for the first time."',
+      sceneId: 's1-1',
+      episodeNumber: 1,
+    },
+    expected: 'same_scene_retry',
   }],
   GATE_POV_ANCHOR: [{
     name: 'opening beat missing player POV anchor',

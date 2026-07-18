@@ -4,6 +4,7 @@ import type {
 } from '../../types/narrativeContract';
 import {
   collectNarrativeEvidenceSurfaceIndex,
+  collectNarrativeVariantEntries,
   collectRouteEvidenceSurfaceIndex,
   type NarrativeEvidenceSurfaceIndex,
 } from '../validators/encounterTextSurfaces';
@@ -383,10 +384,42 @@ function choicesForTaskInput(input: { sceneContent?: unknown; choiceSet?: unknow
     : []);
 }
 
+type SurfaceTextEntry = { surface: NarrativeRealizationTask['target']['surfaces'][number]; text: string };
+
+/**
+ * Owner-scope tasks that request `text_variant` evidence normally see every
+ * conditional retelling of a beat pooled into one group — a semantic judge
+ * then reads six mutually-exclusive flag-gated versions as if all were
+ * simultaneously true (r115). When a task's surfaces include `text_variant`
+ * and the scene actually has more than one, split into one group per variant
+ * — the always-present surfaces (beat_text, dialogue, ...) repeated in every
+ * group for context, plus exactly one variant's text — so each group reflects
+ * a single reachable playthrough. Returns undefined when there's nothing to
+ * split (no text_variant requested, or ≤1 variant present), so callers fall
+ * back to the single pooled group unchanged.
+ */
+function ownerVariantSplitEntries(
+  input: { sceneContent?: unknown; encounter?: unknown },
+  surfaces: NarrativeRealizationTask['target']['surfaces'],
+  index: NarrativeEvidenceSurfaceIndex,
+): SurfaceTextEntry[][] | undefined {
+  if (!surfaces.includes('text_variant')) return undefined;
+  const variants = collectNarrativeVariantEntries(input);
+  if (variants.length <= 1) return undefined;
+  const baseSurfaces = surfaces.filter((surface) => surface !== 'text_variant');
+  const baseEntries: SurfaceTextEntry[] = baseSurfaces.flatMap((surface) =>
+    index[surface].map((text) => ({ surface, text })));
+  return variants.map((variant) => [...baseEntries, { surface: 'text_variant' as const, text: variant.text }]);
+}
+
 function taskTextGroups(input: { sceneContent?: unknown; choiceSet?: unknown; encounter?: unknown; task: NarrativeRealizationTask }): string[][] {
   const target = input.task.target;
   if (target.scope === 'owner') {
-    return [textsForSurfaces(collectNarrativeEvidenceSurfaceIndex(input), target.surfaces)];
+    const index = collectNarrativeEvidenceSurfaceIndex(input);
+    const split = ownerVariantSplitEntries(input, target.surfaces, index);
+    return split
+      ? split.map((entries) => entries.map((entry) => entry.text))
+      : [textsForSurfaces(index, target.surfaces)];
   }
   if (target.scope === 'route_path') {
     return [textsForSurfaces(collectRouteEvidenceSurfaceIndex({ ...input, outcomeTier: target.outcomeTier }), target.surfaces)];
@@ -455,7 +488,9 @@ export function collectNarrativeTaskEvidenceTextGroups(input: {
     surfaces.flatMap((surface) => index[surface].map((text) => ({ surface, text })));
   let groups: Array<Array<{ surface: typeof target.surfaces[number]; text: string }>>;
   if (target.scope === 'owner') {
-    groups = [indexedEntries(collectNarrativeEvidenceSurfaceIndex(input), target.surfaces)];
+    const index = collectNarrativeEvidenceSurfaceIndex(input);
+    groups = ownerVariantSplitEntries(input, target.surfaces, index)
+      ?? [indexedEntries(index, target.surfaces)];
   } else if (target.scope === 'route_path') {
     groups = [indexedEntries(collectRouteEvidenceSurfaceIndex({ ...input, outcomeTier: target.outcomeTier }), target.surfaces)];
   } else if (target.scope === 'route_terminal') {

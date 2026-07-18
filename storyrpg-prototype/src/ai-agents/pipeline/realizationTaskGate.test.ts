@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 import {
+  collectNarrativeTaskEvidenceTextGroups,
   prioritizeOwnerRepairFindings,
   shouldAdoptOwnerRepairCandidate,
   validateOwnerRealizationTasks,
@@ -774,6 +775,61 @@ describe('validateOwnerRealizationTasks', () => {
   });
 });
 
+describe('collectNarrativeTaskEvidenceTextGroups (r115: route/variant-aware evidence)', () => {
+  it('splits a beat with multiple mutually-exclusive textVariants into one group per variant, not one pooled group', () => {
+    const task = {
+      id: 'task:event:s1-6-b1:owner-event', contractId: 'event:homecoming', episodeNumber: 1,
+      ownerStage: 'scene_writer' as const, repairHandler: 'scene_prose' as const, sceneId: 's1-6',
+      evidenceAtoms: [],
+      target: { scope: 'owner' as const, surfaces: ['beat_text' as const, 'text_variant' as const] },
+      sourceContractIds: ['event:homecoming'], blocking: true,
+    };
+    const sceneContent = {
+      beats: [{
+        id: 's1-6-b1',
+        text: 'You arrive home.',
+        textVariants: [
+          { condition: { flag: 'told_mom', value: true }, text: 'Your mother is waiting up, and you have to explain everything.' },
+          { condition: { flag: 'told_mom', value: false }, text: 'The house is dark. Nobody knows you left yet.' },
+          { condition: { flag: 'marcus_hurt', value: true }, text: 'You slip in quietly, favoring the arm Marcus bruised.' },
+        ],
+      }],
+    };
+
+    const groups = collectNarrativeTaskEvidenceTextGroups({ sceneId: 's1-6', task, sceneContent });
+
+    expect(groups).toHaveLength(3);
+    for (const group of groups) {
+      const variantEntries = group.entries.filter((entry) => entry.surface === 'text_variant');
+      expect(variantEntries).toHaveLength(1);
+      // The always-present beat text rides along in every group for context;
+      // no group's texts contain more than one variant's retelling.
+      expect(group.texts).toContain('You arrive home.');
+    }
+    const variantTexts = groups.flatMap((group) => group.entries.filter((entry) => entry.surface === 'text_variant').map((entry) => entry.text));
+    expect(new Set(variantTexts).size).toBe(3);
+  });
+
+  it('falls back to one pooled group when the beat has zero or one variant', () => {
+    const task = {
+      id: 'task:event:s1-1-b1:owner-event', contractId: 'event:opening', episodeNumber: 1,
+      ownerStage: 'scene_writer' as const, repairHandler: 'scene_prose' as const, sceneId: 's1-1',
+      evidenceAtoms: [],
+      target: { scope: 'owner' as const, surfaces: ['beat_text' as const, 'text_variant' as const] },
+      sourceContractIds: ['event:opening'], blocking: true,
+    };
+    const single = collectNarrativeTaskEvidenceTextGroups({
+      sceneId: 's1-1', task,
+      sceneContent: { beats: [{ id: 's1-1-b1', text: 'You wake up.', textVariants: [{ condition: { flag: 'x', value: true }, text: 'Sunlight.' }] }] },
+    });
+    expect(single).toHaveLength(1);
+
+    const none = collectNarrativeTaskEvidenceTextGroups({
+      sceneId: 's1-1', task, sceneContent: { beats: [{ id: 's1-1-b1', text: 'You wake up.' }] },
+    });
+    expect(none).toHaveLength(1);
+  });
+});
 
 describe('final_regression enforcement phase', () => {
   it('owner-stage validation skips reveal-timing tasks; final regression includes them', () => {

@@ -184,6 +184,56 @@ export function collectNarrativeEvidenceSurfaceIndex(input: {
   return index;
 }
 
+export interface NarrativeVariantEntry {
+  /** Stable per-beat/per-field/per-index key — NOT a persisted id, only used
+   * to keep a variant's entry distinct within one collection call. */
+  variantKey: string;
+  text: string;
+}
+
+function collectIndexedBeatVariants(value: unknown, entries: NarrativeVariantEntry[]): void {
+  for (const rawBeat of valuesOf(value)) {
+    const beat = recordOf(rawBeat);
+    if (!beat) continue;
+    const beatId = typeof beat.id === 'string' ? beat.id : 'beat';
+    for (const key of ['textVariants', 'setupTextVariants', 'escalationTextVariants']) {
+      valuesOf(beat[key]).forEach((rawVariant, variantIndex) => {
+        const text = recordOf(rawVariant)?.text;
+        if (typeof text === 'string' && isReaderFacingText(text)) {
+          entries.push({ variantKey: `${beatId}:${key}:${variantIndex}`, text: text.trim() });
+        }
+      });
+    }
+  }
+}
+
+/**
+ * Every conditional textVariant across a scene's/encounter's beats as its
+ * own entry, keyed to stay distinct from siblings. `collectNarrativeEvidenceSurfaceIndex`
+ * flattens these into one `text_variant` bucket — correct for validators that
+ * just need "is this phrase present anywhere reachable," wrong for owner-scope
+ * checks that judge a single beat's mutually-exclusive retellings: pooling six
+ * flag-gated versions of "arriving home" into one excerpt list shows a semantic
+ * judge a multiverse where all six are true at once (r115: a causal-restage
+ * check flagged a contradiction that only existed across branches, never
+ * within one reachable playthrough). Callers that need per-variant isolation
+ * use this instead and judge each entry as its own group.
+ */
+export function collectNarrativeVariantEntries(input: {
+  sceneContent?: unknown;
+  encounter?: unknown;
+}): NarrativeVariantEntry[] {
+  const entries: NarrativeVariantEntry[] = [];
+  const scene = recordOf(input.sceneContent);
+  collectIndexedBeatVariants(scene?.beats, entries);
+  const encounter = recordOf(input.encounter);
+  collectIndexedBeatVariants(encounter?.beats, entries);
+  for (const rawPhase of valuesOf(encounter?.phases)) {
+    collectIndexedBeatVariants(recordOf(rawPhase)?.beats, entries);
+  }
+  return entries;
+}
+
 function collectVariants(texts: string[], variants: TextVariantLike[] | Record<string, TextVariantLike> | undefined): void {
   for (const variant of asObjectValues(variants)) {
     if (variant && typeof variant === 'object') pushReaderText(texts, (variant as TextVariantLike).text);

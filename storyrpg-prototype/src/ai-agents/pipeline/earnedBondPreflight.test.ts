@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { auditEarnedBonds } from './earnedBondPreflight';
+import { applyEarnedBondAutofix, auditEarnedBonds } from './earnedBondPreflight';
 
 describe('auditEarnedBonds (B3)', () => {
   const jump = { npcId: 'stela', startStage: 'spark', targetStage: 'friend', requiredEvidence: [] };
@@ -43,5 +43,36 @@ describe('auditEarnedBonds (B3)', () => {
         { npcId: 'mika', startStage: 'unmet', targetStage: 'spark' },
       ],
     }])).toEqual([]);
+  });
+});
+
+describe('applyEarnedBondAutofix (B3, r115 gap analysis 2026-07-18)', () => {
+  it('clamps both r115 s1-4 jumps to one rank above start', () => {
+    // Live regression: bite-me-r115_2026-07-18T04-37-51 planned Stela
+    // spark→friend and Mika acquaintance→friend at s1-4 with no staged
+    // earning path (same shape as the original dusk-club case, recurring).
+    const scenes = [{
+      id: 's1-4',
+      relationshipPacing: [
+        { npcId: 'char-stela-pavel', startStage: 'spark', targetStage: 'friend' },
+        { npcId: 'char-mika-dragan', startStage: 'acquaintance', targetStage: 'friend' },
+      ],
+    }];
+    const findings = auditEarnedBonds(scenes);
+    expect(findings).toHaveLength(2);
+
+    const applied = applyEarnedBondAutofix(findings, scenes);
+
+    expect(applied).toHaveLength(2);
+    expect(scenes[0].relationshipPacing[0]).toMatchObject({ npcId: 'char-stela-pavel', startStage: 'spark', targetStage: 'acquaintance' });
+    expect(scenes[0].relationshipPacing[1]).toMatchObject({ npcId: 'char-mika-dragan', startStage: 'acquaintance', targetStage: 'tentative_ally' });
+    // Re-auditing the clamped scene finds nothing left to flag.
+    expect(auditEarnedBonds(scenes)).toEqual([]);
+  });
+
+  it('does not touch scenes with no matching finding', () => {
+    const scenes = [{ id: 's1-2', relationshipPacing: [{ npcId: 'stela', startStage: 'unmet', targetStage: 'noticed' }] }];
+    expect(applyEarnedBondAutofix([], scenes)).toEqual([]);
+    expect(scenes[0].relationshipPacing[0].targetStage).toBe('noticed');
   });
 });

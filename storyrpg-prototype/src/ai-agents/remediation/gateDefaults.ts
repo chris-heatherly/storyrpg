@@ -176,6 +176,17 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // authored. Presence-derived (non-anchor) findings stay advisory.
   GATE_ANCHOR_CAST_ORDER_AUTOFIX: true,
 
+  // B3 earned-bond autofix (r115 gap analysis, 2026-07-18): the audit itself
+  // has been advisory since 2026-07-16 and has now confirmed the same defect
+  // shape twice more (run 16-30-16's own dusk-club case, plus r115's Stela
+  // spark→friend and Mika acquaintance→friend at s1-4) with zero false
+  // positives — the shadow-evidence bar this project holds every promotion
+  // to. Clamping the target stage to one rank above start is a deterministic
+  // plan-metadata edit (no prose authored), offline-proven against both
+  // runs' archived relationship pacing before shipping default-on, same
+  // precedent as GATE_ANCHOR_CAST_ORDER_AUTOFIX above.
+  GATE_EARNED_BOND_AUTOFIX: true,
+
   // Flag-gated SceneCritic (SAR wave 2, R8 — authoring economics). The full
   // sceneCritic config pass doubles SceneWriter token cost per scene, so it
   // stays opt-in. This gate instead runs the critic ONLY over scenes that

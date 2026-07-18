@@ -74,3 +74,51 @@ export function auditEarnedBonds(scenes: ReadonlyArray<EarnedBondScene>): Earned
   }
   return findings;
 }
+
+const STAGE_BY_RANK: Record<number, string> = Object.fromEntries(
+  Object.entries(STAGE_RANK).map(([stage, rank]) => [rank, stage]),
+);
+
+export interface EarnedBondAutofixScene {
+  id: string;
+  relationshipPacing?: Array<{
+    npcId?: string;
+    groupId?: string;
+    startStage: string;
+    targetStage: string;
+  }>;
+}
+
+/**
+ * B3 autofix (r115 gap analysis, 2026-07-18): a scene planned to advance a
+ * bond 2+ stages to friend+ with no staged earning path clamps the jump down
+ * to the highest rank achievable in one scene without one — the audit's own
+ * threshold (`targetRank - startRank < 2` is fine unaccompanied) says a
+ * single-rank advance never needs a dramatized earning path, so that's the
+ * ceiling. Deterministic plan-metadata edit only — no prose is authored; the
+ * scene simply stops claiming a bigger leap than it stages. Same shape as
+ * the C1 cast-order autofix: mutate the REAL blueprint scenes (the audit ran
+ * on copies), matched back by sceneId + subject.
+ */
+export function applyEarnedBondAutofix(
+  findings: ReadonlyArray<EarnedBondFinding>,
+  scenes: ReadonlyArray<EarnedBondAutofixScene>,
+): EarnedBondFinding[] {
+  const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
+  const applied: EarnedBondFinding[] = [];
+  for (const finding of findings) {
+    const scene = sceneById.get(finding.sceneId);
+    const pacing = scene?.relationshipPacing?.find(
+      (candidate) => (candidate.npcId ?? candidate.groupId ?? 'unknown-subject') === finding.subject
+        && candidate.startStage === finding.startStage
+        && candidate.targetStage === finding.targetStage,
+    );
+    if (!pacing) continue;
+    const startRank = STAGE_RANK[pacing.startStage] ?? 0;
+    const clampedStage = STAGE_BY_RANK[startRank + 1];
+    if (!clampedStage || clampedStage === pacing.targetStage) continue;
+    pacing.targetStage = clampedStage;
+    applied.push(finding);
+  }
+  return applied;
+}

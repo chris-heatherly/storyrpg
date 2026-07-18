@@ -250,7 +250,7 @@ function describeBoilerplateHits(hits: EncounterProseScanHit[], max = 6): string
 }
 import { CallbackLedger } from '../callbackLedger';
 import { auditAnchorCastOrder, auditFirstAppearanceCastOrder, applyCastOrderAutofix, type CastOrderAuditScene } from '../anchorCastOrderPreflight';
-import { auditEarnedBonds, type EarnedBondScene } from '../earnedBondPreflight';
+import { applyEarnedBondAutofix, auditEarnedBonds, type EarnedBondAutofixScene, type EarnedBondScene } from '../earnedBondPreflight';
 import { preservePipelineMaterializedBeats } from '../pipelineMaterializedBeats';
 import {
   mergeDuplicatePublicAftermathScenes,
@@ -1046,12 +1046,31 @@ export class ContentGenerationPhase {
       relationshipPacing: (scene as { relationshipPacing?: EarnedBondScene['relationshipPacing'] }).relationshipPacing,
     })));
     if (earnedBondFindings.length > 0) {
-      context.emit({
-        type: 'warning',
-        phase: 'scenes',
-        message: `Earned-bond preflight: ${earnedBondFindings.length} planned stage jump(s) to friend+ with no staged earning path — ${earnedBondFindings.map((finding) => `${finding.subject} in ${finding.sceneId} (${finding.startStage}→${finding.targetStage})`).join('; ')}. Advisory.`,
-        data: { findings: earnedBondFindings },
-      });
+      // B3 autofix: clamp the unstaged jump to one rank at plan time (real
+      // blueprint scenes — the audit above ran on copies). Findings the
+      // autofix couldn't apply to (no matching relationshipPacing entry
+      // found back on the real scene) stay advisory.
+      const earnedBondAutofixed = isGateEnabled('GATE_EARNED_BOND_AUTOFIX')
+        ? applyEarnedBondAutofix(earnedBondFindings, blueprint.scenes as unknown as EarnedBondAutofixScene[])
+        : [];
+      const earnedBondAutofixedKeys = new Set(earnedBondAutofixed.map((finding) => `${finding.sceneId}:${finding.subject}`));
+      const earnedBondAdvisory = earnedBondFindings.filter((finding) => !earnedBondAutofixedKeys.has(`${finding.sceneId}:${finding.subject}`));
+      if (earnedBondAutofixed.length > 0) {
+        context.emit({
+          type: 'checkpoint',
+          phase: 'scenes',
+          message: `Earned-bond autofix: clamped ${earnedBondAutofixed.length} unstaged stage jump(s) to one rank — ${earnedBondAutofixed.map((finding) => `${finding.subject} in ${finding.sceneId} (${finding.startStage}→${finding.targetStage} clamped)`).join('; ')}.`,
+          data: { earnedBondAutofixed },
+        });
+      }
+      if (earnedBondAdvisory.length > 0) {
+        context.emit({
+          type: 'warning',
+          phase: 'scenes',
+          message: `Earned-bond preflight: ${earnedBondAdvisory.length} planned stage jump(s) to friend+ with no staged earning path — ${earnedBondAdvisory.map((finding) => `${finding.subject} in ${finding.sceneId} (${finding.startStage}→${finding.targetStage})`).join('; ')}. Advisory.`,
+          data: { findings: earnedBondAdvisory },
+        });
+      }
     }
     if (outputDirectory) {
       await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-construction-report.json`, {

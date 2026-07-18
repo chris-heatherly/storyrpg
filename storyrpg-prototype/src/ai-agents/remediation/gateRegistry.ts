@@ -144,6 +144,9 @@ const RAW_GATE_REGISTRY = [
   // C1: strip anchor-backed premature cast placements at plan time
   // (deterministic metadata edit; the advisory audit remains the detector).
   { id: 'GATE_ANCHOR_CAST_ORDER_AUTOFIX', placement: 'plan', kind: 'remediation', defaultOn: true, repair: 'autofix' },
+  // B3: clamp an unstaged 2+ rank relationship jump to one rank at plan time
+  // (deterministic metadata edit; the advisory audit remains the detector).
+  { id: 'GATE_EARNED_BOND_AUTOFIX', placement: 'plan', kind: 'remediation', defaultOn: true, repair: 'autofix' },
   // Flag-gated SceneCritic rewrite: a targeted critic pass over scenes that
   // failed incremental voice/POV validation or needed a realization retry
   // (criticFlags), capped at 3/episode. Not a detector — cost-bounded polish.

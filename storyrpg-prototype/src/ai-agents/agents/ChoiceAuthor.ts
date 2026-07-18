@@ -972,6 +972,22 @@ Return JSON only: {"sharedResolutionText":"..."}`;
             name: 'choice_shared_resolution_repair',
             description: 'A focused authored repair for one route-invariant choice payoff.',
             maxOutputTokens: 512,
+            // r116 (2026-07-18): a bare 512-token cap with no outputBudget made
+            // this call infeasible on thinking-enabled Gemini models — with no
+            // outputBudget declared, the resolver never reserves any room for
+            // thinking on top of the 512, so the model's own minimal-reasoning
+            // tokens alone consumed nearly the entire cap before any JSON
+            // output ("thoughtsTokens: 509" of a 512-token request) and every
+            // attempt truncated. Same class of bug, same fix, as the
+            // encounter-description re-author (EncounterArchitect.ts) — no
+            // totalCeiling, so the resolver computes the true requirement
+            // (visible + reasoning + safety) bounded by the provider's actual
+            // configured cap, instead of the bare, unreserved 512.
+            outputBudget: {
+              visibleTokens: 256,
+              reasoningProfile: 'minimal',
+              safetyTokens: 64,
+            },
             schema: {
               type: 'object',
               additionalProperties: false,

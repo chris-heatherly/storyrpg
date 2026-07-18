@@ -750,4 +750,40 @@ describe('resolveStructuredCallBudget fail-open (infeasible declarations)', () =
     expect(resolved.maxOutputTokens).toBe(1024);
     expect(resolved.reasoningTokens).toBe(1024 - 256 - 64);
   });
+
+  it('r116 (2026-07-18): a bare 512 maxOutputTokens with no outputBudget starves gemini-2.5 thinking, reproducing the choice-resolution-repair truncation', () => {
+    // Live regression: ChoiceAuthor.repairSharedResolution declared only
+    // `maxOutputTokens: 512` with no outputBudget — the early-return path
+    // below never reserves room for gemini-2.5's 512-token minimal reasoning
+    // reservation, so thinking alone consumed nearly the entire cap
+    // ("thoughtsTokens: 509" of a 512-token request), leaving almost nothing
+    // for the actual JSON output and truncating on every attempt.
+    const bare = resolveStructuredCallBudget({
+      configured: 8192,
+      schema: { name: 'choice_shared_resolution_repair', schema: { type: 'object' }, maxOutputTokens: 512 } as never,
+      defaultCap: 8192,
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+    });
+    expect(bare.maxOutputTokens).toBe(512);
+
+    // The fix: declaring outputBudget routes through the reasoning-aware
+    // resolver instead, which reserves the minimal profile's 2048 tokens on
+    // top of the visible output.
+    const fixed = resolveStructuredCallBudget({
+      configured: 8192,
+      schema: {
+        name: 'choice_shared_resolution_repair',
+        schema: { type: 'object' },
+        maxOutputTokens: 512,
+        outputBudget: { visibleTokens: 256, reasoningProfile: 'minimal', safetyTokens: 64 },
+      } as never,
+      defaultCap: 8192,
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+    });
+    expect(fixed.reasoningTokens).toBe(512);
+    expect(fixed.maxOutputTokens).toBeGreaterThan(bare.maxOutputTokens);
+    expect(fixed.maxOutputTokens).toBe(256 + 512 + 64);
+  });
 });

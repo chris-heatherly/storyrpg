@@ -965,6 +965,10 @@ export async function appendFailedRunLedger(
     repairTarget?: string;
     topBlockingValidator?: string;
     gateConfigHash?: string;
+    /** Total default-ON blocking gates at run time (docs/RELIABILITY_AUDIT_2026-07-13.md compounding-gate math). */
+    blockingGateCount?: number;
+    /** Subset of blockingGateCount that executes at season-final. */
+    blockingGateCountSeasonFinal?: number;
     /** Deferral backpressure gauge: findings handed to episode-contract repair. */
     deferredRealizationCount?: number;
     validatorId?: string;
@@ -1001,6 +1005,8 @@ export async function appendFailedRunLedger(
       repairTarget: details?.repairTarget,
       topBlockingValidator: details?.topBlockingValidator,
       gateConfigHash: details?.gateConfigHash,
+      blockingGateCount: details?.blockingGateCount,
+      blockingGateCountSeasonFinal: details?.blockingGateCountSeasonFinal,
       validatorId: details?.validatorId,
       durationMs: details?.durationMs,
       llmCalls: details?.llmLedger?.totals.calls,

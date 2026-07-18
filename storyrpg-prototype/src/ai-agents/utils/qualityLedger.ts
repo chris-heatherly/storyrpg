@@ -81,6 +81,15 @@ export interface QualityLedgerEntry {
   topBlockingValidator?: string;
   /** Fingerprint of resolved GATE_DEFAULTS + env overrides at fail time. */
   gateConfigHash?: string;
+  /**
+   * Total default-ON blocking gates in GATE_REGISTRY at run time. Pure
+   * observability (docs/RELIABILITY_AUDIT_2026-07-13.md: "11.5% success =
+   * compounding-gate math") — no run had ever logged this, so there was no way
+   * to see whether a gate promotion tips the pass-rate math further.
+   */
+  blockingGateCount?: number;
+  /** Subset of blockingGateCount that actually executes at season-final (the placement the audit's math is about). */
+  blockingGateCountSeasonFinal?: number;
   /** Git commit the worker actually ran — resolves which fixes a run exercised. */
   workerGitSha?: string;
   /** Deferral backpressure: owner-stage findings handed to episode-contract repair this run. */

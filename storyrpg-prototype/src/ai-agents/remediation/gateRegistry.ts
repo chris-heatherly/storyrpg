@@ -330,6 +330,29 @@ export function qualityGatesAtPlacement(placement: GatePlacement): GateSpec[] {
   return gatesAtPlacement(placement).filter((g) => g.lifecycle !== 'repair-infra');
 }
 
+export interface BlockingGateCounts {
+  /** Every default-ON blocking gate, regardless of placement. */
+  total: number;
+  /** The subset that actually executes at season-final (primary placement or auditPlacements). */
+  seasonFinal: number;
+}
+
+/**
+ * Total default-ON blocking gates — the count behind
+ * docs/RELIABILITY_AUDIT_2026-07-13.md's "compounding-gate math" ("11.5%
+ * success = 43 blocking-ON gates x per-scene"). No run had ever logged this;
+ * stamped into the quality ledger (qualityLedger.ts's blockingGateCount /
+ * blockingGateCountSeasonFinal) alongside resolveGateConfigHash so future gate
+ * promotions can be checked against the trend the audit predicts instead of
+ * guessed at.
+ */
+export function countBlockingGates(): BlockingGateCounts {
+  const defaultOnBlocking = GATE_REGISTRY.filter((gate) => gate.kind === 'blocking' && gate.defaultOn);
+  const seasonFinal = defaultOnBlocking.filter((gate) =>
+    gate.placement === 'season-final' || (gate.auditPlacements ?? []).includes('season-final'));
+  return { total: defaultOnBlocking.length, seasonFinal: seasonFinal.length };
+}
+
 const placementWarned = new Set<string>();
 
 /**

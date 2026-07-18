@@ -374,6 +374,7 @@ import { RemediationBudget, createRemediationBudget, shouldAttemptRemediation } 
 import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { buildGateShadowRecord, buildValidatorPromotionRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
 import { isGateEnabled, resolveGateConfigHash } from '../remediation/gateDefaults';
+import { countBlockingGates } from '../remediation/gateRegistry';
 import {
   applyCandidateEpisodes,
   carryForwardStoryHash,
@@ -5883,6 +5884,8 @@ export class FullStoryPipeline {
             repairTarget: earlyFail?.repairTarget,
             topBlockingValidator: earlyFail?.issueCodes?.[0],
             gateConfigHash: resolveGateConfigHash(),
+            blockingGateCount: countBlockingGates().total,
+            blockingGateCountSeasonFinal: countBlockingGates().seasonFinal,
             durationMs: Date.now() - startTime,
             llmLedger: this.telemetry.getLlmLedger(),
             remediationSummary: this.getRemediationSummary(),
@@ -5957,6 +5960,8 @@ export class FullStoryPipeline {
             repairTarget: epFail?.repairTarget,
             topBlockingValidator: epFail?.issueCodes?.[0],
             gateConfigHash: resolveGateConfigHash(),
+            blockingGateCount: countBlockingGates().total,
+            blockingGateCountSeasonFinal: countBlockingGates().seasonFinal,
             durationMs: Date.now() - startTime,
             llmLedger: this.telemetry.getLlmLedger(),
             remediationSummary: this.getRemediationSummary(),
@@ -6334,6 +6339,8 @@ export class FullStoryPipeline {
               ? (error.agent || error.issueCodes[0])
               : undefined,
             gateConfigHash: resolveGateConfigHash(),
+            blockingGateCount: countBlockingGates().total,
+            blockingGateCountSeasonFinal: countBlockingGates().seasonFinal,
             validatorId: error instanceof PipelineError ? error.agent : undefined,
             durationMs: Date.now() - startTime,
             llmLedger: this.telemetry.getLlmLedger(),

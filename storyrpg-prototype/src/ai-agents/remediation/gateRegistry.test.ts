@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GATE_DEFAULTS } from './gateDefaults';
 import {
   GATE_REGISTRY,
+  countBlockingGates,
   gateExecutionsAtPlacement,
   gatesAtPlacement,
   isGateEnabledAt,
@@ -162,6 +163,22 @@ describe('isGateEnabledAt (placement-aware execution, adoption A6)', () => {
     expect(finalExecutions).toContain('GATE_OUTCOME_TEXT_QUALITY');
     expect(finalExecutions).toContain('GATE_ENCOUNTER_OUTCOME_VARIANT');
     expect(gatesAtPlacement('scene').map((g) => g.id)).toContain('GATE_OUTCOME_TEXT_QUALITY');
+  });
+
+  it('countBlockingGates reports total default-ON blocking gates and the season-final subset', () => {
+    const counts = countBlockingGates();
+    const expectedTotal = GATE_REGISTRY.filter((g) => g.kind === 'blocking' && g.defaultOn).length;
+    const expectedSeasonFinal = GATE_REGISTRY.filter((g) =>
+      g.kind === 'blocking'
+      && g.defaultOn
+      && (g.placement === 'season-final' || (g.auditPlacements ?? []).includes('season-final'))).length;
+    expect(counts.total).toBe(expectedTotal);
+    expect(counts.seasonFinal).toBe(expectedSeasonFinal);
+    // Sanity bound: the season-final subset can never exceed the total, and
+    // the reliability audit's math (docs/RELIABILITY_AUDIT_2026-07-13.md) is
+    // specifically about this being a real, nonzero number.
+    expect(counts.seasonFinal).toBeLessThanOrEqual(counts.total);
+    expect(counts.seasonFinal).toBeGreaterThan(0);
   });
 
   it('quality placement counts exclude repair infrastructure', () => {

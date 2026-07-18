@@ -15,6 +15,8 @@ import { FlagContractValidator } from '../src/ai-agents/validators/FlagContractV
 import { EncounterQualityValidator } from '../src/ai-agents/validators/EncounterQualityValidator';
 import { SceneGraphBranchValidator } from '../src/ai-agents/validators/SceneGraphBranchValidator';
 import { findEncounterPovBreaks } from '../src/ai-agents/pipeline/encounterPovBackstop';
+import { FinalStoryContractValidator } from '../src/ai-agents/validators/FinalStoryContractValidator';
+import { ArcPressureArchitectureValidator } from '../src/ai-agents/validators/ArcPressureArchitectureValidator';
 
 /**
  * Offline gate replay: run deterministic story validators against ARCHIVED generation
@@ -56,6 +58,8 @@ interface RunContext {
   story: Story;
   /** Season scene plan from 00-input-brief.json (seasonPlan.scenePlan), when present. */
   plan?: SeasonScenePlan;
+  /** Arc/episode slice of the full season plan (00-input-brief.json seasonPlan), for plan-time validators. */
+  seasonPlanArcs?: { arcs?: unknown[]; episodes?: unknown[]; totalEpisodes?: number };
   /** episode-N-blueprint.json keyed by episode number, when present. */
   blueprints: Map<number, EpisodeBlueprint>;
 }
@@ -69,7 +73,7 @@ interface GateEntry {
   blocking: 'errors' | 'any';
   /** Member of the no-flag default set (deterministic, Story-input, default-OFF gate). */
   inDefaultSet: boolean;
-  run: (ctx: RunContext) => Finding[];
+  run: (ctx: RunContext) => Finding[] | Promise<Finding[]>;
 }
 
 function fromValidationResult(issues: Array<{ severity: string; message: string }>): Finding[] {
@@ -191,6 +195,39 @@ const REGISTRY: GateEntry[] = [
         message: `encounter prose narrates the protagonist in third person: "${snippet}"`,
       })),
   },
+  {
+    // The surface where 4 of the 6 most recent live runs died (r115-r118).
+    // Deterministic + LLM-free (semantic judging lives OUTSIDE this validator,
+    // in finalContract.ts); replaying it over the corpus — including the
+    // partial-story.json drafts of failed runs — surfaces native-check
+    // regressions (duplicate_high_pressure_event, scene_location_event_mismatch,
+    // supernatural_canon_contradiction, ...) without burning a live run.
+    name: 'FINAL_STORY_CONTRACT',
+    validator: 'FinalStoryContractValidator',
+    gateFlag: 'GATE_FINAL_CONTRACT_REPAIR', // the contract itself is always-on; this flag is its repair loop
+    blocking: 'errors',
+    inDefaultSet: false,
+    run: async (ctx) => {
+      const report = await new FinalStoryContractValidator().validate({ story: ctx.story });
+      return fromValidationResult([...report.blockingIssues, ...report.warnings]);
+    },
+  },
+  {
+    // r119 class (2026-07-18): the ArcPressure gate hard-fails treatment-sourced
+    // season plans regardless of the flag default. Replaying it over archived
+    // briefs proves the turnout backfill keeps every planned arc gate-clean.
+    name: 'ARC_PRESSURE',
+    validator: 'ArcPressureArchitectureValidator',
+    gateFlag: 'GATE_ARC_PRESSURE',
+    blocking: 'errors',
+    inDefaultSet: false,
+    run: (ctx) => {
+      if (!ctx.seasonPlanArcs) return [{ severity: 'info', message: 'skipped: no seasonPlan.arcs in 00-input-brief.json' }];
+      return fromValidationResult(
+        new ArcPressureArchitectureValidator().validate(ctx.seasonPlanArcs as never).issues,
+      );
+    },
+  },
 ];
 
 // ── CLI plumbing ─────────────────────────────────────────────────────────────────────
@@ -252,26 +289,41 @@ function readJson<T>(file: string): T | undefined {
 
 /** story.json wraps the Story under `.story`. */
 function loadStory(runDir: string): { story: Story; source: string } | undefined {
-  const candidate = 'story.json';
-  const file = path.join(runDir, candidate);
-  if (!fs.existsSync(file)) return undefined;
-  const raw = readJson<Record<string, unknown>>(file);
-  if (!raw) return undefined;
-  const story = (Array.isArray(raw.episodes) ? raw : raw.story) as Story | undefined;
-  if (story && Array.isArray(story.episodes)) return { story, source: candidate };
+  // partial-story.json is the surviving draft of a run that FAILED the final
+  // contract — exactly the runs whose defects the sweep exists to surface.
+  // Restricting to story.json meant every recent failed run was silently
+  // skipped and the sweep only ever re-checked successes (r119 batch-drain
+  // extension, 2026-07-18).
+  for (const candidate of ['story.json', 'partial-story.json']) {
+    const file = path.join(runDir, candidate);
+    if (!fs.existsSync(file)) continue;
+    const raw = readJson<Record<string, unknown>>(file);
+    if (!raw) continue;
+    const story = (Array.isArray(raw.episodes) ? raw : raw.story) as Story | undefined;
+    if (story && Array.isArray(story.episodes)) return { story, source: candidate };
+  }
   return undefined;
 }
 
 function loadContext(runDir: string): (RunContext & { storySource: string }) | undefined {
   const loaded = loadStory(runDir);
   if (!loaded) return undefined;
-  const brief = readJson<{ seasonPlan?: { scenePlan?: SeasonScenePlan } }>(path.join(runDir, '00-input-brief.json'));
+  const brief = readJson<{ seasonPlan?: { scenePlan?: SeasonScenePlan; arcs?: unknown[]; episodes?: unknown[]; totalEpisodes?: number } }>(path.join(runDir, '00-input-brief.json'));
   const blueprints = new Map<number, EpisodeBlueprint>();
   for (const episode of loaded.story.episodes || []) {
     const bp = readJson<EpisodeBlueprint>(path.join(runDir, `episode-${episode.number}-blueprint.json`));
     if (bp) blueprints.set(episode.number, bp);
   }
-  return { runDir, story: loaded.story, storySource: loaded.source, plan: brief?.seasonPlan?.scenePlan, blueprints };
+  return {
+    runDir,
+    story: loaded.story,
+    storySource: loaded.source,
+    plan: brief?.seasonPlan?.scenePlan,
+    seasonPlanArcs: brief?.seasonPlan && Array.isArray(brief.seasonPlan.arcs)
+      ? { arcs: brief.seasonPlan.arcs, episodes: brief.seasonPlan.episodes, totalEpisodes: brief.seasonPlan.totalEpisodes }
+      : undefined,
+    blueprints,
+  };
 }
 
 interface CellResult {
@@ -287,7 +339,7 @@ interface CellResult {
   validatorError?: string;
 }
 
-function replayCell(gate: GateEntry, ctx: RunContext): CellResult {
+async function replayCell(gate: GateEntry, ctx: RunContext): Promise<CellResult> {
   const base = {
     run: path.basename(ctx.runDir),
     validator: gate.validator,
@@ -295,7 +347,7 @@ function replayCell(gate: GateEntry, ctx: RunContext): CellResult {
     gateDefaultOn: GATE_DEFAULTS[gate.gateFlag] === true,
   };
   try {
-    const findings = gate.run(ctx);
+    const findings = await gate.run(ctx);
     const errorCount = findings.filter((f) => f.severity === 'error').length;
     const warningCount = findings.filter((f) => f.severity === 'warning').length;
     const actionable = findings.filter((f) => f.severity !== 'info');
@@ -332,7 +384,7 @@ function findRunDirs(corpus: string, filter?: string): string[] {
     if (filter && !name.includes(filter)) continue;
     const dir = path.join(root, name);
     if (!fs.statSync(dir).isDirectory()) continue;
-    if (fs.existsSync(path.join(dir, 'story.json'))) {
+    if (fs.existsSync(path.join(dir, 'story.json')) || fs.existsSync(path.join(dir, 'partial-story.json'))) {
       out.push(dir);
     }
   }
@@ -401,7 +453,7 @@ function printSummary(gates: GateEntry[], cells: CellResult[], runCount: number)
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const gates = selectGates(args.gates);
   const runDirs = findRunDirs(args.corpus, args.runsFilter);
@@ -422,7 +474,7 @@ function main(): void {
     }
     replayedRuns += 1;
     for (const gate of gates) {
-      cells.push(replayCell(gate, ctx));
+      cells.push(await replayCell(gate, ctx));
     }
   }
 
@@ -452,5 +504,5 @@ export { REGISTRY, loadContext, replayCell, findRunDirs };
 export type { GateEntry, RunContext, CellResult, Finding };
 
 if (require.main === module) {
-  main();
+  void main();
 }

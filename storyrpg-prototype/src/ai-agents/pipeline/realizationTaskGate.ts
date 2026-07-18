@@ -11,6 +11,7 @@ import {
   inferNarrativeVerificationAuthority,
   isDeterministicNarrativeAtom,
 } from './realizationVerificationAuthority';
+import { literalPhraseMatch } from '../utils/literalPhraseMatch';
 import {
   evaluateTaskSatisfaction,
   type NarrativeAtomVerdict,
@@ -336,7 +337,11 @@ function relationshipEvidenceMatches(
   if (atom.matchStrategy === 'transition_action') return transitionActionMatches(atom, text);
   if (atom.matchStrategy === 'state_transition') return stateTransitionMatches(atom, pattern, text);
   const kind = atom.kind;
-  if (kind === 'lexical') return normalize(text).includes(normalize(pattern));
+  // r115: a lexical atom is a codename/coined-title EXACT phrase — plain
+  // substring containment let the forbidden codename "The Mountain" match
+  // inside "the mountains" (a common noun). Literal means literal: whole
+  // tokens, in order, never a partial-word match.
+  if (kind === 'lexical') return literalPhraseMatch(pattern, text);
   if (kind !== 'relationship_label') {
     if ((atom.semanticRole === 'relationship_change' || atom.semanticRole === 'state_change')
       && !semanticTransitionPresent(pattern, text)) return false;

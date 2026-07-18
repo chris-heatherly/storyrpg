@@ -11,6 +11,7 @@ import { collectReaderFacingTexts, collectReaderFacingTextsForEncounterOutcomeTi
 import { BaseValidator, buildFailureResult, buildSuccessResult, type ValidationIssue, type ValidationResult } from './BaseValidator';
 import { isGenericScenePlannerText, isQuestionShapedTurnText } from '../utils/sceneContractBuilders';
 import { validateOwnerRealizationTasks } from '../pipeline/realizationTaskGate';
+import { literalPhraseMatch } from '../utils/literalPhraseMatch';
 
 function normalize(value: string): string {
   return value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -45,7 +46,12 @@ function evidenceHit(pattern: string, text: string): boolean {
   const needle = normalize(pattern);
   const haystack = normalize(text);
   if (!needle) return false;
-  if (haystack.includes(needle)) return true;
+  // r115: whole-token exact phrase first (same class of bug as
+  // realizationTaskGate.ts's lexical matcher — raw substring containment let
+  // "the mountain" match inside "the mountains"). The word-overlap fallback
+  // below stays deliberately fuzzy — it backs open-ended premise/seed/twist
+  // evidence presence checks, not exact-phrase verification.
+  if (literalPhraseMatch(pattern, text)) return true;
   const words = needle.split(' ').filter((word) => word.length >= 4);
   if (words.length === 0) return false;
   const hayWords = new Set(haystack.split(' '));

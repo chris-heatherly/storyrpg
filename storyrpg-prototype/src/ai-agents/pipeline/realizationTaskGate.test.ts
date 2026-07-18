@@ -417,6 +417,39 @@ describe('validateOwnerRealizationTasks', () => {
     expect(findings).toEqual([]);
   });
 
+  it('r115: a forbidden lexical codename never matches a plain-word plural/inflection of the same root', () => {
+    const task = {
+      id: 'task:lexical:forbidden:the-mountain:s1-5',
+      contractId: 'lexical:the-mountain',
+      episodeNumber: 1,
+      ownerStage: 'scene_writer' as const,
+      repairHandler: 'scene_prose' as const,
+      sceneId: 's1-5',
+      evidenceAtoms: [{
+        id: 'the-mountain-forbidden', description: 'not-yet-created codename', acceptedPatterns: ['The Mountain'],
+        kind: 'lexical' as const, polarity: 'forbidden' as const, required: true, verificationAuthority: 'literal' as const,
+      }],
+      target: { scope: 'owner' as const, surfaces: ['beat_text' as const] },
+      sourceContractIds: ['lexical:the-mountain'],
+      blocking: true,
+    };
+    // "the mountains" (common noun, plural) must NOT trip the forbidden codename.
+    const clean = validateOwnerRealizationTasks({
+      sceneId: 's1-5',
+      tasks: [task],
+      sceneContent: { beats: [{ id: 'b4', text: 'Dressed for the mountains, not the city, he watches with quiet intensity.' }] },
+    });
+    expect(clean).toEqual([]);
+    // The actual codename, verbatim, must still be caught.
+    const hit = validateOwnerRealizationTasks({
+      sceneId: 's1-5',
+      tasks: [task],
+      sceneContent: { beats: [{ id: 'b4', text: 'They call him The Mountain in the old quarter.' }] },
+    });
+    expect(hit).toHaveLength(1);
+    expect(hit[0].code).toBe('OWNER_FORBIDDEN_EVIDENCE_PRESENT');
+  });
+
   it('matches ordinary inflection changes in premise evidence', () => {
     const findings = validateOwnerRealizationTasks({
       sceneId: 's1-1',

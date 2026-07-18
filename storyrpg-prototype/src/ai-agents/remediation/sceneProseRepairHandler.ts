@@ -963,7 +963,30 @@ function allMomentsDepicted(
       return proseHygieneIssueCleared(scene, issue);
     }
     const moment = requiredMomentFromMessage(issue.message);
-    if (!moment) return !MOMENT_REALIZATION_VALIDATORS.has(issue.validator ?? '');
+    if (!moment) {
+      // r116 gap analysis (2026-07-18): SemanticRealizationJudge messages
+      // ("Canonical realization validation confirms...") never match this
+      // extractor's quoted-moment patterns — those were written for the
+      // older RequiredBeatRealizationValidator/SignatureDevicePresenceValidator
+      // generation, before SemanticRealizationJudge existed. Since
+      // 'SemanticRealizationJudge' was never added to
+      // MOMENT_REALIZATION_VALIDATORS, every one of its findings (missing OR
+      // forbidden) fell through to `!MOMENT_REALIZATION_VALIDATORS.has(...)`
+      // = vacuously true — "predicted clear" on the FIRST attempt regardless
+      // of whether the rewrite touched the flagged content at all, which
+      // skips this function's own sharpened-feedback retry and, for a
+      // forbidden-evidence finding, can accept a rewrite that never actually
+      // removed the forbidden content (confirmed live: an escalation-budget
+      // "ending-displaced" forbidden atom was declared fixed after one
+      // rewrite, then reappeared as the exact same blocking issue at final
+      // regression). This function can't score presence/absence without a
+      // moment to check, so for this validator it must NOT claim success by
+      // default — false forces the retry-with-feedback path to actually run;
+      // the real verdict comes from re-running the judge at final regression
+      // either way.
+      if (issue.validator === 'SemanticRealizationJudge') return false;
+      return !MOMENT_REALIZATION_VALIDATORS.has(issue.validator ?? '');
+    }
     if (issue.validator === 'TreatmentEventLedgerValidator') {
       return hasDirectTreatmentEventRealization(moment, prose);
     }

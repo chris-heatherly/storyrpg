@@ -379,6 +379,56 @@ describe('buildSceneProseRepairHandler', () => {
     expect(emitted.join('\n')).toContain('restored s2-1');
   });
 
+  it('r116 gap analysis (2026-07-18): restores a rewrite instead of falsely declaring a SemanticRealizationJudge forbidden-evidence finding cleared', async () => {
+    // Live regression: bite-me-r116_2026-07-18T14-51-12. An escalation-budget
+    // forbidden-evidence finding ("Canonical realization validation confirms
+    // forbidden evidence...") has no quoted moment to extract — before this
+    // fix, any SemanticRealizationJudge finding with no extractable moment
+    // fell through to `!MOMENT_REALIZATION_VALIDATORS.has(...)`, which is
+    // vacuously true (SemanticRealizationJudge was never in that set), so
+    // the very first rewrite attempt was declared "predicted clear" whether
+    // or not it actually removed the forbidden content — skipping the
+    // sharpened-feedback retry and, under requirePredictedClear, keeping a
+    // rewrite that never fixed anything. The real content still had the
+    // forbidden evidence at final regression, but the repair loop had
+    // already (wrongly) moved on.
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's1-4',
+          // A rewrite that doesn't remove anything meaningful — stands in
+          // for a rewrite that fails to clear the forbidden evidence.
+          rewrittenBeats: [{ id: 'b1', text: 'Kylie walks home through the quiet park once more.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const story = makeStory();
+    const original = (story as any).episodes[0].scenes[0].beats[0].text;
+    const emitted: string[] = [];
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      emit: (message) => emitted.push(message),
+      allowRequiredBeatFallback: () => false,
+      requirePredictedClear: true,
+    });
+
+    const result = await handler({
+      story,
+      blockingIssues: [{
+        type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+        repairHandler: 'scene_prose', sceneId: 's1-4', episodeNumber: 1,
+        message: 'Canonical realization validation confirms forbidden evidence for task task:escalation-budget:ep1: escalation-budget:ep1:ending-displaced.',
+      }] as never,
+    });
+
+    expect(result.changed).toBe(false);
+    expect((story as any).episodes[0].scenes[0].beats[0].text).toBe(original);
+    expect(emitted.join('\n')).toContain('restored s1-4');
+  });
+
   it('repairs an ENCOUNTER scene: rewrites encounter phase/storylet prose and merges it back', async () => {
     const critic = {
       execute: vi.fn().mockResolvedValue({

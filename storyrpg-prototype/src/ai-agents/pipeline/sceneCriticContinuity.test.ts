@@ -154,4 +154,38 @@ describe('SceneCriticContinuity.repairContinuityFindings (run-shaped)', () => {
     expect(criticCalls[0].directorNotes).toContain('Stela slides a business card');
     expect(criticCalls[0].directorNotes).toContain('motivated departure');
   });
+
+  it('r117 gap analysis (2026-07-18): rejects a critic rewrite that drops the opening player anchor', async () => {
+    // Live regression: bite-me-r117_2026-07-18T16-07-37 shipped s1-1 with
+    // pov_anchor_missing at final contract even though it had PASSED
+    // incremental validation (including the opening-anchor check) minutes
+    // earlier — the only rewrite in between was this flag-gated pass.
+    const { sceneContents, deps } = makeFixture();
+    sceneContents[0].beats[0].text = 'You unpack alone in the Lipscani apartment.';
+    const { flagSceneForCritic } = await import('../remediation/sceneCriticFlags');
+    flagSceneForCritic(sceneContents[0], 'realization-retry');
+
+    const sceneCritic = {
+      execute: vi.fn(async () => ({
+        success: true,
+        data: {
+          // A voice polish that reads well but drops the player anchor entirely.
+          rewrittenBeats: [{ id: 's1-1-b1', text: 'Kylie unpacks alone in the Lipscani apartment.' }],
+          overallCommentary: '',
+        },
+      })),
+    } as unknown as SceneCritic;
+
+    const emitted: string[] = [];
+    const pass = new SceneCriticContinuity({
+      ...deps,
+      sceneCritic,
+      emit: (event) => emitted.push(String((event as { message?: string }).message ?? '')),
+      config: { agents: {}, sceneCritic: { enabled: false, maxScenesPerEpisode: 1 } } as unknown as PipelineConfig,
+    });
+    await pass.runSceneCriticPass(sceneContents, characterBible);
+
+    expect(sceneContents[0].beats[0].text).toBe('You unpack alone in the Lipscani apartment.');
+    expect(emitted.join('\n')).toContain('dropped the opening player anchor');
+  });
 });

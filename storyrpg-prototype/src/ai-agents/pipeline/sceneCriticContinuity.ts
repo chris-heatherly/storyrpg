@@ -44,6 +44,7 @@ import {
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { sceneCriticFlags, sceneCriticNotes } from '../remediation/sceneCriticFlags';
 import { rewriteLosesRequiredMoment } from '../remediation/sceneRealizationGuard';
+import { hasPlayerReference } from '../validators/PovClarityValidator';
 import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
@@ -202,6 +203,40 @@ export class SceneCriticContinuity {
               type: 'warning',
               phase: 'scene_critic',
               message: `SceneCritic rewrite of ${scene.sceneId} dropped the authored ${lost.tier} moment ("${lost.moment.slice(0, 80)}…") — keeping the original prose`,
+            });
+            continue;
+          }
+        }
+        // r117 gap analysis (2026-07-18): this pass runs AFTER incremental
+        // validation already passed (including PovClarityValidator's opening-
+        // anchor check), rewriting the scene's opening beat with no
+        // awareness of that contract — rewriteLosesRequiredMoment only
+        // covers requiredBeats/signatureMoment, not POV anchoring. A live run
+        // shipped s1-1 with pov_anchor_missing at final contract even though
+        // it had passed incremental validation minutes earlier; the only
+        // rewrite between those two points was this one. Same guard shape:
+        // if the scene's first non-empty beat anchored the player before,
+        // it must still anchor the player after, or the rewrite is refused.
+        const originalOpeningBeat = scene.beats.find((beat) => String(beat.text ?? '').trim().length > 0);
+        const openingBeatHadAnchor = originalOpeningBeat
+          ? hasPlayerReference([
+              String(originalOpeningBeat.text ?? ''),
+              ...(originalOpeningBeat.textVariants ?? []).map((variant) => String(variant?.text ?? '')),
+            ].join('\n'))
+          : false;
+        if (openingBeatHadAnchor) {
+          const proposedOpeningBeat = proposedBeats.find((beat) => String(beat.text ?? '').trim().length > 0);
+          const stillHasAnchor = proposedOpeningBeat
+            ? hasPlayerReference([
+                String(proposedOpeningBeat.text ?? ''),
+                ...(proposedOpeningBeat.textVariants ?? []).map((variant) => String(variant?.text ?? '')),
+              ].join('\n'))
+            : false;
+          if (!stillHasAnchor) {
+            this.deps.emit({
+              type: 'warning',
+              phase: 'scene_critic',
+              message: `SceneCritic rewrite of ${scene.sceneId} dropped the opening player anchor (you/your/{{player.name}}) — keeping the original prose`,
             });
             continue;
           }

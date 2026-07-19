@@ -67,6 +67,34 @@ describe('memory outbox service', () => {
     }
   });
 
+  it('keeps an exhausted transient failure pending for operator recovery', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'storyrpg-cognee-outbox-'));
+    const lifecycle = { activeWorkers: new Map([['story-worker', {}]]) };
+    const fetchMock = vi.fn().mockRejectedValue(new Error('fetch failed'));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = createMemoryOutboxService({
+      memoryRoot: root,
+      lifecycle,
+      baseUrl: 'http://cognee:8000',
+      apiKey: 'ck_test',
+      token: 'internal-token',
+    });
+
+    try {
+      const queued = service.enqueue({ kind: 'validator', title: 'Validation', text: 'Passed.' });
+      const pending = path.join(root, 'cognee-outbox', 'pending', `${queued.id}.json`);
+      const entry = JSON.parse(await fs.readFile(pending, 'utf8'));
+      entry.attempts = 7;
+      await fs.writeFile(pending, JSON.stringify(entry));
+      lifecycle.activeWorkers.clear();
+      await service.drain();
+      expect(service.status()).toMatchObject({ pending: 1, deadLetter: 0, retryExhausted: 1 });
+    } finally {
+      service.stop();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('configures Cognee with the queued narrative model before adding a record', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'storyrpg-cognee-outbox-'));
     const lifecycle = { activeWorkers: new Map([['story-worker', {}]]) };

@@ -15,6 +15,7 @@ const defaultProjectDataset = process.env.COGNEE_PROJECT_DATASET || 'storyrpg-pr
 const runDatasetPrefix = process.env.COGNEE_RUN_DATASET_PREFIX || 'storyrpg-run';
 const memoryRoot = process.env.MEMORY_DIR ? path.resolve(process.env.MEMORY_DIR) : path.join(appRoot, 'pipeline-memories');
 const projectManifestFile = path.join(memoryRoot, 'cognee-project-dataset.json');
+const outboxRoot = path.join(memoryRoot, 'cognee-outbox');
 
 function headers(json = true) {
   const h = {};
@@ -94,6 +95,46 @@ async function search(query, datasets) {
   });
   if (!res.ok) throw new Error(`Cognee search failed: ${res.status} ${await res.text()}`);
   return res.json();
+}
+
+async function activeGeneratorLlmTarget() {
+  try {
+    const settings = JSON.parse(await fs.readFile(path.join(appRoot, '.generator-settings.json'), 'utf8'));
+    const provider = settings.llmProvider === 'google' ? 'gemini' : settings.llmProvider;
+    const rawModel = settings.llmModel;
+    if (!provider || !rawModel) return null;
+    const model = provider === 'gemini' && !rawModel.includes('/') ? `gemini/${rawModel}` : rawModel;
+    const apiKey = provider === 'gemini' ? process.env.GEMINI_API_KEY
+      : provider === 'anthropic' ? process.env.ANTHROPIC_API_KEY
+        : provider === 'openai' ? process.env.OPENAI_API_KEY
+          : undefined;
+    return { provider, model, apiKey };
+  } catch {
+    return null;
+  }
+}
+
+async function syncLlmTarget(target) {
+  if (!target) return null;
+  const res = await fetch(endpoint('settings'), {
+    method: 'POST',
+    headers: headers(true),
+    body: JSON.stringify({ llm: { provider: target.provider, model: target.model, ...(target.apiKey ? { apiKey: target.apiKey } : {}) } }),
+  });
+  if (!res.ok) throw new Error(`Cognee LLM settings failed: ${res.status} ${await res.text()}`);
+  return { provider: target.provider, model: target.model };
+}
+
+async function outboxStatus() {
+  const count = async (name) => {
+    try { return (await fs.readdir(path.join(outboxRoot, name))).filter((file) => file.endsWith('.json')).length; } catch { return 0; }
+  };
+  return {
+    pending: await count('pending'),
+    processing: await count('processing'),
+    completed: await count('completed'),
+    deadLetter: await count('dead-letter'),
+  };
 }
 
 async function indexProject() {
@@ -191,17 +232,35 @@ async function health() {
   console.log(`Cognee healthy at ${baseUrl}`);
 }
 
-async function doctor() {
+async function doctor(args = []) {
   await health();
+  const target = await syncLlmTarget(await activeGeneratorLlmTarget());
   const projectDataset = await activeProjectDataset();
   const result = await search('StoryRPG memory readiness check', [projectDataset]);
   const resultCount = Array.isArray(result) ? result.length : 1;
+  let canary = 'not-run';
+  if (args.includes('--write')) {
+    const dataset = 'storyrpg-memory-health';
+    const marker = `storyrpg-memory-canary-${Date.now()}`;
+    await addText(dataset, marker, `Cognee readiness canary ${marker}`, ['health-canary']);
+    await cognify(dataset);
+    const deadline = Date.now() + 45_000;
+    do {
+      const hits = await search(marker, [dataset]);
+      if (Array.isArray(hits) ? hits.length : hits) { canary = 'write-index-recall-ok'; break; }
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    } while (Date.now() < deadline);
+    if (canary !== 'write-index-recall-ok') throw new Error('Cognee write canary was not retrievable before timeout');
+  }
   console.log(JSON.stringify({
     provider: 'cognee',
     baseUrl,
     projectDataset,
     authenticatedSearch: 'ok',
     resultCount,
+    activeGeneratorLlm: target,
+    outbox: await outboxStatus(),
+    canary,
   }, null, 2));
 }
 
@@ -212,7 +271,7 @@ try {
   else if (command === 'index-run') await indexRun(args);
   else if (command === 'ask') await ask(args);
   else if (command === 'health') await health();
-  else if (command === 'doctor') await doctor();
+  else if (command === 'doctor') await doctor(args);
   else {
     throw new Error('Usage: memory.mjs <index-project|index-run|ask|health|doctor>');
   }

@@ -188,7 +188,15 @@ function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, tok
           } else {
             delete entry.nextAttemptAt;
           }
-          const destination = !retryable || entry.attempts >= MAX_ATTEMPTS
+          // A transient provider outage must never turn advisory memory into
+          // silent data loss. After the normal retry budget is exhausted, keep
+          // the record pending at the capped interval until an operator can
+          // observe or repair the provider. Only permanent failures quarantine.
+          if (retryable && entry.attempts >= MAX_ATTEMPTS) {
+            entry.retryExhaustedAt = entry.retryExhaustedAt || new Date().toISOString();
+            entry.nextAttemptAt = new Date(Date.now() + MAX_RETRY_DELAY_MS).toISOString();
+          }
+          const destination = !retryable
             ? path.join(deadLetterDir, file)
             : path.join(pendingDir, file);
           atomicWrite(destination, entry);
@@ -221,6 +229,9 @@ function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, tok
       processing: count(processingDir),
       completed: count(completedDir),
       deadLetter: count(deadLetterDir),
+      retryExhausted: entries(pendingDir).filter((file) => {
+        try { return Boolean(JSON.parse(fs.readFileSync(path.join(pendingDir, file), 'utf8')).retryExhaustedAt); } catch { return false; }
+      }).length,
       dirtyDatasets: loadDirtyDatasets().size,
       oldestPendingAgeMs,
       draining,

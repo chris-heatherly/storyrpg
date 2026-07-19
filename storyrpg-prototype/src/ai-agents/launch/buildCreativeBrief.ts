@@ -50,7 +50,7 @@ function analyzedBrief(
     },
     protagonist: {
       id: sourceAnalysis.protagonist?.id || 'protagonist',
-      name: sourceAnalysis.protagonist?.name || 'Hero',
+      name: sourceAnalysis.protagonist?.name || '',
       pronouns: sourcePronouns || alignedDocumentPronouns || 'they/them',
       description: sourceAnalysis.protagonist?.description || '',
       role: 'protagonist',
@@ -86,7 +86,7 @@ function promptOnlyBrief(customStoryTitle: string, userPrompt: string): FullCrea
       themes: [],
     },
     world: { premise: '', timePeriod: '', technologyLevel: '', keyLocations: [] },
-    protagonist: { id: 'p1', name: 'Hero', pronouns: 'he/him', description: '', role: '' },
+    protagonist: { id: 'p1', name: '', pronouns: 'they/them', description: '', role: '' },
     npcs: [],
     episode: { number: 1, title: 'Episode 1', synopsis: '', startingLocation: '' },
     userPrompt: prompt,

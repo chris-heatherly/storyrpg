@@ -558,6 +558,25 @@ function mergeJsonLike(base, patch) {
   return merged;
 }
 
+function applyCanonicalIdentityToResumeContext(resumeContext, eventData, normalizedAt) {
+  if (
+    eventData?.eventCode !== 'generation_identity_normalized'
+    || !eventData.canonicalProtagonist
+    || typeof eventData.canonicalProtagonist !== 'object'
+    || !resumeContext?.requestPayload?.generationInput?.brief
+  ) return undefined;
+  return {
+    ...resumeContext,
+    requestPayload: mergeJsonLike(resumeContext.requestPayload, {
+      generationInput: {
+        brief: { protagonist: eventData.canonicalProtagonist },
+        identityResolution: eventData.identityResolution,
+      },
+    }),
+    identityNormalizedAt: normalizedAt,
+  };
+}
+
 const DURABLE_RESUME_OUTPUT_STEP_IDS = [
   'source_analysis',
   'season_plan',
@@ -1565,6 +1584,15 @@ function createWorkerLifecycle({
             // Latest-wins snapshot; flows out to the frontend via publicJobState.
             if (evt.data && evt.data.generationPlan && typeof evt.data.generationPlan === 'object') {
               updates.generationPlan = evt.data.generationPlan;
+            }
+            const normalizedResumeContext = applyCanonicalIdentityToResumeContext(
+              currentJob?.resumeContext,
+              evt.data,
+              eventAt,
+            );
+            if (normalizedResumeContext) {
+              updates.resumeContext = normalizedResumeContext;
+              updateCheckpoint(workerJob.id, { resumeContext: updates.resumeContext });
             }
             upsertWorkerJob(workerJob.id, updates);
             const savedCheckpointStepId = evt.eventType === 'checkpoint'
@@ -2631,6 +2659,7 @@ module.exports = {
     compactWorkerTimelineEntry,
     compactPersistedGenerationJob,
     compactPersistedWorkerJob,
+    applyCanonicalIdentityToResumeContext,
     publicWorkerStatus,
   },
 };

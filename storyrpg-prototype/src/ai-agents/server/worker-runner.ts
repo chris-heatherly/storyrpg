@@ -30,6 +30,10 @@ import { installResilientHttp } from './resilientHttp';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { Story } from '../../types';
 import { assertGenerationPreflight } from '../pipeline/generationPreflight';
+import {
+  compileGenerationBrief,
+  selectGenerationIdentityResolution,
+} from '../launch/compileGenerationBrief';
 
 // Make every outbound provider call (Gemini/Anthropic/OpenAI/ElevenLabs/blob/…)
 // reuse keep-alive connections and transparently retry transient connection
@@ -300,19 +304,45 @@ async function runAnalysis(payload: WorkerPayload) {
 
 async function runGeneration(payload: WorkerPayload) {
   if (!payload.generationInput) throw new Error('generationInput is required for generation mode');
-  const { brief, sourceAnalysis, episodeRange, manifest } = payload.generationInput;
+  const { sourceAnalysis, episodeRange, manifest } = payload.generationInput;
+  const incomingBrief = payload.generationInput.brief as unknown as FullCreativeBrief;
+  const compiled = compileGenerationBrief({
+    draftBrief: incomingBrief,
+    sourceAnalysis: sourceAnalysis as SourceMaterialAnalysis | undefined,
+    seasonPlan: incomingBrief.seasonPlan,
+  });
+  compiled.brief.generationManifest = manifest;
+  payload.generationInput.brief = compiled.brief as unknown as Record<string, unknown>;
+  const launchResolution = payload.generationInput.identityResolution;
+  const identityResolution = selectGenerationIdentityResolution(launchResolution, compiled.identityResolution);
+  payload.generationInput.identityResolution = identityResolution;
+  if (identityResolution.action !== 'unchanged') {
+    emitPipelineEvent({
+      type: 'debug',
+      phase: 'preflight',
+      message: identityResolution.action === 'normalized'
+        ? `Canonical protagonist identity normalized from ${identityResolution.canonicalSource}.`
+        : 'Generation brief has no canonical protagonist identity yet.',
+      data: {
+        eventCode: 'generation_identity_normalized',
+        identityResolution,
+        canonicalProtagonist: compiled.brief.protagonist,
+      },
+    });
+  }
+  const brief = compiled.brief;
   assertGenerationPreflight({
-    brief: brief as unknown as FullCreativeBrief,
+    brief,
     sourceAnalysis: sourceAnalysis as SourceMaterialAnalysis | undefined,
     episodeRange,
     manifest,
-    fallbackEpisode: Number((brief as any)?.episode?.number || 1),
+    fallbackEpisode: Number(brief?.episode?.number || 1),
   });
   emit('step_start', { step: 'generation' });
   const { pipeline, result } = await runStoryGeneration({
     config: payload.config,
     externalJobId: payload.externalJobId,
-    brief: brief as unknown as FullCreativeBrief,
+    brief,
     sourceAnalysis: sourceAnalysis as SourceMaterialAnalysis | undefined,
     episodeRange,
     manifest,

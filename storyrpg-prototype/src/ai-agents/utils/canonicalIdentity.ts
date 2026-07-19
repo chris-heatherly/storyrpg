@@ -16,6 +16,9 @@ const GENERIC_PERSON_NAMES = new Set([
   'unknown',
 ]);
 
+/** Bump whenever identity normalization semantics change persisted launch/cache data. */
+export const CANONICAL_IDENTITY_SCHEMA_VERSION = 'canonical-identity-v1' as const;
+
 function normalizedIdentityText(value?: string): string {
   return (value ?? '')
     .normalize('NFKC')

@@ -65,6 +65,31 @@ function invokeJsonRoute(handler, req) {
 }
 
 describe('workerLifecycle resume checkpoint normalization', () => {
+  it('persists worker-normalized identity into the next resume payload', () => {
+    const resumeContext = {
+      requestPayload: {
+        generationInput: {
+          brief: {
+            protagonist: { id: 'protagonist', name: 'The Hero', pronouns: 'he/him' },
+            story: { title: 'Fixture' },
+          },
+        },
+      },
+    };
+    const updated = __test__.applyCanonicalIdentityToResumeContext(resumeContext, {
+      eventCode: 'generation_identity_normalized',
+      canonicalProtagonist: { id: 'char-mara', name: 'Mara Vale', pronouns: 'she/her' },
+      identityResolution: { action: 'normalized', canonicalSource: 'season_plan' },
+    }, '2026-07-19T16:00:00.000Z');
+
+    expect(updated.requestPayload.generationInput.brief).toMatchObject({
+      story: { title: 'Fixture' },
+      protagonist: { id: 'char-mara', name: 'Mara Vale', pronouns: 'she/her' },
+    });
+    expect(updated.requestPayload.generationInput.identityResolution.action).toBe('normalized');
+    expect(updated.identityNormalizedAt).toBe('2026-07-19T16:00:00.000Z');
+  });
+
   it('uses server provider credentials over stale non-empty client keys', () => {
     const agents = {
       sceneWriter: { provider: 'gemini', model: 'gemini-test', apiKey: 'stale-client-key' },

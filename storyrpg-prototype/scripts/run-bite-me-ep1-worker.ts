@@ -287,7 +287,7 @@ async function main(): Promise<void> {
   // Generation uses the same locked Gemini-only policy as analysis.
   const prepared = prepareGenerationJob({
     config: primaryConfig,
-    brief,
+    draftBrief: brief,
     sourceAnalysis: analysisResult.sourceAnalysis as SourceMaterialAnalysis,
     seasonPlan,
     requestedEpisodes: [1],

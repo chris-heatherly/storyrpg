@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -45,5 +45,17 @@ describe('analysis cache fingerprinting', () => {
     expect(readAnalysisCache(path, identity({ model: 'changed' }))).toBeUndefined();
     expect(readAnalysisCache(path, identity({ provider: 'anthropic' }))).toBeUndefined();
     expect(readAnalysisCache(path, identity({ options: { pacing: 'fast' } }))).toBeUndefined();
+  });
+
+  it('rejects cache envelopes that predate canonical identity versioning', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'storyrpg-analysis-cache-'));
+    dirs.push(dir);
+    const path = join(dir, 'analysis.json');
+    writeAnalysisCache(path, identity(), { success: true });
+    const legacy = JSON.parse(readFileSync(path, 'utf8'));
+    delete legacy.identitySchemaVersion;
+    writeFileSync(path, JSON.stringify(legacy));
+
+    expect(readAnalysisCache(path, identity())).toBeUndefined();
   });
 });

@@ -102,7 +102,7 @@ describe('buildGeneratorCreativeBrief', () => {
 
     expect(brief?.story.title).toBe('Untitled Prompt');
     expect(brief?.story.genre).toBe('Action');
-    expect(brief?.protagonist.name).toBe('Hero');
+    expect(brief?.protagonist).toMatchObject({ name: '', pronouns: 'they/them' });
   });
 
   it('lets analyzed source override document brief once analysis is available', () => {

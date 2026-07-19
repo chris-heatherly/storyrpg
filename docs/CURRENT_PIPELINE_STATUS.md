@@ -97,10 +97,19 @@ An override is recorded with `npm run quality:override -- --run <run-dir> --appr
 receipt and appends `quality-override-audit.jsonl`; it never changes scores,
 caps, QA evidence, or story content.
 
-Source analysis now carries explicit protagonist pronouns. Treatment-bound
-generation preflight rejects a creative-brief protagonist that conflicts with
-the locked season plan, and placeholder names such as `Hero` or `The Hero`
-cannot become canonical aliases. Final-contract repair is monotonic across
+An already-packaged run can be withdrawn without changing its story or score via
+`npm run quality:hold -- --run <run-dir> --held-by <identity> --reason <reason>
+[--superseded-by <run-dir>]`. This writes an explicit held disposition and an
+append-only `quality-hold-audit.jsonl` record; the mechanism is story-agnostic.
+
+Source analysis now carries explicit protagonist pronouns. `prepareGenerationJob`
+treats caller briefs as provisional and compiles identity from source analysis,
+the locked season plan, and explicit overrides. Missing or legacy-placeholder
+identity is normalized with telemetry; genuine name-vs-name contradictions fail
+before provider work. Workers repeat this normalization before preflight so old
+resume payloads use the same policy, and the proxy persists the normalized
+identity into the next resume context. Placeholder names such as `Hero` or
+`The Hero` cannot become final-validator aliases. Final-contract repair is monotonic across
 blocking and advisory canonical findings, so a rewrite that loses a previously
 realized anchor is rolled back rather than committed.
 

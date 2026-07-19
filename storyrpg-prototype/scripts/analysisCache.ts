@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import { CANONICAL_IDENTITY_SCHEMA_VERSION } from '../src/ai-agents/utils/canonicalIdentity';
 
 export const ANALYSIS_CACHE_VERSION = 1;
-export const ANALYSIS_EXTRACTION_CONTRACT_VERSION = 'source-analysis-season-plan-v1';
+export const ANALYSIS_EXTRACTION_CONTRACT_VERSION = 'source-analysis-season-plan-v2';
 
 export interface AnalysisCacheIdentity {
   sourceText: string;
@@ -16,6 +17,7 @@ export interface AnalysisCacheEnvelope<T> {
   fingerprint: string;
   sourceHash: string;
   extractionContractVersion: typeof ANALYSIS_EXTRACTION_CONTRACT_VERSION;
+  identitySchemaVersion: typeof CANONICAL_IDENTITY_SCHEMA_VERSION;
   provider: string;
   model: string;
   options: Record<string, unknown>;
@@ -45,6 +47,7 @@ export function analysisCacheFingerprint(identity: AnalysisCacheIdentity): {
   const fingerprint = sha256(JSON.stringify(stableValue({
     version: ANALYSIS_CACHE_VERSION,
     extractionContractVersion: ANALYSIS_EXTRACTION_CONTRACT_VERSION,
+    identitySchemaVersion: CANONICAL_IDENTITY_SCHEMA_VERSION,
     sourceHash,
     provider: identity.provider,
     model: identity.model,
@@ -63,6 +66,7 @@ export function writeAnalysisCache<T>(
     version: ANALYSIS_CACHE_VERSION,
     ...hashes,
     extractionContractVersion: ANALYSIS_EXTRACTION_CONTRACT_VERSION,
+    identitySchemaVersion: CANONICAL_IDENTITY_SCHEMA_VERSION,
     provider: identity.provider,
     model: identity.model,
     options: stableValue(identity.options) as Record<string, unknown>,
@@ -84,6 +88,7 @@ export function readAnalysisCache<T>(
     if (
       envelope.version !== ANALYSIS_CACHE_VERSION
       || envelope.extractionContractVersion !== ANALYSIS_EXTRACTION_CONTRACT_VERSION
+      || envelope.identitySchemaVersion !== CANONICAL_IDENTITY_SCHEMA_VERSION
       || envelope.fingerprint !== expected.fingerprint
       || envelope.sourceHash !== expected.sourceHash
       || !envelope.result

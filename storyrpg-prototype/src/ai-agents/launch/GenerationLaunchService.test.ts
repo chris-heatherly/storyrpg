@@ -64,7 +64,7 @@ describe('GenerationLaunchService', () => {
   it('commits one manifest into the brief and versioned worker request', () => {
     const prepared = prepareGenerationJob({
       config: fixtureConfig(),
-      brief: fixtureBrief(),
+      draftBrief: fixtureBrief(),
       sourceAnalysis: fixtureSourceAnalysis(),
       seasonPlan: fixtureSeasonPlan(),
       requestedEpisodes: [1],
@@ -81,14 +81,36 @@ describe('GenerationLaunchService', () => {
       manifestHash: prepared.manifestHash,
     });
     expect(prepared.request.payload.generationInput?.episodeRange).toEqual({ start: 1, end: 1, specific: [1] });
+    expect(prepared.request.payload.generationInput?.identityResolution).toEqual(prepared.identityResolution);
     expect(Object.isFrozen(prepared.request)).toBe(true);
     expect(Object.isFrozen(prepared.request.payload.generationInput)).toBe(true);
+  });
+
+  it('normalizes a legacy placeholder from canonical analysis before request admission', () => {
+    const sourceAnalysis = fixtureSourceAnalysis();
+    sourceAnalysis.protagonist = {
+      id: 'char-mara', name: 'Mara Vale', pronouns: 'she/her', description: '', arc: '',
+    };
+    const seasonPlan = fixtureSeasonPlan();
+    seasonPlan.protagonist = { id: 'char-mara', name: 'Mara Vale', description: '' };
+    const draftBrief = fixtureBrief();
+    draftBrief.protagonist = {
+      id: 'protagonist', name: 'The Hero', pronouns: 'he/him', description: '', role: 'protagonist',
+    };
+
+    const prepared = prepareGenerationJob({
+      config: fixtureConfig(), draftBrief, sourceAnalysis, seasonPlan,
+      requestedEpisodes: [1], providerPolicy: 'gemini-only', runId: 'normalize-legacy',
+    });
+
+    expect(prepared.brief.protagonist).toMatchObject({ id: 'char-mara', name: 'Mara Vale', pronouns: 'she/her' });
+    expect(prepared.identityResolution.action).toBe('normalized');
   });
 
   it('rejects a non-Gemini route before a worker request exists', () => {
     expect(() => prepareGenerationJob({
       config: fixtureConfig('anthropic'),
-      brief: fixtureBrief(),
+      draftBrief: fixtureBrief(),
       sourceAnalysis: fixtureSourceAnalysis(),
       seasonPlan: fixtureSeasonPlan(),
       requestedEpisodes: [1],

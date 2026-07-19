@@ -22,6 +22,10 @@ import {
   generationArtifactHash,
   normalizeRequestedEpisodes,
 } from '../pipeline/generationPreflight';
+import {
+  compileGenerationBrief,
+  type GenerationIdentityResolution,
+} from './compileGenerationBrief';
 
 export const GENERATION_LAUNCH_SERVICE_VERSION = 1 as const;
 export type ProviderPolicy = 'configured' | 'gemini-only';
@@ -36,6 +40,7 @@ export type GeneratorPipelineConfigInput = Omit<BuildPipelineConfigInput, 'taskA
 export interface PreparedGenerationJob {
   request: GenerationWorkerJobStartRequest;
   brief: FullCreativeBrief;
+  identityResolution: GenerationIdentityResolution;
   configHash: string;
   manifestHash: string;
   launchServiceVersion: typeof GENERATION_LAUNCH_SERVICE_VERSION;
@@ -117,9 +122,11 @@ export function prepareAnalysisJob(input: {
 
 export function prepareGenerationJob(input: {
   config: PipelineConfig;
-  brief: FullCreativeBrief;
+  /** Provisional input only. Canonical source/plan facts are compiled over it here. */
+  draftBrief: FullCreativeBrief;
   sourceAnalysis?: SourceMaterialAnalysis | null;
   seasonPlan?: SeasonPlan | null;
+  protagonistOverride?: Partial<FullCreativeBrief['protagonist']> | null;
   requestedEpisodes: number[];
   providerPolicy?: ProviderPolicy;
   runId: string;
@@ -134,17 +141,20 @@ export function prepareGenerationJob(input: {
           specific: input.requestedEpisodes,
         }
       : undefined,
-    input.brief.episode.number,
+    input.draftBrief.episode.number,
   );
   const episodeRange = {
     start: Math.min(...requestedEpisodes),
     end: Math.max(...requestedEpisodes),
     specific: requestedEpisodes,
   };
-  const brief: FullCreativeBrief = {
-    ...input.brief,
-    ...(input.seasonPlan ? { seasonPlan: input.seasonPlan } : {}),
-  };
+  const compiled = compileGenerationBrief({
+    draftBrief: input.draftBrief,
+    sourceAnalysis: input.sourceAnalysis,
+    seasonPlan: input.seasonPlan,
+    protagonistOverride: input.protagonistOverride,
+  });
+  const brief = compiled.brief;
   const manifest = buildGenerationManifest({
     sourceAnalysis: input.sourceAnalysis,
     seasonPlan: input.seasonPlan,
@@ -168,6 +178,7 @@ export function prepareGenerationJob(input: {
       config: wireClone(input.config) as unknown as Record<string, unknown>,
       generationInput: {
         brief: wireClone(brief) as unknown as Record<string, unknown>,
+        identityResolution: wireClone(compiled.identityResolution),
         sourceAnalysis: input.sourceAnalysis
           ? wireClone(input.sourceAnalysis) as unknown as Record<string, unknown>
           : undefined,
@@ -188,6 +199,7 @@ export function prepareGenerationJob(input: {
   };
   return {
     brief,
+    identityResolution: compiled.identityResolution,
     configHash,
     manifestHash,
     launchServiceVersion: GENERATION_LAUNCH_SERVICE_VERSION,

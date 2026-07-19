@@ -442,12 +442,13 @@ function protagonistFromStoryRoster(story: Story): ContractProtagonist | undefin
 
 function mergeAliases(rosterName: string, provided?: ContractProtagonist): string[] | undefined {
   const aliases = new Set<string>();
-  const providedName = normalizeProtagonistName(provided?.name);
-  if (providedName && providedName !== rosterName) aliases.add(providedName);
-  for (const alias of provided?.aliases || []) {
-    const clean = normalizeProtagonistName(alias);
+  const addAlias = (value?: string): void => {
+    if (!value || isPlaceholderPersonName(value)) return;
+    const clean = normalizeProtagonistName(value);
     if (clean && clean !== rosterName) aliases.add(clean);
-  }
+  };
+  addAlias(provided?.name);
+  for (const alias of provided?.aliases || []) addAlias(alias);
   return aliases.size > 0 ? [...aliases] : undefined;
 }
 

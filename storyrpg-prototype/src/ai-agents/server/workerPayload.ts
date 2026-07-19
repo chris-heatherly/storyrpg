@@ -1,6 +1,7 @@
 import type { CompileEpisodeRequest } from '../pipeline/episodeCompiler';
 import { createHash } from 'node:crypto';
 import type { GenerationManifest } from '../pipeline/generationPreflight';
+import type { GenerationIdentityResolution } from '../launch/compileGenerationBrief';
 
 type EndingMode = 'single' | 'multiple';
 
@@ -37,6 +38,7 @@ export type WorkerPayload = {
   };
   generationInput?: {
     brief: Record<string, unknown>;
+    identityResolution?: GenerationIdentityResolution;
     sourceAnalysis?: Record<string, unknown>;
     episodeRange?: { start: number; end: number; specific?: number[] };
     manifest: GenerationManifest;

@@ -2123,7 +2123,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
       config = createPipelineConfig();
       preparedGeneration = prepareGenerationJob({
         config,
-        brief: draftBrief,
+        draftBrief,
         sourceAnalysis: updatedSourceAnalysis,
         seasonPlan: generationSeasonPlan,
         requestedEpisodes: episodesToGenerate,

@@ -614,7 +614,7 @@ describe('FinalStoryContractValidator', () => {
 
     const report = await new FinalStoryContractValidator().validate({
       story,
-      protagonist: { name: 'The Hero', pronouns: 'he/him' },
+      protagonist: { name: 'The Hero', aliases: ['the protagonist', 'Player Character'], pronouns: 'he/him' },
       mode: 'strict',
     });
 

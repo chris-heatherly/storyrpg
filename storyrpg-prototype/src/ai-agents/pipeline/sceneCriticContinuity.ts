@@ -46,6 +46,10 @@ import { sceneCriticFlags, sceneCriticNotes } from '../remediation/sceneCriticFl
 import { realizationTaskMomentsFor, rewriteLosesRequiredMoment } from '../remediation/sceneRealizationGuard';
 import { hasPlayerReference } from '../validators/PovClarityValidator';
 import type { NarrativeRealizationTask } from '../../types/narrativeContract';
+import type { SemanticRealizationJudgeLike } from '../agents/SemanticRealizationJudge';
+import { validateSemanticRealizationTasks } from './semanticValidationCoordinator';
+import { validateOwnerRealizationTasks, type RealizationTaskGateFinding } from './realizationTaskGate';
+import { inferNarrativeVerificationAuthority } from './realizationVerificationAuthority';
 import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection';
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
@@ -67,10 +71,44 @@ export interface SceneCriticContinuityDeps {
   emit: (event: Omit<PipelineEvent, 'timestamp'>) => void;
   /** Current SceneCritic instance, or null when one was never constructed. */
   readonly sceneCritic: SceneCritic | null;
+  /** Canonical semantic authority used to revalidate rewritten owner prose. */
+  readonly semanticRealizationJudge?: SemanticRealizationJudgeLike;
   buildContinuityCharacterKnowledge: (
     characterBible: CharacterBible,
   ) => Array<{ characterId: string; knows: string[]; doesNotKnow: string[] }>;
   buildContinuityTimeline: (blueprint: EpisodeBlueprint) => Array<{ event: string; when: string }>;
+}
+
+function taskPreservationSection(tasks: NarrativeRealizationTask[] | undefined): string {
+  if (!tasks?.length) return '';
+  const lines = tasks
+    .filter((task) => task.ownerStage === 'scene_writer')
+    .flatMap((task) => task.evidenceAtoms.map((atom) => {
+      const authority = atom.verificationAuthority
+        ?? (Array.isArray(atom.acceptedPatterns) ? inferNarrativeVerificationAuthority(atom) : 'semantic_judge');
+      const polarity = atom.polarity === 'forbidden' ? 'FORBIDDEN' : 'REQUIRED';
+      return `- [${authority}] ${polarity}: ${atom.description}`;
+    }));
+  return lines.length > 0
+    ? `CANONICAL REALIZATION RECEIPTS: the candidate is revalidated against these typed constraints before adoption. Preserve required meaning and exact literal names; do not introduce forbidden meaning.\n${lines.join('\n')}`
+    : '';
+}
+
+function realizationFindingKey(finding: RealizationTaskGateFinding): string {
+  return finding.fingerprint || [
+    finding.code,
+    finding.taskId,
+    ...(finding.missingEvidenceAtoms ?? []),
+    ...(finding.matchedForbiddenAtoms ?? []),
+  ].join('::');
+}
+
+function introducedRealizationFindings(
+  before: RealizationTaskGateFinding[],
+  after: RealizationTaskGateFinding[],
+): RealizationTaskGateFinding[] {
+  const beforeKeys = new Set(before.filter((finding) => finding.blocking).map(realizationFindingKey));
+  return after.filter((finding) => finding.blocking && !beforeKeys.has(realizationFindingKey(finding)));
 }
 
 function continuityRepairBeatIds(
@@ -93,6 +131,42 @@ function continuityRepairBeatIds(
 
 export class SceneCriticContinuity {
   constructor(private deps: SceneCriticContinuityDeps) {}
+
+  private async validateSceneWriterTasks(
+    scene: SceneContent,
+    tasks: NarrativeRealizationTask[] | undefined,
+  ): Promise<RealizationTaskGateFinding[]> {
+    const ownedTasks = (tasks ?? []).filter((task) =>
+      task.ownerStage === 'scene_writer'
+      && task.evidenceAtoms.every((atom) => Boolean(atom.id) && Array.isArray(atom.acceptedPatterns)),
+    );
+    if (ownedTasks.length === 0) return [];
+    if (!this.deps.semanticRealizationJudge) {
+      return validateOwnerRealizationTasks({
+        sceneId: scene.sceneId,
+        tasks: ownedTasks,
+        sceneContent: scene,
+        mode: 'final_regression',
+        currentStage: 'scene_writer',
+      });
+    }
+    const result = await validateSemanticRealizationTasks({
+      sceneId: scene.sceneId,
+      tasks: ownedTasks,
+      sceneContent: scene,
+      mode: 'final_regression',
+      currentStage: 'scene_writer',
+      judge: this.deps.semanticRealizationJudge,
+    });
+    const infrastructureBlockers = result.findings.filter((finding) =>
+      finding.blocking
+      && (finding.code === 'SEMANTIC_VALIDATION_UNAVAILABLE' || finding.code === 'SEMANTIC_VALIDATION_INCONCLUSIVE'),
+    );
+    if (infrastructureBlockers.length > 0) {
+      throw new Error(`canonical realization validation unavailable for ${infrastructureBlockers.map((finding) => finding.taskId).join(', ')}`);
+    }
+    return result.findings;
+  }
 
   async runSceneCriticPass(
     sceneContents: SceneContent[],
@@ -163,11 +237,14 @@ export class SceneCriticContinuity {
 
     for (const scene of targets) {
       try {
+        const sceneTasks = realizationTasksBySceneId?.get(scene.sceneId);
+        const baselineTaskFindings = await this.validateSceneWriterTasks(scene, sceneTasks);
         // The voice polish must not paraphrase away the scene's authored
         // realization contract (requiredBeats/signatureMoment, tagged onto the
         // SceneContent at acceptance) — the season-final validators block on
         // those exact moments. Tell the critic up front…
         const contractSection = buildRequiredBeatsSection(scene);
+        const typedTaskSection = taskPreservationSection(sceneTasks);
         // A3: advisory shadow evidence (planting/departure misses, unearned
         // relationship jumps, residual mechanics defects) arrives as concrete
         // per-scene notes — the critic fixes the NAMED gaps, not generic polish.
@@ -179,6 +256,7 @@ export class SceneCriticContinuity {
           contractSection
             ? `PRESERVE AUTHORED CONTENT: your rewrite must keep every staged moment below fully on-page — do not paraphrase away proper nouns, places, times, or staged actions.\n${contractSection}`
             : '',
+          typedTaskSection,
           advisorySection,
         ].filter(Boolean).join('\n\n');
         const critique = await critic.execute({
@@ -199,6 +277,19 @@ export class SceneCriticContinuity {
             speakerMood: replacement.speakerMood || b.speakerMood,
           };
         });
+        if (sceneTasks?.length) {
+          const candidateScene = { ...scene, beats: proposedBeats };
+          const candidateTaskFindings = await this.validateSceneWriterTasks(candidateScene, sceneTasks);
+          const introduced = introducedRealizationFindings(baselineTaskFindings, candidateTaskFindings);
+          if (introduced.length > 0) {
+            this.deps.emit({
+              type: 'warning',
+              phase: 'scene_critic',
+              message: `SceneCritic rewrite of ${scene.sceneId} introduced ${introduced.length} canonical realization blocker(s) (${introduced.map((finding) => finding.code).join(', ')}) — keeping the original prose`,
+            });
+            continue;
+          }
+        }
         // …and verify afterwards (deterministic, free): refuse a polish that
         // LOSES a depicted authored moment (GATE_SCENE_REQUIRED_BEAT_CHECK).
         // r117 gap analysis (2026-07-18): also covers premise role-facts and
@@ -206,7 +297,12 @@ export class SceneCriticContinuity {
         // realizationTaskMomentsFor for why this pass can't trust the
         // narrower requiredBeats/signatureMoment contract alone.
         if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')) {
-          const extraMoments = realizationTaskMomentsFor(realizationTasksBySceneId?.get(scene.sceneId));
+          // The typed guard above is authoritative when a semantic judge is
+          // available. Keep the legacy moment bridge only as a deterministic
+          // fallback for direct/test callers that do not inject that judge.
+          const extraMoments = this.deps.semanticRealizationJudge
+            ? []
+            : realizationTaskMomentsFor(sceneTasks);
           const lost = rewriteLosesRequiredMoment(scene, scene.beats, proposedBeats, extraMoments);
           if (lost) {
             this.deps.emit({

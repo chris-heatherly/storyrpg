@@ -344,7 +344,7 @@ export function buildSceneRepairDirectorNotes(
   relationshipPacing?: RepairableStoryScene['relationshipPacing'],
 ): string {
   const lines: string[] = [
-    'The final-story contract flagged this scene. Fix EVERY issue below by rewriting the scene\'s beat prose — dramatize each named moment ON-PAGE with concrete action, dialogue, and sensory detail. Do not summarize, allude to, or skip the staged moment.',
+    'The final-story contract flagged this scene. Fix EVERY issue below with the smallest coherent prose rewrite. Add missing authored meaning ON-PAGE; remove forbidden meaning without replacing it with another unowned event.',
   ];
   for (const issue of issues) {
     lines.push(`- ${issue.message ?? 'unspecified finding'}${issue.suggestion ? ` (fix: ${issue.suggestion})` : ''}`);
@@ -389,6 +389,21 @@ export function buildSceneRepairDirectorNotes(
       continue;
     }
     if (issue.validator === 'SemanticRealizationJudge') {
+      const forbiddenMeanings = forbiddenMeaningsForRepair(issue);
+      if (forbiddenMeanings.length > 0) {
+        for (const meaning of forbiddenMeanings) {
+          lines.push(
+            `  FORBIDDEN REALIZATION TARGET: ${meaning}`,
+            '  NON-NEGOTIABLE: remove that proposition from reader-facing prose. Preserve the scene\'s existing authored events, participants, causal order, and emotional result; do not replace the forbidden material with a different surprise, threat, reveal, arrival, message, or codename.',
+          );
+        }
+        if (/ending-displaced|final emotional beat belongs to the new threat|displaces the protagonist/i.test(`${issue.message ?? ''} ${forbiddenMeanings.join(' ')}`)) {
+          lines.push(
+            '  ENDING OWNERSHIP: rewrite only the terminal coda that displaced the ending. The protagonist\'s authored action, decision, victory, or emotional consequence must remain the final ownership beat. Forward pressure may deepen an existing question but may not introduce a new event.',
+          );
+        }
+        continue;
+      }
       for (const meaning of missingMeaningsForRepair(issue)) {
         lines.push(
           `  SEMANTIC REALIZATION TARGET: ${meaning}`,
@@ -606,6 +621,21 @@ function missingMeaningsForRepair(issue: RepairableIssue): string[] {
   }
   const required = requiredMomentFromMessage(message);
   return required ? [required] : [];
+}
+
+function forbiddenMeaningsForRepair(issue: RepairableIssue): string[] {
+  const message = issue.message ?? '';
+  const semantic = /Forbidden meaning(?:s|\(s\))? present\s*[—-]\s*remove them\s*:\s*(.+?)(?:\.\s*$|$)/i.exec(message)?.[1]?.trim();
+  if (semantic) {
+    return semantic
+      .split(/\s*;\s*/)
+      .map((meaning) => meaning.trim())
+      .filter(Boolean);
+  }
+  if ((issue.matchedForbiddenAtoms?.length ?? 0) > 0) {
+    return issue.matchedForbiddenAtoms!.map((atomId) => `Remove the forbidden proposition identified by ${atomId}.`);
+  }
+  return [];
 }
 
 function flaggedBeatIdsForRepair(
@@ -974,6 +1004,7 @@ function allMomentsDepicted(
   scene: RepairableStoryScene,
   issues: RepairableIssue[],
   plannedSource?: SceneContractSource,
+  deferSemanticPredictionToCanonicalRevalidation = false,
 ): boolean {
   const prose = sceneProseForScoring(scene);
   return plannedSourceMomentsDepicted(scene, plannedSource) && issues.every((issue) => {
@@ -1005,7 +1036,14 @@ function allMomentsDepicted(
       // default — false forces the retry-with-feedback path to actually run;
       // the real verdict comes from re-running the judge at final regression
       // either way.
-      if (issue.validator === 'SemanticRealizationJudge') return false;
+      if (issue.validator === 'SemanticRealizationJudge') {
+        // The final-contract loop re-runs the canonical semantic judge against
+        // each candidate and atomically restores any regression. Local token
+        // scoring cannot prove an interpretive proposition such as an ending
+        // being displaced, so only that transactional caller may defer this
+        // prediction to canonical revalidation.
+        return deferSemanticPredictionToCanonicalRevalidation;
+      }
       return !MOMENT_REALIZATION_VALIDATORS.has(issue.validator ?? '');
     }
     if (issue.validator === 'TreatmentEventLedgerValidator') {
@@ -1288,6 +1326,13 @@ export interface SceneProseRepairOptions {
    */
   requirePredictedClear?: boolean;
   /**
+   * The final-contract loop canonically revalidates every candidate and rolls
+   * it back on regression. Allow semantic findings that local token scoring
+   * cannot prove to reach that authoritative revalidation. Keep false for
+   * direct/advisory callers that lack the transactional outer loop.
+   */
+  deferSemanticPredictionToCanonicalRevalidation?: boolean;
+  /**
    * Shared between the prose and cluster handlers of ONE final-contract loop:
    * cluster centers already attempted (episodeNumber:sceneId keys). The prose
    * handler defers a scene to cluster repair while any of its blockers route
@@ -1412,6 +1457,13 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
         continue;
       }
       attemptedScenes.add(sceneId);
+      // Charge the issue when the handler actually enters its bounded LLM
+      // attempt, even if the response is unusable or canonical prediction
+      // later restores the scene. Reporting only successful merges made live
+      // telemetry claim attemptedIssueKeys: [] despite paid critic calls.
+      for (const issue of currentIssues) {
+        attemptedIssueKeys.add(contractRepairIssueFingerprint(issue));
+      }
       // Encounter scenes carry prose in encounter.phases/storylets, not
       // scene.beats — merge the rewrite back to the surface it came from.
       const isEncounterScene = !scene.beats?.length;
@@ -1514,7 +1566,12 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
           } else {
             opts.emit?.(`Scene-prose contract repair: SceneCritic returned no usable structured rewrite for ${sceneId}; retrying within the bounded scene attempt.`);
           }
-          predictedClear = allMomentsDepicted(scene, issues, plannedSource);
+          predictedClear = allMomentsDepicted(
+            scene,
+            issues,
+            plannedSource,
+            opts.deferSemanticPredictionToCanonicalRevalidation === true,
+          );
           if (!predictedClear && attempt === 1) {
             opts.emit?.(`Scene-prose contract repair: ${sceneId} still missing authored content after rewrite — retrying with the remaining checklist.`);
           }
@@ -1531,7 +1588,12 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
         const fallbackAppended = appendRequiredBeatFallback(scene, fallbackIssues);
         if (fallbackAppended > 0) {
           sceneMerged += fallbackAppended;
-          predictedClear = allMomentsDepicted(scene, issues, plannedSource);
+          predictedClear = allMomentsDepicted(
+            scene,
+            issues,
+            plannedSource,
+            opts.deferSemanticPredictionToCanonicalRevalidation === true,
+          );
           opts.emit?.(
             `Scene-prose contract repair: appended ${fallbackAppended} required beat fallback(s) in ${sceneId}` +
             ` (${predictedClear ? 'now depicts every flagged moment' : 'authored content STILL incomplete'}).`,
@@ -1545,7 +1607,6 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
             if (proseHygieneIssuesCleared(scene, issues)) {
               totalMerged += sceneMerged;
               repairedScenes.push(sceneId);
-              for (const issue of currentIssues) attemptedIssueKeys.add(contractRepairIssueFingerprint(issue));
               opts.emit?.(
                 `Scene-prose contract repair: kept ${sceneId} rewrite because prose-hygiene findings cleared even though the authored checklist is still incomplete.`,
               );
@@ -1559,7 +1620,6 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
           }
           totalMerged += sceneMerged;
           repairedScenes.push(sceneId);
-          for (const issue of currentIssues) attemptedIssueKeys.add(contractRepairIssueFingerprint(issue));
           atomicScopes.push({ kind: 'scene', sceneId, episodeNumber: issues[0]?.episodeNumber });
           if (predictedClear) clearedScenes.push(sceneId);
           opts.emit?.(

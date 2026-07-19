@@ -62,6 +62,7 @@ describe('runFinalContractRepair', () => {
       revalidate: async () => partial,
       maxAttempts: 1,
       rejectIntroducedBlockingIssues: true,
+      rejectNoBlockingProgress: true,
       requireMutationEvidence: true,
     });
     expect((localStory as any).marker).toBe('partially-repaired');
@@ -137,6 +138,29 @@ describe('runFinalContractRepair', () => {
     expect(out.passed).toBe(false);
     expect(out.attempts).toBe(1); // one round attempted, then fixpoint break
     expect(revalidations).toBe(0); // never re-validated because nothing changed
+  });
+
+  it('records and budgets targeted LLM attempts even when no candidate commits', async () => {
+    const issueKey = (await import('./finalContractRepair')).contractRepairIssueFingerprint(fail.blockingIssues[0]);
+    const snapshots: Array<{ attemptedIssueKeys: string[] }> = [];
+    let handlerCalls = 0;
+    const out = await runFinalContractRepair({
+      story,
+      initialReport: fail,
+      handlers: [({ story: candidate }) => {
+        handlerCalls += 1;
+        return { story: candidate, changed: false, attemptedIssueKeys: [issueKey] };
+      }],
+      revalidate: async () => fail,
+      maxAttempts: 2,
+      maxAttemptsPerIssue: 2,
+      onRoundSnapshot: (snapshot) => { snapshots.push(snapshot); },
+    });
+
+    expect(out.passed).toBe(false);
+    expect(handlerCalls).toBe(2);
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots.every((snapshot) => snapshot.attemptedIssueKeys.includes(issueKey))).toBe(true);
   });
 
   it('respects maxAttempts when repairs keep changing but never pass', async () => {

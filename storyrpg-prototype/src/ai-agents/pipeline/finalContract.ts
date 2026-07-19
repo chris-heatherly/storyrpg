@@ -1226,7 +1226,9 @@ export class FinalContract {
           realizationFingerprint: finding.fingerprint,
           matchedForbiddenAtoms: finding.matchedForbiddenAtoms,
           suggestion: forbiddenMeaningDetail.length > 0
-            ? 'Remove or rephrase the forbidden wording named above (use a pre-reveal referent like a description of the person instead of the not-yet-coined name); change nothing else. Do not copy validator wording into the prose.'
+            ? forbiddenMeaningDetail.some((meaning) => /ending-displaced|displaces the protagonist|final emotional beat belongs to the new threat/i.test(meaning))
+              ? 'Remove the unowned terminal threat or twist while preserving the protagonist\'s authored climax and immediate consequence as the ending. Do not replace it with another hook.'
+              : 'Remove or rephrase the forbidden wording named above (use a pre-reveal referent when the issue is a not-yet-coined name); change nothing else. Do not copy validator wording into the prose.'
             : 'Repair the missing meaning on the assigned owner surface; do not copy validator wording into the prose.',
         };
         if (finding.blocking) r.blockingIssues.push(issue);
@@ -1479,6 +1481,7 @@ export class FinalContract {
             allowRequiredBeatFallback,
             plannedMomentSources,
             requirePredictedClear: true,
+            deferSemanticPredictionToCanonicalRevalidation: true,
             protagonistName: input.brief.protagonist?.name,
             clusterAttemptedCenters,
           })),
@@ -1638,6 +1641,7 @@ export class FinalContract {
         requireMutationEvidence: true,
         rejectIntroducedBlockingIssues: true,
         rejectIntroducedWarnings: true,
+        rejectNoBlockingProgress: true,
         onRoundSnapshot: this.deps.saveRepairRoundSnapshot,
         deadlineAt: input.repairDeadlineAt,
       });

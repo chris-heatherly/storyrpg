@@ -6,6 +6,7 @@ import {
   characterIntroductionIssuesCleared,
   selectSceneProseRepairs,
 } from './sceneProseRepairHandler';
+import { runFinalContractRepair, type ContractRepairReport } from './finalContractRepair';
 import type { Story } from '../../types/story';
 import type { Scene } from '../../types/story';
 
@@ -158,6 +159,20 @@ describe('buildSceneRepairDirectorNotes', () => {
     expect(notes).toContain('Dramatize this authored beat on-page');
     expect(notes).toContain('ON-PAGE');
     expect(notes).toContain('Keep beat ids');
+  });
+
+  it('routes forbidden ending findings as removals while preserving protagonist ownership', () => {
+    const notes = buildSceneRepairDirectorNotes([{
+      validator: 'SemanticRealizationJudge',
+      message: 'Canonical realization validation confirms forbidden evidence: the final emotional beat belongs to the new threat and displaces the protagonist.',
+      matchedForbiddenAtoms: ['escalation-budget:ep1:ending-displaced'],
+    }] as never);
+
+    expect(notes).toContain('FORBIDDEN REALIZATION TARGET');
+    expect(notes).toContain('remove that proposition');
+    expect(notes).toContain('do not replace the forbidden material with a different surprise, threat, reveal, arrival, message, or codename');
+    expect(notes).toContain('ENDING OWNERSHIP');
+    expect(notes).toContain('protagonist');
   });
 });
 
@@ -377,6 +392,7 @@ describe('buildSceneProseRepairHandler', () => {
     expect(critic.execute).toHaveBeenCalledTimes(2);
     expect((story as any).episodes[1].scenes[0].beats[0].text).toBe(original);
     expect(emitted.join('\n')).toContain('restored s2-1');
+    expect(result.attemptedIssueKeys).toHaveLength(1);
   });
 
   it('r116 gap analysis (2026-07-18): restores a rewrite instead of falsely declaring a SemanticRealizationJudge forbidden-evidence finding cleared', async () => {
@@ -427,6 +443,169 @@ describe('buildSceneProseRepairHandler', () => {
     expect(result.changed).toBe(false);
     expect((story as any).episodes[0].scenes[0].beats[0].text).toBe(original);
     expect(emitted.join('\n')).toContain('restored s1-4');
+  });
+
+  it('allows the final-contract caller to defer an interpretive forbidden verdict to canonical revalidation', async () => {
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's1-4',
+          rewrittenBeats: [{ id: 'b1', text: 'Kylie closes the laptop on her own terms and lets the silence answer her.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const story = makeStory();
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      requirePredictedClear: true,
+      deferSemanticPredictionToCanonicalRevalidation: true,
+    });
+
+    const result = await handler({
+      story,
+      blockingIssues: [{
+        type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+        repairHandler: 'scene_prose', sceneId: 's1-4', episodeNumber: 1,
+        message: 'Canonical realization validation confirms forbidden evidence for the ending.',
+        matchedForbiddenAtoms: ['escalation-budget:ep1:ending-displaced'],
+      }] as never,
+    });
+
+    expect(result.changed).toBe(true);
+    expect((story as any).episodes[0].scenes[0].beats[0].text).toContain('on her own terms');
+  });
+
+  it('commits a deferred semantic rewrite only when canonical revalidation clears the finding', async () => {
+    const issue = {
+      type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+      issueCode: 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT', taskId: 'task:escalation-budget:ep1',
+      repairHandler: 'scene_prose', sceneId: 's1-4', episodeNumber: 1,
+      message: 'Canonical realization validation confirms forbidden evidence for the ending.',
+      matchedForbiddenAtoms: ['escalation-budget:ep1:ending-displaced'],
+    };
+    const initialReport: ContractRepairReport = { passed: false, blockingIssues: [issue] };
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's1-4',
+          rewrittenBeats: [{ id: 'b1', text: 'Kylie closes the laptop on her own terms and lets the silence answer her.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const story = makeStory();
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      requirePredictedClear: true,
+      deferSemanticPredictionToCanonicalRevalidation: true,
+    });
+
+    const outcome = await runFinalContractRepair({
+      story,
+      initialReport,
+      handlers: [handler],
+      revalidate: async (candidate) => (candidate.episodes[0].scenes[0].beats[0].text.includes('on her own terms')
+        ? { passed: true, blockingIssues: [] }
+        : initialReport),
+      maxAttempts: 1,
+      rejectIntroducedBlockingIssues: true,
+      rejectNoBlockingProgress: true,
+    });
+
+    expect(outcome.passed).toBe(true);
+    expect(story.episodes[0].scenes[0].beats[0].text).toContain('on her own terms');
+  });
+
+  it('rolls back a deferred semantic rewrite when canonical revalidation does not improve the finding', async () => {
+    const issue = {
+      type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+      issueCode: 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT', taskId: 'task:escalation-budget:ep1',
+      repairHandler: 'scene_prose', sceneId: 's1-4', episodeNumber: 1,
+      message: 'Canonical realization validation confirms forbidden evidence for the ending.',
+      matchedForbiddenAtoms: ['escalation-budget:ep1:ending-displaced'],
+    };
+    const initialReport: ContractRepairReport = { passed: false, blockingIssues: [issue] };
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's1-4',
+          rewrittenBeats: [{ id: 'b1', text: 'A different threat claims the final sentence.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const story = makeStory();
+    const original = story.episodes[0].scenes[0].beats[0].text;
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      requirePredictedClear: true,
+      deferSemanticPredictionToCanonicalRevalidation: true,
+    });
+
+    const outcome = await runFinalContractRepair({
+      story,
+      initialReport,
+      handlers: [handler],
+      revalidate: async () => initialReport,
+      maxAttempts: 1,
+      rejectIntroducedBlockingIssues: true,
+      rejectNoBlockingProgress: true,
+    });
+
+    expect(outcome.passed).toBe(false);
+    expect(story.episodes[0].scenes[0].beats[0].text).toBe(original);
+  });
+
+  it('runs a second repair-loop candidate after the first deferred semantic rewrite is rolled back', async () => {
+    const issue = {
+      type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+      issueCode: 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT', taskId: 'task:escalation-budget:ep1',
+      repairHandler: 'scene_prose', sceneId: 's1-4', episodeNumber: 1,
+      message: 'Canonical realization validation confirms forbidden evidence for the ending.',
+      matchedForbiddenAtoms: ['escalation-budget:ep1:ending-displaced'],
+    };
+    const initialReport: ContractRepairReport = { passed: false, blockingIssues: [issue] };
+    const critic = {
+      execute: vi.fn()
+        .mockResolvedValueOnce({
+          success: true,
+          data: { sceneId: 's1-4', rewrittenBeats: [{ id: 'b1', text: 'A different threat claims the final sentence.' }], critiqueNotes: [], overallCommentary: '' },
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          data: { sceneId: 's1-4', rewrittenBeats: [{ id: 'b1', text: 'Kylie closes the laptop on her own terms and lets the silence answer her.' }], critiqueNotes: [], overallCommentary: '' },
+        }),
+    };
+    const story = makeStory();
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      requirePredictedClear: true,
+      deferSemanticPredictionToCanonicalRevalidation: true,
+    });
+
+    const outcome = await runFinalContractRepair({
+      story,
+      initialReport,
+      handlers: [handler],
+      revalidate: async (candidate) => candidate.episodes[0].scenes[0].beats[0].text.includes('on her own terms')
+        ? { passed: true, blockingIssues: [] }
+        : initialReport,
+      maxAttempts: 2,
+      maxAttemptsPerIssue: 2,
+      rejectIntroducedBlockingIssues: true,
+      rejectNoBlockingProgress: true,
+    });
+
+    expect(critic.execute).toHaveBeenCalledTimes(2);
+    expect(outcome.passed).toBe(true);
+    expect(story.episodes[0].scenes[0].beats[0].text).toContain('on her own terms');
   });
 
   it('repairs an ENCOUNTER scene: rewrites encounter phase/storylet prose and merges it back', async () => {

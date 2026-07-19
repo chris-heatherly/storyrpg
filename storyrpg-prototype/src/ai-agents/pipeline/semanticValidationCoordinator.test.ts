@@ -468,6 +468,38 @@ describe('causal-restage memory/aftermath bypass (r115 gap analysis, 2026-07-18)
   });
 });
 
+describe('introduction-ritual prefilter', () => {
+  it('does not spend an LLM judgment on ordinary later-scene character presence', async () => {
+    const judge = new FakeJudge((claim) => verdict(claim, 'fulfilled', 'Mika lifts her glass'));
+    const reintroductionTask = task({
+      id: 'task:first-appearance:char-mika:reintroduction:s1-4',
+      evidenceAtoms: [{
+        id: 'atom:first-appearance:char-mika:reintroduction:s1-4',
+        description: 'This scene must not present Mika as if Kylie is meeting or being introduced to her for the first time.',
+        acceptedPatterns: [],
+        kind: 'semantic',
+        verificationAuthority: 'semantic_judge',
+        polarity: 'forbidden',
+        required: true,
+      }],
+    });
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1-4',
+      tasks: [reintroductionTask],
+      sceneContent: { beats: [{ text: 'Mika lifts her glass and continues the story she started at the bookshop.' }] },
+      judge,
+    });
+
+    expect(judge.calls).toBe(0);
+    expect(result.findings).toEqual([]);
+    expect(result.receipt.taskEvaluations?.[0]).toMatchObject({
+      taskId: reintroductionTask.id,
+      status: 'satisfied',
+    });
+  });
+});
+
 describe('reveal-timing enforcement (F1.1)', () => {
   const revealTask = () => task({
     id: 'task:reveal:1:staged-rescue:s1-final',

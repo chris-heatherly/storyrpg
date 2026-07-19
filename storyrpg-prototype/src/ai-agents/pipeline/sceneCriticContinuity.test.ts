@@ -13,6 +13,7 @@ import type { SceneContent } from '../agents/SceneWriter';
 import type { SceneCritic } from '../agents/SceneCritic';
 import type { CharacterBible } from '../agents/CharacterDesigner';
 import type { QAReport } from '../agents/QAAgents';
+import type { NarrativeRealizationTask } from '../../types/narrativeContract';
 
 /**
  * End-to-end repair-pass shape of bite-me 2026-07-02T23-54-38: the QA judge's
@@ -228,5 +229,46 @@ describe('SceneCriticContinuity.repairContinuityFindings (run-shaped)', () => {
 
     expect(sceneContents[0].beats[0].text).toBe('You are a 34-year-old American food writer turned blogger, starting over in Bucharest.');
     expect(emitted.join('\n')).toContain('realization-task');
+  });
+
+  it('rejects a critic rewrite when typed literal validation loses an exact passing name', async () => {
+    const { sceneContents, deps } = makeFixture();
+    sceneContents[0].beats[0].text = 'You hand the marked envelope to Stela Pavel in the Lipscani apartment.';
+    const { flagSceneForCritic } = await import('../remediation/sceneCriticFlags');
+    flagSceneForCritic(sceneContents[0], 'realization-retry');
+    const sceneCritic = {
+      execute: vi.fn(async () => ({
+        success: true,
+        data: {
+          rewrittenBeats: [{ id: 's1-1-b1', text: 'You hand the marked envelope to your friend in the Lipscani apartment.' }],
+          overallCommentary: '',
+        },
+      })),
+    } as unknown as SceneCritic;
+    const emitted: string[] = [];
+    const pass = new SceneCriticContinuity({
+      ...deps,
+      sceneCritic,
+      emit: (event) => emitted.push(String((event as { message?: string }).message ?? '')),
+      config: { agents: {}, sceneCritic: { enabled: false, maxScenesPerEpisode: 1 } } as unknown as PipelineConfig,
+    });
+    const realizationTasksBySceneId = new Map<string, NarrativeRealizationTask[]>([[
+      's1-1',
+      [{
+        id: 'task:literal-stela', contractId: 'event:stela', episodeNumber: 1,
+        ownerStage: 'scene_writer', repairHandler: 'scene_prose', sceneId: 's1-1',
+        target: { scope: 'owner', surfaces: ['beat_text'] }, sourceContractIds: ['event:stela'], blocking: true,
+        evidenceAtoms: [{
+          id: 'literal:stela-pavel', description: 'The exact name Stela Pavel remains on-page.',
+          acceptedPatterns: ['Stela Pavel'], kind: 'lexical', verificationAuthority: 'literal', required: true,
+        }],
+      }],
+    ]]);
+
+    await pass.runSceneCriticPass(sceneContents, characterBible, realizationTasksBySceneId);
+
+    expect(sceneContents[0].beats[0].text).toContain('Stela Pavel');
+    expect(emitted.join('\n')).toContain('canonical realization blocker');
+    expect((sceneCritic.execute as any).mock.calls[0][0].directorNotes).toContain('[literal] REQUIRED');
   });
 });

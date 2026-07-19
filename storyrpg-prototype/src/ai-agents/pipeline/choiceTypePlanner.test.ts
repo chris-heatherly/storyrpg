@@ -97,6 +97,31 @@ describe('assignChoiceTypes', () => {
     expect(s[0].choicePoint.type).toBe('relationship');
   });
 
+  it('subtracts pinned slots before allocating the remaining episode choice debt', () => {
+    const s = [
+      {
+        id: 'group-formation',
+        authoredChoiceType: 'relationship' as ChoiceType,
+        choicePoint: { type: 'expression' as ChoiceType },
+      },
+      { id: 'opening', choicePoint: { type: 'expression' as ChoiceType } },
+      { id: 'investigation', choicePoint: { type: 'relationship' as ChoiceType } },
+    ];
+
+    assignChoiceTypes(s, DEFAULT_CHOICE_TYPE_TARGET, {
+      expression: 1,
+      relationship: 1,
+      strategic: 1,
+      dilemma: 0,
+    });
+
+    expect(s.map((scene) => scene.choicePoint.type)).toEqual([
+      'relationship',
+      'expression',
+      'strategic',
+    ]);
+  });
+
   it('does not force a dilemma for tiny episodes (<3 choice points)', () => {
     const s = scenes(2);
     assignChoiceTypes(s, DEFAULT_CHOICE_TYPE_TARGET, { expression: 1, relationship: 1, strategic: 0, dilemma: 0 });

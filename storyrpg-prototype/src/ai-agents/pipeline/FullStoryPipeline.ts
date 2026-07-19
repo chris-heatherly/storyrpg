@@ -37,6 +37,7 @@ import { SceneWriter, SceneContent, GeneratedBeat } from '../agents/SceneWriter'
 import { ChoiceAuthor, ChoiceSet } from '../agents/ChoiceAuthor';
 import { QARunner, QAReport, ContinuityChecker } from '../agents/QAAgents';
 import { SemanticRealizationJudge } from '../agents/SemanticRealizationJudge';
+import { validateSemanticRealizationTasks } from './semanticValidationCoordinator';
 import {
   collectKnownSemanticLocations,
   semanticContractEventSeeds,
@@ -8686,6 +8687,7 @@ export class FullStoryPipeline {
       } satisfies Partial<SceneCriticContinuityDeps> as unknown as SceneCriticContinuityDeps;
       Object.defineProperties(deps, {
         sceneCritic: { get: () => this.sceneCritic ?? null },
+        semanticRealizationJudge: { get: () => this.semanticRealizationJudge },
       });
       this._sceneCriticContinuity = new SceneCriticContinuity(deps);
     }
@@ -8932,6 +8934,42 @@ export class FullStoryPipeline {
         emit: (event) => this.emit(event),
         recordRemediationSafe: (record) => this.recordRemediationSafe(record),
         assembleEpisode: this.assembleEpisode.bind(this),
+        validateSceneContract: async ({ scene, sceneId }) => {
+          const graphTasks = brief.seasonPlan?.scenePlan?.narrativeContractGraph?.realizationTasks
+            ?.filter((task) => task.sceneId === sceneId) ?? [];
+          const blueprintTasks = blueprint.scenes.find((candidate) => candidate.id === sceneId)?.realizationTasks ?? [];
+          const tasks = Array.from(new Map(
+            [...graphTasks, ...blueprintTasks].map((task) => [task.id, task]),
+          ).values());
+          if (tasks.length === 0) return [];
+          const choiceSet = choiceSets.find((candidate) => candidate.sceneId === sceneId);
+          const encounter = encounters?.get(sceneId);
+          const findings = [];
+          for (const ownerStage of ['scene_writer', 'choice_author', 'encounter_architect'] as const) {
+            const ownedTasks = tasks.filter((task) => task.ownerStage === ownerStage);
+            if (ownedTasks.length === 0) continue;
+            const result = await validateSemanticRealizationTasks({
+              sceneId,
+              tasks: ownedTasks,
+              sceneContent: scene,
+              choiceSet,
+              encounter,
+              mode: 'final_regression',
+              currentStage: ownerStage,
+              candidateHash: stableHash(ownerStage === 'encounter_architect' ? encounter : scene),
+              judge: this.semanticRealizationJudge,
+            });
+            findings.push(...result.findings);
+          }
+          const infrastructureBlockers = findings.filter((finding) =>
+            finding.blocking
+            && (finding.code === 'SEMANTIC_VALIDATION_UNAVAILABLE' || finding.code === 'SEMANTIC_VALIDATION_INCONCLUSIVE'),
+          );
+          if (infrastructureBlockers.length > 0) {
+            throw new Error(`canonical realization validation unavailable for ${infrastructureBlockers.map((finding) => finding.taskId).join(', ')}`);
+          }
+          return findings;
+        },
       },
       brief, worldBible, characterBible, blueprint, sceneContents, choiceSets, encounters,
     );

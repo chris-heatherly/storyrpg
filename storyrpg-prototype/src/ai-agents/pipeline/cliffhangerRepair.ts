@@ -20,6 +20,7 @@
  */
 
 import type { Episode } from '../../types';
+import type { NarrativeRealizationTask } from '../../types/narrativeContract';
 import type { PipelineConfig } from '../config';
 import type { WorldBible } from '../agents/WorldBuilder';
 import type { CharacterBible } from '../agents/CharacterDesigner';
@@ -52,6 +53,69 @@ export interface CliffhangerRepairDeps {
     imageResults?: { beatImages: Map<string, string>; sceneImages: Map<string, string> },
     encounters?: Map<string, EncounterStructure>,
   ) => Episode;
+  /**
+   * Canonically validate the exact scene candidate before this late pass may
+   * replace prose that already passed its owning producer.
+   */
+  validateSceneContract?: (input: {
+    scene: SceneContent;
+    sceneId: string;
+  }) => Promise<Array<{
+    blocking: boolean;
+    fingerprint?: string;
+    code?: string;
+    taskId?: string;
+    missingEvidenceAtoms?: string[];
+    matchedForbiddenAtoms?: string[];
+    message?: string;
+  }>>;
+}
+
+type CliffhangerContractFinding = Awaited<ReturnType<NonNullable<CliffhangerRepairDeps['validateSceneContract']>>>[number];
+
+function cloneScene(scene: SceneContent): SceneContent {
+  return JSON.parse(JSON.stringify(scene)) as SceneContent;
+}
+
+function findingKey(finding: CliffhangerContractFinding): string {
+  return finding.fingerprint || [
+    finding.code ?? '',
+    finding.taskId ?? '',
+    ...(finding.missingEvidenceAtoms ?? []),
+    ...(finding.matchedForbiddenAtoms ?? []),
+  ].join('::');
+}
+
+function introducedBlockingFindings(
+  before: CliffhangerContractFinding[],
+  after: CliffhangerContractFinding[],
+): CliffhangerContractFinding[] {
+  const beforeKeys = new Set(before.filter((finding) => finding.blocking).map(findingKey));
+  return after.filter((finding) => finding.blocking && !beforeKeys.has(findingKey(finding)));
+}
+
+function sceneTaskConstraints(
+  brief: FullCreativeBrief,
+  blueprint: EpisodeBlueprint,
+  sceneId: string,
+): { requiredMeanings: string[]; forbiddenMeanings: string[] } {
+  const graphTasks = brief.seasonPlan?.scenePlan?.narrativeContractGraph?.realizationTasks
+    ?.filter((task: NarrativeRealizationTask) => task.sceneId === sceneId) ?? [];
+  const blueprintTasks = blueprint.scenes.find((scene) => scene.id === sceneId)?.realizationTasks ?? [];
+  const tasks = Array.from(new Map(
+    [...graphTasks, ...blueprintTasks].map((task) => [task.id, task]),
+  ).values());
+  const requiredMeanings = new Set<string>();
+  const forbiddenMeanings = new Set<string>();
+  for (const task of tasks) {
+    for (const atom of task.evidenceAtoms ?? []) {
+      const description = atom.description?.trim();
+      if (!description) continue;
+      if (atom.polarity === 'forbidden') forbiddenMeanings.add(description);
+      else if (atom.required !== false) requiredMeanings.add(description);
+    }
+  }
+  return { requiredMeanings: [...requiredMeanings], forbiddenMeanings: [...forbiddenMeanings] };
 }
 
 export async function repairWeakCliffhangerBeforeImages(
@@ -170,98 +234,176 @@ export async function repairWeakCliffhangerBeforeImages(
     message: `Repairing weak ${cliffhangerPlan.storyCircleLaunchBeat || 'Story Circle'} cliffhanger (${analysis.score}/100): ${analysis.suggestions.join('; ')}`,
   });
 
-  const improvement = await withTimeout(
-    validator.improveCliffhanger(episode, cliffhangerPlan, analysis),
-    PIPELINE_TIMEOUTS.llmAgent,
-    `CliffhangerValidator.improveCliffhanger(${brief.episode.number})`,
-  );
-
-  if (!improvement.success || !improvement.data?.improvedText) {
+  const taskConstraints = sceneTaskConstraints(brief, blueprint, finalScene.sceneId);
+  if (!deps.validateSceneContract && (taskConstraints.requiredMeanings.length > 0 || taskConstraints.forbiddenMeanings.length > 0)) {
     deps.emit({
       type: 'warning',
       phase: 'cliffhanger_repair',
-      message: `Cliffhanger repair failed: ${improvement.error || 'no improved text returned'}`,
+      message: `Cliffhanger repair retained the original ${finalScene.sceneId} ending because canonical task validation was unavailable.`,
     });
-    // Soft-gate observability: record the (failed) repair attempt best-effort
-    // when stabilization is active. Never blocks; recordRemediationSafe swallows.
+    return;
+  }
+
+  let baselineFindings: CliffhangerContractFinding[] = [];
+  if (deps.validateSceneContract) {
+    try {
+      baselineFindings = await deps.validateSceneContract({ scene: finalScene, sceneId: finalScene.sceneId });
+    } catch (error) {
+      deps.emit({
+        type: 'warning',
+        phase: 'cliffhanger_repair',
+        message: `Cliffhanger repair retained the original ${finalScene.sceneId} ending because baseline contract validation failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
+  }
+
+  const installCandidate = (candidate: SceneContent, improvedText: string, explanation: string): void => {
+    type CandidateBridgeBeat = (typeof candidate.beats)[number] & BridgeBeat;
+    const candidateFinalBeat = candidate.beats.find((beat) => beat.id === finalBeat.id)
+      ?? candidate.beats[candidate.beats.length - 1];
+    if (sharedTarget) {
+      const candidatePayoffs = (candidate.beats || []).filter((beat) => {
+        const bridge = beat as CandidateBridgeBeat;
+        return bridge.isChoiceBridge && bridge.nextSceneId === sharedTarget && !bridge.nextBeatId;
+      }) as CandidateBridgeBeat[];
+      const codaId = `${candidate.sceneId}-cliffhanger-coda`;
+      let coda = candidate.beats.find((beat) => beat.id === codaId) as CandidateBridgeBeat | undefined;
+      if (!coda) {
+        coda = {
+          id: codaId,
+          text: improvedText,
+          isChoicePoint: false,
+          isChoiceBridge: true,
+          nextSceneId: sharedTarget,
+          visualMoment: improvedText.split(/[.!?]/)[0]?.trim(),
+          emotionalRead: cliffhangerPlan.emotionalCharge,
+          intensityTier: cliffhangerPlan.intensity === 'high' ? 'dominant' : 'supporting',
+        } as unknown as CandidateBridgeBeat;
+        candidate.beats.push(coda as never);
+      } else {
+        coda.text = improvedText;
+      }
+      for (const payoff of candidatePayoffs) {
+        payoff.nextBeatId = codaId;
+        payoff.nextSceneId = undefined;
+        payoff.isChoiceBridge = false;
+      }
+    } else if (candidateFinalBeat) {
+      candidateFinalBeat.text = improvedText;
+      candidateFinalBeat.visualMoment = candidateFinalBeat.visualMoment || improvedText.split(/[.!?]/)[0]?.trim();
+      candidateFinalBeat.emotionalRead = candidateFinalBeat.emotionalRead || cliffhangerPlan.emotionalCharge;
+      candidateFinalBeat.intensityTier = cliffhangerPlan.intensity === 'high'
+        ? 'dominant'
+        : (candidateFinalBeat.intensityTier || 'supporting');
+    }
+    if (candidateFinalBeat) candidateFinalBeat.mustShowDetail = candidateFinalBeat.mustShowDetail || cliffhangerPlan.hook;
+    candidate.keyMoments = Array.from(new Set([...(candidate.keyMoments || []), cliffhangerPlan.hook]));
+    candidate.continuityNotes = Array.from(new Set([...(candidate.continuityNotes || []), `Cliffhanger repaired: ${explanation}`]));
+  };
+
+  let accepted: { scene: SceneContent; analysis: typeof analysis; explanation: string } | undefined;
+  let retryFeedback: string | undefined;
+  let attempted = 0;
+  for (let attempt = 1; attempt <= 2 && !accepted; attempt += 1) {
+    attempted += 1;
+    let improvement;
+    try {
+      improvement = await withTimeout(
+        validator.improveCliffhanger(episode, cliffhangerPlan, analysis, {
+          ...taskConstraints,
+          retryFeedback,
+        }),
+        PIPELINE_TIMEOUTS.llmAgent,
+        `CliffhangerValidator.improveCliffhanger(${brief.episode.number}, attempt ${attempt})`,
+      );
+    } catch (error) {
+      retryFeedback = `The repair call failed: ${error instanceof Error ? error.message : String(error)}`;
+      continue;
+    }
+    if (!improvement.success || !improvement.data?.improvedText) {
+      retryFeedback = improvement.error || 'No improved text was returned.';
+      continue;
+    }
+
+    // This post-owner pass can still slip into first person. Coerce narration
+    // (quoted dialogue untouched) on the candidate, never on committed prose.
+    const povFix = coerceFirstPersonNarrationToSecond(improvement.data.improvedText);
+    const improvedText = povFix.text;
+    if (povFix.changed) {
+      deps.emit({
+        type: 'debug',
+        phase: 'cliffhanger_repair',
+        message: `Cliffhanger candidate coerced from first-person to second-person POV on ${finalScene.sceneId}.`,
+      });
+    }
+
+    const candidate = cloneScene(finalScene);
+    installCandidate(candidate, improvedText, improvement.data.explanation);
+    const candidateSceneContents = sceneContents.map((scene, index) => index === finalSceneIndex ? candidate : scene);
+    const candidateEpisode = deps.assembleEpisode(
+      brief, worldBible, characterBible, blueprint, candidateSceneContents,
+      choiceSets, undefined, encounters,
+    );
+    const candidateAnalysis = validator.quickAnalyze(candidateEpisode, cliffhangerPlan);
+    const candidateStillWeak = stabilizationOn
+      ? stabilizeByHysteresis(candidateAnalysis.score, 62, 5)
+      : candidateAnalysis.quality !== 'good' && candidateAnalysis.quality !== 'excellent';
+    if (candidateAnalysis.score < analysis.score || (qualityNeedsRepair && candidateStillWeak)) {
+      retryFeedback = `Heuristic cliffhanger validation rejected the candidate (${candidateAnalysis.score}/100 versus ${analysis.score}/100 before${candidateStillWeak ? '; it remains weak' : ''}).`;
+      continue;
+    }
+
+    if (deps.validateSceneContract) {
+      let candidateFindings: CliffhangerContractFinding[];
+      try {
+        candidateFindings = await deps.validateSceneContract({ scene: candidate, sceneId: candidate.sceneId });
+      } catch (error) {
+        retryFeedback = `Canonical candidate validation failed: ${error instanceof Error ? error.message : String(error)}`;
+        continue;
+      }
+      const introduced = introducedBlockingFindings(baselineFindings, candidateFindings);
+      if (introduced.length > 0) {
+        retryFeedback = introduced.map((finding) =>
+          `- ${finding.message || `${finding.code ?? 'contract finding'} on ${finding.taskId ?? candidate.sceneId}`}`,
+        ).join('\n');
+        deps.emit({
+          type: 'warning',
+          phase: 'cliffhanger_repair',
+          message: `Rejected cliffhanger candidate ${attempt}/2 for ${candidate.sceneId}: ${introduced.length} canonical blocker(s) introduced.`,
+        });
+        continue;
+      }
+    }
+    accepted = { scene: candidate, analysis: candidateAnalysis, explanation: improvement.data.explanation };
+  }
+
+  if (!accepted) {
+    deps.emit({
+      type: 'warning',
+      phase: 'cliffhanger_repair',
+      message: `Cliffhanger repair retained the original ${finalScene.sceneId} ending after ${attempted} rejected candidate(s).${retryFeedback ? ` ${retryFeedback.slice(0, 360)}` : ''}`,
+    });
     if (stabilizationOn) {
       await deps.recordRemediationSafe({
-        rule: 'cliffhanger_stabilized', scope: 'episode', attempted: 1,
-        succeeded: false, degraded: false, blocked: false, attempts: 1,
+        rule: 'cliffhanger_stabilized', scope: 'episode', attempted,
+        succeeded: false, degraded: false, blocked: false, attempts: attempted,
         storyId: (brief.story as typeof brief.story & { id?: string })?.id,
-        details: `Cliffhanger repair failed for episode ${brief.episode.number} (score ${analysis.score}/100, quality ${analysis.quality})`,
+        details: `Cliffhanger repair retained original for episode ${brief.episode.number} after ${attempted} rejected candidate(s).`,
       });
     }
     return;
   }
 
-  // POV safety net: the cliffhanger coda is authored AFTER all per-scene POV passes, so a
-  // first-person slip (bite-me-g16 ep2: "my laptop… I have to choose") would ship in a
-  // second-person story. Deterministically coerce first-person narration → second person
-  // (quoted dialogue untouched) before the coda/finalBeat is installed.
-  {
-    const povFix = coerceFirstPersonNarrationToSecond(improvement.data.improvedText);
-    if (povFix.changed) {
-      improvement.data.improvedText = povFix.text;
-      deps.emit({
-        type: 'debug',
-        phase: 'cliffhanger_repair',
-        message: `Cliffhanger coda coerced from first-person to second-person POV on ${finalScene.sceneId}.`,
-      });
-    }
-  }
-
+  sceneContents[finalSceneIndex] = accepted.scene;
+  const repairedAnalysis = accepted.analysis;
   if (sharedTarget) {
-    // Shared coda: every terminal payoff now flows through one hook-bearing
-    // trunk beat before leaving the episode — no path misses the cliffhanger.
-    const codaId = `${finalScene.sceneId}-cliffhanger-coda`;
-    let coda = (finalScene.beats || []).find(b => b.id === codaId) as BridgeBeat | undefined;
-    if (!coda) {
-      coda = {
-        id: codaId,
-        text: improvement.data.improvedText,
-        isChoicePoint: false,
-        isChoiceBridge: true,
-        nextSceneId: sharedTarget,
-        visualMoment: improvement.data.improvedText.split(/[.!?]/)[0]?.trim(),
-        emotionalRead: cliffhangerPlan.emotionalCharge,
-        intensityTier: cliffhangerPlan.intensity === 'high' ? 'dominant' : 'supporting',
-      } as unknown as BridgeBeat;
-      finalScene.beats.push(coda as never);
-    } else {
-      coda.text = improvement.data.improvedText;
-    }
-    for (const p of terminalPayoffs) {
-      p.nextBeatId = codaId;
-      p.nextSceneId = undefined;
-      p.isChoiceBridge = false;
-    }
     deps.emit({
       type: 'debug',
       phase: 'cliffhanger_repair',
-      message: `Cliffhanger coda installed on ${finalScene.sceneId}: ${terminalPayoffs.length} payoff path(s) rewired through ${codaId} (hook coverage was ${hookCoverage}/${terminalPayoffs.length}).`,
+      message: `Cliffhanger coda installed transactionally on ${accepted.scene.sceneId}: ${terminalPayoffs.length} payoff path(s) rewired through ${accepted.scene.sceneId}-cliffhanger-coda (hook coverage was ${hookCoverage}/${terminalPayoffs.length}).`,
     });
-  } else {
-    finalBeat.text = improvement.data.improvedText;
-    finalBeat.visualMoment = finalBeat.visualMoment || improvement.data.improvedText.split(/[.!?]/)[0]?.trim();
-    finalBeat.emotionalRead = finalBeat.emotionalRead || cliffhangerPlan.emotionalCharge;
-    finalBeat.intensityTier = cliffhangerPlan.intensity === 'high' ? 'dominant' : (finalBeat.intensityTier || 'supporting');
   }
-  finalBeat.mustShowDetail = finalBeat.mustShowDetail || cliffhangerPlan.hook;
-  finalScene.keyMoments = Array.from(new Set([...(finalScene.keyMoments || []), cliffhangerPlan.hook]));
-  finalScene.continuityNotes = Array.from(new Set([...(finalScene.continuityNotes || []), `Cliffhanger repaired: ${improvement.data.explanation}`]));
-
-  const repairedEpisode = deps.assembleEpisode(
-    brief,
-    worldBible,
-    characterBible,
-    blueprint,
-    sceneContents,
-    choiceSets,
-    undefined,
-    encounters,
-  );
-  const repairedAnalysis = validator.quickAnalyze(repairedEpisode, cliffhangerPlan);
   deps.emit({
     type: repairedAnalysis.quality === 'missing' || repairedAnalysis.quality === 'weak' ? 'warning' : 'phase_complete',
     phase: 'cliffhanger_repair',
@@ -272,8 +414,8 @@ export async function repairWeakCliffhangerBeforeImages(
   // when stabilization is active. Never blocks; recordRemediationSafe swallows.
   if (stabilizationOn) {
     await deps.recordRemediationSafe({
-      rule: 'cliffhanger_stabilized', scope: 'episode', attempted: 1,
-      succeeded: true, degraded: false, blocked: false, attempts: 1,
+      rule: 'cliffhanger_stabilized', scope: 'episode', attempted,
+      succeeded: true, degraded: false, blocked: false, attempts: attempted,
       storyId: (brief.story as typeof brief.story & { id?: string })?.id,
       details: `Cliffhanger repaired for episode ${brief.episode.number}: ${analysis.score}/100 → ${repairedAnalysis.score}/100`,
     });

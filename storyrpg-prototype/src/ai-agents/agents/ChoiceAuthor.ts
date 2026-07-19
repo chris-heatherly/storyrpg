@@ -802,6 +802,7 @@ ${issueList}
 Scene: ${input.sceneBlueprint.id} / ${input.sceneBlueprint.name} / ${input.sceneBlueprint.location}
 Beat id: ${input.beatId}
 Beat text: ${String(input.beatText || '').slice(0, 900)}
+Allowed acting cast: ${[input.protagonistInfo.name, ...input.npcsInScene.map((npc) => npc.name)].join(', ')}. Do not introduce, rename, or substitute any other acting person in reader-facing choice prose.
 
 Choice point:
 - type: ${choicePoint.type}
@@ -891,6 +892,8 @@ Return JSON only.`;
       }
     });
 
+    issues.push(...this.collectUnknownActingCharacterIssues(choiceSet, input));
+
     const routeContract = input.sceneBlueprint.routeRealizationContract;
     if (routeContract?.requiresVisibleResidue && choices.length > 1) {
       const normalizeSurface = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -904,6 +907,54 @@ Return JSON only.`;
       }
     }
 
+    return issues;
+  }
+
+  /**
+   * Choice prose is a closed-cast owner surface. This deliberately checks only
+   * name-shaped tokens used in human-action syntax; capitalized places, titles,
+   * organizations, and sentence openers are not findings. The focused author
+   * retry remains responsible for rewriting prose.
+   */
+  private collectUnknownActingCharacterIssues(choiceSet: ChoiceSet, input: ChoiceAuthorInput): string[] {
+    const canonicalContext = [
+      input.protagonistInfo.name,
+      ...input.npcsInScene.map((npc) => npc.name),
+    ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).join(' ');
+    const canonicalTokens = new Set(
+      Array.from(canonicalContext.matchAll(/[\p{L}][\p{L}'’.-]*/gu), (match) => match[0].toLocaleLowerCase()),
+    );
+    const prose = [
+      choiceSet.sharedResolutionText,
+      ...(choiceSet.choices ?? []).flatMap((choice) => [
+        choice.reactionText,
+        ...(choice.outcomeTexts ? Object.values(choice.outcomeTexts) : []),
+      ]),
+    ].filter((value): value is string => typeof value === 'string').join(' ');
+    const candidates = new Set(
+      Array.from(prose.matchAll(/\b\p{Lu}[\p{Ll}.-]{2,}\b/gu), (match) => match[0]),
+    );
+    const nonNameTokens = new Set([
+      'the', 'this', 'that', 'these', 'those', 'what', 'when', 'where', 'why', 'how',
+      'your', 'her', 'his', 'their', 'our', 'its',
+    ]);
+    const issues: string[] = [];
+    for (const candidate of candidates) {
+      const normalizedCandidate = candidate.toLocaleLowerCase();
+      if (nonNameTokens.has(normalizedCandidate) || canonicalTokens.has(normalizedCandidate)) continue;
+      const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const actsAsPerson = new RegExp(
+        `(?:\\b${escaped}['’]s\\s+(?:face|eyes?|voice|hands?|smile|gaze|expression|shoulders?|phone)|` +
+        `\\b(?:you|he|she|they)\\s+(?:and|with|beside)\\s+${escaped}\\b|` +
+        `\\b${escaped}\\s+(?:says?|said|asks?|asked|replies?|smiles?|raises?|looks?|turns?|leans?|nods?|laughs?|meets?|takes?|holds?|steps?|watches?|follows?)\\b)`,
+        'iu',
+      ).test(prose);
+      if (!actsAsPerson) continue;
+      issues.push(
+        `Reader-facing choice prose introduces unknown acting character "${candidate}". ` +
+        `Use only the protagonist and canonical scene roster: ${[input.protagonistInfo.name, ...input.npcsInScene.map((npc) => npc.name)].join(', ')}.`,
+      );
+    }
     return issues;
   }
 
@@ -1536,7 +1587,11 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
 
       choice.choiceIntent = this.normalizeChoiceIntent(choice, choiceSet.choiceType);
       choice.impactFactors = this.normalizeImpactFactors(choice, choiceSet.choiceType);
-      choice.consequenceTier = this.normalizeConsequenceTier(choice, choiceSet.choiceType);
+      choice.consequenceTier = this.normalizeConsequenceTier(
+        choice,
+        choiceSet.choiceType,
+        input.plannedConsequenceTier,
+      );
       choice.stakes = {
         want: choice.stakes?.want || choice.stakesAnnotation?.want || blueprintStakes.want,
         cost: choice.stakes?.cost || choice.stakesAnnotation?.cost || blueprintStakes.cost,
@@ -1805,7 +1860,19 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
     return Array.from(factors);
   }
 
-  private normalizeConsequenceTier(choice: GeneratedChoice, choiceType: ChoiceType): ChoiceConsequenceTier {
+  private normalizeConsequenceTier(
+    choice: GeneratedChoice,
+    choiceType: ChoiceType,
+    plannedTier?: ConsequenceTier,
+  ): ChoiceConsequenceTier {
+    if (plannedTier === 'callback') return 'callback';
+    if (plannedTier === 'tint') return 'sceneTint';
+    if (plannedTier === 'branchlet') return 'branchlet';
+    if (plannedTier === 'branch') {
+      // Topology remains authoritative: a structural branch cannot be created
+      // by relabeling a choice that has no route target.
+      return choice.nextSceneId ? 'structuralBranch' : 'branchlet';
+    }
     if (choiceType === 'expression') return 'sceneTint';
     if (choice.consequenceTier === 'callback' || choice.consequenceTier === 'sceneTint' || choice.consequenceTier === 'branchlet' || choice.consequenceTier === 'structuralBranch') {
       if (choice.consequenceTier === 'structuralBranch' && !choice.nextSceneId) return 'branchlet';
@@ -2109,6 +2176,7 @@ ${formatForbiddenRevealsSection(buildForbiddenLexicalReveals(input.sceneBlueprin
 
 **NPCs**:
 ${npcList || 'None'}
+This is a CLOSED CAST for reader-facing choice prose. Only the protagonist and listed NPCs may act, speak, react, or be named as present. Do not invent or substitute character names.
 
 ## Available Next Scenes
 ${nextSceneList}
@@ -2443,7 +2511,9 @@ ${choicePoint.expectedResidue?.length ? `- Expected residue: ${choicePoint.expec
 ${choicePoint.failureBranchPurpose ? `- Failure branch purpose: ${choicePoint.failureBranchPurpose}` : ''}
 
 ## Characters Present
+ - ${input.protagonistInfo.name} (protagonist)
 ${npcList || 'None'}
+This is a CLOSED CAST for reader-facing choice prose. Only the protagonist and the people listed here may act, speak, react, or be named as present. Do not invent a person, substitute names from another story, or rename a canonical character.
 
 ## Available Next Scenes
 ${nextSceneList || 'None'}

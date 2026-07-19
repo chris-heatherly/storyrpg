@@ -2358,6 +2358,8 @@ export async function savePipelineOutputs(
   const generationManifest = outputs.brief.generationManifest;
   const baselineKey = buildQualityBaselineKey({
     storyId,
+    storyTitle: outputs.brief.story.title,
+    sourceKind: generationManifest?.sourceKind,
     requestedEpisodes: generationManifest?.requestedEpisodes,
     sourceAnalysisHash: generationManifest?.sourceAnalysisHash,
     seasonPlanHash: generationManifest?.seasonPlanHash,

@@ -85,6 +85,39 @@ describe('producer blocker ownership', () => {
     expect(dirty.beats[0].primaryAction).toBeUndefined();
   });
 
+  it('losslessly collapses an exact duplicate beat id before checkpointing', () => {
+    const scene = {
+      startingBeatId: 'b1',
+      beats: [
+        { id: 'b1', text: 'You raise the glass.', nextBeatId: 'b1' },
+        { id: 'b1', text: 'You raise the glass.', nextBeatId: 'b2' },
+        { id: 'b2', text: 'Mika answers with a wary smile.' },
+      ],
+    };
+
+    expect(validateSceneProducerOutput('s1-4', scene)).toHaveLength(0);
+    expect(scene.beats).toHaveLength(2);
+    expect(scene.beats[0]).toMatchObject({ id: 'b1', nextBeatId: 'b2' });
+  });
+
+  it('blocks conflicting prose assigned to the same beat id', () => {
+    const scene = {
+      beats: [
+        { id: 'b1', text: 'You raise the glass.' },
+        { id: 'b1', text: 'A masked attacker crashes through the window.' },
+      ],
+    };
+
+    expect(validateSceneProducerOutput('s1-4', scene)).toEqual([
+      expect.objectContaining({
+        type: 'duplicate_beat_id',
+        ownerPhase: 'scene',
+        repairSurface: 'scene-prose',
+        sceneId: 's1-4',
+      }),
+    ]);
+  });
+
   it('blocks malformed relationship consequences immediately after choice production', () => {
     const findings = validateChoiceProducerOutput('s1-3', {
       choices: [{

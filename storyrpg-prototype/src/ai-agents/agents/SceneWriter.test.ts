@@ -86,6 +86,63 @@ describe('SceneWriter duplicate-beat collapse', () => {
 });
 
 describe('SceneWriter structural guards', () => {
+  it('requires every planned prior-choice flag even when no encounter preceded the scene', () => {
+    const writer = createWriter();
+    const input = {
+      sceneBlueprint: {
+        id: 's1-5',
+        name: 'The First Post',
+        description: 'Kylie publishes the post and waits for the first reaction.',
+        choicePoint: undefined,
+        npcsPresent: [],
+        keyBeats: ['The post goes live'],
+      },
+      protagonistInfo: { name: 'Kylie', pronouns: 'she/her', description: 'A writer under pressure.' },
+      npcs: [],
+      storyContext: { title: 'Bite Me', genre: 'Romantic comedy', tone: 'Wry and warm' },
+      targetBeatCount: 2,
+      dialogueHeavy: false,
+      priorChoiceFamilies: [{
+        sceneId: 's1-4',
+        sceneName: 'Choose the Tone',
+        options: [
+          { flag: 'blog_tone_honest', label: 'Write honestly' },
+          { flag: 'blog_tone_wry', label: 'Make it funny' },
+        ],
+      }],
+    };
+    const content = {
+      sceneId: 's1-5',
+      sceneName: 'The First Post',
+      beats: [
+        {
+          id: 'b1',
+          text: 'You hover over Publish until the cursor stops shaking.',
+          nextBeatId: 'b2',
+          textVariants: [{
+            condition: { type: 'flag', flag: 'blog_tone_honest', value: true },
+            text: 'You leave every embarrassing detail in and click Publish.',
+          }],
+        },
+        { id: 'b2', text: 'The first notification appears before you can close the laptop.' },
+      ],
+      startingBeatId: 'b1',
+      moodProgression: ['tense'],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    };
+
+    const prompt = (writer as any).buildPrompt(input);
+    const issues = (writer as any).collectIssues(content, input);
+
+    expect(prompt).toContain('## POST-CHOICE REACTIVITY');
+    expect(prompt).toContain('blog_tone_honest');
+    expect(prompt).toContain('blog_tone_wry');
+    expect(issues.some((issue: string) => issue.includes('blog_tone_wry'))).toBe(true);
+    expect((writer as any).isHardPostRevisionIssue(issues.find((issue: string) => issue.startsWith('MISSING POST-CHOICE VARIANT')))).toBe(true);
+  });
+
   it('does not invent neutral pronouns in deterministic visual subtext cues', () => {
     const writer = createWriter();
 
@@ -1748,6 +1805,9 @@ describe('SceneWriter structural guards', () => {
     const prompt = (writer as any).buildPrompt(input);
     expect(prompt).toContain('single closing image');
     expect(prompt).toMatch(/do NOT invent a SECOND, competing terminal object/i);
+    expect(prompt).toContain('default allowance is ZERO new threat events');
+    expect(prompt).toContain('generic cliffhanger plan does not grant permission');
+    expect(prompt).toContain("protagonist's authored action, decision, victory, or emotional consequence as the terminal ownership beat");
   });
 
   it('renders the HOLD-THESE-LINES invariant block when the blueprint carries invariants', () => {

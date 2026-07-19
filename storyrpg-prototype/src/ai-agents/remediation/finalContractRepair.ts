@@ -258,6 +258,36 @@ function introducedWarningIssueKeys(
   return introducedBlockingIssueKeys(beforeReport.warnings ?? [], afterReport.warnings ?? []);
 }
 
+function blockingContractProgress(
+  beforeIssues: ContractRepairIssue[],
+  afterIssues: ContractRepairIssue[],
+): boolean {
+  const beforeKeys = new Set(beforeIssues.map(contractRepairIssueFingerprint));
+  const afterKeys = new Set(afterIssues.map(contractRepairIssueFingerprint));
+  if ([...beforeKeys].some((key) => !afterKeys.has(key))) return true;
+
+  const atomsByFamily = (issues: ContractRepairIssue[]): Map<string, Set<string>> => {
+    const result = new Map<string, Set<string>>();
+    for (const issue of issues) {
+      const key = contractRepairIssueFingerprint(issue);
+      const atoms = result.get(key) ?? new Set<string>();
+      for (const atom of [...(issue.missingEvidenceAtoms ?? []), ...(issue.matchedForbiddenAtoms ?? [])]) {
+        atoms.add(atom);
+      }
+      result.set(key, atoms);
+    }
+    return result;
+  };
+  const beforeAtoms = atomsByFamily(beforeIssues);
+  const afterAtoms = atomsByFamily(afterIssues);
+  for (const [family, prior] of beforeAtoms) {
+    if (prior.size === 0) continue;
+    const next = afterAtoms.get(family) ?? new Set<string>();
+    if (next.size < prior.size && [...next].every((atom) => prior.has(atom))) return true;
+  }
+  return false;
+}
+
 export function finalContractRepairInputHash(value: unknown): string {
   return fnv1a32Json(value);
 }
@@ -539,6 +569,13 @@ export async function runFinalContractRepair(opts: {
   /** Reject a candidate that introduces a new canonical advisory fingerprint. */
   rejectIntroducedWarnings?: boolean;
   /**
+   * Reject a candidate that changes prose but clears no blocking fingerprint
+   * and reduces no canonical missing/forbidden atom set. This turns semantic
+   * repair into propose → validate → commit, rather than retaining a rewrite
+   * merely because it failed in the same way.
+   */
+  rejectNoBlockingProgress?: boolean;
+  /**
    * Wall-clock deadline (epoch ms). Checked BEFORE each round: when reached,
    * the loop exits gracefully with its current report so the caller's
    * abort-time triage and carry-forward still run — instead of the outer
@@ -586,6 +623,7 @@ export async function runFinalContractRepair(opts: {
     const handlerReportedPaths = new Set<string>();
     const handlerAttempts: ContractRepairRoundSnapshot['handlerAttempts'] = [];
     const rejectedIntroducedKeys = new Set<string>();
+    let rejectedNoProgress = false;
     for (let handlerIndex = 0; handlerIndex < opts.handlers.length; handlerIndex += 1) {
       const handler = opts.handlers[handlerIndex];
       const handlerBefore = cloneForRepairEvidence(story);
@@ -618,8 +656,11 @@ export async function runFinalContractRepair(opts: {
             ...introducedBlockingIssueKeys(beforeHandlerIssues, candidateReport.blockingIssues),
             ...introducedWarnings.map((key) => `warning::${key}`),
           ];
-          if (introduced.length > 0) {
+          const noBlockingProgress = opts.rejectNoBlockingProgress
+            && !blockingContractProgress(beforeHandlerIssues, candidateReport.blockingIssues);
+          if (introduced.length > 0 || noBlockingProgress) {
             introduced.forEach((key) => rejectedIntroducedKeys.add(key));
+            rejectedNoProgress ||= Boolean(noBlockingProgress);
             const handlerCandidate = cloneForRepairEvidence(story);
             restoreStoryInPlace(story, handlerBefore);
             acceptedChange = false;
@@ -635,9 +676,12 @@ export async function runFinalContractRepair(opts: {
                 ...introducedBlockingIssueKeys(report.blockingIssues, scopedReport.blockingIssues),
                 ...scopedIntroducedWarnings.map((key) => `warning::${key}`),
               ];
-              if (scopedIntroduced.length > 0) {
+              const scopedNoProgress = opts.rejectNoBlockingProgress
+                && !blockingContractProgress(report.blockingIssues, scopedReport.blockingIssues);
+              if (scopedIntroduced.length > 0 || scopedNoProgress) {
                 restoreStoryInPlace(story, scopeBefore);
                 scopedIntroduced.forEach((key) => rejectedIntroducedKeys.add(key));
+                rejectedNoProgress ||= Boolean(scopedNoProgress);
                 continue;
               }
               report = scopedReport;
@@ -672,7 +716,13 @@ export async function runFinalContractRepair(opts: {
     }
 
     if (!roundChanged) {
-      if (rejectedIntroducedKeys.size > 0) {
+      const rejectedCandidate = rejectedIntroducedKeys.size > 0 || rejectedNoProgress;
+      const attemptedWithoutCommit = attemptedThisRound.size > 0;
+      const observedUncommittedAttempt = rejectedCandidate || attemptedWithoutCommit;
+      const uncommittedChargeKeys = anyHandlerReportedAttempts
+        ? Array.from(attemptedThisRound)
+        : round.keys;
+      if (observedUncommittedAttempt) {
         await opts.onRoundSnapshot?.({
           schemaVersion: FINAL_CONTRACT_REPAIR_SNAPSHOT_VERSION,
           validatorVersion: FINAL_CONTRACT_VALIDATOR_VERSION,
@@ -680,7 +730,7 @@ export async function runFinalContractRepair(opts: {
           inputHash: roundInputHash,
           beforeIssueKeys,
           afterIssueKeys: report.blockingIssues.map(contractRepairIssueFingerprint),
-          attemptedIssueKeys: Array.from(attemptedThisRound),
+          attemptedIssueKeys: uncommittedChargeKeys,
           changedFieldPaths: [],
           handlerAttempts,
           clearedIssueKeys: [],
@@ -693,6 +743,15 @@ export async function runFinalContractRepair(opts: {
           },
           passed: report.passed,
         }, story, report);
+        // The handler actually spent a targeted attempt, so charge its issue
+        // budget even when no mutation committed (unusable response, rejected
+        // candidate, or rollback). A later round may ask for the next bounded
+        // candidate instead of reporting attemptedIssueKeys: [] or mistaking
+        // "rejected" for a fixpoint.
+        for (const key of uncommittedChargeKeys) {
+          issueAttempts.set(key, (issueAttempts.get(key) ?? 0) + 1);
+        }
+        if (attempts < maxAttempts) continue;
       }
       break; // fixpoint: nothing left any handler can safely commit
     }

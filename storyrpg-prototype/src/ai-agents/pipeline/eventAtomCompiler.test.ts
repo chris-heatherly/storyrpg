@@ -51,9 +51,11 @@ describe('compileEventRealizationAtoms', () => {
       sourceText: 'The three become friends and form the Dusk Club.',
     });
     expect(atoms[0].semanticRole).toBe('relationship_change');
-    expect(atoms[0].acceptedPatterns).toContain('their friendship begins');
-    expect(atoms[0].acceptedPatterns).toContain('I like her');
-    expect(atoms[0].acceptedPatterns).toContain('she stays');
+    expect(atoms[0].acceptedPatterns).toContain('they choose each other as friends');
+    expect(atoms[0].acceptedPatterns).toContain('they accept one another as friends');
+    expect(atoms[0].acceptedPatterns).toContain('they exchange contact details and agree to stay in touch');
+    expect(atoms[0].acceptedPatterns).not.toContain('I like her');
+    expect(atoms[0].acceptedPatterns).not.toContain('she stays');
     expect(atoms[1].acceptedPatterns).toContain('Dusk Club is born');
     expect(atoms.flatMap((atom) => atom.participantIds ?? [])).not.toEqual(expect.arrayContaining(['Dusk', 'Club']));
   });

@@ -1465,8 +1465,10 @@ export function compileNarrativeRealizationTasks(
     // encounter arrivals — the shape this defect actually took, and where a
     // solo confrontation is most narratively load-bearing — rather than
     // every scene-to-scene cast change, which would false-positive on
-    // ordinary "you leave the shopkeeper behind" breaks. ADVISORY: new task
-    // class, zero shadow evidence.
+    // ordinary "you leave the shopkeeper behind" breaks. This is blocking at
+    // the source-scene owner boundary after repeated live confirmations: a
+    // silent companion disappearance is a real route-continuity break, and
+    // owner-stage repair is cheaper than carrying it to final regression.
     const toScene = sceneById.get(transition.toSceneId);
     if (fromScene && toScene?.kind === 'encounter') {
       const companions = (fromScene.npcsInvolved ?? [])
@@ -1500,7 +1502,7 @@ export function compileNarrativeRealizationTasks(
           }],
           target: { scope: 'owner', surfaces: companionExecution.surfaces },
           sourceContractIds: [...transition.sourceContractIds],
-          blocking: false,
+          blocking: true,
         });
       }
     }

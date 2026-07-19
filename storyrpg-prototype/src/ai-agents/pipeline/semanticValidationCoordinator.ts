@@ -486,6 +486,17 @@ export function clearOwnerAtomReceiptsForTest(): void {
 const MEMORY_OR_AFTERMATH_FRAME_RE =
   /\b(?:the memory of|you remember(?:ed)?|remembers?|recall(?:s|ed|ing)?|replays?(?: in your (?:mind|head))?|plays? on a loop|flash(?:es|ed)? back(?: to)?|think(?:s|ing)? back to|in the aftermath of|now that it(?:'s| is) (?:over|done)|looking back(?: on)?)\b/i;
 
+const INTRODUCTION_RITUAL_CUE_RE =
+  /\b(?:meet|met|introduc(?:e|es|ed|ing|tion)|this is|that is|my name is|name's|name is|call me|i['’]?m|i am|who['’]?s|who is|stranger|first time|newly presented)\b/i;
+
+function isIntroductionRitualTask(taskId: string): boolean {
+  return /:(?:premature-ritual|reintroduction):/.test(taskId);
+}
+
+function canContainIntroductionRitual(claim: SemanticRealizationClaim): boolean {
+  return claim.excerpts.some((excerpt) => INTRODUCTION_RITUAL_CUE_RE.test(excerpt.text));
+}
+
 function isCausalRestageAtom(atomId: string): boolean {
   return atomId.endsWith(':source-restaged-after-consequence');
 }
@@ -521,8 +532,21 @@ export async function validateSemanticRealizationTasks(input: {
   const honorReceipts = input.mode === 'final_regression' && isGateEnabled('GATE_SEMANTIC_RECEIPT_CONTINUITY');
   const honored: Array<{ taskId: string; atomId: string; groupKey: string }> = [];
   const memoryFramed: Array<{ taskId: string; atomId: string; groupKey: string }> = [];
-  let toJudge: typeof built = [];
+  const ritualCueAbsent: Array<{ taskId: string; atomId: string; groupKey: string }> = [];
+  const toJudge: typeof built = [];
   for (const item of built) {
+    if (
+      item.atom.polarity === 'forbidden'
+      && isIntroductionRitualTask(item.claim.taskId)
+      && !canContainIntroductionRitual(item.claim)
+    ) {
+      ritualCueAbsent.push({
+        taskId: item.claim.taskId,
+        atomId: item.atom.id,
+        groupKey: item.claim.id.split('::').at(-1) ?? 'owner:1',
+      });
+      continue;
+    }
     if (
       item.atom.polarity === 'forbidden'
       && isCausalRestageAtom(item.atom.id)
@@ -553,6 +577,9 @@ export async function validateSemanticRealizationTasks(input: {
   if (memoryFramed.length > 0) {
     console.info(`[SemanticValidation] ${memoryFramed.length} causal-restage atom(s) for ${input.sceneId} are memory/aftermath-framed on every excerpt — skipping the judge, not a violation.`);
   }
+  if (ritualCueAbsent.length > 0) {
+    console.info(`[SemanticValidation] ${ritualCueAbsent.length} introduction-ritual atom(s) for ${input.sceneId} have no ritual cue — skipping the judge, not a violation.`);
+  }
   const consensus = await evaluateClaims(input.judge, toJudge.map(({ claim }) => claim), atomsByClaimId, input.forceFreshTaskIds);
   if ((input.mode ?? 'owner') === 'owner') {
     for (const item of consensus) {
@@ -567,7 +594,7 @@ export async function validateSemanticRealizationTasks(input: {
     }
   }
   const semanticVerdictsByTaskAndGroup = new Map<string, NarrativeAtomVerdict[]>();
-  for (const entry of [...honored, ...memoryFramed]) {
+  for (const entry of [...honored, ...memoryFramed, ...ritualCueAbsent]) {
     const key = `${entry.taskId}::${entry.groupKey}`;
     semanticVerdictsByTaskAndGroup.set(key, [...(semanticVerdictsByTaskAndGroup.get(key) ?? []), {
       taskId: entry.taskId,

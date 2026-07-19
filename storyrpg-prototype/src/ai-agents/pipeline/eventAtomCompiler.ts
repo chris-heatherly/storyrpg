@@ -171,15 +171,13 @@ function semanticAlternatives(atom: NarrativeEvidenceAtom, clause: string): stri
     alternatives.add(`${actor} offers her friendship`.trim());
   }
   if (atom.semanticRole === 'relationship_change' && /\bbecome\s+friends?\b/i.test(clause)) {
-    alternatives.add('welcome her as a friend');
-    alternatives.add('call her a friend');
-    alternatives.add('their friendship begins');
-    alternatives.add('I like her');
-    alternatives.add('she stays');
-    alternatives.add('to us');
-    alternatives.add('part of something');
-    alternatives.add('accept her into the circle');
-    alternatives.add('bring her into their circle');
+    // Keep only alternatives that encode a changed mutual footing. Labels,
+    // warmth, a toast, or a one-sided welcome are evidence candidates, not
+    // proof that friendship was earned.
+    alternatives.add('they choose each other as friends');
+    alternatives.add('they accept one another as friends');
+    alternatives.add('they make and accept a plan to meet again');
+    alternatives.add('they exchange contact details and agree to stay in touch');
   }
   if (/\b(?:explores?|wanders?|roams?|walks?\s+(?:through|around))\b/i.test(clause)) {
     const location = names.at(-1);

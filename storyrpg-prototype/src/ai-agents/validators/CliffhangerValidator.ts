@@ -48,6 +48,15 @@ export interface CliffhangerImprovement {
   explanation: string;
 }
 
+export interface CliffhangerImprovementConstraints {
+  /** Meanings that already passed their owning contract and must survive. */
+  requiredMeanings?: string[];
+  /** Meanings that this late rewrite must not add to reader-facing prose. */
+  forbiddenMeanings?: string[];
+  /** Optional retry feedback from canonical candidate validation. */
+  retryFeedback?: string;
+}
+
 // ========================================
 // CLIFFHANGER VALIDATOR
 // ========================================
@@ -172,7 +181,8 @@ export class CliffhangerValidator extends BaseAgent {
   async improveCliffhanger(
     episode: Episode,
     plan: EpisodePlan | CliffhangerPlan,
-    analysis: CliffhangerAnalysis
+    analysis: CliffhangerAnalysis,
+    constraints?: CliffhangerImprovementConstraints,
   ): Promise<AgentResponse<CliffhangerImprovement>> {
     const startTime = Date.now();
     
@@ -197,6 +207,12 @@ A good cliffhanger:
 4. Connects to the story's stakes and characters
 5. Feels earned by setup from the episode, not arbitrary
 
+The planned hook is the complete authorization boundary. Do not invent a substitute
+threat, attacker, arrival, message, reveal, codename, betrayal, or twist merely to
+increase intensity. Preserve the protagonist's authored action, decision, victory,
+or emotional consequence as the ending's owner; forward pressure may deepen the
+planned question but may not displace that ownership.
+
 Cliffhanger types:
 - REVELATION: A shocking truth is revealed ("She was the killer all along")
 - DANGER: Imminent threat with outcome unclear ("The timer hit zero as—")
@@ -209,6 +225,18 @@ Cliffhanger types:
 - LOSS: A relationship, resource, safety, or belief is visibly taken away
 
 Your task: Rewrite the final beat to create a compelling "${planDetails.type}" ${planDetails.intensity} cliffhanger.`;
+
+      const requiredMeanings = constraints?.requiredMeanings?.filter(Boolean) ?? [];
+      const forbiddenMeanings = constraints?.forbiddenMeanings?.filter(Boolean) ?? [];
+      const contractConstraints = requiredMeanings.length > 0 || forbiddenMeanings.length > 0 || constraints?.retryFeedback
+        ? `\n\n## Canonical Adoption Constraints\n${requiredMeanings.length > 0
+          ? `Preserve every already-passing meaning below; names and literal terms must remain exact:\n${requiredMeanings.map((meaning) => `- REQUIRED: ${meaning}`).join('\n')}`
+          : ''}${forbiddenMeanings.length > 0
+          ? `\nDo not add or imply any forbidden meaning below:\n${forbiddenMeanings.map((meaning) => `- FORBIDDEN: ${meaning}`).join('\n')}`
+          : ''}${constraints?.retryFeedback
+          ? `\nThe previous candidate was rejected by canonical validation. Correct these exact regressions without changing unrelated prose:\n${constraints.retryFeedback}`
+          : ''}`
+        : '';
 
       const userPrompt = `## Episode Context
 ${planDetails.title ? `Episode: "${planDetails.title}"` : 'Episode ending'}
@@ -238,6 +266,9 @@ Rewrite the final beat to deliver a compelling "${planDetails.type}" cliffhanger
 2. Implements the planned hook: "${planDetails.hook}"
 3. Makes the reader NEED to continue
 4. Keeps the visual moment concrete for illustration
+5. Preserves the protagonist-owned resolution as the terminal emotional beat
+6. Introduces no event or meaning outside the planned hook and setup
+${contractConstraints}
 
 Return JSON:
 {

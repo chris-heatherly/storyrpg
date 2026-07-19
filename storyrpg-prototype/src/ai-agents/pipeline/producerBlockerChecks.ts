@@ -11,7 +11,7 @@ export type ProducerRepairSurface = 'scene-prose' | 'choice-prose' | 'choice-con
 
 export interface ProducerBlockerFinding {
   validator: 'ProducerPhaseBlockerValidator';
-  type: 'unsafe_fallback_prose' | 'unsafe_metadata' | 'malformed_relationship_consequence';
+  type: 'unsafe_fallback_prose' | 'unsafe_metadata' | 'malformed_relationship_consequence' | 'duplicate_beat_id';
   severity: 'error';
   ownerPhase: ProducerOwnerPhase;
   repairSurface: ProducerRepairSurface;
@@ -64,6 +64,13 @@ export const PRODUCER_BLOCKER_OWNERSHIP: readonly ProducerBlockerOwnership[] = [
     ownerPhase: 'choice',
     repairSurface: 'choice-consequences',
     handler: 'ChoiceAuthor schema retry',
+    retryBudget: 1,
+  },
+  {
+    type: 'duplicate_beat_id',
+    ownerPhase: 'scene',
+    repairSurface: 'scene-prose',
+    handler: 'SceneWriter structured-output retry',
     retryBudget: 1,
   },
 ] as const;
@@ -209,6 +216,39 @@ export function postLlmMetadataHygiene(value: unknown, location?: string): strin
 export function validateSceneProducerOutput(sceneId: string, sceneContent: unknown): ProducerBlockerFinding[] {
   postLlmMetadataHygiene(sceneContent, asRecord(sceneContent)?.location as string | undefined);
   const findings: ProducerBlockerFinding[] = [];
+  const content = asRecord(sceneContent);
+  const beats = Array.isArray(content?.beats) ? content!.beats as unknown[] : [];
+  const seenById = new Map<string, MutableRecord>();
+  const kept: unknown[] = [];
+  for (const rawBeat of beats) {
+    const beat = asRecord(rawBeat);
+    const id = typeof beat?.id === 'string' ? beat.id : '';
+    const prior = id ? seenById.get(id) : undefined;
+    if (!prior) {
+      if (id && beat) seenById.set(id, beat);
+      kept.push(rawBeat);
+      continue;
+    }
+    const priorText = String(prior.text ?? '').replace(/\s+/g, ' ').trim();
+    const beatText = String(beat?.text ?? '').replace(/\s+/g, ' ').trim();
+    if (priorText === beatText) {
+      if (prior.nextBeatId === id) prior.nextBeatId = beat?.nextBeatId;
+      continue;
+    }
+    kept.push(rawBeat);
+    findings.push({
+      validator: 'ProducerPhaseBlockerValidator',
+      type: 'duplicate_beat_id',
+      severity: 'error',
+      ownerPhase: 'scene',
+      repairSurface: 'scene-prose',
+      sceneId,
+      fieldPath: `scene.beats[${id}]`,
+      message: `Scene ${sceneId} contains conflicting prose under duplicate beat id "${id}".`,
+      suggestion: 'Re-run SceneWriter and return exactly one beat payload per canonical beat id.',
+    });
+  }
+  if (content && kept.length !== beats.length) content.beats = kept;
   walkProducerText(sceneContent, 'scene', sceneId, 'scene', findings);
   return findings;
 }

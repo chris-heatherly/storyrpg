@@ -163,6 +163,7 @@ export function assignChoiceTypes(
   // and the original allocation runs over the full set unchanged.
   const assignments: ChoiceTypeAssignment[] = [];
   const unAuthored: PlannableScene[] = [];
+  const authoredCounts = emptyCounts();
   for (const scene of choicePoints) {
     const cp = scene.choicePoint!;
     const authored = scene.authoredChoiceType;
@@ -170,6 +171,7 @@ export function assignChoiceTypes(
     if (authoredValid) {
       if (cp.type !== authored) assignments.push({ sceneId: scene.id, from: cp.type, to: authored! });
       cp.type = authored!;
+      authoredCounts[authored!] += 1;
     } else {
       unAuthored.push(scene);
     }
@@ -178,7 +180,17 @@ export function assignChoiceTypes(
   const n = unAuthored.length;
   if (n === 0) return assignments;
 
-  const counts = allocateChoiceTypeCountsForEpisode(n, target, seasonCounts);
+  // The episode slice describes the WHOLE episode, including authored/pinned
+  // slots. Allocate only the remaining debt across un-authored scenes. Without
+  // this subtraction, a pinned relationship slot is counted twice and can
+  // squeeze a rarer strategic slot out of a three-choice episode.
+  const remainingSeasonCounts = seasonCounts
+    ? Object.fromEntries(ORDER.map((type) => [
+        type,
+        Math.max(0, (seasonCounts[type] ?? 0) - authoredCounts[type]),
+      ])) as Record<ChoiceType, number>
+    : undefined;
+  const counts = allocateChoiceTypeCountsForEpisode(n, target, remainingSeasonCounts);
 
   // Guarantee at least one DILEMMA in a reasonably-sized episode. Largest-
   // remainder gives dilemma (the lowest target weight) 0 slots at small N, so

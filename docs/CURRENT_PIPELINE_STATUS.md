@@ -1,6 +1,6 @@
 # Current Pipeline Status
 
-**Last Updated:** July 13, 2026
+**Last Updated:** July 19, 2026
 
 This is the short operational status of the codebase as it exists now. It is
 intended to answer "what is live?" before older architecture notes or audit
@@ -308,7 +308,17 @@ boundaries. Semantic verdicts are cached by task, atom, scoped evidence, judge
 policy, provider, model, and schema. Positive receipts may be reused after
 unrelated prose changes only when every cited excerpt still exists with the
 same text hash; inconclusive and infrastructure-failure verdicts are never
-cached. Every initial or regenerated choice set passes one transactional
+cached. Late prose mutators follow the same adoption boundary: the flag-gated
+`SceneCritic` pass revalidates its exact scene against typed structured,
+literal, and semantic task evidence before replacing beats, and cliffhanger
+repair evaluates at most two isolated candidates against both cliffhanger
+quality and the final scene's canonical tasks. A regression, inconclusive
+canonical check, or provider failure retains the previously committed prose.
+Final-contract handlers likewise commit only when canonical revalidation clears
+a blocking fingerprint or strictly reduces its missing/forbidden atom set;
+zero-progress rewrites roll back.
+
+Every initial or regenerated choice set passes one transactional
 prepare/validate/commit path: canonical state setters, information markers,
 residue, and route fan-out are applied to a clone; owner and producer gates run
 on that exact clone; only a valid candidate replaces the committed choice set

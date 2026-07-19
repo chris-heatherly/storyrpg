@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildQualityBaselineKey,
   compareQualityBaseline,
   deriveQualityDisposition,
   type QualityBaselineSnapshot,
@@ -17,6 +18,44 @@ const baseline: QualityBaselineSnapshot = {
 };
 
 describe('quality promotion disposition', () => {
+  it('uses stable source identity across run names, providers, and compiled plans', () => {
+    const common = {
+      storyId: 'bite-me-r130_2026-07-19T16-24-08',
+      storyTitle: 'Bite Me r130',
+      sourceKind: 'authored_lite',
+      requestedEpisodes: [1],
+      sourceAnalysisHash: 'source-hash',
+    };
+    const first = buildQualityBaselineKey({
+      ...common,
+      seasonPlanHash: 'plan-a',
+      compilerVersion: 'compiler-a',
+      generator: { modelFamily: 'gemini' },
+    });
+    const second = buildQualityBaselineKey({
+      ...common,
+      storyId: 'bite-me-r133_2026-07-19T16-24-44',
+      storyTitle: 'Bite Me r133',
+      seasonPlanHash: 'plan-b',
+      compilerVersion: 'compiler-b',
+      generator: { modelFamily: 'claude' },
+    });
+    expect(second).toBe(first);
+  });
+
+  it('uses the canonical source hash instead of an LLM-varied display title when available', () => {
+    const first = buildQualityBaselineKey({
+      storyId: 'bite-me-r133', storyTitle: 'Bite Me', sourceKind: 'authored_lite',
+      requestedEpisodes: [1], sourceAnalysisHash: 'source-hash',
+    });
+    const retitled = buildQualityBaselineKey({
+      storyId: 'night-bites-r134', storyTitle: 'Dating After Dusk', sourceKind: 'authored_lite',
+      requestedEpisodes: [1], sourceAnalysisHash: 'source-hash',
+    });
+
+    expect(retitled).toBe(first);
+  });
+
   it('holds stale QA evidence even when the numeric score would ship', () => {
     expect(deriveQualityDisposition({
       score: 88, rawBand: 'ship', capIds: [], blockingCapCount: 0,

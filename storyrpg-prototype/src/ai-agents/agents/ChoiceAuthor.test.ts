@@ -164,7 +164,7 @@ describe('ChoiceAuthor.validateChoices', () => {
     expect(result.success).toBe(true);
     expect(prompts[0]).toContain('Rewrite ONLY the shared post-choice resolution passage');
     expect(prompts[0]).toContain('observable personal bid and reciprocal acceptance');
-    expect(result.data?.choices.map((choice) => choice.text)).toEqual(choiceSet.choices.map((choice) => choice.text));
+    expect(result.data?.choices.map((choice: any) => choice.text)).toEqual(choiceSet.choices.map((choice: any) => choice.text));
     expect(result.data?.choices[0].outcomeTexts?.success).toContain('Success 1.');
     expect(result.data?.choices[0].outcomeTexts?.success).toContain('all three choose friendship');
     expect(result.data?.choices[0].outcomeTexts?.success).not.toContain('They name it the Lantern Circle.');
@@ -288,6 +288,7 @@ describe('ChoiceAuthor.validateChoices', () => {
     const author = new ChoiceAuthor(config);
     const result = await author.execute(makeInput({
       optionCount: 3,
+      npcsInScene: [{ id: 'char-mika', name: 'Mika', pronouns: 'she/her', description: 'A guarded friend.' }],
       sceneBlueprint: {
         id: 'scene-1',
         name: 'Mika Table',
@@ -677,7 +678,7 @@ describe('ChoiceAuthor.normalizeChoiceSet', () => {
 
 describe('ChoiceAuthor.normalizeConsequenceTier (1.3 flag → callback)', () => {
   const author: any = new ChoiceAuthor(config);
-  const tier = (choice: any, choiceType: any) => author.normalizeConsequenceTier(choice, choiceType);
+  const tier = (choice: any, choiceType: any, plannedTier?: any) => author.normalizeConsequenceTier(choice, choiceType, plannedTier);
 
   it('classifies a choice that sets a trackable flag as callback', () => {
     const choice = { id: 'c1', consequences: [{ type: 'setFlag', flag: 'spared_herald', value: true }] };
@@ -697,6 +698,53 @@ describe('ChoiceAuthor.normalizeConsequenceTier (1.3 flag → callback)', () => 
     expect(tier({ id: 'c5', consequenceTier: 'branchlet', consequences: [{ type: 'setFlag', flag: 'x', value: true }] }, 'strategic')).toBe('branchlet');
     expect(tier({ id: 'c6' }, 'expression')).toBe('sceneTint');
     expect(tier({ id: 'c7', consequences: [] }, 'dilemma')).toBe('branchlet');
+  });
+
+  it('enforces the season-assigned tier without inventing route topology', () => {
+    expect(tier({ id: 'c8', consequences: [] }, 'relationship', 'callback')).toBe('callback');
+    expect(tier({ id: 'c8-expression', consequences: [] }, 'expression', 'callback')).toBe('callback');
+    expect(tier({ id: 'c9', consequences: [] }, 'strategic', 'tint')).toBe('sceneTint');
+    expect(tier({ id: 'c10', consequences: [] }, 'strategic', 'branchlet')).toBe('branchlet');
+    expect(tier({ id: 'c11', consequences: [] }, 'strategic', 'branch')).toBe('branchlet');
+    expect(tier({ id: 'c12', nextSceneId: 'scene-2', consequences: [] }, 'strategic', 'branch')).toBe('structuralBranch');
+  });
+});
+
+describe('ChoiceAuthor closed-cast prose', () => {
+  it('rejects unknown acting names in reader-facing outcome prose', () => {
+    const author: any = new ChoiceAuthor(config);
+    const input = makeInput({
+      protagonistInfo: { name: 'Kylie Marinescu', pronouns: 'she/her' },
+      npcsInScene: [
+        { id: 'char-stela', name: 'Stela Pavel', pronouns: 'she/her', description: 'A bookseller.' },
+        { id: 'char-mika', name: 'Mika Dragan', pronouns: 'she/her', description: 'A photographer.' },
+      ],
+      sceneBlueprint: {
+        id: 's1-4',
+        name: 'Valescu Club',
+        location: 'Valescu Club',
+        choicePoint: { stakes: { want: 'belong', cost: 'risk trust', identity: 'open or guarded' } },
+      },
+    });
+    const choiceSet = makeChoiceSet({
+      sharedResolutionText: 'You and Mateo raise a glass to the Dusk Club.',
+      choices: [{
+        id: 'c1',
+        text: 'Tell the truth',
+        choiceType: 'relationship',
+        consequences: [],
+        reactionText: "Ren's face softens when you answer.",
+        outcomeTexts: { success: 'Stela nods while Mika lifts her glass.' },
+      }],
+    });
+
+    const issues = author.collectUnknownActingCharacterIssues(choiceSet, input);
+
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.stringContaining('"Ren"'),
+      expect.stringContaining('"Mateo"'),
+    ]));
+    expect(issues.join(' ')).not.toMatch(/unknown acting character "(?:Stela|Mika|Dusk|Club)"/);
   });
 });
 
@@ -1651,6 +1699,7 @@ describe('ChoiceAuthor semantic completeness retry', () => {
     const author = new ChoiceAuthor(config);
     const result = await author.execute(makeInput({
       optionCount: 3,
+      npcsInScene: [{ id: 'char-mika', name: 'Mika', pronouns: 'she/her', description: 'A guarded friend.' }],
       sceneBlueprint: {
         id: 'scene-1',
         name: 'Test Scene',
@@ -1780,6 +1829,7 @@ describe('ChoiceAuthor semantic completeness retry', () => {
     const author = new ChoiceAuthor(config);
     const result = await author.execute(makeInput({
       optionCount: 3,
+      npcsInScene: [{ id: 'char-stela', name: 'Stela', pronouns: 'she/her', description: 'A wary bookseller.' }],
       sceneBlueprint: {
         id: 'scene-1',
         name: 'Test Scene',

@@ -311,7 +311,7 @@ describe('compileNarrativeRealizationTasks', () => {
     });
   });
 
-  it('r115 gap analysis (2026-07-18): compiles an advisory companion-continuity task when cast members drop out entering an encounter', () => {
+  it('r115 gap analysis (2026-07-18): blocks unexplained companion dropout before entering an encounter', () => {
     // Live regression: s1-5 ends with the whole group ("Come on. Let's walk,
     // the air in Cismigiu is better") heading toward Cismigiu together, but
     // the encounter opens with Kylie alone — no farewell, parting, or reason
@@ -335,7 +335,7 @@ describe('compileNarrativeRealizationTasks', () => {
     const companion = tasks.find((task) => task.id === 'task:transition:s1-5-to-attack:companion-continuity');
     expect(companion).toMatchObject({
       sceneId: 's1-5',
-      blocking: false,
+      blocking: true,
       evidenceAtoms: [expect.objectContaining({
         verificationAuthority: 'semantic_judge',
         semanticRole: 'transition_bridge',

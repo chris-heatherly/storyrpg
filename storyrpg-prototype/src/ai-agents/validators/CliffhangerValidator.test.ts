@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CliffhangerValidator } from './CliffhangerValidator';
 import type { Episode } from '../../types';
@@ -78,5 +78,26 @@ describe('CliffhangerValidator', () => {
 
     expect(['good', 'excellent']).toContain(result.quality);
     expect(result.finalBeatText).toContain('blue letter');
+  });
+
+  it('binds improvement prompts to protagonist ending ownership and typed adoption constraints', async () => {
+    const callLLM = vi.spyOn(validator as any, 'callLLM').mockResolvedValue(JSON.stringify({
+      improvedText: 'The protagonist closes the letter while its familiar seal leaves one question open.',
+      explanation: 'Keeps the resolution while deepening the planned question.',
+    }));
+    const episode = episodeWithFinalText('The tribunal ends and the protagonist closes the blue letter.');
+    const current = validator.quickAnalyze(episode, highShockPlan);
+
+    await validator.improveCliffhanger(episode, highShockPlan, current, {
+      requiredMeanings: ['The protagonist owns the final decision.'],
+      forbiddenMeanings: ['A new attacker displaces the protagonist.'],
+      retryFeedback: 'The prior candidate introduced an unowned threat.',
+    });
+
+    const prompt = callLLM.mock.calls[0][0].map((message: { content: string }) => message.content).join('\n');
+    expect(prompt).toContain('planned hook is the complete authorization boundary');
+    expect(prompt).toContain('REQUIRED: The protagonist owns the final decision.');
+    expect(prompt).toContain('FORBIDDEN: A new attacker displaces the protagonist.');
+    expect(prompt).toContain('prior candidate introduced an unowned threat');
   });
 });

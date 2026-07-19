@@ -52,20 +52,24 @@ export function qualityDomainSnapshot(domains: QualityDomainScore[]): Record<str
 
 export function buildQualityBaselineKey(input: {
   storyId: string;
+  storyTitle?: string;
+  sourceKind?: string;
   requestedEpisodes?: number[];
   sourceAnalysisHash?: string;
   seasonPlanHash?: string;
   compilerVersion?: string;
   generator?: Record<string, unknown>;
 }): string {
-  const generator = input.generator ?? {};
+  const identity = (input.storyTitle || input.storyId)
+    .trim()
+    .replace(/[ _-]+r\d+(?:[ _-].*)?$/i, '')
+    .toLocaleLowerCase();
   return fnv1a32Json({
-    storyId: input.storyId,
+    keySchema: 2,
+    storyIdentity: input.sourceAnalysisHash ? '' : identity,
+    sourceKind: input.sourceKind ?? '',
     requestedEpisodes: input.requestedEpisodes ?? [],
     sourceAnalysisHash: input.sourceAnalysisHash ?? '',
-    seasonPlanHash: input.seasonPlanHash ?? '',
-    compilerVersion: input.compilerVersion ?? '',
-    modelFamily: generator.modelFamily ?? generator.providerPolicy ?? generator.textModel ?? '',
   });
 }
 

@@ -1570,6 +1570,27 @@ Return exactly one complete SceneContent JSON object with:
     // four beats with identical text — QA read it as zero narrative
     // progression). Only long, non-interactive beats collapse; choice points,
     // beats with choices, and variant-carrying beats are never touched.
+    // Beat ids are the navigation identity. An exact repeated payload is a
+    // lossless structured-output duplicate and can collapse to its first
+    // occurrence. A shared id with different prose is ambiguous and must be
+    // retried by the producer rather than silently renaming or dropping story.
+    const seenBeatIds = new Map<string, GeneratedBeat>();
+    content.beats = content.beats.filter((beat) => {
+      const survivor = seenBeatIds.get(beat.id);
+      if (!survivor) {
+        seenBeatIds.set(beat.id, beat);
+        return true;
+      }
+      const sameText = (survivor.text ?? '').replace(/\s+/g, ' ').trim()
+        === (beat.text ?? '').replace(/\s+/g, ' ').trim();
+      if (!sameText) {
+        throw new Error(`SceneWriter returned duplicate beat id "${beat.id}" with conflicting prose.`);
+      }
+      if (survivor.nextBeatId === beat.id) survivor.nextBeatId = beat.nextBeatId;
+      console.warn(`[SceneWriter] Collapsed exact duplicate beat id "${beat.id}" in scene ${content.sceneId}`);
+      return false;
+    });
+
     const seenBeatText = new Map<string, string>();
     const removedRedirect = new Map<string, string | undefined>();
     content.beats = content.beats.filter((beat) => {
@@ -1963,6 +1984,7 @@ Return exactly one complete SceneContent JSON object with:
       issue.startsWith('TOO MANY CLIMAX BEATS') ||
       issue.startsWith('TOO MANY KEY STORY BEATS') ||
       issue.startsWith('MISSING CHOICE POINT') ||
+      issue.startsWith('MISSING POST-CHOICE VARIANT') ||
       issue.startsWith('NO BEATS') ||
       issue.startsWith('SINGLE BEAT') ||
       issue.startsWith('SCENE-LENGTH UNDERFILL')
@@ -2513,7 +2535,7 @@ If this scene has no outgoing scene, write the last beat as serialized-TV craft:
 3. End with forward pressure, but do not rely on ellipses or a generic question as the whole hook.
 4. Make the visual contract show the hook: the object, face, gesture, arrival, absence, or rupture the reader should remember.
 5. The planned hook IS the episode's single closing image. Do NOT invent a SECOND, competing terminal object or delivery (a different gift, parcel, package, letter, or item arriving on the same doorstep/counter/threshold) — that contradicts the planned hook. If the hook is an object that arrives, that object is the only one; the final choice, if any, operates on the planned hook itself, not a substitute.
-6. ESCALATION BUDGET: land AT MOST ONE new threat signal in the closing beat — one watcher, one message, one precise unsettling detail. Several coordinated menaces arriving at once (multiple ominous senders, a "they are all connected" chorus) spends future episodes' dread in a single beat and breaks the season's tone contract. Preserve the scene's earned victory or emotion, then let ONE signal carry the chill.
+6. ENDING OWNERSHIP: the default allowance is ZERO new threat events. Do not invent a watcher, message, arrival, surveillance image, betrayal, sender, or reveal merely to sharpen the hook. A new threat signal is allowed only when this scene's assigned event or realization-task list explicitly stages that concrete signal. A generic cliffhanger plan does not grant permission to invent one. Preserve the protagonist's authored action, decision, victory, or emotional consequence as the terminal ownership beat; forward pressure may deepen an existing question without replacing that ending.
 ` : ''}
 ## Requirements
 - Write up to ${input.targetBeatCount} beats for this scene (cap—use fewer if the scene doesn't need more)
@@ -2526,6 +2548,7 @@ ${input.targetBeatCount >= 6 ? '- If this is a scene-length episode, write at le
 - skillInsights shape: { "id": "slug", "skillWeights": { "perception": 0.6, "investigation": 0.4 }, "threshold": 55, "text": "Plain prose only.", "priority": 1 }
 - Insight thresholds: 45 easy reveal, 55 meaningful reveal, 65 strong build reveal, 75 rare expert reveal.
 - Never write "skill check", "threshold", "bonus", "modifier", "success chance", percentages, or raw skill/stat names as player-facing labels.
+- When an owned event creates or publishes an in-world post, article, letter, speech, recording, or similar artifact whose reception drives a later event, include a concise representative excerpt or quoted line on-page so the reader can understand the reaction. A filename, title, or summary alone does not realize the artifact.
 ${input.previousSceneSummary ? `- Previous scene context: ${input.previousSceneSummary}` : ''}
 ${input.nextSceneContext ? `- Next scene context: ${input.nextSceneContext.name} (${input.nextSceneContext.location}) — ${input.nextSceneContext.encounterDescription || input.nextSceneContext.description}` : ''}
 ${input.continueInLocation ? `- CONTINUITY: the previous scene already took place in ${input.continueInLocation}. The protagonist is ALREADY here — open mid-presence (continue the visit), do NOT re-stage a first arrival, threshold-crossing, or "the smell hits you as you enter". Re-entering a location you never left reads as a continuity error.` : ''}
@@ -2538,7 +2561,15 @@ The previous scene ("${input.sceneTimeline.previous?.sceneName ?? 'previous scen
 ` : ''}
 ${(input.priorEncounterOutcomes?.length ?? 0) > 0 ? `
 ## POST-ENCOUNTER OUTCOME REACTIVITY (CRITICAL)
-This scene follows an encounter that can end several ways, and the gameplay state already records which: ${input.priorEncounterOutcomes!.map(e => `"${e.encounterName}"${e.defeatStakes ? ` (a hard outcome means: ${e.defeatStakes})` : ''}${(input.priorChoiceFamilies?.length ?? 0) > 0 ? `
+This scene follows an encounter that can end several ways, and the gameplay state already records which: ${input.priorEncounterOutcomes!.map(e => `"${e.encounterName}"${e.defeatStakes ? ` (a hard outcome means: ${e.defeatStakes})` : ''}`).join('; ')}.
+- The opening MUST NOT read identically regardless of how that encounter went.
+- Author at least one textVariant on an EARLY beat gated on the outcome flag so the prose reflects the result — e.g. an ally who was hurt appears injured, a costly win shows its cost, a defeat colors the mood. Use these EXACT flags:
+${input.priorEncounterOutcomes!.flatMap(e => e.outcomeFlags.map(o => `  - { "type": "flag", "flag": "${o.flag}", "value": true }  // ${e.encounterName}: ${o.outcome}`)).join('\n')}
+- Keep this lean: put these aftermath variants on one or two early beats only. Do not add textVariants to every beat.
+- Keep the base text true for the most neutral (victory) path; the variants carry the harder outcomes.
+${input.priorEncounterOutcomes!.some(e => e.goalPressure || e.threatPressure) ? `- The encounter ran under pressure the aftermath must still carry — ${input.priorEncounterOutcomes!.filter(e => e.goalPressure || e.threatPressure).map(e => [e.goalPressure ? `what was at stake: ${e.goalPressure}` : '', e.threatPressure ? `the rising danger: ${e.threatPressure}` : ''].filter(Boolean).join('; ')).join('; ')}. Let the prose show its residue (time lost, danger nearer, cost paid) in fiction-first terms — never name clocks, segments, or mechanics.` : ''}
+` : ''}
+${(input.priorChoiceFamilies?.length ?? 0) > 0 ? `
 ## POST-CHOICE REACTIVITY (CRITICAL — the player just chose)
 This scene follows a player choice in ${input.priorChoiceFamilies!.map(f => `"${f.sceneName}"`).join(' and ')}, and the gameplay state records which option they took.
 - The opening MUST NOT read identically regardless of what the player chose.
@@ -2546,13 +2577,6 @@ This scene follows a player choice in ${input.priorChoiceFamilies!.map(f => `"${
 ${input.priorChoiceFamilies!.flatMap(f => f.options.map(o => `  - { "type": "flag", "flag": "${o.flag}", "value": true }  // chose: "${o.label}"`)).join('\n')}
 - Cover EVERY sibling flag above (one variant each, or one variant per flag on different early beats) — a path without a variant silently loses its reflection.
 - Keep it lean: one or two early beats only; base text stays true for the most neutral reading.
-` : ''}`).join('; ')}.
-- The opening MUST NOT read identically regardless of how that encounter went.
-- Author at least one textVariant on an EARLY beat gated on the outcome flag so the prose reflects the result — e.g. an ally who was hurt appears injured, a costly win shows its cost, a defeat colors the mood. Use these EXACT flags:
-${input.priorEncounterOutcomes!.flatMap(e => e.outcomeFlags.map(o => `  - { "type": "flag", "flag": "${o.flag}", "value": true }  // ${e.encounterName}: ${o.outcome}`)).join('\n')}
-- Keep this lean: put these aftermath variants on one or two early beats only. Do not add textVariants to every beat.
-- Keep the base text true for the most neutral (victory) path; the variants carry the harder outcomes.
-${input.priorEncounterOutcomes!.some(e => e.goalPressure || e.threatPressure) ? `- The encounter ran under pressure the aftermath must still carry — ${input.priorEncounterOutcomes!.filter(e => e.goalPressure || e.threatPressure).map(e => [e.goalPressure ? `what was at stake: ${e.goalPressure}` : '', e.threatPressure ? `the rising danger: ${e.threatPressure}` : ''].filter(Boolean).join('; ')).join('; ')}. Let the prose show its residue (time lost, danger nearer, cost paid) in fiction-first terms — never name clocks, segments, or mechanics.` : ''}
 ` : ''}
 ${input.sceneBlueprint.choicePoint ? '- Mark the final beat as isChoicePoint: true for the Choice Author to add options' : ''}
 ${input.sceneBlueprint.relationshipPacing?.some((contract) => (contract.blockedLabels ?? []).length > 0) ? `
@@ -3325,6 +3349,34 @@ Respond with valid JSON matching the SceneContent type. Return raw JSON only: no
       const hasChoicePoint = content.beats?.some(b => b.isChoicePoint);
       if (!hasChoicePoint) {
         issues.push(`MISSING CHOICE POINT - The scene blueprint requires a choice, but no beat is marked as isChoicePoint: true. Mark the final beat where the player should make a decision.`);
+      }
+    }
+
+    const plannedChoiceFlags = (input.priorChoiceFamilies ?? [])
+      .flatMap((family) => family.options)
+      .map((option) => option.flag)
+      .filter((flag): flag is string => typeof flag === 'string' && flag.trim().length > 0);
+    if (plannedChoiceFlags.length > 0) {
+      const realizedVariantFlags = new Set<string>();
+      const collectConditionFlags = (condition: unknown): void => {
+        if (!condition || typeof condition !== 'object') return;
+        const record = condition as Record<string, unknown>;
+        if (record.type === 'flag' && typeof record.flag === 'string') {
+          realizedVariantFlags.add(record.flag);
+        }
+        for (const nested of Array.isArray(record.conditions) ? record.conditions : []) {
+          collectConditionFlags(nested);
+        }
+      };
+      for (const beat of content.beats || []) {
+        for (const variant of beat.textVariants || []) {
+          collectConditionFlags(variant.condition);
+        }
+      }
+      const missingFlags = Array.from(new Set(plannedChoiceFlags))
+        .filter((flag) => !realizedVariantFlags.has(flag));
+      if (missingFlags.length > 0) {
+        issues.push(`MISSING POST-CHOICE VARIANT - This scene must visibly reflect every planned prior-choice path. Add a concise early textVariant for each missing exact flag: ${missingFlags.join(', ')}.`);
       }
     }
 

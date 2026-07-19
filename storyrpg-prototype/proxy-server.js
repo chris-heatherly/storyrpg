@@ -145,6 +145,14 @@ const memoryOutbox = createMemoryOutboxService({
   baseUrl: process.env.COGNEE_BASE_URL || 'http://localhost:8000',
   apiKey: process.env.COGNEE_API_KEY || '',
   token: process.env.STORYRPG_MEMORY_OUTBOX_TOKEN,
+  llmApiKeys: {
+    anthropic: process.env.ANTHROPIC_API_KEY,
+    openai: process.env.OPENAI_API_KEY,
+    gemini: process.env.GEMINI_API_KEY,
+    mistral: process.env.MISTRAL_API_KEY,
+    ollama: process.env.OLLAMA_API_KEY,
+    bedrock: process.env.AWS_ACCESS_KEY_ID,
+  },
 });
 memoryOutbox.registerRoutes(app);
 

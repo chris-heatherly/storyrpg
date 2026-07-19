@@ -72,6 +72,11 @@ export interface PipelineMemoryRecord {
   metadata?: Record<string, unknown>;
   nodeSet?: string[];
   cognify?: boolean;
+  /**
+   * Internal outbox routing metadata. It is never rendered into the Cognee
+   * document, and deliberately carries no API key.
+   */
+  cogneeLlmTarget?: Pick<CogneeLlmTarget, 'provider' | 'model'>;
 }
 
 export interface PipelineMemoryRecallRequest {
@@ -747,7 +752,15 @@ export class CogneeHttpMemoryProvider implements MemoryProvider {
     // The proxy owns durable enqueueing and drains only when story workers are
     // idle. This keeps advisory writes off the generation critical path.
     if (this.config.outboxUrl) {
-      await this.enqueueOutbox(record);
+      await this.enqueueOutbox({
+        ...record,
+        ...(this.llmTarget ? {
+          cogneeLlmTarget: {
+            provider: this.llmTarget.provider,
+            model: this.llmTarget.model,
+          },
+        } : {}),
+      });
       return;
     }
     if (!(await this.ensureHealthy())) return;

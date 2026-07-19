@@ -2,7 +2,13 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, token }) {
+const MAX_ATTEMPTS = 8;
+const INITIAL_RETRY_DELAY_MS = 5_000;
+const MAX_RETRY_DELAY_MS = 5 * 60_000;
+
+const SUPPORTED_LLM_PROVIDERS = new Set(['anthropic', 'openai', 'gemini', 'mistral', 'ollama', 'bedrock']);
+
+function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, token, llmApiKeys = {} }) {
   if (!memoryRoot || !lifecycle || !baseUrl || !token) {
     throw new Error('createMemoryOutboxService requires memoryRoot, lifecycle, baseUrl, and token');
   }
@@ -16,6 +22,7 @@ function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, tok
   for (const dir of [pendingDir, processingDir, completedDir, deadLetterDir]) fs.mkdirSync(dir, { recursive: true });
 
   let draining = false;
+  let activeLlmTargetKey = null;
 
   const headers = (json = true) => {
     const value = {};
@@ -45,6 +52,25 @@ function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, tok
     atomicWrite(dirtyDatasetsFile, Array.from(datasets).sort());
   }
 
+  function recoverInterruptedProcessing() {
+    let recovered = 0;
+    for (const file of fs.readdirSync(processingDir).filter((entry) => entry.endsWith('.json')).sort()) {
+      const source = path.join(processingDir, file);
+      const destination = path.join(pendingDir, file);
+      try {
+        const entry = JSON.parse(fs.readFileSync(source, 'utf8'));
+        entry.recoveredAt = new Date().toISOString();
+        delete entry.nextAttemptAt;
+        atomicWrite(destination, entry);
+        fs.rmSync(source, { force: true });
+        recovered += 1;
+      } catch (error) {
+        console.warn('[CogneeOutbox] processing recovery failed:', error?.message || error);
+      }
+    }
+    return recovered;
+  }
+
   function enqueue(record) {
     const id = `${Date.now()}-${crypto.randomUUID()}`;
     const entry = { schemaVersion: 1, id, createdAt: new Date().toISOString(), attempts: 0, record };
@@ -54,10 +80,45 @@ function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, tok
   }
 
   function isRetryable(error) {
-    return /\b(408|409|423|429|500|502|503|504)\b|timeout|abort|lock|econn|network/i.test(String(error?.message || error));
+    return /\b(408|409|423|429|500|502|503|504)\b|fetch failed|timeout|abort|lock|econn|enotfound|network/i.test(String(error?.message || error));
+  }
+
+  function retryDelayMs(attempts) {
+    return Math.min(INITIAL_RETRY_DELAY_MS * (2 ** Math.max(0, attempts - 1)), MAX_RETRY_DELAY_MS);
+  }
+
+  async function configureLlmForRecord(record) {
+    const target = record.cogneeLlmTarget;
+    if (!target) return;
+    if (!SUPPORTED_LLM_PROVIDERS.has(target.provider) || !target.model) {
+      throw new Error(`Unsupported Cognee LLM target: ${target.provider || 'unknown'}/${target.model || 'unknown'}`);
+    }
+    // LiteLLM interprets an unprefixed gemini-* model as Vertex AI in this
+    // Cognee image. The generator uses an API-key Gemini route, which needs
+    // the explicit provider prefix (and must match pipelineMemory.ts).
+    const model = target.provider === 'gemini' && !target.model.includes('/')
+      ? `gemini/${target.model}`
+      : target.model;
+    const targetKey = `${target.provider}:${model}`;
+    if (activeLlmTargetKey === targetKey) return;
+    const providerKey = llmApiKeys[target.provider];
+    const response = await fetch(endpoint('settings'), {
+      method: 'POST',
+      headers: headers(true),
+      body: JSON.stringify({
+        llm: {
+          provider: target.provider,
+          model,
+          ...(providerKey ? { apiKey: providerKey } : {}),
+        },
+      }),
+    });
+    if (!response.ok) throw new Error(`Cognee LLM settings failed: ${response.status} ${await response.text()}`);
+    activeLlmTargetKey = targetKey;
   }
 
   async function addRecord(record) {
+    await configureLlmForRecord(record);
     const body = new FormData();
     body.append('data', new Blob([[
       `# ${record.title}`,
@@ -96,6 +157,15 @@ function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, tok
         if (lifecycle.activeWorkers.size > 0) break;
         const pendingPath = path.join(pendingDir, file);
         const processingPath = path.join(processingDir, file);
+        let queuedEntry;
+        try {
+          queuedEntry = JSON.parse(fs.readFileSync(pendingPath, 'utf8'));
+          const nextAttemptAt = Date.parse(queuedEntry.nextAttemptAt || '');
+          if (Number.isFinite(nextAttemptAt) && nextAttemptAt > Date.now()) continue;
+        } catch {
+          // Let the existing processing path surface malformed records in the
+          // normal dead-letter handling below.
+        }
         try {
           fs.renameSync(pendingPath, processingPath);
         } catch {
@@ -112,7 +182,13 @@ function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, tok
           entry.attempts = Number(entry.attempts || 0) + 1;
           entry.lastError = String(error?.message || error).slice(0, 2000);
           entry.lastAttemptAt = new Date().toISOString();
-          const destination = !isRetryable(error) || entry.attempts >= 8
+          const retryable = isRetryable(error);
+          if (retryable && entry.attempts < MAX_ATTEMPTS) {
+            entry.nextAttemptAt = new Date(Date.now() + retryDelayMs(entry.attempts)).toISOString();
+          } else {
+            delete entry.nextAttemptAt;
+          }
+          const destination = !retryable || entry.attempts >= MAX_ATTEMPTS
             ? path.join(deadLetterDir, file)
             : path.join(pendingDir, file);
           atomicWrite(destination, entry);
@@ -152,6 +228,28 @@ function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, tok
     };
   }
 
+  function retryDeadLetters() {
+    if (lifecycle.activeWorkers.size > 0) return { ...status(), requeued: 0 };
+    let requeued = 0;
+    for (const file of fs.readdirSync(deadLetterDir).filter((entry) => entry.endsWith('.json')).sort()) {
+      const source = path.join(deadLetterDir, file);
+      const destination = path.join(pendingDir, file);
+      try {
+        const entry = JSON.parse(fs.readFileSync(source, 'utf8'));
+        entry.attempts = 0;
+        entry.requeuedAt = new Date().toISOString();
+        delete entry.nextAttemptAt;
+        atomicWrite(destination, entry);
+        fs.rmSync(source, { force: true });
+        requeued += 1;
+      } catch (error) {
+        console.warn('[CogneeOutbox] dead-letter replay preparation failed:', error?.message || error);
+      }
+    }
+    void drain();
+    return { ...status(), requeued };
+  }
+
   function authorize(req, res) {
     if (req.get('X-StoryRPG-Memory-Token') === token) return true;
     res.status(403).json({ error: 'Forbidden' });
@@ -173,11 +271,16 @@ function createMemoryOutboxService({ memoryRoot, lifecycle, baseUrl, apiKey, tok
       if (!authorize(req, res)) return;
       res.json(status());
     });
+    app.post('/internal/memory/outbox/retry-dead-letter', (req, res) => {
+      if (!authorize(req, res)) return;
+      res.json(retryDeadLetters());
+    });
   }
 
+  recoverInterruptedProcessing();
   const timer = setInterval(() => { void drain(); }, 2_000);
   timer.unref?.();
-  return { enqueue, drain, status, registerRoutes, stop: () => clearInterval(timer) };
+  return { enqueue, drain, status, retryDeadLetters, registerRoutes, stop: () => clearInterval(timer) };
 }
 
 module.exports = { createMemoryOutboxService };

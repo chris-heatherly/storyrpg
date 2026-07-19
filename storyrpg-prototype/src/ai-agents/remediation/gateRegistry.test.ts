@@ -58,7 +58,7 @@ describe('gate registry policy (repair-first, CI-enforced)', () => {
     // gate fired anyway via config enablement and aborted a season-plan
     // analysis run on three missing turnout text fields. Default-OFF blocking
     // gates are reachable in production; they carry the same obligation.
-    const shadowGate: GateSpec = { id: 'GATE_TEST_SHADOW', placement: 'season-final', kind: 'blocking', defaultOn: false };
+    const shadowGate: GateSpec = { id: 'GATE_TEST_SHADOW', placement: 'season-final', kind: 'blocking', defaultOn: false, abortClass: 'ship_with_cap' };
     const repairedPlan: GateSpec = { id: 'GATE_TEST_PLAN_REPAIRED', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' };
     GATE_REGISTRY.push(shadowGate, repairedPlan);
     try {
@@ -98,6 +98,7 @@ describe('gate registry policy (repair-first, CI-enforced)', () => {
       finalRole: 'regression-net',
       kind: 'blocking',
       defaultOn: true,
+      abortClass: 'ship_with_cap',
     };
     GATE_REGISTRY.push(regressionNetGate);
     try {
@@ -204,6 +205,12 @@ describe('isGateEnabledAt (placement-aware execution, adoption A6)', () => {
     // specifically about this being a real, nonzero number.
     expect(counts.seasonFinal).toBeLessThanOrEqual(counts.total);
     expect(counts.seasonFinal).toBeGreaterThan(0);
+    // The ≤15 blocking set (audit Phase 2): only core-class gates still abort
+    // at the final contract; the ceiling is enforced by validateGateRegistry
+    // and tracked run-over-run via the quality ledger.
+    expect(counts.coreSeasonFinal).toBeGreaterThan(0);
+    expect(counts.coreSeasonFinal).toBeLessThanOrEqual(15);
+    expect(counts.coreSeasonFinal).toBeLessThanOrEqual(counts.seasonFinal);
   });
 
   it('quality placement counts exclude repair infrastructure', () => {

@@ -285,6 +285,12 @@ export interface FinalStoryContractIssue {
   requiredEvidenceAtoms?: string[];
   realizationFingerprint?: string;
   matchedForbiddenAtoms?: string[];
+  /**
+   * Set by abort-time triage (finalContractAbortPolicy): this finding was an
+   * unrepaired blocker whose class ships-with-cap instead of aborting. Feeds
+   * the unrepaired_contract_* quality caps; never set at detection time.
+   */
+  demotedFromBlocking?: boolean;
 }
 
 export interface FinalStoryContractReport {

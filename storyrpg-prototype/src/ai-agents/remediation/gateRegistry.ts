@@ -75,6 +75,15 @@ export interface GateSpec {
    * each exception should name its planned fix.
    */
   policyException?: string;
+  /**
+   * Abort-time disposition of this gate's unrepaired residue at the final
+   * contract (audit Phase 2 "≤15 blocking set"): 'core' still aborts the run;
+   * 'ship_with_cap' ships with a quality-score cap. Required for every
+   * blocking gate that executes at season-final; the authoritative per-issue
+   * decision lives in finalContractAbortPolicy.ts (this field mirrors it for
+   * registry accounting and the ≤15 ceiling test).
+   */
+  abortClass?: 'core' | 'ship_with_cap';
 }
 
 function defaultLifecycle(spec: Pick<GateSpec, 'placement' | 'kind'>): GateLifecycle {
@@ -114,7 +123,7 @@ const RAW_GATE_REGISTRY = [
   // echo_summary_variant leaks now REPAIR (buildDesignNoteLeakStripHandler strips the
   // bogus feedback-cue textVariant) instead of aborting — the planned fix the prior
   // policyException referenced is implemented.
-  { id: 'GATE_DESIGN_NOTE_LEAK', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  { id: 'GATE_DESIGN_NOTE_LEAK', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix', abortClass: 'core' },
 
   // ── Wave 3: bounded LLM soft-gates (never abort) ──
   { id: 'GATE_JUDGE_STABILIZATION', placement: 'episode', kind: 'soft', defaultOn: true },
@@ -156,6 +165,11 @@ const RAW_GATE_REGISTRY = [
   // Carry the still-failing contract's repaired candidate across resumes so
   // repair rounds accumulate instead of resetting (fail-open; see gateDefaults).
   { id: 'GATE_REPAIR_CARRYFORWARD', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
+  // Kill switch for abort-time triage (audit Phase 2 "≤15 blocking set"):
+  // GATE_STRICT_CONTRACT=1 restores abort-on-every-blocker for debugging.
+  // Default OFF = triage active (non-core unrepaired residue ships with a
+  // quality-score cap instead of killing the run). See finalContractAbortPolicy.ts.
+  { id: 'GATE_STRICT_CONTRACT', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: false },
   // Honor owner-stage judge receipts at final regression when owner excerpts
   // are a subset of final excerpts (positive atoms only; see gateDefaults).
   { id: 'GATE_SEMANTIC_RECEIPT_CONTINUITY', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
@@ -167,8 +181,8 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_TREATMENT_SOURCED_ARM', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
 
   // ── Wave 4: plan-time gates (blocking is cheap fail-fast before prose) ──
-  { id: 'GATE_SETUP_PAYOFF', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix' },
-  { id: 'GATE_CALLBACK_COVERAGE', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  { id: 'GATE_SETUP_PAYOFF', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix', abortClass: 'ship_with_cap' },
+  { id: 'GATE_CALLBACK_COVERAGE', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix', abortClass: 'ship_with_cap' },
   // R2.1: craft density/budget/pressure demoted from default-ON hard abort →
   // QualityScore / advisory (re-enable via env). No repair route existed.
   { id: 'GATE_CHOICE_DENSITY', placement: 'plan', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF plan-shape audit with no repair route yet; enabling it makes findings hard-abort at plan time unremediated. Planned fix: a plan-rebalance autofix (redistribute choice beats) before any production enablement.' },
@@ -215,65 +229,65 @@ const RAW_GATE_REGISTRY = [
   // duplicate-ownership conflicts were the largest hard-abort surface with no
   // retry path on the deterministic planned-blueprint route).
   { id: 'GATE_OWNERSHIP_AFTERMATH_DEMOTION', placement: 'plan', kind: 'remediation', defaultOn: true, repair: 'autofix' },
-  { id: 'GATE_TREATMENT_SEED_ONPAGE', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  { id: 'GATE_TREATMENT_SEED_ONPAGE', placement: 'plan', auditPlacements: ['season-final'], kind: 'blocking', defaultOn: true, repair: 'autofix', abortClass: 'ship_with_cap' },
   { id: 'GATE_DRAMATIC_STRUCTURE', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
   { id: 'GATE_SCENE_TURN_CONTRACT', placement: 'plan', kind: 'blocking', defaultOn: true, repair: 'regen' },
 
   // ── Wave 5: final-contract-class gates ──
-  { id: 'GATE_DUPLICATE_ESTABLISHING_BEAT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix' },
-  { id: 'GATE_PROTAGONIST_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_NPC_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Held default-OFF as FP-prone (G10 shadow audit 2026-06-09); findings ship as warnings via npcPronounResolver today. Planned fix: an LLM coreference-judge confirmation step routing confirmed findings to scene-prose repair, before blocking enablement.' },
+  { id: 'GATE_DUPLICATE_ESTABLISHING_BEAT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'autofix', abortClass: 'ship_with_cap' },
+  { id: 'GATE_PROTAGONIST_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'core' },
+  { id: 'GATE_NPC_PRONOUN', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Held default-OFF as FP-prone (G10 shadow audit 2026-06-09); findings ship as warnings via npcPronounResolver today. Planned fix: an LLM coreference-judge confirmation step routing confirmed findings to scene-prose repair, before blocking enablement.', abortClass: 'ship_with_cap' },
   // WS0.3: deterministic name-anchored coercion (with verb agreement) repairs the break in
   // place, so this is blocking + autofix — residue the coercion can't safely clear (same-gender
   // NPC ambiguity) is reported for the EncounterArchitect regen route.
-  { id: 'GATE_ENCOUNTER_POV', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix' },
+  { id: 'GATE_ENCOUNTER_POV', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix', abortClass: 'core' },
   // Opening-anchor POV (first prose beat must anchor the player with you/your or
   // {{player.name}}). Moved from the scene-lock gate — where a stale scene-time
   // failure hard-aborted the run with no repair route (2026-07-05T23-54-17) — to
   // the final contract, where a blocking finding routes to a same-scene rewrite.
-  { id: 'GATE_POV_ANCHOR', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_POV_ANCHOR', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'core' },
   // bite-me-g22/g23: malformed second-person encounter prose ("you rooftop",
   // "You kiss takes"). Shadow by default until nested encounter outcome repair
   // can clear the gate without a season-final abort.
-  { id: 'GATE_ENCOUNTER_PROSE_INTEGRITY', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false, repair: 'regen' },
-  { id: 'GATE_PLANNING_REGISTER_PROSE', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_PROSE_STYLE_CONSISTENCY', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_ENCOUNTER_PROSE_INTEGRITY', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false, repair: 'regen', abortClass: 'core' },
+  { id: 'GATE_PLANNING_REGISTER_PROSE', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'core' },
+  { id: 'GATE_PROSE_STYLE_CONSISTENCY', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
   // WS1.4: deterministic in-place reassignment of over-cap dominant-skill slots.
   { id: 'GATE_ENCOUNTER_SKILL_REBALANCE', placement: 'season-final', kind: 'remediation', defaultOn: false, repair: 'autofix' },
   // WS1.3: a dropped cold open routes to the existing season-final scene regen to re-author the opening.
-  { id: 'GATE_COLD_OPEN_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
-  { id: 'GATE_OUTCOME_TEXT_QUALITY', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix' },
-  { id: 'GATE_SENTENCE_OPENER_VARIETY', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
+  { id: 'GATE_COLD_OPEN_REALIZATION', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_OUTCOME_TEXT_QUALITY', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'autofix', abortClass: 'core' },
+  { id: 'GATE_SENTENCE_OPENER_VARIETY', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen', abortClass: 'ship_with_cap' },
   // R5 honesty fix (2026-07-06): this entry previously claimed `repair: 'autofix'`
   // but no autofix exists — a collapsed sustained set piece is missing encounter
   // STRUCTURE (phases / tension-curve points), which no prose rewrite or
   // deterministic fix can add at the final contract. The gateRepairRouter now
   // classifies its findings as architectural (blueprint_rebalance) instead of the
   // unclassified diagnostic_stop fall-through.
-  { id: 'GATE_ENCOUNTER_SETPIECE_DEPTH', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, policyException: 'No final-contract repair can add encounter phases/tension-curve structure; findings are honestly classified architectural (blueprint_rebalance). The generative half is EncounterArchitect\'s sustained-set-piece beat floor at encounter build time. Planned fix: an encounter-structure repair handler that scaffolds the missing phases deterministically and has the LLM author their prose (shift-left candidate, R5 audit 2026-07-06).' },
-  { id: 'GATE_REFERENCED_EVENT_PRESENCE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
-  { id: 'GATE_REQUIRED_BEAT_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
-  { id: 'GATE_TREATMENT_SEED_REALIZATION', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_SCENE_TRANSITION_CONTINUITY', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_SCENE_CHARACTER_AVAILABILITY', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen' },
-  { id: 'GATE_SCENE_TURN_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_EPISODE_STORY_CIRCLE_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false, repair: 'regen' },
+  { id: 'GATE_ENCOUNTER_SETPIECE_DEPTH', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, policyException: 'No final-contract repair can add encounter phases/tension-curve structure; findings are honestly classified architectural (blueprint_rebalance). The generative half is EncounterArchitect\'s sustained-set-piece beat floor at encounter build time. Planned fix: an encounter-structure repair handler that scaffolds the missing phases deterministically and has the LLM author their prose (shift-left candidate, R5 audit 2026-07-06).', abortClass: 'ship_with_cap' },
+  { id: 'GATE_REFERENCED_EVENT_PRESENCE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'judge+regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_REQUIRED_BEAT_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_TREATMENT_SEED_REALIZATION', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_SCENE_TRANSITION_CONTINUITY', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_SCENE_CHARACTER_AVAILABILITY', placement: 'season-final', kind: 'blocking', defaultOn: false, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_SCENE_TURN_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_EPISODE_STORY_CIRCLE_REALIZATION', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: false, repair: 'regen', abortClass: 'ship_with_cap' },
   { id: 'GATE_SCENE_TURN_CLUSTER_REPAIR', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_NARRATIVE_MECHANIC_PRESSURE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_TREATMENT_FIELD_UTILIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_SEASON_PROMISE_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_CHARACTER_TREATMENT_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_FAILURE_MODE_AUDIT_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_CHARACTER_INTRODUCTION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_FLAG_CONTRACT', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF, but treatmentSourced runs escalate unset_flag_condition to error through a side door (FinalStoryContractValidator blockFlags || treatmentSourced) with no flag-wiring repair handler (see repairRouteCoverage NATIVE_DIAGNOSTIC_STOP_ALLOWLIST). Planned fix: a deterministic setFlag wiring autofix.' },
+  { id: 'GATE_NARRATIVE_MECHANIC_PRESSURE', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_TREATMENT_FIELD_UTILIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_SEASON_PROMISE_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_CHARACTER_TREATMENT_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_FAILURE_MODE_AUDIT_REALIZATION', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_CHARACTER_INTRODUCTION', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_FLAG_CONTRACT', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF, but treatmentSourced runs escalate unset_flag_condition to error through a side door (FinalStoryContractValidator blockFlags || treatmentSourced) with no flag-wiring repair handler (see repairRouteCoverage NATIVE_DIAGNOSTIC_STOP_ALLOWLIST). Planned fix: a deterministic setFlag wiring autofix.', abortClass: 'ship_with_cap' },
   // WS0.2: deterministic generative half (inject a flag-gated read for every unread
   // consequential set-flag), so this is remediation + autofix, not a blocking abort.
   { id: 'GATE_RESIDUE_CONSUME', placement: 'episode', auditPlacements: ['season-final'], lifecycle: 'episode-contract', finalRole: 'regression-net', kind: 'remediation', defaultOn: false, repair: 'autofix' },
   { id: 'GATE_WITNESS_BAKE', placement: 'episode', kind: 'remediation', defaultOn: true, repair: 'autofix' },
-  { id: 'GATE_ENCOUNTER_OUTCOME_VARIANT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_ENCOUNTER_OUTCOME_VARIANT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
   { id: 'GATE_CONTINUITY_REMEDIATION', placement: 'episode', kind: 'remediation', defaultOn: false, repair: 'regen' },
-  { id: 'GATE_QA_CRITICAL_BLOCK', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF promotion switch for QA criticals (F3: advisory by default); when enabled, scene-localized findings already route via the QARunner branch (same_scene_retry) and unlocalized aggregates defer. Planned fix: none needed — routes exist; kept as exception only because the umbrella itself declares no single repair kind.' },
-  { id: 'GATE_ENDING_REACHABILITY', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF structural audit; an unreachable authored ending is topology, not prose — fail-fast is intentional (same class as broken_navigation). Planned fix: an episode-replan path before any enablement; never route to prose repair.' },
+  { id: 'GATE_QA_CRITICAL_BLOCK', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF promotion switch for QA criticals (F3: advisory by default); when enabled, scene-localized findings already route via the QARunner branch (same_scene_retry) and unlocalized aggregates defer. Planned fix: none needed — routes exist; kept as exception only because the umbrella itself declares no single repair kind.', abortClass: 'ship_with_cap' },
+  { id: 'GATE_ENDING_REACHABILITY', placement: 'season-final', kind: 'blocking', defaultOn: false, policyException: 'Default-OFF structural audit; an unreachable authored ending is topology, not prose — fail-fast is intentional (same class as broken_navigation). Planned fix: an episode-replan path before any enablement; never route to prose repair.', abortClass: 'core' },
 
   // ── §4 treatment-fidelity dispatch ──
   // WS1 (2026-06-12): relocated from season-final to plan placement — the
@@ -286,11 +300,11 @@ const RAW_GATE_REGISTRY = [
   // findings (episode-list mismatch) are classified blueprint_rebalance instead
   // of the unclassified diagnostic_stop dead end. Primary enforcement remains
   // plan placement (cheap fail-fast before prose).
-  { id: 'GATE_AUTHORED_EPISODE_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_AUTHORED_EPISODE_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
   // Repair-first: the fidelity judge refutes FPs (it is a treatment-fidelity finding) and the
   // scene-prose repair handler now re-authors the encounter's phase/storylet prose to depict a
   // confirmed-missing central conflict / required beat (bite-me-g18), so this no longer hard-aborts.
-  { id: 'GATE_ENCOUNTER_ANCHOR_CONTENT', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
+  { id: 'GATE_ENCOUNTER_ANCHOR_CONTENT', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen', abortClass: 'ship_with_cap' },
   // Audit 2026-07-01 item 4.4 planned fix implemented (R5, 2026-07-06): the
   // gateRepairRouter routes scene-localized drift findings to scene-prose/cluster
   // repair; schedule findings with no scene target (reveal-before-setup ordering,
@@ -306,19 +320,20 @@ const RAW_GATE_REGISTRY = [
     kind: 'blocking',
     defaultOn: true,
     repair: 'regen',
+    abortClass: 'ship_with_cap',
   },
-  { id: 'GATE_SIGNATURE_DEVICE_PRESENCE', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
-  { id: 'GATE_SCENE_SPATIAL_UNIT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_RELATIONSHIP_ARC_LEDGER', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_THEMATIC_SQUARE_TURN', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen' },
+  { id: 'GATE_SIGNATURE_DEVICE_PRESENCE', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_SCENE_SPATIAL_UNIT', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_RELATIONSHIP_ARC_LEDGER', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_THEMATIC_SQUARE_TURN', placement: 'season-final', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
   // WS1 (2026-06-12): relocated from season-final to plan placement — anchors
   // are fully known before generation (see GATE_AUTHORED_EPISODE_CONFORMANCE).
   // Audit 2026-07-01 item 4.4 planned fix implemented (R5, 2026-07-06): the
   // gateRepairRouter routes scene-localized drift findings to scene-prose/cluster
   // repair; season-spine beat-placement findings (no scene target) are classified
   // blueprint_rebalance. Primary enforcement remains plan placement.
-  { id: 'GATE_STORY_CIRCLE_ANCHOR_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen' },
-  { id: 'GATE_SIGNATURE_PRESENCE_STRICT', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen' },
+  { id: 'GATE_STORY_CIRCLE_ANCHOR_CONFORMANCE', placement: 'plan', auditPlacements: ['season-final'], lifecycle: 'plan-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'regen', abortClass: 'ship_with_cap' },
+  { id: 'GATE_SIGNATURE_PRESENCE_STRICT', placement: 'scene', auditPlacements: ['season-final'], lifecycle: 'scene-contract', finalRole: 'regression-net', kind: 'blocking', defaultOn: true, repair: 'judge+regen', abortClass: 'ship_with_cap' },
 ] satisfies GateSpec[];
 
 export const GATE_REGISTRY: GateSpec[] = RAW_GATE_REGISTRY.map(withGateMetadata);
@@ -343,6 +358,8 @@ export interface BlockingGateCounts {
   total: number;
   /** The subset that actually executes at season-final (primary placement or auditPlacements). */
   seasonFinal: number;
+  /** Season-final subset whose abortClass is 'core' — the ≤15-ceiling number (audit Phase 2). */
+  coreSeasonFinal: number;
 }
 
 /**
@@ -358,7 +375,11 @@ export function countBlockingGates(): BlockingGateCounts {
   const defaultOnBlocking = GATE_REGISTRY.filter((gate) => gate.kind === 'blocking' && gate.defaultOn);
   const seasonFinal = defaultOnBlocking.filter((gate) =>
     gate.placement === 'season-final' || (gate.auditPlacements ?? []).includes('season-final'));
-  return { total: defaultOnBlocking.length, seasonFinal: seasonFinal.length };
+  return {
+    total: defaultOnBlocking.length,
+    seasonFinal: seasonFinal.length,
+    coreSeasonFinal: seasonFinal.filter((gate) => gate.abortClass === 'core').length,
+  };
 }
 
 const placementWarned = new Set<string>();
@@ -456,6 +477,27 @@ export function validateGateRegistry(defaults: Record<string, boolean> = GATE_DE
         problem: 'repair-first policy: a blocking gate at plan/scene/episode/season-final (placement or auditPlacements) must declare a repair route (autofix/regen/judge) or carry a written policyException — default-OFF gates included, because config/env enablement makes them fire in production (r119 GATE_ARC_PRESSURE)',
       });
     }
+    // Abort-class accounting (audit Phase 2 "≤15 blocking set"): every blocking
+    // gate that can execute at season-final must declare how its unrepaired
+    // residue is dispatched at the abort decision — 'core' (still aborts) or
+    // 'ship_with_cap' (ships with a quality-score cap).
+    const executesAtSeasonFinal = executionPlacements.has('season-final');
+    if (spec.kind === 'blocking' && executesAtSeasonFinal && !spec.abortClass) {
+      violations.push({
+        gateId: spec.id,
+        problem: 'abort-class policy: a blocking gate executing at season-final must declare abortClass (core | ship_with_cap) — see finalContractAbortPolicy.ts for the per-issue taxonomy it mirrors',
+      });
+    }
+  }
+  const coreCount = GATE_REGISTRY.filter((gate) =>
+    gate.kind === 'blocking'
+    && (gate.placement === 'season-final' || (gate.auditPlacements ?? []).includes('season-final'))
+    && gate.abortClass === 'core').length;
+  if (coreCount > 15) {
+    violations.push({
+      gateId: '(core abort set)',
+      problem: `abort-class policy: ${coreCount} season-final blocking gates declare abortClass 'core' — the audit Phase 2 ceiling is 15. Growing the core is a policy decision requiring shadow evidence, not a default.`,
+    });
   }
   return violations;
 }

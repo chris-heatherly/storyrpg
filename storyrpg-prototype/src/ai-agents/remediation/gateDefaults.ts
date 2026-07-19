@@ -87,6 +87,10 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // the watermark start, validation always re-runs in full, and no new abort
   // class exists. Reversible via env=0.
   GATE_REPAIR_CARRYFORWARD: true,
+  // Abort-time triage kill switch (audit Phase 2): OFF = triage active
+  // (non-core unrepaired residue ships-with-cap); set env GATE_STRICT_CONTRACT=1
+  // to restore abort-on-every-blocker for debugging a specific run.
+  GATE_STRICT_CONTRACT: false,
 
   // Owner-receipt continuity at final regression (W3.2 first slice,
   // 2026-07-16T03-12-37): a positive semantic atom the owner-stage judge

@@ -63,6 +63,59 @@ describe('qualityScoring caps and eligibility', () => {
     expect(result.basis.caps.some((cap) => cap.id === 'planning_register_leak' && cap.maxScore === 69)).toBe(true);
   });
 
+  it('caps a run that shipped with abort-time-triage demoted findings (unrepaired_contract_findings)', () => {
+    // The ship-with-cap path: the contract PASSED because abort-time triage
+    // demoted non-core unrepaired blockers to tagged warnings. The score must
+    // carry a sub-90 cap so blockingCapCount increments and the ledger band
+    // leaves `ship` — the defect is visible, never silent.
+    const result = deriveStoryCircleQualityScore({
+      finalStory: syntheticStory() as any,
+      finalStoryContractReport: {
+        passed: true,
+        blockingIssues: [],
+        warnings: [
+          {
+            type: 'duplicate_high_pressure_event',
+            validator: 'FinalStoryContractValidator',
+            message: 'Reachable scenes "s1-4" and "s1-5" appear to restage the same high-pressure event.',
+            severity: 'warning',
+            demotedFromBlocking: true,
+          },
+          {
+            type: 'sentence_opener_monotony',
+            validator: 'SentenceOpenerVarietyValidator',
+            message: 'Ordinary advisory warning without demotion.',
+            severity: 'warning',
+          },
+        ],
+      } as any,
+    }, { now: new Date('2026-01-01T00:00:00Z') });
+
+    const cap = result.basis.caps.find((c) => c.id === 'unrepaired_contract_findings');
+    expect(cap).toBeDefined();
+    expect(cap!.maxScore).toBe(74);
+    expect(cap!.reason).toContain('duplicate_high_pressure_event');
+    expect(result.score).toBeLessThanOrEqual(74);
+  });
+
+  it('does not cap plain warnings that were never demoted from blocking', () => {
+    const result = deriveStoryCircleQualityScore({
+      finalStory: syntheticStory() as any,
+      finalStoryContractReport: {
+        passed: true,
+        blockingIssues: [],
+        warnings: [{
+          type: 'sentence_opener_monotony',
+          validator: 'SentenceOpenerVarietyValidator',
+          message: 'Ordinary advisory warning.',
+          severity: 'warning',
+        }],
+      } as any,
+    }, { now: new Date('2026-01-01T00:00:00Z') });
+
+    expect(result.basis.caps.some((c) => c.id === 'unrepaired_contract_findings')).toBe(false);
+  });
+
   it('dedupes identical final-contract and sidecar findings before scoring domains', () => {
     const outputDir = mkdtempSync(join(tmpdir(), 'storyrpg-quality-'));
     const message = 'Choice "c1" sets unplanned consequential flag "kept_the_card".';

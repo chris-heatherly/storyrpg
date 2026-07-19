@@ -1737,6 +1737,25 @@ function applyCaps(
     });
   }
 
+  // Abort-time triage residue (audit Phase 2 "≤15 blocking set"): unrepaired
+  // non-core blockers that shipped as demoted warnings instead of aborting the
+  // run (finalContractAbortPolicy.applyFinalContractAbortTriage). Every one of
+  // these was an error-severity blocker before demotion, so a single
+  // error-tier cap applies. Sub-90 ⇒ blockingCapCount increments ⇒ the ledger
+  // band leaves `ship` — the defect ships VISIBLY, never silently.
+  const demotedContractFindings = inputs.finalStoryContractReport?.warnings?.filter(
+    (issue) => (issue as { demotedFromBlocking?: boolean }).demotedFromBlocking === true,
+  ) ?? [];
+  if (demotedContractFindings.length > 0) {
+    caps.push({
+      id: 'unrepaired_contract_findings',
+      maxScore: 74,
+      reason:
+        `${demotedContractFindings.length} unrepaired final-contract finding(s) shipped via abort-time triage `
+        + `(non-core classes: ${[...new Set(demotedContractFindings.map((issue) => issue.type))].slice(0, 6).join(', ')}).`,
+    });
+  }
+
   const routeBlockingIssues = inputs.finalStoryContractReport?.blockingIssues?.filter((issue) =>
     issue.validator === 'RouteContinuityValidator',
   ) ?? [];

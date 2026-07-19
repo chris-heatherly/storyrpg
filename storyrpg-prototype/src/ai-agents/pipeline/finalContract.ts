@@ -35,6 +35,7 @@ import type { ComprehensiveValidationReport } from '../../types/validation';
 import { createValidatorExecutionRecord } from '../validators/validatorExecutionRecords';
 import { runFidelityValidators, type FidelityFinding } from '../validators/runFidelityValidators';
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
+import { applyFinalContractAbortTriage } from '../validators/finalContractAbortPolicy';
 import {
   runFinalContractRepair,
   buildDeterministicContractHandlers,
@@ -1747,6 +1748,42 @@ export class FinalContract {
         passed: report.passed,
       }),
     ];
+
+    // Abort-time triage (audit Phase 2, the "≤15 blocking set"): the repair
+    // loop is fully exhausted at this point — every finding stayed blocking
+    // through every repair round, so repair effort is unchanged. What remains
+    // is unrepaired residue, and only the genuinely-unshippable core classes
+    // (structural/graph corruption, stub/leak prose, POV collapse, forbidden
+    // meaning on the page) still abort. Everything else — the fidelity/craft/
+    // pacing/ledger surface that produced most historical run-kills — ships
+    // WITH the defect recorded: demoted to tagged warnings here, then capped
+    // in the quality score (unrepaired_contract_* caps) and banded off `ship`
+    // in the ledger. GATE_STRICT_CONTRACT=1 restores abort-on-everything.
+    {
+      const preTriageBlockerCount = report.blockingIssues.length;
+      const triage = applyFinalContractAbortTriage(report, {
+        strict: isGateEnabled('GATE_STRICT_CONTRACT'),
+      });
+      if (triage.demotedCount > 0) {
+        this.deps.emit({
+          type: 'checkpoint',
+          phase: input.phase,
+          message:
+            `Shipping with ${triage.demotedCount} unrepaired non-core finding(s) — the quality score will be capped `
+            + `(abort-time triage: 0 core-class residue). Demoted: ${[...new Set(triage.demotedTypes)].slice(0, 8).join(', ')}.`,
+          data: { demotedCount: triage.demotedCount, demotedTypes: triage.demotedTypes.slice(0, 20) },
+        });
+      } else if (triage.coreResidueTypes.length > 0 && preTriageBlockerCount > 0) {
+        this.deps.emit({
+          type: 'debug',
+          phase: input.phase,
+          message:
+            `Abort-time triage: core-class residue [${triage.coreResidueTypes.join(', ')}] forces the abort `
+            + `(${preTriageBlockerCount} total unrepaired blocker(s)).`,
+          data: { coreTypes: triage.coreResidueTypes },
+        } as never);
+      }
+    }
 
     this.deps.emit({
       type: report.passed ? 'checkpoint' : 'error',

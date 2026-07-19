@@ -969,6 +969,8 @@ export async function appendFailedRunLedger(
     blockingGateCount?: number;
     /** Subset of blockingGateCount that executes at season-final. */
     blockingGateCountSeasonFinal?: number;
+    /** Season-final subset with abortClass 'core' (the ≤15 blocking set). */
+    blockingGateCountCoreSeasonFinal?: number;
     /** Deferral backpressure gauge: findings handed to episode-contract repair. */
     deferredRealizationCount?: number;
     validatorId?: string;
@@ -1007,6 +1009,7 @@ export async function appendFailedRunLedger(
       gateConfigHash: details?.gateConfigHash,
       blockingGateCount: details?.blockingGateCount,
       blockingGateCountSeasonFinal: details?.blockingGateCountSeasonFinal,
+      blockingGateCountCoreSeasonFinal: details?.blockingGateCountCoreSeasonFinal,
       validatorId: details?.validatorId,
       durationMs: details?.durationMs,
       llmCalls: details?.llmLedger?.totals.calls,

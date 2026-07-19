@@ -244,6 +244,7 @@ async function evaluateClaims(
   judge: SemanticRealizationJudgeLike,
   claims: SemanticRealizationClaim[],
   atomsByClaimId: Map<string, NarrativeEvidenceAtom>,
+  forceFreshTaskIds?: ReadonlySet<string>,
 ): Promise<ClaimConsensus[]> {
   const identity = judge.identity();
   const resolved = new Map<string, ClaimConsensus>();
@@ -255,6 +256,16 @@ async function evaluateClaims(
     cacheKeys.set(claim.id, cacheKey);
     const evidenceCacheKey = claimSemanticCacheKey(identity, claim);
     evidenceCacheKeys.set(claim.id, evidenceCacheKey);
+    // Instrument-failure retries need FRESH samples for the affected tasks —
+    // but only for those tasks. The old approach (clearSemanticValidationCache
+    // wiping both maps globally) forced every subsequent repair-round
+    // revalidation to re-judge ALL tasks (~100 serialized calls, 3.5-4 min per
+    // pass), and with ~1 flaky call per 100 the wipe became self-sustaining —
+    // the direct cause of the r120/r121 contract-repair timeouts (2026-07-19).
+    if (forceFreshTaskIds?.has(claim.taskId)) {
+      pending.push(claim);
+      continue;
+    }
     const cached = semanticConsensusCache.get(cacheKey);
     const evidenceCached = reusableEvidenceConsensus(claim, semanticEvidenceReceiptCache.get(evidenceCacheKey));
     if (cached) resolved.set(claim.id, cached);
@@ -489,6 +500,8 @@ export async function validateSemanticRealizationTasks(input: {
   currentStage?: NarrativeRealizationOwnerStage;
   candidateHash?: string;
   judge: SemanticRealizationJudgeLike;
+  /** Bypass the consensus caches for these tasks only (instrument-failure retry: fresh samples without a global cache wipe). */
+  forceFreshTaskIds?: ReadonlySet<string>;
 }): Promise<SemanticValidationResult> {
   const tasks = (input.tasks ?? []).filter((task) =>
     (input.mode ?? 'owner') !== 'owner' || !input.currentStage || task.ownerStage === input.currentStage,
@@ -540,7 +553,7 @@ export async function validateSemanticRealizationTasks(input: {
   if (memoryFramed.length > 0) {
     console.info(`[SemanticValidation] ${memoryFramed.length} causal-restage atom(s) for ${input.sceneId} are memory/aftermath-framed on every excerpt — skipping the judge, not a violation.`);
   }
-  const consensus = await evaluateClaims(input.judge, toJudge.map(({ claim }) => claim), atomsByClaimId);
+  const consensus = await evaluateClaims(input.judge, toJudge.map(({ claim }) => claim), atomsByClaimId, input.forceFreshTaskIds);
   if ((input.mode ?? 'owner') === 'owner') {
     for (const item of consensus) {
       if (item.outcome !== 'pass') continue;
@@ -707,6 +720,7 @@ export async function validateStorySemanticRealization(input: {
   story: Story;
   tasks?: NarrativeRealizationTask[];
   judge: SemanticRealizationJudgeLike;
+  forceFreshTaskIds?: ReadonlySet<string>;
 }): Promise<SemanticValidationResult[]> {
   const results: SemanticValidationResult[] = [];
   for (const episode of input.story.episodes ?? []) {
@@ -723,6 +737,7 @@ export async function validateStorySemanticRealization(input: {
           currentStage: ownerStage,
           candidateHash: stableHash(ownerStage === 'encounter_architect' ? scene.encounter : scene),
           judge: input.judge,
+          forceFreshTaskIds: input.forceFreshTaskIds,
         }));
       }
     }

@@ -628,3 +628,57 @@ describe('owner-receipt continuity at final regression (W3.2)', () => {
     expect(finalJudge.calls).toBeGreaterThan(0);
   });
 });
+
+describe('scoped fresh samples on instrument-failure retry (r120/r121 timeout root cause)', () => {
+  // The global clearSemanticValidationCache() on judge instrument failure made
+  // every later repair-round revalidation re-judge ALL tasks (~100 serialized
+  // calls, 3.5-4 min per pass) — and with ~1 flaky call per 100, each pass
+  // re-triggered the wipe. forceFreshTaskIds re-samples ONLY the failed tasks;
+  // every other task's consensus stays cached.
+  it('re-judges only the forced tasks; untouched tasks reuse cached consensus', async () => {
+    clearSemanticValidationCache();
+    clearOwnerAtomReceiptsForTest();
+    const sceneContent = { beats: [{ id: 'b1', text: 'The three friends form the Dusk Club over champagne.' }] };
+    const taskA = task();
+    const taskB = task({
+      id: 'task:toast',
+      contractId: 'event:toast',
+      canonicalEventId: 'event:toast',
+      evidenceAtoms: [{
+        id: 'atom:toast',
+        description: 'The group toasts on-page.',
+        acceptedPatterns: ['toast'],
+        kind: 'semantic',
+        verificationAuthority: 'semantic_judge',
+        semanticRole: 'relationship_change',
+        required: true,
+      }],
+    });
+
+    const judge = new FakeJudge((claim) => verdict(claim, 'fulfilled', 'form the Dusk Club'));
+    await validateSemanticRealizationTasks({
+      sceneId: 's1', tasks: [taskA, taskB], sceneContent, mode: 'final_regression', currentStage: 'scene_writer', judge,
+    });
+    const callsAfterFirst = judge.calls;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+
+    // Second pass, forcing fresh samples for taskB only: taskA must be a pure
+    // cache hit (no new judge executions beyond taskB's).
+    const judgeCallsBefore = judge.calls;
+    await validateSemanticRealizationTasks({
+      sceneId: 's1', tasks: [taskA, taskB], sceneContent, mode: 'final_regression', currentStage: 'scene_writer', judge,
+      forceFreshTaskIds: new Set(['task:toast']),
+    });
+    // Exactly one batch executes: taskB's single claim. taskA resolved from
+    // cache before batching, so it contributes zero pending claims.
+    const forcedPassCalls = judge.calls - judgeCallsBefore;
+    expect(forcedPassCalls).toBe(1);
+
+    // Third pass with NO forcing: everything cached, zero judge calls.
+    const judgeCallsBeforeThird = judge.calls;
+    await validateSemanticRealizationTasks({
+      sceneId: 's1', tasks: [taskA, taskB], sceneContent, mode: 'final_regression', currentStage: 'scene_writer', judge,
+    });
+    expect(judge.calls).toBe(judgeCallsBeforeThird);
+  });
+});

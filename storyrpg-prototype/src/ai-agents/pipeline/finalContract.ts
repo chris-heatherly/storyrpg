@@ -98,7 +98,7 @@ import type { PipelineEvent } from './events';
 import type { FullCreativeBrief } from './FullStoryPipeline';
 import type { SeasonScenePlan } from '../../types/scenePlan';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
-import { clearSemanticValidationCache, validateStorySemanticRealization } from './semanticValidationCoordinator';
+import { validateStorySemanticRealization } from './semanticValidationCoordinator';
 
 type FinalContractWarning = NonNullable<FinalStoryContractReport['warnings']>[number];
 
@@ -869,6 +869,8 @@ export class FinalContract {
     deferredRealizationRecords?: DeferredRealizationRecord[];
     /** Set by the pipeline wrapper when repair carry-forward is active for this enforcement. */
     carryForward?: FinalContractCarryForwardContext;
+    /** Wall-clock deadline (epoch ms) for the repair loop; the loop exits gracefully at this point so triage/carry-forward still run before the outer timeout race. */
+    repairDeadlineAt?: number;
   }): Promise<FinalStoryContractReport | undefined> {
     if (!this.deps.config.validation?.enabled || this.deps.config.validation?.mode === 'disabled') {
       return undefined;
@@ -1103,11 +1105,19 @@ export class FinalContract {
           phase: input.phase,
           message: `Final regression: retrying semantic validation for ${retryTaskIds.size} task(s) after judge instrument failure.`,
         });
-        clearSemanticValidationCache();
+        // Scoped fresh samples for ONLY the failed tasks. The previous
+        // clearSemanticValidationCache() here wiped the consensus cache
+        // globally, so every later repair-round revalidation re-judged ALL
+        // tasks (~100 serialized judge calls, 3.5-4 min per pass) — and with
+        // ~1 flaky judge call per 100, each pass re-triggered the wipe. That
+        // self-sustaining cycle consumed the 1200s contract budget and killed
+        // batch runs r120/r121 (2026-07-19) — r120 died one revalidation
+        // short of passing.
         const retryResults = await validateStorySemanticRealization({
           story,
           tasks: allRealizationTasks.filter((task) => retryTaskIds.has(task.id)),
           judge: semanticJudge,
+          forceFreshTaskIds: retryTaskIds as Set<string>,
         });
         semanticResults = [...semanticResults, ...retryResults];
         semanticFindings = [
@@ -1606,6 +1616,7 @@ export class FinalContract {
         requireMutationEvidence: true,
         rejectIntroducedBlockingIssues: true,
         onRoundSnapshot: this.deps.saveRepairRoundSnapshot,
+        deadlineAt: input.repairDeadlineAt,
       });
       report = outcome.report as FinalStoryContractReport;
       for (const rec of outcome.records) await this.deps.recordRemediationSafe(rec);
@@ -1614,6 +1625,13 @@ export class FinalContract {
         phase: input.phase,
         message: `Final contract repair ran ${outcome.attempts} round(s); now ${report.passed ? 'passing' : 'still failing'}`,
       } as any);
+      if (outcome.deadlineExhausted) {
+        this.deps.emit({
+          type: 'warning',
+          phase: input.phase,
+          message: `Final contract repair stopped at its wall-clock deadline after ${outcome.attempts} round(s); proceeding to abort-time triage with the current residue instead of racing the hard timeout.`,
+        } as any);
+      }
       if (outcome.exhaustedIssueCount > 0) {
         this.deps.emit({
           type: 'debug',

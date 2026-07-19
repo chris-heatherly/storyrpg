@@ -96,3 +96,29 @@ describe('splitBeatTextForCaps', () => {
     expect(splitBeatTextForCaps('One. Two.', { maxWords: 70, maxSentences: 4 })).toBeUndefined();
   });
 });
+
+describe('splitBeatTextForCaps minimum-substance guard (batch r121)', () => {
+  it('never emits a chunk under the substance floor — the r121 lone-quote trailing fragment', () => {
+    // r121 shipped beat "s1-3-b4-split-3" containing ONE character (a stray
+    // quote) — the trailing fragment survived greedy packing as its own chunk
+    // and downstream repair rejected rewrites for omitting the junk beat id.
+    const text = `${Array.from({ length: 8 }, (_, i) => `Sentence number ${i} keeps rolling forward with plenty of extra words attached here.`).join(' ')} '`;
+    const chunks = splitBeatTextForCaps(text, { maxWords: 70, maxSentences: 4 });
+    if (chunks) {
+      for (const chunk of chunks) {
+        expect(chunk.trim().split(/\s+/).length).toBeGreaterThanOrEqual(4);
+      }
+    }
+    // Either outcome is acceptable (fold or decline); emitting a junk chunk is not.
+  });
+
+  it('folds a small trailing fragment into the previous chunk when caps allow', () => {
+    const text = 'First sentence has a solid handful of words. Second sentence also carries real content along. so it';
+    const chunks = splitBeatTextForCaps(text, { maxWords: 12, maxSentences: 1 });
+    if (chunks) {
+      for (const chunk of chunks) {
+        expect(chunk.trim().split(/\s+/).length).toBeGreaterThanOrEqual(4);
+      }
+    }
+  });
+});

@@ -145,6 +145,8 @@ export interface FinalContractRepairOutcome {
   passed: boolean;
   /** How many repair rounds ran. */
   attempts: number;
+  /** True when the wall-clock deadline ended the loop before rounds/budget did. */
+  deadlineExhausted?: boolean;
   /** Unique issue fingerprints skipped because their per-issue repair budget was spent. */
   exhaustedIssueKeys: string[];
   exhaustedIssueCount: number;
@@ -525,6 +527,14 @@ export async function runFinalContractRepair(opts: {
   requireMutationEvidence?: boolean;
   /** Reject a candidate that introduces any new blocking fingerprint. */
   rejectIntroducedBlockingIssues?: boolean;
+  /**
+   * Wall-clock deadline (epoch ms). Checked BEFORE each round: when reached,
+   * the loop exits gracefully with its current report so the caller's
+   * abort-time triage and carry-forward still run — instead of the outer
+   * withTimeout race throwing and abandoning all loop state (batch r120,
+   * 2026-07-19: killed one revalidation short of passing).
+   */
+  deadlineAt?: number;
 }): Promise<FinalContractRepairOutcome> {
   const maxAttempts = opts.maxAttempts ?? 2;
   const story = opts.story;
@@ -534,7 +544,12 @@ export async function runFinalContractRepair(opts: {
   const exhaustedIssueKeys = new Set<string>();
   let attempts = 0;
 
+  let deadlineExhausted = false;
   while (!report.passed && attempts < maxAttempts) {
+    if (opts.deadlineAt && Date.now() >= opts.deadlineAt) {
+      deadlineExhausted = true;
+      break;
+    }
     if (opts.canSpend && !opts.canSpend()) break;
     const round = selectRepairableIssuesForRound(
       report.blockingIssues,
@@ -745,6 +760,7 @@ export async function runFinalContractRepair(opts: {
     report,
     passed: report.passed,
     attempts,
+    deadlineExhausted,
     exhaustedIssueKeys: Array.from(exhaustedIssueKeys),
     exhaustedIssueCount: exhaustedIssueKeys.size,
     records,

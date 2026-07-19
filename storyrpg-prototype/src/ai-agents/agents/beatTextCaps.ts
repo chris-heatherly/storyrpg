@@ -155,6 +155,28 @@ export function splitBeatTextForCaps(
   }
   if (current.length > 0) chunks.push(current.join(' '));
 
+  // Minimum-substance guard (batch r121, 2026-07-19): a trailing fragment like
+  // a lone quote mark survived greedy packing as its own chunk — beat
+  // "s1-3-b4-split-3" shipped with ONE character of text, and the scene-prose
+  // repair pass then rejected otherwise-good rewrites for omitting that junk
+  // beat id, burning repair rounds until the contract timeout. Fold any
+  // undersized chunk into its neighbor; if the fold would break a cap, decline
+  // the whole split (the LLM revision path handles it, as before 27b1232b).
+  const MIN_CHUNK_WORDS = 4;
+  for (let index = chunks.length - 1; index >= 0; index -= 1) {
+    if (wordCount(chunks[index]) >= MIN_CHUNK_WORDS) continue;
+    const neighbor = index > 0 ? index - 1 : index + 1;
+    if (neighbor < 0 || neighbor >= chunks.length) return undefined;
+    const merged = neighbor < index
+      ? `${chunks[neighbor]} ${chunks[index]}`
+      : `${chunks[index]} ${chunks[neighbor]}`;
+    if (countSentencesBounded(merged) > caps.maxSentences || wordCount(merged) > caps.maxWords) {
+      return undefined;
+    }
+    chunks[Math.min(index, neighbor)] = merged;
+    chunks.splice(Math.max(index, neighbor), 1);
+  }
+
   if (chunks.length < 2 || chunks.length > MAX_SPLIT_CHUNKS) return undefined;
   if (chunks.some((chunk) => countSentencesBounded(chunk) > caps.maxSentences || wordCount(chunk) > caps.maxWords)) {
     return undefined;

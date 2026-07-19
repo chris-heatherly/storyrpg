@@ -1343,6 +1343,7 @@ export class FullStoryPipeline {
     phase: string;
     validationScope?: import('../validators/runFidelityValidators').FidelityValidationScope;
     deferredRealizationRecords?: DeferredRealizationRecord[];
+    repairDeadlineAt?: number;
   }): Promise<FinalStoryContractReport | undefined> {
     const evidence = await this.recallValidatorEvidence(
       'FinalStoryContractValidator',
@@ -1440,8 +1441,13 @@ export class FullStoryPipeline {
     input: Parameters<FullStoryPipeline['enforceFinalStoryContract']>[0],
     timeoutMs = PIPELINE_TIMEOUTS.finalContractRepair,
   ): Promise<FinalStoryContractReport | undefined> {
+    // In-loop deadline with a 2-minute margin: the repair loop exits
+    // gracefully (report intact -> abort-time triage + carry-forward run)
+    // instead of the withTimeout race throwing away all loop state (batch
+    // r120, 2026-07-19: killed one revalidation short of passing).
+    const repairDeadlineAt = Date.now() + Math.max(60_000, timeoutMs - 120_000);
     return withTimeout(
-      this.enforceFinalStoryContract(input),
+      this.enforceFinalStoryContract({ ...input, repairDeadlineAt }),
       timeoutMs,
       `FinalStoryContractRepair(incremental_contract_ep_${episodeNumber})`,
       () => {

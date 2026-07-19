@@ -612,3 +612,46 @@ describe('buildChoicePayoffRematerializationHandler', () => {
     expect(result.changed).toBe(false);
   });
 });
+
+describe('wall-clock deadline (r120 timeout root cause, 2026-07-19)', () => {
+  it('exits gracefully with the current report when the deadline has passed — handlers never run', async () => {
+    const { runFinalContractRepair } = await import('./finalContractRepair');
+    let handlerRan = false;
+    const report = {
+      passed: false,
+      blockingIssues: [{
+        type: 'treatment_event_ledger_violation', severity: 'error',
+        validator: 'TreatmentEventLedgerValidator', sceneId: 's1-3', message: 'unrepaired residue',
+      }],
+      warnings: [],
+    };
+    const outcome = await runFinalContractRepair({
+      story: { episodes: [] } as never,
+      initialReport: report as never,
+      handlers: [async () => { handlerRan = true; return { changed: false }; }],
+      revalidate: async () => report as never,
+      maxAttempts: 3,
+      deadlineAt: Date.now() - 1,
+    });
+
+    expect(outcome.deadlineExhausted).toBe(true);
+    expect(outcome.attempts).toBe(0);
+    expect(handlerRan).toBe(false);
+    // The report survives intact for the caller's abort-time triage —
+    // the whole point vs. the withTimeout race that discarded loop state.
+    expect(outcome.report.blockingIssues).toHaveLength(1);
+  });
+
+  it('does not set deadlineExhausted when no deadline is configured', async () => {
+    const { runFinalContractRepair } = await import('./finalContractRepair');
+    const passing = { passed: true, blockingIssues: [], warnings: [] };
+    const outcome = await runFinalContractRepair({
+      story: { episodes: [] } as never,
+      initialReport: passing as never,
+      handlers: [],
+      revalidate: async () => passing as never,
+      maxAttempts: 3,
+    });
+    expect(outcome.deadlineExhausted).toBe(false);
+  });
+});

@@ -106,6 +106,68 @@ export interface TwistDeferralContract {
   reason: string;
 }
 
+export interface TwistSceneBindingResult {
+  status: 'not_planned' | 'not_owner' | 'bound' | 'invalid';
+  role?: 'foreshadow' | 'reveal';
+  beatId?: string;
+  reason?: string;
+}
+
+/**
+ * Bind one twist-plan role while its owning scene is still mutable. This is
+ * the production path: no previously committed scene is reopened when the
+ * later reveal scene is generated.
+ */
+export function materializeTwistSceneBeforeCommit(
+  plan: TwistPlan | undefined,
+  scene: SceneContent,
+): TwistSceneBindingResult {
+  if (!plan) return { status: 'not_planned' };
+  const isForeshadow = scene.sceneId === plan.foreshadowSceneId;
+  const isReveal = scene.sceneId === plan.twistSceneId;
+  if (!isForeshadow && !isReveal) return { status: 'not_owner' };
+  if (isForeshadow && isReveal) {
+    return {
+      status: 'invalid',
+      reason: `Twist plan assigns foreshadow and reveal to the same scene ${scene.sceneId}.`,
+    };
+  }
+
+  const role = isForeshadow ? 'foreshadow' : 'reveal';
+  const plannedBeatId = isForeshadow ? plan.foreshadowBeatId : plan.twistBeatId;
+  const beat = scene.beats.find((candidate) => candidate.id === plannedBeatId)
+    || (isForeshadow
+      ? scene.beats.find((candidate) => !candidate.isChoicePoint) || scene.beats[0]
+      : [...scene.beats].reverse().find((candidate) => !candidate.isChoicePoint) || scene.beats[scene.beats.length - 1]);
+  if (!beat) {
+    return {
+      status: 'invalid',
+      role,
+      reason: `Twist ${role} scene ${scene.sceneId} has no generated prose beat to bind.`,
+    };
+  }
+
+  beat.plotPointType = isForeshadow ? 'setup' : plan.kind === 'revelation' ? 'revelation' : 'twist';
+  beat.twistKind = plan.kind;
+  if (isForeshadow) plan.foreshadowBeatId = beat.id;
+  else plan.twistBeatId = beat.id;
+  plan.directives = plan.directives.map((directive) => {
+    if (directive.sceneId !== scene.sceneId) return directive;
+    const ownsRole = isForeshadow
+      ? directive.beatRole === 'foreshadow' || directive.beatRole === 'misdirect'
+      : directive.beatRole === 'reveal' || directive.beatRole === 'aftermath';
+    return ownsRole ? { ...directive, beatId: beat.id } : directive;
+  });
+  if (isReveal) {
+    plan.realization = {
+      status: 'materialized',
+      foreshadowBeatId: plan.foreshadowBeatId,
+      twistBeatId: beat.id,
+    };
+  }
+  return { status: 'bound', role, beatId: beat.id };
+}
+
 /**
  * Reconcile plan-time placeholder beat ids with the concrete beats SceneWriter
  * returned. This only writes narrative metadata; it never authors prose.

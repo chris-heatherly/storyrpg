@@ -6,11 +6,10 @@
 import { ChoiceDensityValidator } from '../validators/ChoiceDensityValidator';
 import { PropIntroductionValidator } from '../validators/PropIntroductionValidator';
 import { buildPropIntroductionInput } from '../remediation/propIntroductionGate';
-import { repairAndRevalidatePropIntroduction } from '../remediation/repairs/propIntroductionRepair';
 import { PLAN_GATE_FLAGS, shouldGate } from '../remediation/planGatePolicy';
 import { isGateEnabled, isShadowLoggingEnabled } from '../remediation/gateDefaults';
 import { buildValidatorPromotionRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
-import { RemediationBudget, shouldAttemptRemediation } from '../remediation/RemediationBudget';
+import { RemediationBudget } from '../remediation/RemediationBudget';
 import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { validateObligationLedger } from '../validators/ObligationLedgerValidator';
 import { createSeasonGateEnforcement } from './seasonGateFrontier';
@@ -219,49 +218,7 @@ export async function enforceEpisodePlanCraftGates(deps: EpisodePlanCraftGateDep
             issues: propIssues,
             details: `episode=${i}; unresolved=${propGate.blockingCount}; repairTelemetry=pre`,
           }));
-          if (propGate.blockingCount > 0) {
-            // Wave 4 repair loop: resolve raw label->canonical-id references (the
-            // witness-bug class) and re-validate before aborting. Genuinely-unknown
-            // references are NOT rewritten, so a real dangling reference still blocks.
-            const propRoster = (characterBible.characters ?? []).map((c) => ({ id: c.id, name: c.name }));
-            const propRepairScenes = sceneContents
-              .filter((sc) => Array.isArray(sc.charactersInvolved))
-              .map((sc) => ({ sceneId: sc.sceneId, sceneName: sc.sceneName, referencedEntityIds: sc.charactersInvolved as string[] }));
-            const propRepair = await repairAndRevalidatePropIntroduction(propRepairScenes, propRoster, {
-              canSpend: () => propGate.gate ? shouldAttemptRemediation(deps.remediationBudget) : true,
-            });
-            if (propGate.gate) {
-              for (const rec of propRepair.records) await deps.recordRemediationSafe(rec);
-            }
-            const repairedPropResult = new PropIntroductionValidator().validate(
-              buildPropIntroductionInput(
-                propRoster.flatMap((r) => [r.id, r.name]),
-                propRepairScenes.map((sc) => ({
-                  sceneId: sc.sceneId,
-                  sceneName: sc.sceneName,
-                  referencedEntityIds: sc.referencedEntityIds,
-                })),
-              ),
-              { strict: true },
-            );
-            const remainingUnknownCount = repairedPropResult.issues.filter((iss) => iss.severity === 'error').length;
-            await deps.recordGateShadowSafe(buildValidatorPromotionRecord({
-              gate: PLAN_GATE_FLAGS.propIntroduction,
-              validator: 'PropIntroductionValidator',
-              scope: 'episode',
-              placement: 'plan',
-              enabled: isEnabled(PLAN_GATE_FLAGS.propIntroduction),
-              blockingCount: propGate.blockingCount,
-              wouldRepairCount: propGate.blockingCount,
-              repairAttempted: true,
-              repairSucceeded: propRepair.passed,
-              residualBlockingCount: remainingUnknownCount,
-              issues: repairedPropResult.issues.map((iss) => ({ severity: iss.severity, message: iss.message })),
-              details:
-                `episode=${i}; wouldRepairCount=${propGate.blockingCount}; repairedCount=${propRepair.fixedCount}; ` +
-                `remainingUnknownCount=${remainingUnknownCount}; examples=${propRepair.examples.join(',') || 'none'}`,
-            }));
-            if (propGate.gate && !propRepair.passed) {
+          if (propGate.gate && propGate.blockingCount > 0) {
               const errs = propIssues.filter((iss) => iss.severity === 'error');
               await deps.recordRemediationSafe({
                 rule: 'prop_introduction_gate', scope: 'episode', attempted: 1,
@@ -275,7 +232,6 @@ export async function enforceEpisodePlanCraftGates(deps: EpisodePlanCraftGateDep
                 `episode_${i}_prop_introduction_gate`,
                 { context: { episode: i, blockingCount: propGate.blockingCount } },
               );
-            }
           }
         }
       }

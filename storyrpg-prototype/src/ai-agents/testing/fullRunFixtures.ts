@@ -545,7 +545,7 @@ export function sceneFixture(sceneId: string): string {
     beats: [
       {
         id: 'beat-1',
-        text: 'The passage climbs, turns twice, and lets you out through a door masked as garden wall. Moonlight floods the overgrown hedges.',
+        text: 'You climb through the passage, turn twice, and step out through a door masked as garden wall. Moonlight floods the overgrown hedges.',
         nextBeatId: 'beat-2',
         shotType: 'establishing',
         visualMoment: 'Mara steps out into the moonlit garden.',
@@ -694,7 +694,7 @@ function expressionChoiceSetFixture(): string {
         reactionText: 'His jaw tightens around the word he will not give you.',
         outcomeTexts: {
           success: 'He gives you a direction if not a name, and the silence after it costs him visibly.',
-          partial: 'He parries the question, but the parry itself tells you where the wound is.',
+          partial: 'He parries the question, but the parry itself tells you where the wound is. You leave him by the candle and follow the hidden passage until it opens into the east garden.',
           failure: 'The shutters come down behind his eyes, and the bell finishes tolling alone.',
         },
       },
@@ -712,8 +712,26 @@ function expressionChoiceSetFixture(): string {
         reactionText: 'You let the unsaid name stay where he buried it.',
         outcomeTexts: {
           success: 'Something unknots in his shoulders, and he holds the passage door wider for you.',
-          partial: 'He nods once, grateful and unreadable, and the moment closes without mending anything.',
+          partial: 'He nods once, grateful and unreadable, then walks you through the hidden passage to the east garden door.',
           failure: 'Your restraint reads as indifference, and he mistakes mercy for dismissal.',
+        },
+      },
+      {
+        id: 'choice-3',
+        text: 'Leave the half-truth behind and take the passage to the garden',
+        choiceType: 'expression',
+        consequences: [{ type: 'setFlag', flag: 'left_edric_half_truth', value: true }],
+        stakes: {
+          want: 'Reach the garden before the house closes around the secret',
+          cost: 'Walking away from the answer Edric might still give',
+          identity: 'The archivist who knows when motion matters more than certainty',
+        },
+        tintFlag: 'tint:decisive',
+        reactionText: 'You leave the candle behind and enter the passage.',
+        outcomeTexts: {
+          success: 'You cross the hidden passage at a run and emerge through the garden wall into clean moonlight.',
+          partial: 'You leave Edric by the candle, follow the turning passage, and step out into the east garden with his silence still beside you.',
+          failure: 'The passage fights every step, but at last the garden door gives and spills you into the wet hedges.',
         },
       },
     ],

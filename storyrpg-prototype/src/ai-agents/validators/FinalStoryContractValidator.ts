@@ -311,6 +311,7 @@ export type FinalStoryContractIssueType =
   | 'route_duplicate_event'
   | 'unsafe_fallback_prose'
   | 'role_fidelity_violation'
+  | 'late_normalization_required'
   | 'qa_blocker_present';
 
 export interface FinalStoryContractIssue {
@@ -341,6 +342,8 @@ export interface FinalStoryContractIssue {
   requiredEvidenceAtoms?: string[];
   realizationFingerprint?: string;
   matchedForbiddenAtoms?: string[];
+  /** Exact literal evidence that must be removed, used to localize repair. */
+  forbiddenLiteralPatterns?: string[];
   /**
    * Set by abort-time triage (finalContractAbortPolicy): this finding was an
    * unrepaired blocker whose class ships-with-cap instead of aborting. Feeds
@@ -377,11 +380,14 @@ export interface FinalStoryContractReport {
 
 export interface FinalStoryContractInput {
   story: Story;
+  /** Internal recursion flag. Public validation is read-only and evaluates a
+   * projection only to detect legacy normalization requirements. */
+  allowMutation?: boolean;
   /**
    * Canonical protagonist identity (from the brief/character bible). When present,
-   * the contract deterministically repairs wrong-gender protagonist pronouns in
-   * player-facing prose (W1) and — when GATE_PROTAGONIST_PRONOUN is on — flags any
-   * ambiguous residue for regen. Absent ⇒ the pronoun pass is skipped.
+   * the contract audits wrong-gender protagonist pronouns in player-facing
+   * prose. Any normalization the legacy scanner would require becomes a
+   * blocking owner-regeneration finding. Absent ⇒ the pronoun pass is skipped.
    */
   protagonist?: { name?: string; aliases?: string[]; pronouns?: string };
   requestedEpisodeNumbers?: number[];
@@ -460,6 +466,7 @@ export interface FinalStoryContractInput {
     requiredEvidenceAtoms?: string[];
     realizationFingerprint?: string;
     matchedForbiddenAtoms?: string[];
+    forbiddenLiteralPatterns?: string[];
   }>;
   /** Optional shadow input from pre-generation fidelity checks; raw gating remains unchanged. */
   planTimeFidelityFindings?: Array<{
@@ -526,6 +533,36 @@ function resolveContractProtagonist(
 
 export class FinalStoryContractValidator {
   async validate(input: FinalStoryContractInput): Promise<FinalStoryContractReport> {
+    if (input.allowMutation !== true) {
+      const before = JSON.stringify(input.story);
+      const projection = JSON.parse(before) as Story;
+      const report = await this.validate({
+        ...input,
+        story: projection,
+        allowMutation: true,
+      });
+      if (JSON.stringify(input.story) !== before) {
+        throw new Error('FinalStoryContractValidator mutated its sealed input story.');
+      }
+      if (JSON.stringify(projection) !== before) {
+        const issue: FinalStoryContractIssue = {
+          type: 'late_normalization_required',
+          severity: 'error',
+          message: 'The sealed story would require a legacy final-stage normalization to pass validation.',
+          validator: 'FinalStoryContractValidator',
+          suggestion: 'Regenerate from the earliest owning scene so normalization occurs before its commit receipt.',
+          ownerStage: 'scene_content',
+          retryClass: 'none',
+          issueCode: 'LATE_NORMALIZATION_REQUIRED',
+        };
+        return {
+          ...report,
+          passed: false,
+          blockingIssues: [...report.blockingIssues, issue],
+        };
+      }
+      return report;
+    }
     const protagonist = resolveContractProtagonist(input.story, input.protagonist);
     const mode = input.mode || 'advisory';
     const issues: FinalStoryContractIssue[] = [];
@@ -562,8 +599,9 @@ export class FinalStoryContractValidator {
     // Normalize witnessReaction npcIds to canonical `story.npcs` ids before any
     // checks. Upstream authoring uses raw per-scene NPC labels (names/slugs), so
     // witness ids otherwise fail the unknown-NPC check. This is the single
-    // authoritative chokepoint every final story passes through; it mutates the
-    // story object in place so the shipped story.json is corrected too.
+    // authoritative validation projection every final story passes through.
+    // The public validator clones sealed input, so this legacy normalization
+    // can influence diagnostics but never the shipped story.
     const witnessFix = canonicalizeStoryWitnessReactions(input.story);
     if (witnessFix.remapped || witnessFix.dropped) {
       console.info(
@@ -615,7 +653,7 @@ export class FinalStoryContractValidator {
     // in encounter outcome/phase prose to second person IN PLACE (name-anchored, verb-agreed),
     // so the recurring encounter-POV break (g17: every encounter climax narrated "Kylie
     // straightens her collar… she has become it") never ships even on truncated/variant LLM
-    // output. Mutates input.story like the strip/pronoun passes; the per-scene POV scan below
+    // output. Mutates only the isolated validation projection; the per-scene POV scan below
     // then surfaces only residue the coercion could not safely clear (same-gender NPC
     // ambiguity) for the EncounterArchitect regen route.
     if (isGateEnabledAt('GATE_ENCOUNTER_POV', 'season-final') && protagonist?.name) {
@@ -778,7 +816,7 @@ export class FinalStoryContractValidator {
       }
     }
 
-    // W1: deterministically repair wrong-gender protagonist pronouns in player-facing
+    // W1: normalize wrong-gender protagonist pronouns on the validation projection
     // prose (the encounter generator drifted Kylie -> he/him). Pronouns are canon, so
     // the safe (protagonist-only-sentence) repair runs always — pure data correctness,
     // like the witness pass above. Genuinely ambiguous residue (protagonist + a
@@ -1852,6 +1890,28 @@ export class FinalStoryContractValidator {
       }
       return false;
     };
+    const sceneCanReach = (fromSceneId: string, targetSceneId: string): boolean => {
+      const pending = [fromSceneId];
+      const visited = new Set<string>();
+      while (pending.length > 0) {
+        const current = pending.pop()!;
+        if (current === targetSceneId) return true;
+        if (visited.has(current)) continue;
+        visited.add(current);
+        const currentScene = sceneMap.get(current);
+        if (!currentScene) continue;
+        for (const next of currentScene.leadsTo || []) {
+          if (next && !isTerminalSceneTarget(next) && !visited.has(next)) pending.push(next);
+        }
+        for (const beat of currentScene.beats || []) {
+          if (beat.nextSceneId && !isTerminalSceneTarget(beat.nextSceneId)) pending.push(beat.nextSceneId);
+          for (const choice of beat.choices || []) {
+            if (choice.nextSceneId && !isTerminalSceneTarget(choice.nextSceneId)) pending.push(choice.nextSceneId);
+          }
+        }
+      }
+      return false;
+    };
     const flagSkip = (targetSceneId: string | undefined, where: string, beatId: string, node: unknown): void => {
       if (!isChoiceBridge(node)) return;
       if (!targetSceneId || isTerminalSceneTarget(targetSceneId) || isAllowedSkip(node)) return;
@@ -1864,6 +1924,8 @@ export class FinalStoryContractValidator {
         .filter(candidate =>
           hasRequiredSetup(candidate)
             && !isAlternativeBranchSibling(scene.id, candidate.id)
+            && !(isAlternativeBranchSibling(targetSceneId, candidate.id)
+              && !sceneCanReach(candidate.id, targetSceneId))
         );
       if (skipped.length === 0) return;
       issues.push({
@@ -2413,6 +2475,7 @@ export class FinalStoryContractValidator {
         requiredEvidenceAtoms: finding.requiredEvidenceAtoms,
         realizationFingerprint: finding.realizationFingerprint,
         matchedForbiddenAtoms: finding.matchedForbiddenAtoms,
+        forbiddenLiteralPatterns: finding.forbiddenLiteralPatterns,
       });
     }
   }

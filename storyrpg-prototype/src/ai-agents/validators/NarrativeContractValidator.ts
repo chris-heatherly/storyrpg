@@ -12,6 +12,10 @@ import { BaseValidator, buildFailureResult, buildSuccessResult, type ValidationI
 import { isGenericScenePlannerText, isQuestionShapedTurnText } from '../utils/sceneContractBuilders';
 import { validateOwnerRealizationTasks } from '../pipeline/realizationTaskGate';
 import { literalPhraseMatch } from '../utils/literalPhraseMatch';
+import {
+  findIdentityReferenceViolations,
+  resolveSceneIdentityReferencePolicies,
+} from '../utils/identityReferencePolicy';
 
 function normalize(value: string): string {
   return value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -223,17 +227,34 @@ export class NarrativeContractValidator extends BaseValidator {
       }
     }
 
-    for (const schedule of graph.identityScheduleContracts ?? []) {
-      for (const episode of input.story.episodes ?? []) {
-        if (episode.number >= schedule.firstNamedEpisode) continue;
-        for (const scene of episode.scenes ?? []) {
-          const text = sceneText(scene);
-          if (!containsName(text, schedule.canonicalName)) continue;
-          issues.push(this.error(
-            `Canonical identity "${schedule.canonicalName}" appears in episode ${episode.number} before its scheduled named introduction in episode ${schedule.firstNamedEpisode}.`,
-            `identitySchedule:ep${episode.number}:${scene.id}:${schedule.characterId}`,
-            `Use an allowed visual plant or codename (${schedule.allowedAliases.join(', ') || 'no canonical name'}) until the scheduled reveal.`,
-          ));
+    for (const episode of input.story.episodes ?? []) {
+      for (const scene of episode.scenes ?? []) {
+        const policies = resolveSceneIdentityReferencePolicies({
+          episodeNumber: episode.number,
+          sceneId: scene.id,
+          identityScheduleContracts: graph.identityScheduleContracts,
+          lexicalArtifactContracts: graph.lexicalArtifactContracts,
+          realizationTasks: graph.realizationTasks,
+        });
+        for (const violation of findIdentityReferenceViolations({ readerFacingTexts: collectReaderFacingTexts(scene) }, policies)) {
+          const policy = policies.find((candidate) => candidate.characterId === violation.characterId);
+          const issue = this.error(
+            `Canonical identity reference "${violation.reference}" appears before it is available for ${violation.canonicalName} in episode ${episode.number} scene ${scene.id}.`,
+            `identitySchedule:ep${episode.number}:${scene.id}:${violation.characterId}:${violation.fieldPath}`,
+            policy?.availableAliases.length
+              ? `Use one of the references legal in this scene (${policy.availableAliases.join(', ')}), or a visual description.`
+              : 'Keep the identity anonymous through visual or behavioral description; no scheduled alias is available in this scene.',
+          );
+          issue.metadata = {
+            issueCode: 'PREMATURE_IDENTITY_REFERENCE',
+            ownerStage: 'scene_content',
+            retryClass: 'repair_scene_prose',
+            repairHandler: 'scene_prose',
+            episodeNumber: episode.number,
+            sceneId: scene.id,
+            forbiddenLiteralPatterns: [violation.reference],
+          };
+          issues.push(issue);
         }
       }
     }

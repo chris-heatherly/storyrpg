@@ -169,6 +169,10 @@ export class SceneGraphBranchValidator {
                 .filter((skippedScene) =>
                   sceneRequiresSequentialSetup(skippedScene)
                     && !isAlternativeBranchSibling(episode.scenes, blueprint, scene.id, skippedScene.id)
+                    && !(
+                      isAlternativeBranchSibling(episode.scenes, blueprint, effectiveNextSceneId, skippedScene.id)
+                      && !sceneCanReach(episode.scenes, skippedScene.id, effectiveNextSceneId)
+                    )
                 );
               if (skipped.length > 0) {
                 issues.push({
@@ -418,6 +422,24 @@ function collectOutgoingSceneTargets(scene: Scene): Set<string> {
     }
   }
   return targets;
+}
+
+function sceneCanReach(scenes: Scene[], fromSceneId: string, targetSceneId: string): boolean {
+  const byId = new Map(scenes.map((scene) => [scene.id, scene]));
+  const pending = [fromSceneId];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current === targetSceneId) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    const currentScene = byId.get(current);
+    if (!currentScene) continue;
+    for (const next of collectOutgoingSceneTargets(currentScene)) {
+      if (!visited.has(next)) pending.push(next);
+    }
+  }
+  return false;
 }
 
 /** A single choice acknowledges the branch path if it carries any residue signal. */

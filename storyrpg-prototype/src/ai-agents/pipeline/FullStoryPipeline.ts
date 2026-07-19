@@ -40,6 +40,11 @@ import { QARunner, QAReport, ContinuityChecker } from '../agents/QAAgents';
 import { SemanticRealizationJudge } from '../agents/SemanticRealizationJudge';
 import { validateSemanticRealizationTasks } from './semanticValidationCoordinator';
 import {
+  findIdentityReferenceViolations,
+  resolveSceneIdentityReferencePolicies,
+} from '../utils/identityReferencePolicy';
+import { collectNarrativeEvidenceSurfaceIndex } from '../validators/encounterTextSurfaces';
+import {
   collectKnownSemanticLocations,
   semanticContractEventSeeds,
   semanticContractPremiseSeeds,
@@ -54,10 +59,6 @@ import type { CharacterFashionStyle } from '../../types/sourceAnalysis';
 // Types CrossEpisodeBranch, ConsequenceChain, PlannedEncounter used transitively via SeasonPlan
 import { BranchManager, BranchAnalysis, BranchPath } from '../agents/BranchManager';
 import { SceneCritic } from '../agents/SceneCritic';
-import { PronounDisambiguator } from '../agents/PronounDisambiguator';
-import { canonicalizeProtagonistPronouns, otherGenderNamesFromStory, applyPronounDisambiguations } from '../utils/protagonistPronounResolver';
-import { OutcomeVariantAuthor } from '../agents/OutcomeVariantAuthor';
-import { seedEncounterOutcomeFlags, findEncounterOutcomeDesyncs, firstProseBeatId, applyOutcomeVariants, normalizeEncounterOutcomeFlags } from '../utils/encounterOutcomeFlags';
 import { 
   EncounterArchitect, 
   EncounterArchitectInput, 
@@ -102,7 +103,6 @@ import type { GeneratedImage } from '../images/imageTypes';
 import { VideoDirectorAgent, VideoDirectionRequest } from '../agents/image-team/VideoDirectorAgent';
 import { VideoGenerationService } from '../services/videoGenerationService';
 import { type SceneSettingContext } from '../utils/styleAdaptation';
-import { normalizeChoiceSetStatChecks } from '../utils/statCheckNormalization';
 import {
   type SceneVisualStoryboardPlan,
   type VisualStoryboardPacket,
@@ -250,7 +250,12 @@ import { RunLedger } from './runLedger';
 import { DraftImageEntry } from './draftImageEntry';
 import { DraftImageGeneration, type DraftImageGenerationDeps } from './draftImageGeneration';
 import { SceneGraphValidation, type SceneGraphValidationDeps } from './sceneGraphValidation';
-import { SceneCriticContinuity, type SceneCriticContinuityDeps, type ContinuityRepairOptions } from './sceneCriticContinuity';
+import {
+  SceneCriticContinuity,
+  type SceneCriticContinuityDeps,
+  type SceneCriticReviewInput,
+  type SceneCriticReviewOutcome,
+} from './sceneCriticContinuity';
 import { FinalContract, type FinalContractDeps } from './finalContract';
 import { Assembly } from './assembly';
 import { QAPhase, type QAPhaseDeps } from './phases/QAPhase';
@@ -261,6 +266,10 @@ import { AssemblyPhase } from './phases/AssemblyPhase';
 import { bindStoryMediaAssets, rethrowAsImagePhaseFailure } from './mediaBinding';
 import { EpisodeArchitecturePhase, type EpisodeArchitecturePhaseDeps } from './phases/EpisodeArchitecturePhase';
 import { buildEpisodeDraftCheckpoint, readEpisodeDraftCheckpoint } from './episodeDraftCheckpoint';
+import {
+  assertNoCommittedSceneMutation,
+  type SceneCommitReceipt,
+} from './sceneCommit';
 import { BranchAnalysisPhase, type BranchAnalysisPhaseDeps } from './phases/BranchAnalysisPhase';
 import { CharacterDesignPhase, type CharacterDesignPhaseDeps } from './phases/CharacterDesignPhase';
 import { NPCDepthValidationPhase } from './phases/NPCDepthValidationPhase';
@@ -274,7 +283,6 @@ import {
   saveFinalStoryContractFailure,
   saveFinalContractRepairRound,
   saveFinalContractRepairCandidate,
-  loadFinalContractRepairCandidateSync,
   savePartialStory,
   appendFailedRunLedger,
   saveEarlyDiagnostic,
@@ -290,7 +298,6 @@ import {
 } from '../utils/pipelineOutputWriter';
 import {
   stampQaEvidence,
-  markQaEvidenceStaleness,
   aggregateQaEvidence,
   qaGradedContentHash,
 } from '../utils/qaEvidenceStamp';
@@ -323,10 +330,8 @@ import { CallbackLedger } from './callbackLedger';
 import {
   getUnresolvedCallbacksForPrompt as getUnresolvedCallbacksForPromptImpl,
   harvestEpisodeCallbacks as harvestEpisodeCallbacksImpl,
-  injectFallbackCallbacks as injectFallbackCallbacksImpl,
   type UnresolvedCallbackForPrompt,
   type HarvestEpisodeCallbacksParams,
-  type InjectFallbackCallbacksParams,
 } from './callbackOrchestration';
 import { implementEpisodeResidueObligations } from './residueObligations';
 import { collectEpisodeSetFlags, registerSeedObligations, registerThreadObligations } from './obligationSeeding';
@@ -358,7 +363,6 @@ import {
   SceneValidationResult,
   IncrementalValidationConfig,
   PhaseValidator,
-  StructuralValidator,
   ChoiceDistributionValidator,
   SceneGraphBranchValidator,
   DuplicateEstablishingBeatValidator,
@@ -380,11 +384,6 @@ import { type RemediationLedgerRecord } from '../remediation/remediationLedger';
 import { buildGateShadowRecord, buildValidatorPromotionRecord, type GateShadowRecord } from '../remediation/gateShadowLedger';
 import { isGateEnabled, resolveGateConfigHash } from '../remediation/gateDefaults';
 import { countBlockingGates } from '../remediation/gateRegistry';
-import {
-  applyCandidateEpisodes,
-  carryForwardStoryHash,
-  type FinalContractCarryForwardContext,
-} from '../remediation/finalContractCarryForward';
 import { setRealizationPovContext } from '../remediation/realizationEvaluator';
 import {
   ComprehensiveValidationReport,
@@ -431,9 +430,7 @@ import {
 import {
   buildBranchFallbackChoiceSet as buildBranchFallbackChoiceSetImpl,
   createFallbackChoiceSet as createFallbackChoiceSetImpl,
-  ensureBlueprintFidelityText as ensureBlueprintFidelityTextImpl,
   sanitizeReaderFacingSceneName as sanitizeReaderFacingSceneNameImpl,
-  sanitizeSceneContentForReader as sanitizeSceneContentForReaderImpl,
 } from './readerTextFallbacks';
 import {
   extractSceneContext as extractSceneContextImpl,
@@ -443,7 +440,6 @@ import {
   mapSpeakerMoodToEmotion as mapSpeakerMoodToEmotionImpl,
   resolveWorldLocationForScene as resolveWorldLocationForSceneImpl,
 } from './sceneMediaSignals';
-import { ensureChoiceBridgeBeats as ensureChoiceBridgeBeatsImpl } from './choiceBridgeBeats';
 import { ProgressTelemetryTracker } from './progressTelemetry';
 import { CastingReferences } from './castingReferences';
 import { ImageResumeHydration, type ResumeReferencePreflightReport } from './imageResumeHydration';
@@ -706,6 +702,7 @@ type AuthoredEpisodeArtifacts = {
   sceneContents: SceneContent[];
   choiceSets: ChoiceSet[];
   encounters: Map<string, EncounterStructure>;
+  sceneCommitReceipts: SceneCommitReceipt[];
   validationExecutionRecords?: import('../../types/validation').ValidatorExecutionRecord[];
 };
 
@@ -1228,118 +1225,6 @@ export class FullStoryPipeline {
     return this.sceneGraphValidation().validateSceneGraphBranching(episode, blueprint, context);
   }
 
-  /**
-   * W1 regen route for the protagonist-pronoun gate. Runs the deterministic resolver
-   * to surface the AMBIGUOUS residue (sentences naming the protagonist and a
-   * wrong-gender NPC), hands those sentences to {@link PronounDisambiguator} for a
-   * minimal rewrite, and applies the rewrites back into the story in place. After this
-   * the contract's own resolver re-scan finds only genuinely-unresolvable residue, so
-   * GATE_PROTAGONIST_PRONOUN can block on real defects instead of every shared-pronoun
-   * sentence. No-op (and zero LLM cost) when the gate is off or there is no residue.
-   */
-  private async disambiguateProtagonistPronouns(story: Story, brief: FullCreativeBrief): Promise<void> {
-    if (!isGateEnabled('GATE_PROTAGONIST_PRONOUN')) return;
-    const pronouns = brief.protagonist?.pronouns;
-    const name = brief.protagonist?.name;
-    if (!pronouns || !name) return;
-
-    const names = [name, ...((brief.protagonist as { aliases?: string[] })?.aliases ?? [])].filter(Boolean) as string[];
-    const otherGenderNames = otherGenderNamesFromStory(story, pronouns);
-    // First pass is read-only here: it reports the ambiguous residue (the safe cases
-    // are repaired again, idempotently, by the contract's own resolver run later).
-    const scan = canonicalizeProtagonistPronouns(story, { names, pronouns }, otherGenderNames);
-    const sentences = [...new Set(scan.ambiguous.map((a) => a.sentence.trim()).filter(Boolean))];
-    if (sentences.length === 0) return;
-
-    try {
-      const agent = new PronounDisambiguator(this.config.agents.sceneWriter);
-      const res = await withTimeout(
-        agent.execute({ sentences, protagonistName: name, protagonistPronouns: pronouns, otherGenderNames }),
-        PIPELINE_TIMEOUTS.llmAgent,
-        'PronounDisambiguator',
-      );
-      const rewrites = new Map((res.data?.rewrites ?? []).map((r) => [r.original, r.rewritten]));
-      const applied = rewrites.size > 0 ? applyPronounDisambiguations(story, rewrites) : 0;
-      this.emit({
-        type: 'debug',
-        phase: 'pronoun_disambiguation',
-        message: `Protagonist pronoun disambiguation: ${sentences.length} ambiguous sentence(s), ${rewrites.size} rewritten, ${applied} field replacement(s).`,
-      });
-    } catch (err) {
-      // Degrade: keep the residue; the gate will block on it (never silently passes).
-      this.emit({
-        type: 'warning',
-        phase: 'pronoun_disambiguation',
-        message: `Pronoun disambiguation failed (keeping residue): ${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
-  }
-
-  /**
-   * W4 regen route for the encounter-outcome-variant gate. Seeds the outcome flags,
-   * finds reconvergence scenes whose opening prose ignores the outcome, and authors a
-   * per-outcome opening variant (via {@link OutcomeVariantAuthor}) gated on the
-   * matching `encounter_<id>_<outcome>` flag. After this the contract's own desync
-   * detector finds only reconvergences the author could not cover, so
-   * GATE_ENCOUNTER_OUTCOME_VARIANT blocks on real residue. No-op (zero LLM cost) when
-   * the gate is off or there are no desyncs.
-   */
-  private async authorEncounterOutcomeVariants(story: Story): Promise<void> {
-    if (!isGateEnabled('GATE_ENCOUNTER_OUTCOME_VARIANT')) return;
-    normalizeEncounterOutcomeFlags(story); // G12: unify flag spellings so setters match consumers
-    seedEncounterOutcomeFlags(story); // idempotent: ensure the flags the variants gate on exist
-    const desyncs = findEncounterOutcomeDesyncs(story).slice(0, 8); // bound the regen work
-    if (desyncs.length === 0) return;
-
-    const sceneById = new Map<string, Scene>();
-    for (const ep of story.episodes || []) for (const s of ep.scenes || []) sceneById.set(s.id, s);
-
-    let authored = 0;
-    try {
-      const agent = new OutcomeVariantAuthor(this.config.agents.sceneWriter);
-      for (const desync of desyncs) {
-        const encounterScene = sceneById.get(desync.encounterSceneId);
-        const enc = encounterScene?.encounter;
-        const reconScene = sceneById.get(desync.reconvergenceSceneId);
-        if (!enc?.outcomes || !reconScene) continue;
-        const beatId = firstProseBeatId(reconScene);
-        if (!beatId) continue;
-        const openingBeatText = (reconScene.beats || []).find((b) => b.id === beatId)?.text ?? '';
-        const outcomes = desync.outcomes
-          .map((k) => ({ outcome: k, outcomeText: (enc.outcomes as Record<string, { outcomeText?: string }>)[k]?.outcomeText ?? '' }))
-          .filter((o) => o.outcomeText);
-        if (outcomes.length < 2) continue;
-
-        const res = await withTimeout(
-          agent.execute({
-            reconvergenceSceneId: desync.reconvergenceSceneId,
-            openingBeatText,
-            encounterId: desync.encounterId,
-            encounterName: enc.name ?? desync.encounterId,
-            outcomes,
-          }),
-          PIPELINE_TIMEOUTS.llmAgent,
-          `OutcomeVariantAuthor(${desync.reconvergenceSceneId})`,
-        );
-        const variants = res.data?.variants ?? [];
-        if (variants.length > 0) {
-          authored += applyOutcomeVariants(story, desync.reconvergenceSceneId, beatId, desync.encounterId, variants);
-        }
-      }
-      this.emit({
-        type: 'debug',
-        phase: 'encounter_outcome_variants',
-        message: `Encounter outcome variants: ${desyncs.length} desync(s), ${authored} variant(s) authored.`,
-      });
-    } catch (err) {
-      this.emit({
-        type: 'warning',
-        phase: 'encounter_outcome_variants',
-        message: `Outcome-variant authoring failed (keeping desync): ${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
-  }
-
   private async enforceFinalStoryContract(input: {
     story: Story;
     brief: FullCreativeBrief;
@@ -1351,6 +1236,8 @@ export class FullStoryPipeline {
     deferredRealizationRecords?: DeferredRealizationRecord[];
     repairDeadlineAt?: number;
   }): Promise<FinalStoryContractReport | undefined> {
+    const sealedStoryHash = stableHash(input.story);
+    const validationStory = JSON.parse(JSON.stringify(input.story)) as Story;
     const evidence = await this.recallValidatorEvidence(
       'FinalStoryContractValidator',
       input.phase || 'final-contract',
@@ -1360,12 +1247,26 @@ export class FullStoryPipeline {
     const requestedEpisodes = new Set(input.requestedEpisodeNumbers ?? []);
     const deferredRealizationRecords = (input.deferredRealizationRecords ?? this.deferredRealizationRecords)
       .filter((record) => requestedEpisodes.size === 0 || requestedEpisodes.has(record.episodeNumber));
-    const carryForward = this.prepareRepairCarryForward(input.story, input.phase);
+    // Carry-forward candidates are historical repair artifacts. A sealed story
+    // may only be replaced through explicit owner/suffix regeneration, never by
+    // applying one during final validation.
+    const carryForward = undefined;
     const report = await this.finalContract().enforceFinalStoryContract({
       ...input,
+      story: validationStory,
       deferredRealizationRecords,
       carryForward,
     });
+    if (stableHash(input.story) !== sealedStoryHash) {
+      throw new Error(`Final contract mutated the sealed story during ${input.phase}.`);
+    }
+    if (stableHash(validationStory) !== sealedStoryHash) {
+      this.emit({
+        type: 'warning',
+        phase: input.phase,
+        message: 'Final contract attempted legacy normalization on its isolated validation projection; those changes were discarded.',
+      });
+    }
     if (report) {
       report.memoryEvidence = [
         this.validatorEvidenceService().summarize(evidence, evidence.corroborationRequired ? 'corroborated-evidence' : 'advisory-memory'),
@@ -1391,81 +1292,6 @@ export class FullStoryPipeline {
     return report;
   }
 
-  /**
-   * Repair carry-forward (docs/REPAIR_CARRYFORWARD_PLAN_2026-07-15.md): if a
-   * prior still-failing enforcement of this phase persisted its repaired
-   * candidate AND that candidate descends from exactly this pre-repair content
-   * (base hash match), substitute the candidate's episodes as the contract
-   * input so repairs accumulate across resumes. Every mismatch degrades to the
-   * plain watermark start; validation always re-runs in full either way.
-   */
-  private prepareRepairCarryForward(story: Story, phase: string): FinalContractCarryForwardContext | undefined {
-    if (!isGateEnabled('GATE_REPAIR_CARRYFORWARD')) return undefined;
-    const rawOutputDirectory = this._currentOutputDirectory || story.outputDir;
-    if (!rawOutputDirectory) return undefined;
-    const baseStoryHash = carryForwardStoryHash(story);
-    let candidate: ReturnType<typeof loadFinalContractRepairCandidateSync> = null;
-    try {
-      candidate = loadFinalContractRepairCandidateSync(rawOutputDirectory, phase);
-    } catch (loadError) {
-      console.warn(`[Pipeline] Repair carry-forward load failed (starting from watermarks): ${loadError instanceof Error ? loadError.message : String(loadError)}`);
-    }
-    if (!candidate) return { baseStoryHash };
-    if (candidate.baseStoryHash !== baseStoryHash) {
-      this.emit({
-        type: 'debug',
-        phase,
-        message: `Discarding stale repair candidate for ${phase}: the assembled content changed since it was derived (base ${candidate.baseStoryHash} vs ${baseStoryHash}). Starting from watermarks.`,
-      });
-      return { baseStoryHash };
-    }
-    applyCandidateEpisodes(story, candidate);
-    this.emit({
-      type: 'checkpoint',
-      phase,
-      message: `Resuming ${phase} from the carried repair candidate (enforcement ${candidate.enforcementCount}, ${candidate.remainingBlockingFingerprints.length} blocker(s) remaining at its last failure). Validation re-runs in full.`,
-      data: {
-        enforcementCount: candidate.enforcementCount,
-        remainingBlockingFingerprints: candidate.remainingBlockingFingerprints.slice(0, 20),
-        savedAt: candidate.savedAt,
-        workerGitSha: candidate.workerGitSha,
-      },
-    });
-    return {
-      baseStoryHash,
-      consumed: {
-        candidateStoryHash: candidate.candidateStoryHash,
-        remainingBlockingFingerprints: candidate.remainingBlockingFingerprints,
-        enforcementCount: candidate.enforcementCount,
-        fingerprintEnforcementsSeen: candidate.fingerprintEnforcementsSeen,
-      },
-    };
-  }
-
-  private enforceEpisodeIncrementalContractWithTimeout(
-    episodeNumber: number,
-    input: Parameters<FullStoryPipeline['enforceFinalStoryContract']>[0],
-    timeoutMs = PIPELINE_TIMEOUTS.finalContractRepair,
-  ): Promise<FinalStoryContractReport | undefined> {
-    // In-loop deadline with a 2-minute margin: the repair loop exits
-    // gracefully (report intact -> abort-time triage + carry-forward run)
-    // instead of the withTimeout race throwing away all loop state (batch
-    // r120, 2026-07-19: killed one revalidation short of passing).
-    const repairDeadlineAt = Date.now() + Math.max(60_000, timeoutMs - 120_000);
-    return withTimeout(
-      this.enforceFinalStoryContract({ ...input, repairDeadlineAt }),
-      timeoutMs,
-      `FinalStoryContractRepair(incremental_contract_ep_${episodeNumber})`,
-      () => {
-        this.emit({
-          type: 'warning',
-          phase: `incremental_contract_ep_${episodeNumber}`,
-          message: `Episode ${episodeNumber} contract repair exceeded ${Math.round(timeoutMs / 60_000)} minute(s); failing the job so it can be resumed safely.`,
-        });
-      },
-    );
-  }
-
   private createFallbackChoiceSet(
     sceneBlueprint: SceneBlueprint,
     choiceBeat: GeneratedBeat
@@ -1480,31 +1306,8 @@ export class FullStoryPipeline {
     return buildBranchFallbackChoiceSetImpl(sceneBlueprint, choiceBeat);
   }
 
-  private sanitizeSceneContentForReader(sceneBlueprint: SceneBlueprint, content: SceneContent): void {
-    sanitizeSceneContentForReaderImpl(sceneBlueprint, content);
-  }
-
   private sanitizeReaderFacingSceneName(name: string | undefined, fallback = 'the next scene'): string {
     return sanitizeReaderFacingSceneNameImpl(name, fallback);
-  }
-
-  private ensureBlueprintFidelityText(sceneBlueprint: SceneBlueprint, content: SceneContent): void {
-    ensureBlueprintFidelityTextImpl(sceneBlueprint, content);
-  }
-
-  private repairSceneGraphBranchingChoices(
-    brief: FullCreativeBrief,
-    worldBible: WorldBible,
-    characterBible: CharacterBible,
-    blueprint: EpisodeBlueprint,
-    sceneContents: SceneContent[],
-    choiceSets: ChoiceSet[],
-    encounters: Map<string, EncounterStructure>,
-    context: { phase: string }
-  ): Promise<boolean> {
-    return this.sceneGraphValidation().repairSceneGraphBranchingChoices(
-      brief, worldBible, characterBible, blueprint, sceneContents, choiceSets, encounters, context,
-    );
   }
 
   private assertSceneDependencyInvariants(blueprint: EpisodeBlueprint, sceneContents: SceneContent[]): void {
@@ -2287,10 +2090,7 @@ export class FullStoryPipeline {
     terminalReason: 'cancelled' | 'failed' | 'completed' = 'completed',
     startTime = Date.now(),
   ): Promise<Story> {
-    const finalStory = this.resolveGeneratedStoryPlayerTemplates(
-      assembleStoryAssetsFromRegistry(story, this.assetRegistry),
-      brief,
-    );
+    const finalStory = assembleStoryAssetsFromRegistry(story, this.assetRegistry);
     finalStory.outputDir = outputDirectory;
     const imageIntegrity = await this.repairBoundImageReferences(finalStory, outputDirectory);
     const manifest = this.buildImageManifestFromStory(finalStory);
@@ -3104,7 +2904,7 @@ export class FullStoryPipeline {
       const draftBlueprintFingerprint = episodeBlueprint.scenes.map((scene) => scene.id).join('|');
       const resumedSceneContent = readEpisodeDraftCheckpoint(
         this.getResumeOutput<unknown>(resumeCheckpoint, 'scene_content'),
-        { episodeNumber: brief.episode.number, blueprintId: draftBlueprintFingerprint },
+        { episodeNumber: brief.episode.number, blueprintId: draftBlueprintFingerprint, requireCommittedScenes: true },
       );
       let contentGenerationResult: ContentGenerationResult;
       if (resumedSceneContent) {
@@ -3114,6 +2914,7 @@ export class FullStoryPipeline {
           encounters: new Map<string, EncounterStructure>(resumedSceneContent.encounters || []),
           validationExecutionRecords: [],
           deferredRealizationRecords: resumedSceneContent.deferredRealizationRecords || [],
+          sceneCommitReceipts: resumedSceneContent.sceneCommitReceipts || [],
         };
       } else {
         const contentOutcome = await this.runContentGenerationWithArchitectureRetry({
@@ -3132,18 +2933,24 @@ export class FullStoryPipeline {
       }
       const { sceneContents } = contentGenerationResult;
       ({ choiceSets, encounters } = contentGenerationResult);
-      mergeDeferredRealizationRecords(this.deferredRealizationRecords, contentGenerationResult.deferredRealizationRecords);
-      // Deferral backpressure gauge: defer-and-continue is only healthy while
-      // the episode-contract repair loop can absorb the pile. Surface a loud
-      // advisory well before the loop's round/scene budgets would drown.
-      const deferredThisEpisode = (contentGenerationResult.deferredRealizationRecords ?? []).length;
-      if (deferredThisEpisode > 12) {
-        this.emit({
-          type: 'warning',
-          phase: 'content',
-          message: `Episode deferred ${deferredThisEpisode} realization finding(s) to episode-contract repair — above the healthy band (≤12). Owner-stage repair may be regressing; inspect before the pile exceeds the final repair budget.`,
-        });
+      const sceneCommitReceipts = contentGenerationResult.sceneCommitReceipts;
+      if (contentGenerationResult.deferredRealizationRecords.length > 0) {
+        throw new PipelineError(
+          `Episode ${brief.episode.number} resumed with unresolved owner-stage realization findings; regenerate from the earliest owning scene.`,
+          'content_generation',
+          {
+            failure: {
+              code: 'owner_realization_failed',
+              ownerStage: contentGenerationResult.deferredRealizationRecords[0]?.ownerStage ?? 'scene_content',
+              retryClass: 'none',
+              issueCodes: contentGenerationResult.deferredRealizationRecords.map((record) => record.finding.code),
+              repairTarget: contentGenerationResult.deferredRealizationRecords[0]?.sceneId,
+            },
+            context: { deferredRealizationRecords: contentGenerationResult.deferredRealizationRecords },
+          },
+        );
       }
+      mergeDeferredRealizationRecords(this.deferredRealizationRecords, contentGenerationResult.deferredRealizationRecords);
       this.markPhaseComplete('content_generation');
       // Mark this single episode complete in the structure plan (covers the
       // resume path, where setSceneBeats never ran for the cached scenes).
@@ -3163,6 +2970,7 @@ export class FullStoryPipeline {
 	            choiceSets,
 	            encounters,
 	            deferredRealizationRecords: contentGenerationResult.deferredRealizationRecords,
+	            sceneCommitReceipts: contentGenerationResult.sceneCommitReceipts,
 	          }),
 	          true
 	        );
@@ -3277,11 +3085,8 @@ export class FullStoryPipeline {
 	      ]);
 
 	      // === PHASE 4.5: QUICK VALIDATION ===
-      // Extracted to phases/QuickValidationPhase.ts (pure move): the fast
-      // validator gate, incremental POV/voice escalation, targeted repair
-      // (ChoiceAuthor + scoped SceneWriter rewrites), one re-validation, and
-      // the blocking ValidationError. Repairs mutate sceneContents/choiceSets
-      // in place via the shared array refs.
+      // Read-only regression net over the committed scene receipts. Findings
+      // fail toward owner/suffix regeneration; no author is invoked here.
 	      const quickMemoryEvidence = await this.recallValidatorEvidence(
 	        'IntegratedBestPracticesValidator',
 	        'quick-validation',
@@ -3324,7 +3129,7 @@ export class FullStoryPipeline {
 	          severity: quickValidation.blockingIssues.length > 0 ? 'blocking' : quickValidation.warningCount > 0 ? 'warning' : 'pass',
 	          outcome: quickValidation.canProceed ? 'passed' : 'failed',
 	          storyId: brief.story.title,
-	          repairRoute: 'quick-validation-repair',
+	          repairRoute: 'scene-suffix-regeneration',
 	          findings: {
 	            blockingIssues: quickValidation.blockingIssues.slice(0, 20),
 	            warningCount: quickValidation.warningCount,
@@ -3339,10 +3144,8 @@ export class FullStoryPipeline {
       await this.checkCancellation();
       let finalStoryContractReport: FinalStoryContractReport | undefined;
 
-      // QA phase extracted to phases/QAPhase.ts (pure move): QARunner + best
-      // practices in parallel, the choice-distribution checkpoint, the
-      // QA-driven targeted repair loop, and the threshold warning. Repairs
-	      // mutate sceneContents/choiceSets in place via the shared array refs.
+      // QA is read-only over committed content. It emits diagnostics and an
+      // owner/suffix regeneration route without rewriting scene arrays.
 	      const qaMemoryEvidence = await this.recallValidatorEvidence(
 	        'IntegratedBestPracticesValidator',
 	        'full-qa',
@@ -3387,7 +3190,7 @@ export class FullStoryPipeline {
 	          severity: bestPracticesReport.blockingIssues.length > 0 ? 'blocking' : bestPracticesReport.warnings.length > 0 ? 'warning' : 'pass',
 	          outcome: bestPracticesReport.overallPassed ? 'passed' : 'failed',
 	          storyId: brief.story.title,
-	          repairRoute: 'qa-repair',
+	          repairRoute: 'scene-suffix-regeneration',
 	          findings: {
 	            overallScore: bestPracticesReport.overallScore,
 	            blockingIssues: bestPracticesReport.blockingIssues.slice(0, 20),
@@ -3399,18 +3202,16 @@ export class FullStoryPipeline {
 	        }).catch(() => {});
 	      }
       await this.flushPipelineMemory(brief.story.title, 'qa');
-
-      await this.repairWeakCliffhangerBeforeImages(
-        brief,
-        worldBible,
-        characterBible,
-        episodeBlueprint,
+      this.assertCommittedEpisodeDraftUnchanged({
+        phase: 'single_episode_qa',
+        receipts: sceneCommitReceipts,
         sceneContents,
         choiceSets,
         encounters,
-      );
+        blueprint: episodeBlueprint,
+      });
 
-      // === PHASE 5.5: RUN SETUP (output directory, asset registry, branch repair) ===
+      // === PHASE 5.5: RUN SETUP (output directory, asset registry, branch validation) ===
       await this.checkCancellation();
       // Create output directory EARLY so images are saved to the right location
       // (outputDirectory itself is hoisted above the try for the catch block)
@@ -3464,17 +3265,6 @@ export class FullStoryPipeline {
             saveEarlyDiagnostic(outputDirectory as string, `episode-${brief.episode.number}-charge-materialization.json`, ledger),
         );
 
-        await this.repairSceneGraphBranchingChoices(
-          brief,
-          worldBible,
-          characterBible,
-          episodeBlueprint,
-          sceneContents,
-          choiceSets,
-          encounters,
-          { phase: 'branch_repair' }
-        );
-
         const branchValidationEpisode = this.assembleEpisode(
           brief,
           worldBible,
@@ -3492,7 +3282,14 @@ export class FullStoryPipeline {
           outputDirectory,
           artifactName: `episode-${brief.episode.number}-branch-metrics.json`,
           choiceSets,
-          residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, undefined, encounters, undefined, videoResults) },
+        });
+        this.assertCommittedEpisodeDraftUnchanged({
+          phase: 'single_episode_branch_validation',
+          receipts: sceneCommitReceipts,
+          sceneContents,
+          choiceSets,
+          encounters,
+          blueprint: episodeBlueprint,
         });
         const episodePlanningRefs = await persistEpisodePlanningArtifacts({
           artifactRuntime,
@@ -3829,8 +3626,7 @@ export class FullStoryPipeline {
 
       // === MEDIA BINDING + COMPLETENESS (post-media pass) ===
       // Bind the just-generated media into the contract-passed story WITHOUT
-      // re-assembling from sceneContents (which would discard the contract's
-      // in-place repairs), then run the media completeness gate, asset HTTP
+      // re-assembling from sceneContents, then run the media completeness gate, asset HTTP
       // verification, and imagesStatus stamp (phases/AssemblyPhase.ts).
       story = bindStoryMediaAssets(story, {
         assetRegistry: this.assetRegistry,
@@ -4460,7 +4256,24 @@ export class FullStoryPipeline {
       recordRemediationSafe: this.recordRemediationSafe.bind(this),
       recordSceneValidationResult: this.recordSceneValidationResult.bind(this),
       resolveWorldLocationForScene: this.resolveWorldLocationForScene.bind(this),
-      runSceneCriticPass: this.runSceneCriticPass.bind(this),
+      reviewSceneBeforeCommit: this.reviewSceneBeforeCommit.bind(this),
+      repairEpisodeFinalSceneBeforeCommit: ({
+        brief: finalBrief,
+        worldBible: finalWorldBible,
+        characterBible: finalCharacterBible,
+        blueprint: finalBlueprint,
+        sceneContents: finalSceneContents,
+        choiceSets: finalChoiceSets,
+        encounters: finalEncounters,
+      }) => this.repairWeakCliffhangerBeforeImages(
+        finalBrief,
+        finalWorldBible,
+        finalCharacterBible,
+        finalBlueprint,
+        finalSceneContents,
+        finalChoiceSets,
+        finalEncounters,
+      ),
       sanitizeReaderFacingSceneName: this.sanitizeReaderFacingSceneName.bind(this),
       saveResumeUnit: this.saveResumeUnit.bind(this),
       throwIfFailFast: this.throwIfFailFast.bind(this),
@@ -4513,18 +4326,26 @@ export class FullStoryPipeline {
     );
   }
 
-  /**
-   * Optional SceneCritic rewrite pass (Phase 9.2). Re-authors the *text* of
-   * beats in a small number of scenes to improve subtext / reversals /
-   * show-don't-tell. Non-destructive — merges rewritten beats back into the
-   * existing SceneContent objects, preserving structural fields.
-   */
-  private runSceneCriticPass(
-    sceneContents: SceneContent[],
-    characterBible: CharacterBible,
-    realizationTasksBySceneId?: Map<string, NarrativeRealizationTask[]>,
-  ): Promise<void> {
-    return this.sceneCriticContinuity().runSceneCriticPass(sceneContents, characterBible, realizationTasksBySceneId);
+  /** Review one scene transactionally before it is exposed to descendants. */
+  private reviewSceneBeforeCommit(input: SceneCriticReviewInput): Promise<SceneCriticReviewOutcome> {
+    return this.sceneCriticContinuity().reviewSceneBeforeCommit(input);
+  }
+
+  private assertCommittedEpisodeDraftUnchanged(input: {
+    phase: string;
+    receipts: SceneCommitReceipt[];
+    sceneContents: SceneContent[];
+    choiceSets: ChoiceSet[];
+    encounters: Map<string, EncounterStructure>;
+    blueprint: EpisodeBlueprint;
+  }): void {
+    assertNoCommittedSceneMutation(input.phase, {
+      receipts: input.receipts,
+      sceneContents: input.sceneContents,
+      choiceSets: input.choiceSets,
+      encounters: input.encounters,
+      blueprintScenes: input.blueprint.scenes,
+    });
   }
 
   // Extracted to phases/QAPhase.ts (pure move): the QARunner full-QA pass
@@ -4550,8 +4371,6 @@ export class FullStoryPipeline {
       qaRunner: this.qaRunner,
       integratedValidator: this.integratedValidator,
       distributionValidator: this.distributionValidator,
-      sceneWriter: this.sceneWriter,
-      choiceAuthor: this.choiceAuthor,
       requirePhases: this.requirePhases.bind(this),
       markPhaseComplete: this.markPhaseComplete.bind(this),
       measurePhase: this.measurePhase.bind(this),
@@ -4559,18 +4378,12 @@ export class FullStoryPipeline {
       prepareValidationInput: this.prepareValidationInput.bind(this),
       buildContinuityCharacterKnowledge: this.buildContinuityCharacterKnowledge.bind(this),
       buildContinuityTimeline: this.buildContinuityTimeline.bind(this),
-      buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
-      getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
-      buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
-      deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
-      getAgentMemoryContext: this.getAgentMemoryContext.bind(this),
     } satisfies Partial<QAPhaseDeps> as unknown as QAPhaseDeps;
     // Accessor-backed run-scoped state: reads on the phase side always see
     // the pipeline's current values.
     Object.defineProperties(deps, {
       incrementalValidator: { get: () => this.incrementalValidator },
       sceneValidationResults: { get: () => this.sceneValidationResults },
-      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
     });
     return new QAPhase(deps);
   }
@@ -4578,20 +4391,12 @@ export class FullStoryPipeline {
   private quickValidationPhase(): QuickValidationPhase {
     const deps = {
       integratedValidator: this.integratedValidator,
-      sceneWriter: this.sceneWriter,
-      choiceAuthor: this.choiceAuthor,
       prepareValidationInput: this.prepareValidationInput.bind(this),
-      buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
-      getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
-      buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
-      deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
-      getAgentMemoryContext: this.getAgentMemoryContext.bind(this),
     } satisfies Partial<QuickValidationPhaseDeps> as unknown as QuickValidationPhaseDeps;
     // Accessor-backed run-scoped state: reads on the phase side always see
     // the pipeline's current values.
     Object.defineProperties(deps, {
       sceneValidationResults: { get: () => this.sceneValidationResults },
-      cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
     });
     return new QuickValidationPhase(deps);
   }
@@ -4607,33 +4412,10 @@ export class FullStoryPipeline {
       assetRegistry: this.assetRegistry,
       assembleStory: this.assembleStory.bind(this),
       recordRemediationSafe: this.recordRemediationSafe.bind(this),
-      resolveGeneratedStoryPlayerTemplates: this.resolveGeneratedStoryPlayerTemplates.bind(this),
       runFlagChronologyScan: this.runFlagChronologyScan.bind(this),
       saveDraftImageManifest: this.saveDraftImageManifest.bind(this),
       buildImageManifestFromStory: this.buildImageManifestFromStory.bind(this),
     });
-  }
-
-  /**
-   * Phase B (Season Canon): targeted, advisory continuity repair. For scenes the
-   * ContinuityChecker flagged with a character-consistency contradiction
-   * (state_conflict / impossible_knowledge / contradiction), re-author the flagged
-   * beats via SceneCritic — grounded in the capability canon — and merge the
-   * rewritten PROSE back into the already-assembled story (ids/nav/choices
-   * untouched). Bounded + advisory: never blocks; keeps the original on any failure.
-   */
-  private repairContinuityFindings(
-    story: Story,
-    sceneContents: SceneContent[],
-    characterBible: CharacterBible,
-    qaReport: QAReport,
-    outputDirectory: string,
-    blueprint?: EpisodeBlueprint,
-    options?: ContinuityRepairOptions,
-  ): Promise<void> {
-    return this.sceneCriticContinuity().repairContinuityFindings(
-      story, sceneContents, characterBible, qaReport, outputDirectory, blueprint, options,
-    );
   }
 
   /**
@@ -5579,6 +5361,7 @@ export class FullStoryPipeline {
                 sceneContents: generated.sceneContents,
                 choiceSets: generated.choiceSets,
                 encounters: generated.encounters,
+                sceneCommitReceipts: generated.sceneCommitReceipts ?? [],
                 validationExecutionRecords: generated.validationExecutionRecords,
               }
               : undefined;
@@ -5956,28 +5739,9 @@ export class FullStoryPipeline {
           },
         });
       }
-      // STRUCTURAL AUTO-FIX (parity with the single-episode path, which runs
-      // this before its contract): repair navigation/structure issues on the
-      // merged season — including dangling choice nextBeatId references — so the
-      // final contract doesn't abort on defects that are mechanically fixable.
-      try {
-        const autoFixResult = new StructuralValidator().autoFix(story);
-        story = autoFixResult.story;
-        if (autoFixResult.fixedCount > 0) {
-          this.emit({
-            type: 'debug',
-            phase: 'final_story',
-            message: `StructuralValidator.autoFix applied ${autoFixResult.fixedCount} repair(s) to the merged season`,
-            data: { fixes: autoFixResult.fixes.slice(0, 20) },
-          });
-        }
-      } catch (autoFixError) {
-        this.emit({
-          type: 'warning',
-          phase: 'final_story',
-          message: `StructuralValidator.autoFix failed (non-fatal): ${(autoFixError as Error).message}`,
-        });
-      }
+      // Locked episodes are immutable. The season package is a pure merge;
+      // structural residue is reported by the final regression contract and
+      // routed to the owning episode/suffix rather than auto-fixed here.
 
       // B2: never discard generated work. Snapshot the assembled story BEFORE
       // the final gates (treatment fidelity, story contract) that can throw, so
@@ -6381,13 +6145,6 @@ export class FullStoryPipeline {
           sceneLocksPassed: sceneLockReport.passed,
           sceneLockArtifact,
         };
-        if (sceneLockReport.deferredFindingCount > 0) {
-          this.emit({
-            type: 'warning',
-            phase: 'assembly',
-            message: `Episode ${episodeNumber} scene locks: deferred ${sceneLockReport.deferredFindingCount} craft finding(s) from scene-time validation to the final contract repair loop.`,
-          });
-        }
         if (!sceneLockReport.passed) {
           const detail = sceneLockReport.validation.issues
             .filter((issue) => issue.severity === 'error')
@@ -6535,9 +6292,9 @@ export class FullStoryPipeline {
    * WS-A (bite-me-g16): run the final-story contract validators on a SINGLE freshly
    * generated episode, so POV / treatment-fidelity / flag / pronoun / conformance defects
    * surface as each episode is produced — not only after the whole season is assembled.
-   * Episode-level contract: run the same final-story contract validators on a SINGLE
-   * freshly generated episode, repair blocking findings while the episode artifact is
-   * still mutable, and only allow completion when blockers are gone. Writes
+   * Episode-level contract: run the same final-story validators on a SINGLE
+   * freshly generated episode as a read-only lock gate and only allow
+   * completion when blockers are absent. Writes
    * `episode-<n>-incremental-contract.json` for diagnostics before the season package
    * bundling step.
    */
@@ -6556,8 +6313,8 @@ export class FullStoryPipeline {
       const validationBrief = {
         ...episodeBrief,
         // Resumed season-plan artifacts are recursively frozen. Incremental
-        // validation overlays blueprint ownership and may repair projections,
-        // so give it a mutable brief.
+        // validation overlays blueprint ownership on an isolated projection,
+        // so give that projection a mutable brief.
         seasonPlan: episodeBrief.seasonPlan
           ? JSON.parse(JSON.stringify(episodeBrief.seasonPlan))
           : episodeBrief.seasonPlan,
@@ -6566,10 +6323,9 @@ export class FullStoryPipeline {
       const npcs = (characterBible.characters || [])
         .filter((c: CharacterProfile) => c.id !== protagonistId)
         .map((c: CharacterProfile) => ({ id: c.id, name: c.name, pronouns: (c as { pronouns?: string }).pronouns }));
-      // Rehydrated episode artifacts are recursively frozen. Final-contract
-      // validators include deterministic prose repairs, so validate a mutable
-      // working episode and publish those repairs back only when the caller's
-      // episode shell is mutable.
+      // Validators receive an isolated projection. Any legacy normalization
+      // they still perform is discarded; the authored episode is immutable.
+      const sealedEpisodeHash = stableHash(episode);
       const workingEpisode = JSON.parse(JSON.stringify(episode)) as Episode;
       const oneEpisodeStory = {
         id: (episodeBrief.story as { id?: string })?.id || 'incremental',
@@ -6581,10 +6337,6 @@ export class FullStoryPipeline {
         npcs,
         episodes: [workingEpisode],
       } as unknown as Story;
-
-      // Keep episode-level diagnostics aligned with the final package contract:
-      // outcome flags/variants are part of the episode seal, not post-season surgery.
-      await this.authorEncounterOutcomeVariants(oneEpisodeStory);
 
       if (episodeBlueprint && validationBrief.seasonPlan?.scenePlan?.scenes?.length) {
         const synced = overlayBlueprintSceneEventOwnership(
@@ -6640,34 +6392,32 @@ export class FullStoryPipeline {
         plannedConsequenceTiersByScene: plannedConsequenceTiers,
         seasonSkillPlan: this.seasonSkillPlan,
       });
-      let repairedByEpisodeContract = false;
+      const validatorProjectionMutated = stableHash(workingEpisode) !== sealedEpisodeHash;
+      if (validatorProjectionMutated) {
+        this.emit({
+          type: 'warning',
+          phase: `incremental_contract_ep_${i}`,
+          message: `Episode ${i} validator attempted a late normalization on its isolated projection; the mutation was discarded. Move that normalization to the owning producer boundary.`,
+        });
+      }
+      const repairedByEpisodeContract = false;
       const deferredForEpisode = this.deferredRealizationRecords.filter((record) => record.episodeNumber === i);
 
-      if (!report.passed || report.blockingIssues.length > 0 || deferredForEpisode.length > 0) {
-        this.emit({
-          type: 'debug',
-          phase: `incremental_contract_ep_${i}`,
-          message: `Episode ${i} contract has ${report.blockingIssues.length} blocker(s) and ${deferredForEpisode.length} deferred realization handoff(s); running episode-local semantic repair before completion.`,
-          data: { blockingIssues: report.blockingIssues.slice(0, 5), deferredRealizationRecords: deferredForEpisode },
-        });
-        const repairedReport = await this.enforceEpisodeIncrementalContractWithTimeout(i, {
-          story: oneEpisodeStory,
-          brief: validationBrief,
-          requestedEpisodeNumbers: [i],
-          qaReport,
-          bestPracticesReport,
-          phase: `incremental_contract_ep_${i}`,
-          validationScope: {
-            mode: 'episode-incremental',
-            requestedEpisodeNumbers: [i],
-            generatedEpisodeNumbers: [i],
-            generatedThroughEpisode: i,
+      if (deferredForEpisode.length > 0) {
+        throw new PipelineError(
+          `Episode ${i} has ${deferredForEpisode.length} unresolved owner-stage realization finding(s); invalidate and regenerate from the earliest owning scene.`,
+          `incremental_contract_ep_${i}`,
+          {
+            failure: {
+              code: 'owner_realization_failed',
+              ownerStage: deferredForEpisode[0]?.ownerStage ?? 'scene_content',
+              retryClass: 'none',
+              issueCodes: deferredForEpisode.map((record) => record.finding.code),
+              repairTarget: deferredForEpisode[0]?.sceneId,
+            },
+            context: { deferredRealizationRecords: deferredForEpisode },
           },
-        });
-        if (repairedReport) {
-          report = repairedReport;
-          repairedByEpisodeContract = true;
-        }
+        );
       }
 
       const byType: Record<string, number> = {};
@@ -6704,11 +6454,8 @@ export class FullStoryPipeline {
           report.blockingIssues.slice(0, 3).map(issue => issue.message).join('; '),
         );
       }
-      if (!Object.isFrozen(episodeBrief)) {
-        episodeBrief.seasonPlan = validationBrief.seasonPlan;
-      }
-      if (!Object.isFrozen(episode)) {
-        Object.assign(episode as unknown as Record<string, unknown>, workingEpisode);
+      if (stableHash(episode) !== sealedEpisodeHash) {
+        throw new Error(`Episode ${i} changed during its read-only lock validation.`);
       }
       return this.toArtifactValidationSummary(`incremental_contract_ep_${i}`, report);
     } catch (err) {
@@ -6898,7 +6645,24 @@ export class FullStoryPipeline {
         encounters,
         validationExecutionRecords,
         deferredRealizationRecords,
+        sceneCommitReceipts,
       } = contentOutcome.content;
+      if (deferredRealizationRecords.length > 0) {
+        throw new PipelineError(
+          `Episode ${i} produced unresolved owner-stage realization findings; regenerate from the earliest owning scene.`,
+          `episode_${i}_content`,
+          {
+            failure: {
+              code: 'owner_realization_failed',
+              ownerStage: deferredRealizationRecords[0]?.ownerStage ?? 'scene_content',
+              retryClass: 'none',
+              issueCodes: deferredRealizationRecords.map((record) => record.finding.code),
+              repairTarget: deferredRealizationRecords[0]?.sceneId,
+            },
+            context: { deferredRealizationRecords },
+          },
+        );
+      }
       mergeDeferredRealizationRecords(this.deferredRealizationRecords, deferredRealizationRecords);
       let callbackNewHooks = 0;
       let authoredCallbackPayoffs = 0;
@@ -6910,7 +6674,9 @@ export class FullStoryPipeline {
       try {
         const { newHooks, payoffs } = this.harvestEpisodeCallbacks({
           episodeNumber: i,
-          sceneContents: sceneContents as unknown as Parameters<typeof this.harvestEpisodeCallbacks>[0]['sceneContents'],
+          // Harvest may annotate callback ids while crediting payoffs. Give it
+          // a projection so the committed scenes remain byte-identical.
+          sceneContents: JSON.parse(JSON.stringify(sceneContents)) as Parameters<typeof this.harvestEpisodeCallbacks>[0]['sceneContents'],
           choiceSets: choiceSets as unknown as Parameters<typeof this.harvestEpisodeCallbacks>[0]['choiceSets'],
         });
         callbackNewHooks = newHooks;
@@ -6925,11 +6691,14 @@ export class FullStoryPipeline {
 
       const residueContract = implementEpisodeResidueObligations({
         episodeNumber: i,
-        sceneContents,
-        choiceSets,
+        // Episode-tail residue is now audit-only. Receiving scenes own prose
+        // realization before commit; this clone records what would be missing
+        // without reopening the sealed episode draft.
+        sceneContents: JSON.parse(JSON.stringify(sceneContents)),
+        choiceSets: JSON.parse(JSON.stringify(choiceSets)),
         blueprint,
         seasonResiduePlan: episodeBrief.seasonPlan?.residuePlan,
-        callbackLedger: this.callbackLedger,
+        callbackLedger: undefined,
         importedCallbackLedger: this.callbackLedger.serialize(),
         generatedThroughEpisode: this.totalEpisodes,
       });
@@ -7011,53 +6780,15 @@ export class FullStoryPipeline {
         callbackLedger: this.callbackLedger.serialize(),
       });
 
-      try {
-        // Deterministically realize planted-but-uncollected callbacks after
-        // planned residue has had the first opportunity to pay its assigned
-        // obligations. This prevents a generic callback line from double-paying
-        // the same hook before the residue contract can attach source-specific
-        // prose and evidence.
-        const { injected } = this.injectFallbackCallbacks({
-          episodeNumber: i,
-          sceneContents: sceneContents as unknown as InjectFallbackCallbacksParams['sceneContents'],
-          choiceSets: choiceSets as unknown as InjectFallbackCallbacksParams['choiceSets'],
-        });
-        if (callbackNewHooks > 0 || authoredCallbackPayoffs > 0 || injected > 0) {
-          this.emit({
-            type: 'debug',
-            phase: `episode_${i}_callbacks`,
-            message: `Callback ledger: +${callbackNewHooks} new hook(s), +${authoredCallbackPayoffs} authored payoff(s), +${injected} auto-realized this episode; ${this.callbackLedger.size()} total`,
-          });
-        }
-        await saveEarlyDiagnostic(outputDirectory, '09-callback-ledger.json', this.callbackLedger.serialize());
-      } catch (ledgerErr) {
+      if (callbackNewHooks > 0 || authoredCallbackPayoffs > 0) {
         this.emit({
-          type: 'warning',
+          type: 'debug',
           phase: `episode_${i}_callbacks`,
-          message: `CallbackLedger fallback injection failed (non-fatal): ${ledgerErr instanceof Error ? ledgerErr.message : String(ledgerErr)}`,
+          message: `Callback ledger: +${callbackNewHooks} new hook(s), +${authoredCallbackPayoffs} authored payoff(s); episode-tail prose injection is disabled; ${this.callbackLedger.size()} total`,
         });
       }
+      await saveEarlyDiagnostic(outputDirectory, '09-callback-ledger.json', this.callbackLedger.serialize());
 
-      await this.repairWeakCliffhangerBeforeImages(
-        episodeBrief,
-        worldBible,
-        characterBible,
-        blueprint,
-        sceneContents,
-        choiceSets,
-        encounters,
-      );
-
-      await this.repairSceneGraphBranchingChoices(
-        episodeBrief,
-        worldBible,
-        characterBible,
-        blueprint,
-        sceneContents,
-        choiceSets,
-        encounters,
-        { phase: `episode_${i}_branch_repair` }
-      );
       const branchValidationEpisode = this.assembleEpisode(
         episodeBrief,
         worldBible,
@@ -7074,7 +6805,14 @@ export class FullStoryPipeline {
         outputDirectory,
         artifactName: `episode-${i}-branch-metrics.json`,
         choiceSets,
-        residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(episodeBrief, worldBible, characterBible, blueprint, sceneContents, choiceSets, undefined, encounters, undefined) },
+      });
+      this.assertCommittedEpisodeDraftUnchanged({
+        phase: `episode_${i}_branch_validation`,
+        receipts: sceneCommitReceipts,
+        sceneContents,
+        choiceSets,
+        encounters,
+        blueprint,
       });
       // Narrative diagnostics (SetupPayoff / Twist / ArcDelta / Divergence / Callback /
       // FailureMode + E5 intensity / #26C prop-intro / D4 choice-coverage). RELOCATED here
@@ -7179,7 +6917,6 @@ export class FullStoryPipeline {
       if (episodeBrief.options?.runQA !== false) {
         try {
           this.emit({ type: 'phase_start', phase: `qa_ep_${i}`, message: `Running QA for Episode ${i}...` });
-          normalizeChoiceSetStatChecks(choiceSets);
           const validationInput = this.prepareValidationInput(sceneContents, choiceSets, characterBible, encounters, blueprint);
           const [qaResult, bpResult] = await this.measurePhase(`episode_${i}_qa`, () => Promise.all([
             this.runQualityAssurance(episodeBrief, sceneContents, choiceSets, characterBible, blueprint, encounters),
@@ -7201,63 +6938,37 @@ export class FullStoryPipeline {
           });
         } catch (qaError) {
           const qaMsg = qaError instanceof Error ? qaError.message : String(qaError);
-          console.error(`[Pipeline] Episode ${i} QA failed (non-fatal): ${qaMsg}`);
-          this.emit({ type: 'warning', phase: `qa_ep_${i}`, message: `QA for Episode ${i} failed (continuing): ${qaMsg}` });
+          throw new PipelineError(
+            `Episode ${i} QA could not complete before episode sealing: ${qaMsg}`,
+            `qa_ep_${i}`,
+            {
+              originalError: qaError instanceof Error ? qaError : undefined,
+              failure: {
+                code: 'unknown',
+                ownerStage: 'episode_contract',
+                retryClass: 'none',
+                issueCodes: ['EPISODE_QA_INCOMPLETE'],
+                repairTarget: `episode:${i}`,
+              },
+            },
+          );
         }
       }
 
-      // A1: targeted, advisory continuity repair — in its OWN try so a QA-phase throw
-      // (e.g. Gemini continuity-parse fragility) can no longer skip it. Runs whenever a
-      // qaReport was produced, even if QA later threw.
-      this.emit({ type: 'debug', phase: `continuity_repair_ep_${i}`, message: `Continuity repair gate: seasonCanonOn=${this.seasonCanonOn} hasQaReport=${!!qaReport}` });
-      if (this.seasonCanonOn && qaReport) {
-        try {
-          // NOTE(de-@ts-nocheck): this call previously referenced an
-          // out-of-scope `story` (a ReferenceError swallowed by this catch),
-          // so multi-episode continuity repair never actually ran. The merge
-          // walks story.episodes[].scenes[], so the assembled episode is
-          // wrapped as a one-episode story; beat rewrites mutate `episode`
-          // in place and flow into the season story downstream.
-          const treatmentSourcedContinuityBlocks = Boolean(
-            episodeBrief.multiEpisode?.sourceAnalysis || episodeBrief.rawDocument?.trim(),
-          );
-          await this.repairContinuityFindings(
-            { episodes: [episode] } as unknown as Story,
-            sceneContents, characterBible, qaReport, outputDirectory, blueprint,
-            {
-              plannedScenes: episodeBrief.seasonPlan?.scenePlan?.scenes,
-              ...(treatmentSourcedContinuityBlocks
-                ? { forceRevalidation: true, revalidationReason: 'treatment-sourced continuity findings escalate at final contract' }
-                : {}),
-            },
-          );
-          // G9 evidence sync: continuity repair mutates prose in place and only
-          // the continuity block conditionally re-derives — if the graded hash no
-          // longer matches, the persisted reports say so instead of presenting as
-          // fresh. Reporting-only; never gates.
-          markQaEvidenceStaleness(
-            qaReport,
-            qaGradedContentHash(sceneContents, choiceSets),
-            'continuity repair mutated prose after grading; voice/stakes/proseCraft/responsiveness were not re-derived',
-          );
-          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.json`, qaReport);
-          await saveEarlyDiagnostic(outputDirectory, `episode-${i}-qa-report.post-repair.json`, qaReport);
-          this.emit({
-            type: 'phase_complete',
-            phase: `qa_ep_${i}_post_repair`,
-            message: `Episode ${i} QA Post-Repair Score: ${qaReport.overallScore}/100 - ${qaReport.passesQA ? 'PASSED' : 'NEEDS REVISION'}`,
-          });
-        } catch (repairErr) {
-          this.emit({ type: 'warning', phase: `continuity_repair_ep_${i}`, message: `Continuity repair failed (non-fatal): ${repairErr instanceof Error ? repairErr.message : String(repairErr)}` });
-        }
-      } else {
-        // Reveal why the artifact never appears: write a skip diagnostic.
-        await saveEarlyDiagnostic(outputDirectory, 'continuity-repair.json', {
-          generatedAt: new Date().toISOString(),
-          skipped: true,
-          reason: !this.seasonCanonOn ? 'seasonCanon off' : 'no qaReport at repair site',
-        }).catch(() => undefined);
-      }
+      await saveEarlyDiagnostic(outputDirectory, 'continuity-repair.json', {
+        generatedAt: new Date().toISOString(),
+        skipped: true,
+        reason: 'committed scenes are immutable; continuity findings require explicit suffix regeneration',
+        findingCount: qaReport?.continuity?.issues?.length ?? 0,
+      }).catch(() => undefined);
+      this.assertCommittedEpisodeDraftUnchanged({
+        phase: `episode_${i}_qa`,
+        receipts: sceneCommitReceipts,
+        sceneContents,
+        choiceSets,
+        encounters,
+        blueprint,
+      });
 
       this.emit({
         type: 'phase_complete',
@@ -7273,6 +6984,7 @@ export class FullStoryPipeline {
         sceneContents,
         choiceSets,
         encounters,
+        sceneCommitReceipts,
         validationExecutionRecords,
         result: { episodeNumber: i, title: episodeOutline.title, success: true },
         qaReport,
@@ -8061,10 +7773,6 @@ export class FullStoryPipeline {
     return this.imagePromptSupport().sanitizePromptText(raw, brief, fallback);
   }
 
-  private resolveGeneratedStoryPlayerTemplates(story: Story, brief: FullCreativeBrief): Story {
-    return this.imagePromptSupport().resolveGeneratedStoryPlayerTemplates(story, brief);
-  }
-
   private sanitizeImagePrompt(prompt: ImagePrompt, brief: FullCreativeBrief): ImagePrompt {
     return this.imagePromptSupport().sanitizeImagePrompt(prompt, brief);
   }
@@ -8342,13 +8050,6 @@ export class FullStoryPipeline {
     return harvestEpisodeCallbacksImpl(this.callbackLedger, params);
   }
 
-  private injectFallbackCallbacks(
-    params: InjectFallbackCallbacksParams,
-  ): { injected: number } {
-    return injectFallbackCallbacksImpl(this.callbackLedger, params);
-  }
-
-
   private async validateAndRegenerateImage(
     prompt: ImagePrompt,
     identifier: string,
@@ -8491,9 +8192,8 @@ export class FullStoryPipeline {
 
   /**
    * Memoized story/episode assembly cluster — see pipeline/assembly.ts. The
-   * run-scoped style anchor paths are shared by reference; all other helpers
-   * (fidelity text, choice-bridge beats, reader sanitization, episode-scoped
-   * keys and encounter-tree image wiring are bound.
+   * run-scoped style anchor paths are shared by reference; assembly only
+   * projects committed narrative artifacts and binds media/runtime keys.
    */
   private assembly(): Assembly {
     if (!this._assembly) {
@@ -8504,12 +8204,9 @@ export class FullStoryPipeline {
         imageAgentTeam: this.imageAgentTeam,
         styleAnchorPaths: this._styleAnchorPaths,
         buildPersistedNpc: this.buildPersistedNpc.bind(this),
-        ensureBlueprintFidelityText: this.ensureBlueprintFidelityText.bind(this),
-        ensureChoiceBridgeBeats: this.ensureChoiceBridgeBeats.bind(this),
         getEpisodeScopedBeatKey: this.getEpisodeScopedBeatKey.bind(this),
         getEpisodeScopedSceneId: this.getEpisodeScopedSceneId.bind(this),
         sanitizeReaderFacingSceneName: this.sanitizeReaderFacingSceneName.bind(this),
-        sanitizeSceneContentForReader: this.sanitizeSceneContentForReader.bind(this),
         wireEncounterTreeImages: this.wireEncounterTreeImages.bind(this),
       });
     }
@@ -8549,8 +8246,6 @@ export class FullStoryPipeline {
           if (!rawOutputDirectory) return;
           await saveFinalContractRepairCandidate(rawOutputDirectory, candidate);
         },
-        disambiguateProtagonistPronouns: this.disambiguateProtagonistPronouns.bind(this),
-        authorEncounterOutcomeVariants: this.authorEncounterOutcomeVariants.bind(this),
         relationshipDimensionsForNpc: this.relationshipDimensionsForNpc.bind(this),
       } satisfies Partial<FinalContractDeps> as unknown as FinalContractDeps;
       Object.defineProperties(deps, {
@@ -8613,21 +8308,7 @@ export class FullStoryPipeline {
         duplicateEstablishingBeatValidator: this.duplicateEstablishingBeatValidator,
         treatmentSeedOnPageValidator: this.treatmentSeedOnPageValidator,
         endingReachabilityValidator: this.endingReachabilityValidator,
-        choiceAuthor: this.choiceAuthor,
-        assembleEpisode: this.assembleEpisode.bind(this),
-        buildChoiceAuthorNpcs: this.buildChoiceAuthorNpcs.bind(this),
-        buildCompactWorldContext: this.buildCompactWorldContext.bind(this),
-        deriveStoryVerbsForBrief: this.deriveStoryVerbsForBrief.bind(this),
-        getAgentMemoryContext: this.getAgentMemoryContext.bind(this),
-        getUnresolvedCallbacksForPrompt: this.getUnresolvedCallbacksForPrompt.bind(this),
-        resolveWorldLocationForScene: this.resolveWorldLocationForScene.bind(this),
       } satisfies Partial<SceneGraphValidationDeps> as unknown as SceneGraphValidationDeps;
-      // sceneCritic may be constructed after this accessor first runs, and
-      // cachedPipelineMemory is set once memory loads — read both lazily.
-      Object.defineProperties(deps, {
-        sceneCritic: { get: () => this.sceneCritic ?? null },
-        cachedPipelineMemory: { get: () => this.renderedPipelineMemory },
-      });
       this._sceneGraphValidation = new SceneGraphValidation(deps);
     }
     return this._sceneGraphValidation;
@@ -8689,7 +8370,6 @@ export class FullStoryPipeline {
         toEncounterRunDiagnostics: this.toEncounterRunDiagnostics.bind(this),
         seedAssetRegistryFromResults: this.seedAssetRegistryFromResults.bind(this),
         generateStoryCoverArt: this.generateStoryCoverArt.bind(this),
-        resolveGeneratedStoryPlayerTemplates: this.resolveGeneratedStoryPlayerTemplates.bind(this),
         auditStoryVisualContractPersistence: this.auditStoryVisualContractPersistence.bind(this),
         repairBoundImageReferences: this.repairBoundImageReferences.bind(this),
         buildImageManifestFromStory: this.buildImageManifestFromStory.bind(this),
@@ -8790,15 +8470,6 @@ export class FullStoryPipeline {
     return resolveWorldLocationForSceneImpl(sceneBlueprint, worldBible);
   }
 
-  private ensureChoiceBridgeBeats(
-    blueprint: EpisodeBlueprint,
-    sceneBlueprint: SceneBlueprint,
-    content: SceneContent,
-    choiceMap: Map<string, ChoiceSet>,
-  ): void {
-    ensureChoiceBridgeBeatsImpl(blueprint, sceneBlueprint, content, choiceMap);
-  }
-
   private assembleEpisode(
     brief: FullCreativeBrief,
     worldBible: WorldBible,
@@ -8836,16 +8507,24 @@ export class FullStoryPipeline {
         recordRemediationSafe: (record) => this.recordRemediationSafe(record),
         assembleEpisode: this.assembleEpisode.bind(this),
         validateSceneContract: async ({ scene, sceneId }) => {
-          const graphTasks = brief.seasonPlan?.scenePlan?.narrativeContractGraph?.realizationTasks
+          const graph = brief.seasonPlan?.scenePlan?.narrativeContractGraph;
+          const graphTasks = graph?.realizationTasks
             ?.filter((task) => task.sceneId === sceneId) ?? [];
           const blueprintTasks = blueprint.scenes.find((candidate) => candidate.id === sceneId)?.realizationTasks ?? [];
           const tasks = Array.from(new Map(
             [...graphTasks, ...blueprintTasks].map((task) => [task.id, task]),
           ).values());
-          if (tasks.length === 0) return [];
           const choiceSet = choiceSets.find((candidate) => candidate.sceneId === sceneId);
           const encounter = encounters?.get(sceneId);
-          const findings = [];
+          const findings: Array<{
+            blocking: boolean;
+            fingerprint?: string;
+            code?: string;
+            taskId?: string;
+            missingEvidenceAtoms?: string[];
+            matchedForbiddenAtoms?: string[];
+            message?: string;
+          }> = [];
           for (const ownerStage of ['scene_writer', 'choice_author', 'encounter_architect'] as const) {
             const ownedTasks = tasks.filter((task) => task.ownerStage === ownerStage);
             if (ownedTasks.length === 0) continue;
@@ -8861,6 +8540,23 @@ export class FullStoryPipeline {
               judge: this.semanticRealizationJudge,
             });
             findings.push(...result.findings);
+          }
+          const identityPolicies = resolveSceneIdentityReferencePolicies({
+            episodeNumber: brief.episode.number,
+            sceneId,
+            identityScheduleContracts: graph?.identityScheduleContracts,
+            lexicalArtifactContracts: graph?.lexicalArtifactContracts,
+            realizationTasks: tasks,
+          });
+          const readerFacingSurfaces = collectNarrativeEvidenceSurfaceIndex({ sceneContent: scene });
+          for (const violation of findIdentityReferenceViolations(readerFacingSurfaces, identityPolicies)) {
+            findings.push({
+              blocking: true,
+              code: 'PREMATURE_IDENTITY_REFERENCE',
+              fingerprint: `PREMATURE_IDENTITY_REFERENCE::${sceneId}::${violation.characterId}::${violation.reference}::${violation.fieldPath}`,
+              matchedForbiddenAtoms: [violation.reference],
+              message: `Remove the unavailable identity reference "${violation.reference}" from ${violation.fieldPath}; keep ${violation.canonicalName} anonymous in this scene.`,
+            });
           }
           const infrastructureBlockers = findings.filter((finding) =>
             finding.blocking

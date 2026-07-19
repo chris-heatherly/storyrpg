@@ -5,13 +5,16 @@ import {
   sanitizeCoveragePlanMetadata,
   sanitizeSequenceIntentMetadata,
 } from '../utils/coverageMetadataHygiene';
+import type { SceneIdentityReferencePolicy } from '../utils/identityReferencePolicy';
+import { findIdentityReferenceViolations } from '../utils/identityReferencePolicy';
+import { collectNarrativeEvidenceSurfaceIndex } from '../validators/encounterTextSurfaces';
 
 export type ProducerOwnerPhase = 'scene' | 'choice' | 'encounter';
 export type ProducerRepairSurface = 'scene-prose' | 'choice-prose' | 'choice-consequences' | 'encounter-field' | 'coverage-metadata';
 
 export interface ProducerBlockerFinding {
   validator: 'ProducerPhaseBlockerValidator';
-  type: 'unsafe_fallback_prose' | 'unsafe_metadata' | 'malformed_relationship_consequence' | 'duplicate_beat_id';
+  type: 'unsafe_fallback_prose' | 'unsafe_metadata' | 'malformed_relationship_consequence' | 'duplicate_beat_id' | 'premature_identity_reference';
   severity: 'error';
   ownerPhase: ProducerOwnerPhase;
   repairSurface: ProducerRepairSurface;
@@ -73,6 +76,17 @@ export const PRODUCER_BLOCKER_OWNERSHIP: readonly ProducerBlockerOwnership[] = [
     handler: 'SceneWriter structured-output retry',
     retryBudget: 1,
   },
+  ...(['scene', 'choice', 'encounter'] as const).map((ownerPhase): ProducerBlockerOwnership => ({
+    type: 'premature_identity_reference',
+    ownerPhase,
+    repairSurface: ownerPhase === 'scene' ? 'scene-prose' : ownerPhase === 'choice' ? 'choice-prose' : 'encounter-field',
+    handler: ownerPhase === 'scene'
+      ? 'SceneWriter retry with identity-policy feedback'
+      : ownerPhase === 'choice'
+        ? 'ChoiceAuthor focused re-author with identity-policy feedback'
+        : 'EncounterArchitect retry with identity-policy feedback',
+    retryBudget: 1,
+  })),
 ] as const;
 
 type MutableRecord = Record<string, unknown>;
@@ -251,6 +265,38 @@ export function validateSceneProducerOutput(sceneId: string, sceneContent: unkno
   if (content && kept.length !== beats.length) content.beats = kept;
   walkProducerText(sceneContent, 'scene', sceneId, 'scene', findings);
   return findings;
+}
+
+export function validateIdentityReferenceProducerOutput(
+  sceneId: string,
+  ownerPhase: ProducerOwnerPhase,
+  value: unknown,
+  policies: SceneIdentityReferencePolicy[],
+): ProducerBlockerFinding[] {
+  const rootPath = ownerPhase === 'scene' ? 'scene' : ownerPhase === 'choice' ? 'choiceSet' : 'encounter';
+  const readerFacingSurfaces = collectNarrativeEvidenceSurfaceIndex(
+    ownerPhase === 'scene'
+      ? { sceneContent: value }
+      : ownerPhase === 'choice'
+        ? { choiceSet: value }
+        : { encounter: value },
+  );
+  return findIdentityReferenceViolations(readerFacingSurfaces, policies, rootPath).map((violation) => {
+    const policy = policies.find((candidate) => candidate.characterId === violation.characterId);
+    return {
+      validator: 'ProducerPhaseBlockerValidator',
+      type: 'premature_identity_reference',
+      severity: 'error',
+      ownerPhase,
+      repairSurface: ownerPhase === 'scene' ? 'scene-prose' : ownerPhase === 'choice' ? 'choice-prose' : 'encounter-field',
+      sceneId,
+      fieldPath: violation.fieldPath,
+      message: `Identity reference "${violation.reference}" is unavailable for ${violation.canonicalName} in scene ${sceneId}.`,
+      suggestion: policy?.availableAliases.length
+        ? `Re-author this field using a legal reference (${policy.availableAliases.join(', ')}) or visual description.`
+        : 'Re-author this field using anonymous visual or behavioral description.',
+    };
+  });
 }
 
 export function validateEncounterProducerOutput(sceneId: string, encounter: unknown): ProducerBlockerFinding[] {

@@ -1,10 +1,11 @@
 /**
  * SceneCritic rewrite pass + character-consistency continuity repair.
  *
- * Faithful port of FullStoryPipeline.runSceneCriticPass,
- * repairContinuityFindings, and revalidateRepairedContinuity (pure move).
- * runSceneCriticPass runs the optional voice/style rewrite over the
- * lowest-scoring scenes; repairContinuityFindings re-authors scenes flagged by
+ * Owns the transactional per-scene critic review, continuity repair, and
+ * continuity revalidation. reviewSceneBeforeCommit runs the optional
+ * voice/style rewrite before descendants consume the scene; the retained
+ * runSceneCriticPass method is a compatibility surface for focused callers and
+ * tests. repairContinuityFindings re-authors scenes flagged by
  * the QA continuity checker (constructing a one-off SceneCritic if none is
  * configured) and, when a consuming gate is on, revalidateRepairedContinuity
  * re-runs the ContinuityChecker over the repaired prose and refreshes the QA
@@ -54,6 +55,7 @@ import { buildRequiredBeatsSection } from '../prompts/requiredBeatsPromptSection
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
 import type { PipelineEvent } from './events';
+import { sceneCommitContentHash, sceneHandoffHash, type SceneCommitReceipt } from './sceneCommit';
 
 export interface ContinuityRepairOptions {
   forceRevalidation?: boolean;
@@ -64,6 +66,13 @@ export interface ContinuityRepairOptions {
    * (sceneEventOwnership), in addition to the flagged use-site scene.
    */
   plannedScenes?: OwnershipPlannedSceneLite[];
+  /**
+   * Once later scenes have consumed a scene's realized summary, a late repair
+   * may change interior prose but must preserve that downstream handoff.
+   */
+  preserveCommittedHandoffs?: boolean;
+  /** Mutable in-run receipts; accepted late repairs refresh their content hash. */
+  commitReceipts?: SceneCommitReceipt[];
 }
 
 export interface SceneCriticContinuityDeps {
@@ -77,6 +86,56 @@ export interface SceneCriticContinuityDeps {
     characterBible: CharacterBible,
   ) => Array<{ characterId: string; knows: string[]; doesNotKnow: string[] }>;
   buildContinuityTimeline: (blueprint: EpisodeBlueprint) => Array<{ event: string; when: string }>;
+}
+
+export interface SceneCriticBudget {
+  limit: number;
+  attempted: number;
+  accepted: number;
+  rejected: number;
+  failed: number;
+}
+
+export type SceneCriticReviewDisposition =
+  | 'not_eligible'
+  | 'budget_exhausted'
+  | 'accepted'
+  | 'rejected'
+  | 'failed';
+
+export interface SceneCriticReviewOutcome {
+  disposition: SceneCriticReviewDisposition;
+  scene: SceneContent;
+  rewrittenBeatIds: string[];
+  commentary?: string;
+  reason?: string;
+}
+
+export interface SceneCriticReviewInput {
+  scene: SceneContent;
+  characterBible: CharacterBible;
+  realizationTasks?: NarrativeRealizationTask[];
+  /** Final incremental VoiceValidator score for this exact candidate. */
+  voiceScore?: number;
+  /** Encounter prose is owned by EncounterArchitect and is not a SceneCritic surface. */
+  isEncounter?: boolean;
+  budget: SceneCriticBudget;
+  /** Caller-owned checks that must pass before the candidate may be committed. */
+  validateCandidate?: (candidate: SceneContent) => Promise<{ accepted: boolean; reason?: string }>;
+}
+
+export function createSceneCriticBudget(limit: number): SceneCriticBudget {
+  return {
+    limit: Math.max(1, Math.floor(limit)),
+    attempted: 0,
+    accepted: 0,
+    rejected: 0,
+    failed: 0,
+  };
+}
+
+function cloneSceneContent(scene: SceneContent): SceneContent {
+  return JSON.parse(JSON.stringify(scene)) as SceneContent;
 }
 
 function taskPreservationSection(tasks: NarrativeRealizationTask[] | undefined): string {
@@ -166,6 +225,179 @@ export class SceneCriticContinuity {
       throw new Error(`canonical realization validation unavailable for ${infrastructureBlockers.map((finding) => finding.taskId).join(', ')}`);
     }
     return result.findings;
+  }
+
+  /**
+   * Review one scene at its commit boundary. Unlike the historical episode-end
+   * pass, this method never mutates the accepted scene. It returns a validated
+   * candidate for the caller to commit before any dependent scene is authored.
+   */
+  async reviewSceneBeforeCommit(input: SceneCriticReviewInput): Promise<SceneCriticReviewOutcome> {
+    const { scene, characterBible, realizationTasks, budget } = input;
+    const cfg = this.deps.config.sceneCritic;
+    const configuredPass = cfg?.enabled === true;
+    const flagGatedPass = !configuredPass && isGateEnabled('GATE_SCENE_CRITIC_ON_FLAG');
+    const flags = sceneCriticFlags(scene);
+    const notes = sceneCriticNotes(scene);
+
+    if (input.isEncounter || !scene.beats?.length) {
+      return { disposition: 'not_eligible', scene, rewrittenBeatIds: [], reason: 'unsupported or empty scene surface' };
+    }
+    if (!configuredPass && (!flagGatedPass || flags.length === 0)) {
+      return { disposition: 'not_eligible', scene, rewrittenBeatIds: [], reason: 'scene has no critic eligibility signal' };
+    }
+    if (
+      configuredPass
+      && typeof cfg?.voiceScoreThreshold === 'number'
+      && (typeof input.voiceScore !== 'number' || input.voiceScore > cfg.voiceScoreThreshold)
+    ) {
+      return { disposition: 'not_eligible', scene, rewrittenBeatIds: [], reason: 'voice score is above the configured threshold' };
+    }
+    if (budget.attempted >= budget.limit) {
+      return { disposition: 'budget_exhausted', scene, rewrittenBeatIds: [], reason: 'episode critic budget exhausted' };
+    }
+
+    budget.attempted += 1;
+    let critic: SceneCritic;
+    try {
+      critic = this.deps.sceneCritic ?? new SceneCritic(this.deps.config.agents.sceneWriter);
+    } catch (error) {
+      budget.failed += 1;
+      const reason = error instanceof Error ? error.message : String(error);
+      this.deps.emit({
+        type: 'warning',
+        phase: 'scene_critic',
+        message: `SceneCritic review of ${scene.sceneId} could not start — keeping the accepted scene: ${reason}`,
+      });
+      return { disposition: 'failed', scene, rewrittenBeatIds: [], reason };
+    }
+
+    try {
+      const baselineTaskFindings = await this.validateSceneWriterTasks(scene, realizationTasks);
+      const contractSection = buildRequiredBeatsSection(scene);
+      const typedTaskSection = taskPreservationSection(realizationTasks);
+      const advisorySection = notes.length > 0
+        ? `ADDRESS THESE SPECIFIC GAPS (advisory findings from generation-time validation):\n${notes.map((note) => `- ${note}`).join('\n')}`
+        : '';
+      const directorNotes = [
+        contractSection
+          ? `PRESERVE AUTHORED CONTENT: your rewrite must keep every staged moment below fully on-page — do not paraphrase away proper nouns, places, times, or staged actions.\n${contractSection}`
+          : '',
+        typedTaskSection,
+        advisorySection,
+      ].filter(Boolean).join('\n\n');
+
+      this.deps.emit({
+        type: 'debug',
+        phase: 'scene_critic',
+        message: `SceneCritic reviewing ${scene.sceneId} before scene commit`,
+        data: { sceneId: scene.sceneId, flags, budget: { ...budget } },
+      });
+      const critique = await critic.execute({
+        scene,
+        characterBible,
+        ...(directorNotes ? { directorNotes } : {}),
+      });
+      if (!critique.data || critique.data.rewrittenBeats.length === 0) {
+        if (critique.error) {
+          budget.failed += 1;
+          return { disposition: 'failed', scene, rewrittenBeatIds: [], reason: critique.error };
+        }
+        budget.rejected += 1;
+        return { disposition: 'rejected', scene, rewrittenBeatIds: [], reason: 'critic returned no usable rewritten beats' };
+      }
+
+      const rewrittenById = new Map(critique.data.rewrittenBeats.map((beat) => [beat.id, beat]));
+      const candidate = cloneSceneContent(scene);
+      candidate.beats = candidate.beats.map((beat) => {
+        const replacement = rewrittenById.get(beat.id);
+        if (!replacement) return beat;
+        return {
+          ...beat,
+          text: replacement.text || beat.text,
+          textVariants: replacement.textVariants || beat.textVariants,
+        };
+      });
+
+      if (realizationTasks?.length) {
+        const candidateTaskFindings = await this.validateSceneWriterTasks(candidate, realizationTasks);
+        const introduced = introducedRealizationFindings(baselineTaskFindings, candidateTaskFindings);
+        if (introduced.length > 0) {
+          budget.rejected += 1;
+          return {
+            disposition: 'rejected',
+            scene,
+            rewrittenBeatIds: [],
+            reason: `candidate introduced canonical realization blockers: ${introduced.map((finding) => finding.code).join(', ')}`,
+          };
+        }
+      }
+
+      if (isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')) {
+        const extraMoments = this.deps.semanticRealizationJudge
+          ? []
+          : realizationTaskMomentsFor(realizationTasks);
+        const lost = rewriteLosesRequiredMoment(scene, scene.beats, candidate.beats, extraMoments);
+        if (lost) {
+          budget.rejected += 1;
+          return {
+            disposition: 'rejected',
+            scene,
+            rewrittenBeatIds: [],
+            reason: `candidate dropped the authored ${lost.tier} moment`,
+          };
+        }
+      }
+
+      const originalOpeningBeat = scene.beats.find((beat) => String(beat.text ?? '').trim().length > 0);
+      const openingBeatHadAnchor = originalOpeningBeat
+        ? hasPlayerReference([
+            String(originalOpeningBeat.text ?? ''),
+            ...(originalOpeningBeat.textVariants ?? []).map((variant) => String(variant?.text ?? '')),
+          ].join('\n'))
+        : false;
+      if (openingBeatHadAnchor) {
+        const candidateOpeningBeat = candidate.beats.find((beat) => String(beat.text ?? '').trim().length > 0);
+        const candidateHasAnchor = candidateOpeningBeat
+          ? hasPlayerReference([
+              String(candidateOpeningBeat.text ?? ''),
+              ...(candidateOpeningBeat.textVariants ?? []).map((variant) => String(variant?.text ?? '')),
+            ].join('\n'))
+          : false;
+        if (!candidateHasAnchor) {
+          budget.rejected += 1;
+          return { disposition: 'rejected', scene, rewrittenBeatIds: [], reason: 'candidate dropped the opening player anchor' };
+        }
+      }
+
+      const callerValidation = await input.validateCandidate?.(candidate);
+      if (callerValidation && !callerValidation.accepted) {
+        budget.rejected += 1;
+        return {
+          disposition: 'rejected',
+          scene,
+          rewrittenBeatIds: [],
+          reason: callerValidation.reason || 'caller-owned candidate validation rejected the rewrite',
+        };
+      }
+
+      budget.accepted += 1;
+      return {
+        disposition: 'accepted',
+        scene: candidate,
+        rewrittenBeatIds: [...rewrittenById.keys()],
+        commentary: critique.data.overallCommentary,
+      };
+    } catch (error) {
+      budget.failed += 1;
+      const reason = error instanceof Error ? error.message : String(error);
+      this.deps.emit({
+        type: 'warning',
+        phase: 'scene_critic',
+        message: `SceneCritic review of ${scene.sceneId} failed — keeping the accepted scene: ${reason}`,
+      });
+      return { disposition: 'failed', scene, rewrittenBeatIds: [], reason };
+    }
   }
 
   async runSceneCriticPass(
@@ -431,6 +663,7 @@ export class SceneCriticContinuity {
     }
     const capabilityFacts = capabilityFactStrings(characterBible.characters);
     const repaired: Array<{ sceneId: string; beatIds: string[]; merged: number }> = [];
+    const rejectedHandoffChanges: Array<{ sceneId: string; reason: string }> = [];
     const rewrittenSceneIds = new Set<string>();
     // When an owning-scene repair lands, the flagged use-site must be
     // re-checked too — its finding is resolved by the EARLIER scene's new
@@ -456,6 +689,10 @@ export class SceneCriticContinuity {
       if (!scene) continue;
       if (!guidance) continue;
       try {
+        const sceneIndex = sceneContents.findIndex((candidate) => candidate.sceneId === sceneId);
+        const hasCommittedSuccessor = sceneIndex >= 0 && sceneIndex < sceneContents.length - 1;
+        const sceneBlueprint = blueprint?.scenes.find((candidate) => candidate.id === sceneId);
+        const handoffBefore = sceneHandoffHash(scene, sceneBlueprint);
         const critique = await withTimeout(
           critic.execute({ scene, characterBible, directorNotes: guidance, flaggedBeatIds }),
           PIPELINE_TIMEOUTS.llmAgent,
@@ -484,11 +721,37 @@ export class SceneCriticContinuity {
             const lost = isGateEnabled('GATE_SCENE_REQUIRED_BEAT_CHECK')
               ? rewriteLosesRequiredMoment(scene, proseSnapshot, scene.beats)
               : undefined;
-            if (lost) {
+            const changedCommittedHandoff = Boolean(
+              options?.preserveCommittedHandoffs
+              && hasCommittedSuccessor
+              && handoffBefore !== sceneHandoffHash(scene, sceneBlueprint)
+            );
+            if (lost || changedCommittedHandoff) {
               mergeRewrittenBeatsIntoStory(story as never, sceneId, proseSnapshot as never);
               applyRewrittenBeatsToSceneContents(sceneContents as never, sceneId, proseSnapshot as never);
-              this.deps.emit({ type: 'warning', phase: 'continuity_repair', message: `Continuity repair of ${sceneId} dropped the authored ${lost.tier} moment ("${lost.moment.slice(0, 80)}…") — reverted to the original prose.` });
+              if (lost) {
+                this.deps.emit({ type: 'warning', phase: 'continuity_repair', message: `Continuity repair of ${sceneId} dropped the authored ${lost.tier} moment ("${lost.moment.slice(0, 80)}…") — reverted to the original prose.` });
+              } else {
+                const reason = 'rewrite changed the realized closing handoff already consumed by a later scene';
+                rejectedHandoffChanges.push({ sceneId, reason });
+                this.deps.emit({
+                  type: 'warning',
+                  phase: 'continuity_repair',
+                  message: `Continuity repair of ${sceneId} was rolled back: ${reason}. Regenerate the dependent suffix instead of reopening committed history.`,
+                });
+              }
             } else {
+              const receipt = options?.commitReceipts?.find((candidate) => candidate.sceneId === sceneId);
+              if (receipt) {
+                receipt.sceneHash = sceneCommitContentHash(scene);
+                receipt.handoffHash = sceneHandoffHash(scene, sceneBlueprint);
+                receipt.committedAt = new Date().toISOString();
+                receipt.critic = {
+                  disposition: 'accepted',
+                  rewrittenBeatIds: rewrittenBeats.map((beat) => beat.id),
+                  reason: 'accepted late continuity repair preserved committed downstream handoff',
+                };
+              }
               rewrittenSceneIds.add(sceneId);
               for (const id of task.revalidateWith) alsoRevalidate.add(id);
               repaired.push({ sceneId, beatIds: flaggedBeatIds, merged });
@@ -526,6 +789,7 @@ export class SceneCriticContinuity {
       candidateScenes: tasks.map((task) => task.sceneId),
       ownerRetargets: ownerTargets.map(({ ownerSceneId, findingSceneId, cue, entity }) => ({ ownerSceneId, findingSceneId, cue, entity })),
       repaired,
+      rejectedHandoffChanges,
       revalidation,
       forceRevalidation: options?.forceRevalidation === true,
       revalidationReason: options?.revalidationReason,

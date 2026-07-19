@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Episode } from '../../types';
-import { CliffhangerValidator, type CliffhangerAnalysis } from '../validators';
+import { CliffhangerValidator, type CliffhangerAnalysis } from '../validators/CliffhangerValidator';
 import { repairWeakCliffhangerBeforeImages, type CliffhangerRepairDeps } from './cliffhangerRepair';
 import type { FullCreativeBrief } from './FullStoryPipeline';
 import type { EpisodeBlueprint } from '../agents/StoryArchitect';
@@ -102,7 +102,7 @@ describe('repairWeakCliffhangerBeforeImages', () => {
       emit: (event) => emitted.push(event.message),
       recordRemediationSafe: vi.fn(async () => undefined),
       assembleEpisode: f.assembleEpisode,
-      validateSceneContract: vi.fn(async ({ scene }) => scene.beats.some((beat) => beat.text.includes('attacker'))
+      validateSceneContract: vi.fn(async ({ scene }) => scene.beats.some((beat: { text: string }) => beat.text.includes('attacker'))
         ? [{ blocking: true, fingerprint: 'ending-displaced', code: 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT', taskId: 'task:ending', message: 'The attacker displaces Kylie.' }]
         : []),
     };
@@ -139,7 +139,7 @@ describe('repairWeakCliffhangerBeforeImages', () => {
       emit: vi.fn(),
       recordRemediationSafe: vi.fn(async () => undefined),
       assembleEpisode: f.assembleEpisode,
-      validateSceneContract: vi.fn(async ({ scene }) => scene.beats.some((beat) => beat.text.includes('attacker'))
+      validateSceneContract: vi.fn(async ({ scene }) => scene.beats.some((beat: { text: string }) => beat.text.includes('attacker'))
         ? [{ blocking: true, fingerprint: 'ending-displaced', code: 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT', taskId: 'task:ending' }]
         : []),
     };
@@ -150,5 +150,45 @@ describe('repairWeakCliffhangerBeforeImages', () => {
     );
 
     expect(f.sceneContents[0].beats[0].text).toBe(original);
+  });
+
+  it('forbids a globally listed alias when its lexical creation is still in the future', async () => {
+    const f = fixture();
+    const graph = f.brief.seasonPlan!.scenePlan!.narrativeContractGraph!;
+    graph.identityScheduleContracts = [{
+      id: 'identity:radu', characterId: 'radu', canonicalName: 'Radu Stoian',
+      allowedAliases: ['The Mountain'], forbiddenBeforeNamedEpisode: ['Radu Stoian', 'Radu'],
+      firstVisualEpisode: 1, firstNamedEpisode: 2, sourceContractIds: [],
+    }];
+    graph.lexicalArtifactContracts = [{
+      id: 'lexical:mountain', episodeNumber: 2, creatorEventId: 'ep2-u2', creatorSceneId: 's2-coining',
+      creatorPropositionId: 'ep2-u2:p2', kind: 'codeword', canonicalValue: 'The Mountain',
+      routePolicy: 'source_invariant', allowedAlternatives: [], forbiddenBeforeSceneIds: ['s2-opening'],
+      sourceContractIds: [], blocking: true,
+    }];
+    vi.spyOn(CliffhangerValidator.prototype, 'quickAnalyze').mockImplementation((episode) => {
+      const text = episode.scenes[0].beats.at(-1)?.text ?? '';
+      return text.includes('after publishing the post') ? analysis(40, 'weak', text) : analysis(75, 'good', text);
+    });
+    const improve = vi.spyOn(CliffhangerValidator.prototype, 'improveCliffhanger').mockResolvedValue({
+      success: true,
+      data: { originalText: '', improvedText: 'A charcoal-suited stranger watches from across the street.', cliffhangerType: 'mystery', explanation: 'safe' },
+    });
+
+    await repairWeakCliffhangerBeforeImages(
+      {
+        sceneWriterConfig: { provider: 'anthropic', model: 'test', apiKey: 'x' } as never,
+        emit: vi.fn(),
+        recordRemediationSafe: vi.fn(async () => undefined),
+        assembleEpisode: f.assembleEpisode,
+        validateSceneContract: vi.fn(async () => []),
+      },
+      f.brief, f.worldBible, f.characterBible, f.blueprint, f.sceneContents, f.choiceSets,
+    );
+
+    expect(improve.mock.calls[0]?.[3]?.forbiddenMeanings).toEqual(expect.arrayContaining([
+      expect.stringContaining('"The Mountain"'),
+      expect.stringContaining('"Radu Stoian"'),
+    ]));
   });
 });

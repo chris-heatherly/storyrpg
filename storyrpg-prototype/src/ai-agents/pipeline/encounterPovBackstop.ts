@@ -205,6 +205,46 @@ export interface EncounterPovBackstopResult {
   residualBreaks: string[];
 }
 
+/** Apply the POV projection to one encounter before its owning scene is sealed. */
+export function applyEncounterPovBackstopToEncounter(
+  encounter: unknown,
+  protagonist: ProtagonistRef,
+  sameGenderNpcNames: string[] = [],
+): EncounterPovBackstopResult {
+  const protagonistName = safeProtagonistName(protagonist.name);
+  if (!protagonistName) return { coerced: 0, residualBreaks: [] };
+  const subjectPronoun = subjectPronounOf(protagonist.pronouns);
+  const sameGender = sameGenderNpcNames.filter((name) => name !== protagonistName);
+  let coerced = 0;
+  walkNarrative(
+    encounter,
+    (text) => {
+      const residue = repairSecondPersonProtagonistResidue(text);
+      if (!firstNameRe(protagonistName).test(residue.text)) {
+        if (residue.changed) coerced += 1;
+        return residue.text;
+      }
+      const coercePronouns = Boolean(subjectPronoun) && !textHasAnyName(text, sameGender);
+      const result = coerceThirdPersonProtagonistToSecond(residue.text, protagonistName, {
+        coercePronouns,
+        subjectPronoun,
+      });
+      if (result.changed || residue.changed) coerced += 1;
+      return result.text;
+    },
+    (text) => {
+      const result = repairChoiceTextProtagonistReference(text, protagonistName);
+      if (result.changed) coerced += 1;
+      return result.text;
+    },
+  );
+  const strings: string[] = [];
+  collectNarrative(encounter, strings);
+  const residualBreaks = new PovClarityValidator()
+    .findThirdPersonProtagonistTexts(strings, protagonistName);
+  return { coerced, residualBreaks };
+}
+
 /**
  * In-place deterministic backstop: coerce third-person protagonist narration in encounter
  * prose to second person. Returns how many strings changed and any residual breaks the
@@ -222,32 +262,10 @@ export function applyEncounterPovBackstop(
 ): EncounterPovBackstopResult {
   const prot = resolveProtagonist(story, protagonist);
   if (!prot?.name) return { coerced: 0, residualBreaks: [] };
-  const subjectPronoun = subjectPronounOf(prot.pronouns);
   const sameGender = sameGenderNpcNames(story, prot.pronouns).filter((n) => n !== prot.name);
   let coerced = 0;
-  eachEncounter(story, (enc) =>
-    walkNarrative(
-      enc,
-      (s) => {
-        const residue = repairSecondPersonProtagonistResidue(s);
-        if (!firstNameRe(prot.name!).test(residue.text)) {
-          if (residue.changed) coerced += 1;
-          return residue.text;
-        }
-        const coercePronouns = Boolean(subjectPronoun) && !textHasAnyName(s, sameGender);
-        const { text, changed } = coerceThirdPersonProtagonistToSecond(residue.text, prot.name, {
-          coercePronouns,
-          subjectPronoun,
-        });
-        if (changed || residue.changed) coerced += 1;
-        return text;
-      },
-      (s) => {
-        const { text, changed } = repairChoiceTextProtagonistReference(s, prot.name!);
-        if (changed) coerced += 1;
-        return text;
-      },
-    ),
-  );
+  eachEncounter(story, (enc) => {
+    coerced += applyEncounterPovBackstopToEncounter(enc, prot, sameGender).coerced;
+  });
   return { coerced, residualBreaks: findEncounterPovBreaks(story, prot) };
 }

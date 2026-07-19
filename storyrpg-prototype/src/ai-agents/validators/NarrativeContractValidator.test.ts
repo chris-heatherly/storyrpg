@@ -52,6 +52,34 @@ describe('NarrativeContractValidator', () => {
     expect(result.issues).toEqual([]);
   });
 
+  it('does not recommend or accept an alias before its lexical creation scene', () => {
+    const canonical = graph();
+    (canonical.identityScheduleContracts ??= []).push({
+      id: 'identity:radu', characterId: 'radu', canonicalName: 'Radu Stoian',
+      allowedAliases: ['The Mountain'], forbiddenBeforeNamedEpisode: ['Radu Stoian', 'Radu'],
+      firstVisualEpisode: 1, firstNamedEpisode: 2, sourceContractIds: [],
+    });
+    canonical.lexicalArtifactContracts = [{
+      id: 'lexical:mountain', episodeNumber: 2, creatorEventId: 'ep2-u2', creatorSceneId: 's2-coining',
+      creatorPropositionId: 'ep2-u2:p2', kind: 'codeword', canonicalValue: 'The Mountain',
+      routePolicy: 'source_invariant', allowedAlternatives: [], forbiddenBeforeSceneIds: ['s2-opening'],
+      sourceContractIds: [], blocking: true,
+    }];
+
+    const result = new NarrativeContractValidator().validate({
+      story: story(['The Mountain waits beneath the streetlamp.']),
+      graph: canonical,
+    });
+    const issue = result.issues.find((candidate) => candidate.message.includes('The Mountain'));
+    expect(issue?.message).toMatch(/before it is available/i);
+    expect(issue?.suggestion).toMatch(/no scheduled alias is available/i);
+    expect(issue?.metadata).toMatchObject({
+      issueCode: 'PREMATURE_IDENTITY_REFERENCE',
+      repairHandler: 'scene_prose',
+      forbiddenLiteralPatterns: ['The Mountain'],
+    });
+  });
+
   it('requires an exact alias on the late-night writing owner scene', () => {
     const canonical = graph();
     canonical.events.unshift({

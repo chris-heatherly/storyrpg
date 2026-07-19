@@ -183,12 +183,12 @@
     {
       "type": "warning",
       "phase": "scenes",
-      "message": "Scene scene-1 left 3 authored moment(s) for LLM-owned final realization repair; deterministic prose insertion is disabled."
+      "message": "Scene scene-1 has 3 heuristic realization miss(es); concrete misses block now and summary-shaped misses require scene-final semantic proof."
     },
     {
-      "type": "warning",
+      "type": "debug",
       "phase": "scenes",
-      "message": "Scene scene-1 defers 3 summary-shaped authored moment(s) to the season-final realization gate (never inserted as prose)."
+      "message": "Scene scene-1 routes 3 summary-shaped authored moment(s) to its pre-commit semantic owner gate."
     },
     {
       "type": "agent_complete",
@@ -234,6 +234,21 @@
       "type": "incremental_validation",
       "phase": "scene_complete",
       "message": "Scene scene-1: PASSED"
+    },
+    {
+      "type": "debug",
+      "phase": "scene_critic",
+      "message": "SceneCritic reviewing scene-1 before scene commit"
+    },
+    {
+      "type": "warning",
+      "phase": "scene_critic",
+      "message": "SceneCritic kept the accepted prose for scene-1: No scripted fixture for agent \"Scene Critic\" (call #1 from this agent, global call #18). Recent call order: Scene Writer → Scene Writer → Scene Writer → Scene Writer → Scene Writer → Scene Writer → Choice Author → Scene Critic. Extend the fixture map to cover this call."
+    },
+    {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-1"
     },
     {
       "type": "debug",
@@ -301,6 +316,11 @@
       "message": "Scene scene-2a: ISSUES FOUND"
     },
     {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-2a"
+    },
+    {
       "type": "debug",
       "phase": "content",
       "message": "Writing scene scene-2b"
@@ -351,6 +371,11 @@
       "message": "Encounter pass complete for scene-2b"
     },
     {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-2b"
+    },
+    {
       "type": "debug",
       "phase": "content",
       "message": "Writing scene scene-3"
@@ -396,6 +421,11 @@
       "message": "Scene scene-3: PASSED"
     },
     {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-3"
+    },
+    {
       "type": "validation_aggregated",
       "phase": "incremental_validation",
       "message": "Incremental validation complete: 3/4 scenes passed"
@@ -404,11 +434,6 @@
       "type": "phase_complete",
       "phase": "content",
       "message": "Content complete: 4 scenes, 2 choice sets, 6 choices, 1 encounters"
-    },
-    {
-      "type": "debug",
-      "phase": "scene_critic",
-      "message": "SceneCritic flag-gated pass reviewing 1 quality-flagged scene(s)"
     },
     {
       "type": "debug",
@@ -436,42 +461,19 @@
       "message": "Checkpoint committed: Output Directory"
     },
     {
-      "type": "warning",
-      "phase": "branch_repair",
-      "message": "Repaired 2 blueprint branch target(s) that skipped required setup before choice repair; retargeted 1 authored choice(s)."
-    },
-    {
       "type": "checkpoint",
       "phase": "branch_validation",
       "message": "SceneGraphBranchValidator: 6 choices, 6 scene branches, 1 encounters, 30 encounter choices, 4 storylets"
     },
     {
+      "type": "debug",
+      "phase": "episode_1_artifacts",
+      "message": "Saved 5 revisioned episode planning artifact(s)."
+    },
+    {
       "type": "phase_start",
       "phase": "assembly",
       "message": "Phase 6: Assembling final story"
-    },
-    {
-      "type": "pipeline_event",
-      "message": ""
-    },
-    {
-      "type": "pipeline_event",
-      "message": ""
-    },
-    {
-      "type": "debug",
-      "phase": "pronoun_disambiguation",
-      "message": "Protagonist pronoun disambiguation: 2 ambiguous sentence(s), 0 rewritten, 0 field replacement(s)."
-    },
-    {
-      "type": "debug",
-      "phase": "encounter_outcome_variants",
-      "message": "Encounter outcome variants: 1 desync(s), 0 variant(s) authored."
-    },
-    {
-      "type": "debug",
-      "phase": "final_story_contract",
-      "message": "Choice residue planning-register leakage normalized 6 hint(s)."
     },
     {
       "type": "checkpoint",
@@ -491,7 +493,7 @@
     {
       "type": "phase_complete",
       "phase": "saving",
-      "message": "Saved 20 files to generated-stories/the-locked-wing_<ts>/"
+      "message": "Saved 20 files to generated-stories/<run>/"
     },
     {
       "type": "phase_complete",
@@ -577,6 +579,7 @@
         "deferredRealizationRecords",
         "encounters",
         "episodeNumber",
+        "sceneCommitReceipts",
         "sceneContents",
         "version"
       ]
@@ -586,22 +589,6 @@
       "requiresApproval": false,
       "dataKeys": [
         "outputDirectory"
-      ]
-    },
-    {
-      "phase": "structural_autofix",
-      "requiresApproval": false,
-      "dataKeys": [
-        "fixedCount",
-        "fixes"
-      ]
-    },
-    {
-      "phase": "craft_autofix",
-      "requiresApproval": false,
-      "dataKeys": [
-        "fixedCount",
-        "records"
       ]
     },
     {

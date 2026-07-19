@@ -135,11 +135,12 @@ describe('Assembly.assembleBeatChoices (shared attachment for both assembly path
     expect(map.get('s2::b1')!.choices[0].nextSceneId).toBe('s3');
   });
 
-  it('re-points a choice that routes BACKWARD onto a forward leadsTo target', () => {
+  it('rejects a committed choice that routes backward instead of mutating it', () => {
     const map = new Map([['s2::b1', { choices: [{ id: 'c1', text: 'back', nextSceneId: 's1' }] }]]);
     const blueprint = { scenes: [{ id: 's1' }, { id: 's2' }, { id: 's3' }] };
-    const out = attach({ id: 's2', leadsTo: ['s3'] }, blueprint, 'b1', map);
-    expect(out[0].nextSceneId).toBe('s3'); // corrected from the backward 's1'
+    expect(() => attach({ id: 's2', leadsTo: ['s3'] }, blueprint, 'b1', map))
+      .toThrow(/invalidate and regenerate the owning scene/);
+    expect(map.get('s2::b1')!.choices[0].nextSceneId).toBe('s1');
   });
 });
 

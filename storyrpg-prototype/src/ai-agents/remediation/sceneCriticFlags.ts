@@ -2,8 +2,8 @@
  * SceneCritic targeting flags (SAR wave 2, R8 — authoring economics).
  *
  * Generation-time quality signals tag the SceneContent in place (mirroring the
- * ad-hoc `voiceScore` tag runSceneCriticPass already reads) so the flag-gated
- * critic pass (GATE_SCENE_CRITIC_ON_FLAG) can spend its bounded rewrite budget
+ * validator evidence used by the commit review) so the flag-gated critic
+ * review (GATE_SCENE_CRITIC_ON_FLAG) can spend its bounded rewrite budget
  * on the scenes that demonstrably struggled — not on every scene.
  *
  * A3 (quality-gap plan 14-50-23): advisory shadow evidence produced at scene
@@ -37,7 +37,7 @@ export function flagSceneForCritic(scene: SceneContent, reason: SceneCriticFlagR
 
 /**
  * Attach a concrete, actionable instruction for the critic rewrite (idempotent
- * per note). Notes travel with the scene into runSceneCriticPass so the critic
+ * per note). Notes travel with the scene into the pre-commit review so the critic
  * fixes the NAMED gap instead of doing generic polish.
  */
 export function addCriticNote(scene: SceneContent, note: string): void {

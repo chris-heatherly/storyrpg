@@ -147,7 +147,6 @@ export interface DraftImageGenerationDeps {
     worldBible: WorldBible,
     outputDirectory?: string,
   ) => Promise<string | undefined>;
-  resolveGeneratedStoryPlayerTemplates: (story: Story, brief: FullCreativeBrief) => Story;
   /** Stays on the monolith: also called by finalizeImageRunFromRegistry. */
   auditStoryVisualContractPersistence: (story: Story) => {
     passed: boolean;
@@ -446,10 +445,7 @@ export class DraftImageGeneration {
       const coverUrl = options.targetEpisodeNumber == null
         ? await this.deps.generateStoryCoverArt(brief, characterBible, worldBible, normalizedOutputDir)
         : undefined;
-      let finalStory = this.deps.resolveGeneratedStoryPlayerTemplates(
-        assembleStoryAssetsFromRegistry(story, this.deps.assetRegistry),
-        brief,
-      );
+      let finalStory = assembleStoryAssetsFromRegistry(story, this.deps.assetRegistry);
       if (coverUrl) finalStory.coverImage = coverUrl;
       finalStory.outputDir = normalizedOutputDir;
       const visualContractPersistence = this.deps.auditStoryVisualContractPersistence(finalStory);

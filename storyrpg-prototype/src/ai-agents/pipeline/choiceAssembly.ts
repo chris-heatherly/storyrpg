@@ -1,4 +1,5 @@
 import type { Choice, Consequence } from '../../types';
+import type { ChoiceSet } from '../agents/ChoiceAuthor';
 import { isPlaceholderStake } from '../constants/placeholderStakes';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { normalizeTintFlag } from '../utils/tintVocabulary';
@@ -31,6 +32,50 @@ export function routeFallbackChoicesAcrossTargets<T extends { id: string; nextSc
     choices.push({ ...template, id: `${beatId}-fallback-choice-${i + 1}` });
   }
   return choices.map((choice, i) => ({ ...choice, nextSceneId: targets[i % targets.length] }));
+}
+
+/** Namespace one scene's beat ids before its commit receipt is issued. */
+export function namespaceSceneBeatIdsForCommit(
+  scene: {
+    sceneId: string;
+    startingBeatId?: string;
+    beats?: Array<{
+      id: string;
+      nextBeatId?: string;
+      choices?: Array<{ nextBeatId?: string }>;
+    }>;
+  },
+  choiceSets: Array<{
+    sceneId?: string;
+    beatId: string;
+    choices?: Array<{ nextBeatId?: string }>;
+  }>,
+): number {
+  const prefix = `${scene.sceneId}__`;
+  const idMap = new Map<string, string>();
+  for (const beat of scene.beats ?? []) {
+    if (beat.id && !beat.id.startsWith(prefix)) idMap.set(beat.id, `${prefix}${beat.id}`);
+  }
+  if (idMap.size === 0) return 0;
+  for (const beat of scene.beats ?? []) {
+    beat.id = idMap.get(beat.id) ?? beat.id;
+    if (beat.nextBeatId) beat.nextBeatId = idMap.get(beat.nextBeatId) ?? beat.nextBeatId;
+    for (const choice of beat.choices ?? []) {
+      if (choice.nextBeatId) choice.nextBeatId = idMap.get(choice.nextBeatId) ?? choice.nextBeatId;
+    }
+  }
+  if (scene.startingBeatId) {
+    scene.startingBeatId = idMap.get(scene.startingBeatId) ?? scene.startingBeatId;
+  }
+  for (const choiceSet of choiceSets) {
+    if (choiceSet.sceneId === scene.sceneId) {
+      choiceSet.beatId = idMap.get(choiceSet.beatId) ?? choiceSet.beatId;
+      for (const choice of choiceSet.choices ?? []) {
+        if (choice.nextBeatId) choice.nextBeatId = idMap.get(choice.nextBeatId) ?? choice.nextBeatId;
+      }
+    }
+  }
+  return idMap.size;
 }
 
 export interface ReaderFacingFallbackChoiceInput {
@@ -515,7 +560,10 @@ export function assembleChoiceForStory(
 ): Choice {
   // Parse-time consumer canonicalization: encounter-outcome flag spellings in
   // choice conditions fixed at assembly (mirrors SceneWriter's variant pass).
-  if (choice.conditions) canonicalizeConditionOutcomeFlags(choice.conditions);
+  const conditions = choice.conditions
+    ? JSON.parse(JSON.stringify(choice.conditions)) as Choice['conditions']
+    : choice.conditions;
+  if (conditions) canonicalizeConditionOutcomeFlags(conditions);
   return {
     id: choice.id,
     text: choice.text,
@@ -524,7 +572,7 @@ export function assembleChoiceForStory(
     impactFactors: choice.impactFactors,
     consequenceTier: choice.consequenceTier,
     stakes: choice.stakes,
-    conditions: choice.conditions,
+    conditions,
     showWhenLocked: choice.showWhenLocked,
     lockedText: choice.lockedText,
     statCheck: normalizeChoiceStatCheck(choice.statCheck),
@@ -554,5 +602,14 @@ export function assembleChoiceForStory(
     reactionText: choice.reactionText,
     tintFlag: choice.tintFlag ? normalizeTintFlag(choice.tintFlag) : choice.tintFlag,
     memorableMoment: choice.memorableMoment,
+  };
+}
+
+/** Canonicalize the exact ChoiceSet that will be sealed. Assembly must only
+ * project this artifact; it may not perform a second, output-only rewrite. */
+export function normalizeChoiceSetForCommit(choiceSet: ChoiceSet): ChoiceSet {
+  return {
+    ...choiceSet,
+    choices: (choiceSet.choices ?? []).map((choice) => assembleChoiceForStory(choice)),
   };
 }

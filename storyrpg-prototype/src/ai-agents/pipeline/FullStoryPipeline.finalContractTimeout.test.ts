@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { TimeoutError } from '../utils/withTimeout';
 
 (globalThis as any).__DEV__ = false;
 
@@ -15,29 +14,11 @@ vi.mock('expo-file-system', () => ({
   deleteAsync: vi.fn(),
 }));
 
-describe('FullStoryPipeline episode incremental contract timeout', () => {
-  it('fails a stuck episode-local final-contract repair with a resumable timeout', async () => {
+describe('FullStoryPipeline episode sealing boundary', () => {
+  it('does not expose the removed episode-local final-contract repair pass', async () => {
     const { FullStoryPipeline } = await import('./FullStoryPipeline');
     const pipeline = Object.create(FullStoryPipeline.prototype) as any;
-    pipeline.emit = vi.fn();
-    pipeline.enforceFinalStoryContract = vi.fn(() => new Promise((resolve) => setTimeout(resolve, 50)));
 
-    await expect(
-      pipeline.enforceEpisodeIncrementalContractWithTimeout(
-        2,
-        {
-          story: {},
-          brief: {},
-          phase: 'incremental_contract_ep_2',
-        },
-        10,
-      ),
-    ).rejects.toBeInstanceOf(TimeoutError);
-
-    expect(pipeline.emit).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'warning',
-      phase: 'incremental_contract_ep_2',
-      message: expect.stringContaining('failing the job so it can be resumed safely'),
-    }));
+    expect(pipeline.enforceEpisodeIncrementalContractWithTimeout).toBeUndefined();
   });
 });

@@ -14,10 +14,7 @@ vi.mock('expo-file-system', () => ({
 import { finalizeSceneRealizationHandoff } from './finalizeSceneRealizationHandoff';
 import type { DeferredRealizationRecord } from './deferredRealization';
 
-// Regression for bite-me_2026-07-14T21-31-30: the handoff finalizer aborted the
-// run on six non-critical missing-evidence route findings whose own metadata
-// named repair_encounter_route. Non-critical residue must defer to the episode
-// contract; only graph inconsistencies or forbidden meaning may still throw.
+// A scene cannot be sealed while its owner-stage realization is incomplete.
 
 const task = {
   id: 'task:event:ep1-u6:rescue:route:complicated',
@@ -73,16 +70,11 @@ function makeInput(finding: ReturnType<typeof findingFor>, deferredRecords: Defe
 }
 
 describe('finalizeSceneRealizationHandoff terminal policy', () => {
-  it('defers non-critical missing-evidence blockers instead of aborting the run', async () => {
+  it('blocks missing-evidence findings before a scene can be sealed', async () => {
     const deferredRecords: DeferredRealizationRecord[] = [];
-    await expect(finalizeSceneRealizationHandoff(makeInput(findingFor(), deferredRecords))).resolves.toBeUndefined();
-    expect(deferredRecords).toHaveLength(1);
-    expect(deferredRecords[0]).toMatchObject({
-      taskId: task.id,
-      sceneId: 'enc-1',
-      reason: 'owner_repair_exhausted',
-      repairHandler: 'encounter_route',
-    });
+    await expect(finalizeSceneRealizationHandoff(makeInput(findingFor(), deferredRecords)))
+      .rejects.toThrow(/OwnerStageRealizationBlocker/);
+    expect(deferredRecords).toHaveLength(0);
   });
 
   it('still aborts when forbidden meaning is on the page', async () => {

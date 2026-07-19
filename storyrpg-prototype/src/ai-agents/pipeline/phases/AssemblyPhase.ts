@@ -46,14 +46,10 @@ import { Story } from '../../../types';
 import { AssetRegistry } from '../../images/assetRegistry';
 import { assembleStoryAssetsFromRegistry } from '../../images/storyAssetAssembler';
 import { validateRegistryCoverage } from '../../images/coverageValidator';
-import { StructuralValidator } from '../../validators';
 import { walkStoryAssets, formatAssetWalkReport } from '../../validators/storyAssetWalker';
 import { findUnsupportedQuotedRecallIssues } from '../../validators/quoteRecallValidator';
-import { applyCraftAutofix } from '../../remediation/applyCraftAutofix';
-import { gateEnabledPredicate } from '../../remediation/gateDefaults';
 import { type RemediationLedgerRecord } from '../../remediation/remediationLedger';
 import { collectMissingEncounterImageKeys } from '../../utils/encounterImageCoverage';
-import { slugify as idSlugify } from '../../utils/idUtils';
 import { PipelineError } from '../errors';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import { PipelineContext } from './index';
@@ -87,7 +83,7 @@ export interface AssemblyPhaseInput {
 
 /**
  * Everything the phase still borrows from the monolith. assembleStory and
- * the manifest/template/scan helpers are shared with the multi-episode loop
+ * the manifest/scan helpers are shared with the multi-episode loop
  * and stay injected as closures; the asset registry is passed by reference.
  */
 export interface AssemblyPhaseDeps {
@@ -108,7 +104,6 @@ export interface AssemblyPhaseDeps {
   recordRemediationSafe: (
     record: Omit<RemediationLedgerRecord, 'timestamp' | 'runDir'> & { timestamp?: string; runDir?: string },
   ) => Promise<void>;
-  resolveGeneratedStoryPlayerTemplates: (story: Story, brief: FullCreativeBrief) => Story;
   runFlagChronologyScan: (story: Story) => string[];
   saveDraftImageManifest: (outputDirectory: string | undefined, story: Story) => Promise<void>;
   buildImageManifestFromStory: (story: Story) => { imagesStatus: Story['imagesStatus'] };
@@ -167,76 +162,9 @@ export class AssemblyPhase {
     );
     story = assembleStoryAssetsFromRegistry(story, this.deps.assetRegistry);
 
-    // === STRUCTURAL AUTO-FIX ===
-    // Repair common structural issues (missing startingBeatId, broken nextBeatId,
-    // empty beat text, malformed variants) before the completeness gate runs.
-    if (story) {
-      try {
-        const structuralValidator = new StructuralValidator();
-        const autoFixResult = structuralValidator.autoFix(story);
-        story = autoFixResult.story;
-        if (autoFixResult.fixedCount > 0) {
-          context.addCheckpoint('structural_autofix', {
-            fixedCount: autoFixResult.fixedCount,
-            fixes: autoFixResult.fixes,
-          });
-          context.emit({
-            type: 'pipeline_event',
-            event: 'structural_autofix_applied',
-            fixedCount: autoFixResult.fixedCount,
-            fixes: autoFixResult.fixes,
-          } as any);
-          console.log(
-            `[Pipeline] StructuralValidator.autoFix applied ${autoFixResult.fixedCount} repairs`
-          );
-        }
-      } catch (autoFixError) {
-        console.warn(
-          `[Pipeline] StructuralValidator.autoFix failed (non-fatal): ${(autoFixError as Error).message}`
-        );
-      }
-    }
-
-    // === CRAFT AUTO-FIX ===
-    // Deterministic, gated craft repairs (stat-check balance, choice impact,
-    // NPC depth, arc endpoints, mechanics leakage). Each is individually
-    // gated behind a GATE_* env flag; with no flags set this is a no-op, so
-    // default pipeline behavior is unchanged.
-    if (story) {
-      try {
-        const craftFix = applyCraftAutofix(story, gateEnabledPredicate);
-        if (craftFix.fixedCount > 0) {
-          context.addCheckpoint('craft_autofix', {
-            fixedCount: craftFix.fixedCount,
-            records: craftFix.records,
-          });
-          context.emit({
-            type: 'pipeline_event',
-            event: 'craft_autofix_applied',
-            fixedCount: craftFix.fixedCount,
-            records: craftFix.records,
-          } as any);
-          // S3: craft autofix is deterministic (no LLM cost) so it does NOT
-          // debit the remediation budget; we still record it for observability.
-          await this.deps.recordRemediationSafe({
-            rule: 'craft_autofix',
-            scope: 'autofix',
-            attempted: craftFix.fixedCount,
-            succeeded: true,
-            degraded: false,
-            blocked: false,
-            attempts: 1,
-            storyId: idSlugify(brief.story.title),
-            details: `Applied craft autofix to ${craftFix.fixedCount} element(s)`,
-          });
-        }
-      } catch (craftFixError) {
-        console.warn(
-          `[Pipeline] applyCraftAutofix failed (non-fatal): ${(craftFixError as Error).message}`
-        );
-      }
-    }
-    story = this.deps.resolveGeneratedStoryPlayerTemplates(story, brief);
+    // Assembly is deliberately read-only for narrative content. Structural,
+    // craft, and template defects must have been resolved before scene commit;
+    // validators below report residue but never rewrite the assembled story.
 
     // === DETERMINISTIC FLAG CHRONOLOGY SCAN ===
     // Walk the assembled story to catch forward-reference paradoxes that the

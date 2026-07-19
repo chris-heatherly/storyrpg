@@ -95,13 +95,7 @@ describe('sceneLocks', () => {
     expect(report.validation.issues).toEqual([]);
   });
 
-  // Two-tier lock policy pin — bite-me 2026-07-05T23-54-17: s1-1 was accepted
-  // as degraded at scene time with a PovClarity opening-anchor error; the lock
-  // gate then re-blocked on that STALE evidence and hard-aborted the whole run
-  // with no repair route. Craft findings must defer to the final contract
-  // (which re-validates the CURRENT text and owns repair); only SceneLockGate
-  // structural facts may block the lock.
-  it('defers craft findings (PovClarity opening-anchor, this run) instead of blocking the lock', () => {
+  it('blocks the lock on scene-time craft findings instead of deferring them', () => {
     const report = buildEpisodeSceneLockReport({
       episodeNumber: 2,
       episode: makeEpisode(),
@@ -126,12 +120,9 @@ describe('sceneLocks', () => {
       ],
     });
 
-    expect(report.passed).toBe(true);
-    expect(report.deferredFindingCount).toBe(1);
-    const deferred = report.validation.issues.find((issue) => issue.validator === 'PovClarityValidator');
-    expect(deferred).toMatchObject({ severity: 'warning' });
-    expect(deferred?.message).toContain('[deferred to final contract]');
-    // The per-scene lock evidence keeps the faithful audit trail.
+    expect(report.passed).toBe(false);
+    const blocker = report.validation.issues.find((issue) => issue.validator === 'PovClarityValidator');
+    expect(blocker).toMatchObject({ severity: 'error' });
     expect(report.locks.find((lock) => lock.sceneId === 's2-1')?.passed).toBe(false);
   });
 
@@ -147,7 +138,6 @@ describe('sceneLocks', () => {
     });
 
     expect(report.passed).toBe(false);
-    expect(report.deferredFindingCount).toBe(0);
     expect(report.validation.issues.map((issue) => issue.code)).toContain('scene_validation_failed');
   });
 

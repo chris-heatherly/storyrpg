@@ -37,7 +37,7 @@ import { ImageAgentTeam } from '../agents/image-team/ImageAgentTeam';
 import { convertEncounterStructureToEncounter } from '../converters';
 import { encounterCastFromStructure } from './encounterParticipants';
 import { encounterInfoMarkerTargets, emitSceneInfoMarkersOnBeats } from './episodePlantContext';
-import { assembleChoiceForStory, isSafeChoiceAttachmentBeat, reconcileChoiceSetBeatIds } from './choiceAssembly';
+import { assembleChoiceForStory, isSafeChoiceAttachmentBeat } from './choiceAssembly';
 import { generateEpisodeId, slugify as idSlugify } from '../utils/idUtils';
 import { sceneTimelineMetaForScene } from '../utils/sceneTimeline';
 import { CHARACTER_DEFAULTS, DEFAULT_SKILLS } from '../../constants/pipeline';
@@ -102,17 +102,9 @@ export interface AssemblyDeps {
     c: CharacterBible['characters'][number],
     portrait?: string,
   ) => Story['npcs'][number];
-  ensureBlueprintFidelityText: (sceneBlueprint: SceneBlueprint, content: SceneContent) => void;
-  ensureChoiceBridgeBeats: (
-    blueprint: EpisodeBlueprint,
-    sceneBlueprint: SceneBlueprint,
-    content: SceneContent,
-    choiceMap: Map<string, ChoiceSet>,
-  ) => void;
   getEpisodeScopedBeatKey: (brief: FullCreativeBrief, sceneId: string, beatId: string) => string;
   getEpisodeScopedSceneId: (brief: FullCreativeBrief, sceneId: string) => string;
   sanitizeReaderFacingSceneName: (name: string | undefined, fallback?: string) => string;
-  sanitizeSceneContentForReader: (sceneBlueprint: SceneBlueprint, content: SceneContent) => void;
   wireEncounterTreeImages: (
     choices: Array<{ id: string; outcomes?: Record<string, any> }>,
     beatId: string,
@@ -139,17 +131,6 @@ export class Assembly {
     storyCoverUrl?: string,
     videoResults?: Map<string, string>
   ): Story {
-    // Re-sync any choice set whose beatId drifted from its scene's beats during a
-    // post-authoring rewrite pass, BEFORE the `${sceneId}::${beatId}` choiceMap is
-    // built — else a drifted branch point assembles choiceless (GATE_BRANCH_FANOUT).
-    const reSynced = reconcileChoiceSetBeatIds(sceneContents, choiceSets);
-    if (reSynced > 0) {
-      this.deps.emit({
-        type: 'warning',
-        phase: 'assembly',
-        message: `Re-synced ${reSynced} choice set(s) whose beatId drifted from the assembled scene's beats (would otherwise have dropped the choices).`,
-      });
-    }
     const contentMap = new Map(sceneContents.map(sc => [sc.sceneId, sc]));
     const choiceMap = new Map(choiceSets.map(cs => [cs.sceneId ? `${cs.sceneId}::${cs.beatId}` : cs.beatId, cs]));
     const beatImages = imageResults?.beatImages || new Map<string, string>();
@@ -235,9 +216,6 @@ export class Assembly {
         }
       }
 
-      this.deps.ensureBlueprintFidelityText(sceneBlueprint, content);
-      this.deps.ensureChoiceBridgeBeats(blueprint, sceneBlueprint, content, choiceMap);
-      this.deps.sanitizeSceneContentForReader(sceneBlueprint, content);
       for (const beat of content.beats ?? []) {
         const leakedPlanning = beatTextMatchesBlueprintPlanning(beat.text, sceneBlueprint);
         if (leakedPlanning) {
@@ -413,17 +391,6 @@ export class Assembly {
     },
     videoResults?: Map<string, string>
   ): Episode {
-    // Re-sync any choice set whose beatId drifted from its scene's beats during a
-    // post-authoring rewrite pass, BEFORE the `${sceneId}::${beatId}` choiceMap is
-    // built — else a drifted branch point assembles choiceless (GATE_BRANCH_FANOUT).
-    const reSynced = reconcileChoiceSetBeatIds(sceneContents, choiceSets);
-    if (reSynced > 0) {
-      this.deps.emit({
-        type: 'warning',
-        phase: 'assembly',
-        message: `Re-synced ${reSynced} choice set(s) whose beatId drifted from the assembled scene's beats (would otherwise have dropped the choices).`,
-      });
-    }
     const contentMap = new Map(sceneContents.map(sc => [sc.sceneId, sc]));
     const choiceMap = new Map(choiceSets.map(cs => [cs.sceneId ? `${cs.sceneId}::${cs.beatId}` : cs.beatId, cs]));
     const beatImages = imageResults?.beatImages || new Map<string, string>();
@@ -438,19 +405,9 @@ export class Assembly {
     for (const sb of blueprint.scenes) {
       let content = contentMap.get(sb.id);
       if (!content) {
-        console.error(`[Pipeline] Missing content for scene ${sb.id} — inserting placeholder`);
-        this.deps.emit({ type: 'error', phase: 'assembly', message: `Missing content for scene ${sb.id} — inserting placeholder` });
-        assemblyWarnings.push(`Missing content for scene ${sb.id}`);
-        content = {
-          sceneId: sb.id,
-          sceneName: sb.name,
-          beats: [{ id: `${sb.id}-missing-beat`, text: '[Scene content was not generated]', nextBeatId: undefined }],
-          startingBeatId: `${sb.id}-missing-beat`,
-          moodProgression: [sb.mood],
-          charactersInvolved: sb.npcsPresent,
-          keyMoments: [sb.description],
-          continuityNotes: ['Content generation did not produce this scene'],
-        } as SceneContent;
+        throw new PipelineError(`Missing committed content for scene ${sb.id}`, 'assembly', {
+          context: { sceneId: sb.id, failureKind: 'missing_committed_scene' },
+        });
       }
 
       // Check if this scene has an encounter (wrapped in try/catch for resilience)
@@ -552,10 +509,6 @@ export class Assembly {
       // Determine if this is a convergence point (multiple scenes lead to it)
       const incomingScenes = blueprint.scenes.filter(s => s.leadsTo?.includes(sb.id));
       const isConvergencePoint = incomingScenes.length > 1;
-
-      this.deps.ensureBlueprintFidelityText(sb, content);
-      this.deps.ensureChoiceBridgeBeats(blueprint, sb, content, choiceMap);
-      this.deps.sanitizeSceneContentForReader(sb, content);
 
       scenes.push({
         id: sb.id,
@@ -716,14 +669,11 @@ export class Assembly {
         if (targetIdx >= 0 && targetIdx <= currentIdx) {
           const leadsTo = sceneBlueprint.leadsTo || [];
           const corrected = leadsTo[ci % leadsTo.length] || leadsTo[0];
-          if (corrected) {
-            console.warn(
-              `[Pipeline] assembly: choice "${gc.id}" in scene "${sceneBlueprint.id}" ` +
-              `routes backward to "${nextSceneId}" (idx ${targetIdx} <= ${currentIdx}). ` +
-              `Auto-correcting to "${corrected}".`,
-            );
-            nextSceneId = corrected;
-          }
+          if (corrected) throw new PipelineError(
+            `Committed choice "${gc.id}" in scene "${sceneBlueprint.id}" routes backward to "${nextSceneId}"; invalidate and regenerate the owning scene instead of correcting it during assembly.`,
+            'assembly',
+            { context: { sceneId: sceneBlueprint.id, choiceId: gc.id, nextSceneId, suggestedTarget: corrected } },
+          );
         }
       }
       const routesThroughGeneratedBridge =

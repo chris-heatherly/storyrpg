@@ -664,11 +664,10 @@ const FINAL_GATE_ROUTES: Record<string, RoutedGateCase[]> = {
 const DIAGNOSTIC_STOP_ALLOWLIST: Record<string, { rationale: string; issue: BlockingClassCase['issue'] }> = {
   GATE_ENCOUNTER_OUTCOME_VARIANT: {
     rationale:
-      'The regen route (authorEncounterOutcomeVariants + OutcomeVariantAuthor) runs BEFORE desync detection on every '
-      + 'enforcement pass, so a surviving encounter_outcome_desync is residue the variant author could not cover. The '
-      + 'repair is a flag-GATED textVariant on the reconvergence scene — conditioned-variant authoring is not something '
-      + 'the scene-prose rewrite can do safely (it rewrites unconditioned beat prose). The finding blocks only in strict '
-      + 'mode; in default mode it ships as a warning.',
+      'The season-final detector is read-only. A surviving encounter_outcome_desync requires explicit regeneration from '
+      + 'the reconvergence scene (and its dependent suffix), because adding a flag-gated textVariant after its commit '
+      + 'receipt would reopen sealed narrative content. The finding blocks only in strict mode; in default mode it ships '
+      + 'as a warning.',
     issue: {
       validator: 'encounterOutcomeFlags',
       type: 'encounter_outcome_desync',
@@ -971,6 +970,7 @@ const ALL_FINAL_STORY_CONTRACT_ISSUE_TYPES: Record<FinalStoryContractIssueType, 
   route_duplicate_event: true,
   unsafe_fallback_prose: true,
   role_fidelity_violation: true,
+  late_normalization_required: true,
   qa_blocker_present: true,
 };
 
@@ -1074,6 +1074,18 @@ const NATIVE_TYPE_ROUTES: NativeTypeCase[] = [
  * ones — the shift-left follow-up that would actually close the gap.
  */
 const NATIVE_DIAGNOSTIC_STOP_ALLOWLIST: Record<string, { rationale: string; issue: BlockingClassCase['issue'] }> = {
+  late_normalization_required: {
+    rationale:
+      'A read-only final validator proved that sealed bytes would need a legacy normalizer. Applying that normalizer '
+      + 'would violate the scene receipt, so the only valid correction is orchestration-level invalidation and '
+      + 'regeneration from the earliest owning scene and its dependent suffix.',
+    issue: {
+      validator: 'FinalStoryContractValidator',
+      type: 'late_normalization_required',
+      severity: 'error',
+      message: 'The sealed story would require a legacy final-stage normalization to pass validation.',
+    },
+  },
   broken_navigation: {
     rationale:
       'Scene-graph corruption (missing/dangling startingSceneId, or a scene unreachable from the episode start). No '

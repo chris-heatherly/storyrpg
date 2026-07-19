@@ -5,7 +5,11 @@ vi.mock('../utils/pipelineOutputWriter', () => ({
   saveEarlyDiagnostic: vi.fn(async () => undefined),
 }));
 
-import { SceneCriticContinuity, type SceneCriticContinuityDeps } from './sceneCriticContinuity';
+import {
+  createSceneCriticBudget,
+  SceneCriticContinuity,
+  type SceneCriticContinuityDeps,
+} from './sceneCriticContinuity';
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
 import type { PipelineConfig } from '../config';
 import type { Story } from '../../types';
@@ -137,6 +141,31 @@ describe('SceneCriticContinuity.repairContinuityFindings (run-shaped)', () => {
     expect(qaReport.continuity!.issues[0].location).toEqual({ sceneId: 's1-2', beatId: 's1-2-b2' });
   });
 
+  it('rolls back a late repair that changes a handoff already consumed by a later scene', async () => {
+    const { story, sceneContents, qaReport, deps } = makeFixture();
+    const originalOwnerProse = sceneContents[0].beats[0].text;
+    const repair = new SceneCriticContinuity(deps);
+    await repair.repairContinuityFindings(
+      story,
+      sceneContents,
+      characterBible,
+      qaReport,
+      '/dev/null-out',
+      undefined,
+      { plannedScenes, preserveCommittedHandoffs: true },
+    );
+
+    expect(sceneContents[0].beats[0].text).toBe(originalOwnerProse);
+    expect(sceneContents[1].beats[1].text).toBe('repaired prose for s1-2');
+    const diagnostic = vi.mocked(saveEarlyDiagnostic).mock.calls.at(-1)?.[2] as {
+      rejectedHandoffChanges: Array<{ sceneId: string; reason: string }>;
+    };
+    expect(diagnostic.rejectedHandoffChanges).toEqual([{
+      sceneId: 's1-1',
+      reason: 'rewrite changed the realized closing handoff already consumed by a later scene',
+    }]);
+  });
+
   it('A3: flag-gated pass feeds advisory critic notes into directorNotes and prioritizes the most-flagged scene', async () => {
     const { sceneContents, criticCalls, deps } = makeFixture();
     const { flagSceneForCritic, addCriticNote } = await import('../remediation/sceneCriticFlags');
@@ -218,13 +247,13 @@ describe('SceneCriticContinuity.repairContinuityFindings (run-shaped)', () => {
       emit: (event) => emitted.push(String((event as { message?: string }).message ?? '')),
       config: { agents: {}, sceneCritic: { enabled: false, maxScenesPerEpisode: 1 } } as unknown as PipelineConfig,
     });
-    const realizationTasksBySceneId = new Map([
+    const realizationTasksBySceneId = new Map<string, NarrativeRealizationTask[]>([
       ['s1-1', [{
         ownerStage: 'scene_writer',
         target: { scope: 'owner' },
         evidenceAtoms: [{ description: 'Role in the world: You are a 34-year-old American food writer turned blogger.', required: true }],
-      }]],
-    ] as never);
+      } as NarrativeRealizationTask]],
+    ]);
     await pass.runSceneCriticPass(sceneContents, characterBible, realizationTasksBySceneId);
 
     expect(sceneContents[0].beats[0].text).toBe('You are a 34-year-old American food writer turned blogger, starting over in Bucharest.');
@@ -270,5 +299,71 @@ describe('SceneCriticContinuity.repairContinuityFindings (run-shaped)', () => {
     expect(sceneContents[0].beats[0].text).toContain('Stela Pavel');
     expect(emitted.join('\n')).toContain('canonical realization blocker');
     expect((sceneCritic.execute as any).mock.calls[0][0].directorNotes).toContain('[literal] REQUIRED');
+  });
+
+  it('reviews a scene transactionally and applies only critic-owned prose fields', async () => {
+    const baseline = {
+      sceneId: 's1-1',
+      beats: [{ id: 'b1', text: 'You enter.', speakerMood: 'guarded' }],
+    } as unknown as SceneContent;
+    const sceneCritic = {
+      execute: vi.fn(async () => ({
+        success: true,
+        data: {
+          rewrittenBeats: [{ id: 'b1', text: 'You step through the open door.', speakerMood: 'ecstatic' }],
+          overallCommentary: 'Sharper entrance.',
+        },
+      })),
+    } as unknown as SceneCritic;
+    const pass = new SceneCriticContinuity({
+      config: { agents: {}, sceneCritic: { enabled: true, maxScenesPerEpisode: 1 } } as unknown as PipelineConfig,
+      emit: vi.fn(),
+      sceneCritic,
+      buildContinuityCharacterKnowledge: () => [],
+      buildContinuityTimeline: () => [],
+    });
+
+    const result = await pass.reviewSceneBeforeCommit({
+      scene: baseline,
+      characterBible,
+      budget: createSceneCriticBudget(1),
+      validateCandidate: async () => ({ accepted: true }),
+    });
+
+    expect(result.disposition).toBe('accepted');
+    expect(result.scene).not.toBe(baseline);
+    expect(result.scene.beats[0].text).toBe('You step through the open door.');
+    expect((result.scene.beats[0] as { speakerMood?: string }).speakerMood).toBe('guarded');
+    expect(baseline.beats[0].text).toBe('You enter.');
+  });
+
+  it('keeps the accepted baseline when caller-owned validation rejects the candidate', async () => {
+    const baseline = {
+      sceneId: 's1-1',
+      beats: [{ id: 'b1', text: 'You enter.' }],
+    } as unknown as SceneContent;
+    const sceneCritic = {
+      execute: vi.fn(async () => ({
+        success: true,
+        data: { rewrittenBeats: [{ id: 'b1', text: 'You follow a stranger inside.' }], overallCommentary: '' },
+      })),
+    } as unknown as SceneCritic;
+    const pass = new SceneCriticContinuity({
+      config: { agents: {}, sceneCritic: { enabled: true, maxScenesPerEpisode: 1 } } as unknown as PipelineConfig,
+      emit: vi.fn(),
+      sceneCritic,
+      buildContinuityCharacterKnowledge: () => [],
+      buildContinuityTimeline: () => [],
+    });
+
+    const result = await pass.reviewSceneBeforeCommit({
+      scene: baseline,
+      characterBible,
+      budget: createSceneCriticBudget(1),
+      validateCandidate: async () => ({ accepted: false, reason: 'POV regression' }),
+    });
+
+    expect(result).toMatchObject({ disposition: 'rejected', scene: baseline, reason: 'POV regression' });
+    expect(baseline.beats[0].text).toBe('You enter.');
   });
 });

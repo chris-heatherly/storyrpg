@@ -15,6 +15,7 @@ import {
   planEpisodeThreadsAndTwist,
   mergeIntoSeasonLedger,
   materializeTwistPlan,
+  materializeTwistSceneBeforeCommit,
   openPriorThreads,
   sceneActiveThreads,
   sceneTwistDirectives,
@@ -355,6 +356,54 @@ describe('sceneTwistDirectives (SceneWriter input mapping)', () => {
 });
 
 describe('materializeTwistPlan', () => {
+  it('binds each owning scene without reopening the earlier scene', () => {
+    const plan = makeTwistPlan({
+      foreshadowBeatId: 'planned-foreshadow',
+      twistBeatId: 'planned-reveal',
+    });
+    const foreshadow: SceneContent = {
+      sceneId: 's1-1',
+      sceneName: 'Opening',
+      startingBeatId: 'actual-setup',
+      beats: [{ id: 'actual-setup', text: 'The mentor flinches at the name.' }],
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    };
+    const reveal: SceneContent = {
+      sceneId: 's1-2',
+      sceneName: 'Reveal',
+      startingBeatId: 'actual-reveal',
+      beats: [{ id: 'actual-reveal', text: 'The letter names the mentor.' }],
+      moodProgression: [],
+      charactersInvolved: [],
+      keyMoments: [],
+      continuityNotes: [],
+    };
+
+    expect(materializeTwistSceneBeforeCommit(plan, foreshadow)).toMatchObject({
+      status: 'bound',
+      role: 'foreshadow',
+      beatId: 'actual-setup',
+    });
+    const sealedForeshadow = JSON.stringify(foreshadow);
+    expect(materializeTwistSceneBeforeCommit(plan, reveal)).toMatchObject({
+      status: 'bound',
+      role: 'reveal',
+      beatId: 'actual-reveal',
+    });
+
+    expect(JSON.stringify(foreshadow)).toBe(sealedForeshadow);
+    expect(foreshadow.beats[0].plotPointType).toBe('setup');
+    expect(reveal.beats[0].plotPointType).toBe('revelation');
+    expect(plan.realization).toMatchObject({
+      status: 'materialized',
+      foreshadowBeatId: 'actual-setup',
+      twistBeatId: 'actual-reveal',
+    });
+  });
+
   it('binds placeholder plan ids to concrete generated beats and marks setup/reveal', () => {
     const plan = makeTwistPlan({
       foreshadowBeatId: 'planned-foreshadow',

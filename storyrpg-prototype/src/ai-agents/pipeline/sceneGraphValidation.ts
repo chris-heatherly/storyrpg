@@ -1,29 +1,16 @@
 /**
- * Scene-graph branching validation + repair cluster.
+ * Read-only scene-graph branching validation cluster.
  *
- * Faithful port of FullStoryPipeline.validateSceneGraphBranching,
- * repairSceneGraphBranchingChoices, and repairSceneGraphBranchResidue (pure
- * move). validateSceneGraphBranching runs the SceneGraphBranchValidator (with
- * the lost-branch wiring repair + the reconvergence-residue regen gate) and
- * the three Gen-4 audit checks (duplicate establishing beat, treatment-seed
- * on-page, ending reachability). repairSceneGraphBranchingChoices re-assembles
- * the episode, and for a dropped/lost branch re-authors the branch scene's
- * choice point via ChoiceAuthor; repairSceneGraphBranchResidue marks
- * reconvergence residue with a callbackHookId.
+ * Runs SceneGraphBranchValidator plus the Gen-4 audit checks. Findings never
+ * retarget choices, rewrite prose, or annotate a committed scene.
  *
  * Extracted from FullStoryPipeline to keep that monolith from growing.
  */
 
 import { PipelineConfig } from '../config';
 import { Episode } from '../../types';
-import { EpisodeBlueprint, SceneBlueprint } from '../agents/StoryArchitect';
-import { WorldBible } from '../agents/WorldBuilder';
-import { CharacterBible } from '../agents/CharacterDesigner';
-import { SceneContent, GeneratedBeat } from '../agents/SceneWriter';
-import { ChoiceAuthor, ChoiceSet, type ChoiceAuthorInput } from '../agents/ChoiceAuthor';
-import { SceneCritic } from '../agents/SceneCritic';
-import { EncounterStructure } from '../agents/EncounterArchitect';
-import type { AgentMemoryRequest } from './pipelineMemory';
+import { EpisodeBlueprint } from '../agents/StoryArchitect';
+import { ChoiceSet } from '../agents/ChoiceAuthor';
 import {
   SceneGraphBranchValidator,
   DuplicateEstablishingBeatValidator,
@@ -37,57 +24,8 @@ import {
   buildValidatorPromotionRecord,
   type GateShadowRecord,
 } from '../remediation/gateShadowLedger';
-import { runReconvergenceResidueGate } from '../remediation/reconvergenceResidueRepair';
-import { hasMissingResidueFindings } from './reconvergenceResidue';
-import {
-  applyBlueprintRequiredSetupSkipRepairsToChoiceSets,
-  repairBlueprintRequiredSetupSkips,
-  repairInvalidBranchTargets,
-  repairInvalidBranchTargetsInChoiceSets,
-  repairLostSceneGraphBranches,
-  repairRequiredSetupSkips,
-  repairRequiredSetupSkipsInChoiceSets,
-} from './branchRepair';
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
-import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
-import { plannedConsequenceTiersByScene } from './plannedSceneBudgets';
-import { StoryVerb } from '../utils/storyVerbs';
 import type { PipelineEvent } from './events';
-import { UnresolvedCallbackForPrompt } from './callbackOrchestration';
-// Type-only import — erased at runtime, so no runtime cycle with the monolith.
-import type { FullCreativeBrief } from './FullStoryPipeline';
-
-function repairDuplicateEstablishingBeatText(
-  episode: Episode,
-  blueprint: EpisodeBlueprint | undefined,
-  issues: Array<{ sceneId: string; beatId?: string; priorSceneId: string }>,
-): number {
-  const locationByScene = new Map<string, string>();
-  for (const scene of blueprint?.scenes ?? []) {
-    if (scene.id && scene.location) locationByScene.set(scene.id, scene.location);
-  }
-  let repaired = 0;
-  for (const issue of issues) {
-    const scene = (episode.scenes ?? []).find((candidate) => candidate.id === issue.sceneId);
-    if (!scene) continue;
-    const beat = (scene.beats ?? []).find((candidate) =>
-      issue.beatId ? candidate.id === issue.beatId : !candidate.isChoiceBridge && typeof candidate.text === 'string' && candidate.text.trim().length > 0,
-    );
-    if (!beat?.text) continue;
-    const text = beat.text.trim();
-    const firstStop = text.search(/[.!?]/);
-    const rest = firstStop >= 0 ? text.slice(firstStop + 1).trim() : '';
-    const location = locationByScene.get(scene.id);
-    beat.text = [
-      location
-        ? `The scene keeps you inside ${location}, carrying forward the pressure already on the page.`
-        : `The scene continues from the previous room, carrying forward its pressure instead of starting with a new arrival.`,
-      rest,
-    ].filter(Boolean).join(' ');
-    repaired += 1;
-  }
-  return repaired;
-}
 
 export interface SceneGraphValidationDeps {
   config: PipelineConfig;
@@ -100,48 +38,10 @@ export interface SceneGraphValidationDeps {
     phase: string,
     options?: { agent?: string; cause?: unknown; context?: Record<string, unknown> },
   ) => void;
-  /** Current SceneCritic instance, or null when one was never constructed. */
-  readonly sceneCritic: SceneCritic | null;
-  readonly cachedPipelineMemory: string | null;
-  getAgentMemoryContext?: (request: AgentMemoryRequest) => Promise<string | null>;
   sceneGraphBranchValidator: Pick<SceneGraphBranchValidator, 'validateEpisode'>;
   duplicateEstablishingBeatValidator: Pick<DuplicateEstablishingBeatValidator, 'validateEpisode'>;
   treatmentSeedOnPageValidator: Pick<TreatmentSeedOnPageValidator, 'validateEpisode'>;
   endingReachabilityValidator: Pick<EndingReachabilityValidator, 'validateEpisode'>;
-  choiceAuthor: Pick<ChoiceAuthor, 'execute'>;
-  assembleEpisode: (
-    brief: FullCreativeBrief,
-    worldBible: WorldBible,
-    characterBible: CharacterBible,
-    blueprint: EpisodeBlueprint,
-    sceneContents: SceneContent[],
-    choiceSets: ChoiceSet[],
-    imageResults?: { beatImages: Map<string, string>; sceneImages: Map<string, string> },
-    encounters?: Map<string, EncounterStructure>,
-    encounterImageResults?: {
-      encounterImages: Map<string, { setupImages: Map<string, string>; outcomeImages: Map<string, { success?: string; complicated?: string; failure?: string }> }>;
-      storyletImages?: Map<string, Map<string, Map<string, string>>>;
-    },
-    videoResults?: Map<string, string>,
-  ) => Episode;
-  buildChoiceAuthorNpcs: (
-    npcIds: string[],
-    characterBible: CharacterBible,
-  ) => Array<{
-    id: string;
-    name: string;
-    pronouns: 'he/him' | 'she/her' | 'they/them';
-    description: string;
-    voiceNotes?: string;
-    physicalDescription?: string;
-  }>;
-  buildCompactWorldContext: (worldBible: WorldBible, locationDescription?: string) => string;
-  deriveStoryVerbsForBrief: (brief: FullCreativeBrief, worldBible?: WorldBible) => StoryVerb[];
-  getUnresolvedCallbacksForPrompt: (episodeNumber: number | undefined) => UnresolvedCallbackForPrompt[] | undefined;
-  resolveWorldLocationForScene: (
-    sceneBlueprint: Pick<SceneBlueprint, 'location' | 'name' | 'description'>,
-    worldBible: WorldBible,
-  ) => WorldBible['locations'][number] | undefined;
 }
 
 export class SceneGraphValidation {
@@ -155,8 +55,6 @@ export class SceneGraphValidation {
       outputDirectory?: string;
       artifactName?: string;
       choiceSets?: ChoiceSet[];
-      // WS2a: enables the targeted residue regen; degrade-to-advisory works without it.
-      residueRepair?: { sceneContents: SceneContent[]; reassemble: () => Episode };
     }
   ): Promise<SceneGraphBranchValidationResult> {
     const hasSafeBranchSlot = blueprintHasSafeSceneGraphBranchSlot(blueprint);
@@ -169,76 +67,7 @@ export class SceneGraphValidation {
       // linear pass-through (dead branch). Default-off; metric always recorded.
       requireBlueprintBranchFanOut: hasSafeBranchSlot && isGateEnabled('GATE_BRANCH_FANOUT'),
     };
-    let result = this.deps.sceneGraphBranchValidator.validateEpisode(episode, blueprint, branchOptions);
-
-    // Repair a branch the blueprint planned but assembly dropped (intermittent),
-    // then re-validate. Deterministic: wires/synthesizes nextSceneId onto the
-    // branch scene's choice point. See branchRepair.ts / PROJECT_AUDIT.
-    if (!result.valid) {
-      const lostBranch = result.issues.some(
-        issue => issue.type === 'lost_branch_during_assembly' || issue.type === 'missing_scene_graph_branch'
-      );
-      if (lostBranch) {
-        const wired = repairLostSceneGraphBranches(episode as never, blueprint);
-        if (wired > 0) {
-          this.deps.emit({
-            type: 'warning',
-            phase: context.phase,
-            message: `Repaired ${wired} lost scene-graph branch(es) by wiring nextSceneId onto the branch scene's choices (would otherwise have aborted the episode).`,
-          });
-          result = this.deps.sceneGraphBranchValidator.validateEpisode(episode, blueprint, branchOptions);
-        }
-      }
-    }
-
-    if (!result.valid) {
-      const repairedInvalidTargets = repairInvalidBranchTargets(episode as never, result.issues, blueprint);
-      const repairedSourceInvalidTargets = repairInvalidBranchTargetsInChoiceSets(context.choiceSets as never, result.issues, episode as never, blueprint);
-      const totalInvalidTargetRepairs = Math.max(repairedInvalidTargets, repairedSourceInvalidTargets);
-      if (totalInvalidTargetRepairs > 0) {
-        this.deps.emit({
-          type: 'warning',
-          phase: context.phase,
-          message: `Repaired ${totalInvalidTargetRepairs} invalid scene route(s) by retargeting choices to valid blueprint targets or episode-end.`,
-        });
-        const repairedEpisode = context.residueRepair?.reassemble?.() ?? episode;
-        result = this.deps.sceneGraphBranchValidator.validateEpisode(repairedEpisode, blueprint, branchOptions);
-      }
-    }
-
-    if (!result.valid) {
-      const repairedSkips = repairRequiredSetupSkips(episode as never, result.issues, blueprint);
-      const repairedSourceSkips = repairRequiredSetupSkipsInChoiceSets(context.choiceSets as never, result.issues, blueprint);
-      const totalRepairedSkips = Math.max(repairedSkips, repairedSourceSkips);
-      if (totalRepairedSkips > 0) {
-        this.deps.emit({
-          type: 'warning',
-          phase: context.phase,
-          message: `Repaired ${totalRepairedSkips} choice bridge(s) that skipped required setup by routing to the first skipped setup scene.`,
-        });
-        const repairedEpisode = context.residueRepair?.reassemble?.() ?? episode;
-        result = this.deps.sceneGraphBranchValidator.validateEpisode(repairedEpisode, blueprint, branchOptions);
-      }
-    }
-
-    // WS2a (reconvergence residue — the #1 archived-run killer): a missing-residue ERROR
-    // gets ONE targeted SceneCritic regen with the residue requirement injected, then
-    // degrades to an `[advisory]` warning instead of aborting the run. All logic lives in
-    // remediation/reconvergenceResidueRepair (monolith ratchet). Kill-switch via =0.
-    if (!result.valid && hasMissingResidueFindings(result) && isGateEnabled('GATE_RECONVERGENCE_RESIDUE_REPAIR')) {
-      result = (await runReconvergenceResidueGate({
-        result,
-        episodeScenes: episode.scenes as never,
-        blueprintScenes: blueprint?.scenes,
-        sceneContents: context.residueRepair?.sceneContents,
-        critic: () => this.deps.sceneCritic ?? new SceneCritic(this.deps.config.agents.sceneWriter),
-        revalidate: context.residueRepair
-          ? () => this.deps.sceneGraphBranchValidator.validateEpisode(context.residueRepair!.reassemble(), blueprint, branchOptions)
-          : undefined,
-        emit: this.deps.emit,
-        phase: context.phase,
-      })).result;
-    }
+    const result = this.deps.sceneGraphBranchValidator.validateEpisode(episode, blueprint, branchOptions);
 
     this.deps.emit({
       type: result.valid ? 'checkpoint' : 'warning',
@@ -279,25 +108,8 @@ export class SceneGraphValidation {
     // promotes it to blocking. (The season-level continuity remediation loop is the
     // softer landing once it lands.)
     const dupBlocking = isGateEnabled('GATE_DUPLICATE_ESTABLISHING_BEAT');
-    let dup = this.deps.duplicateEstablishingBeatValidator.validateEpisode(episode, blueprint, { blocking: dupBlocking });
+    const dup = this.deps.duplicateEstablishingBeatValidator.validateEpisode(episode, blueprint, { blocking: dupBlocking });
     const dupInitialCount = dup.metrics.duplicateEstablishingBeatCount;
-    let dupRepairAttempted = false;
-    let dupRepairSucceeded = false;
-    if (dupBlocking && dup.metrics.duplicateEstablishingBeatCount > 0) {
-      dupRepairAttempted = true;
-      const repaired = repairDuplicateEstablishingBeatText(episode, blueprint, dup.issues);
-      if (repaired > 0) {
-        const rerun = this.deps.duplicateEstablishingBeatValidator.validateEpisode(episode, blueprint, { blocking: dupBlocking });
-        dupRepairSucceeded = rerun.metrics.duplicateEstablishingBeatCount === 0;
-        dup = rerun;
-        this.deps.emit({
-          type: dupRepairSucceeded ? 'checkpoint' : 'warning',
-          phase: context.phase,
-          message: `DuplicateEstablishingBeatValidator repair ${dupRepairSucceeded ? 'cleared' : 'left'} ${dup.metrics.duplicateEstablishingBeatCount} duplicate establishing beat(s).`,
-          data: { repaired, result: dup },
-        });
-      }
-    }
     // Wave-0 shadow telemetry: record the flag-INDEPENDENT would-fire count
     // (duplicateEstablishingBeatCount is the same whether blocking is on or off) so
     // gate-shadow-ledger.jsonl accumulates the false-positive data this prose
@@ -310,8 +122,7 @@ export class SceneGraphValidation {
         enabled: dupBlocking,
         blockingCount: dupInitialCount,
         wouldRepairCount: dupInitialCount,
-        repairAttempted: dupRepairAttempted,
-        repairSucceeded: dupRepairAttempted ? dupRepairSucceeded : undefined,
+        repairAttempted: false,
         residualBlockingCount: dup.metrics.duplicateEstablishingBeatCount,
         storyId: episode.id,
       });
@@ -404,6 +215,8 @@ export class SceneGraphValidation {
     return result;
   }
 
+  /* Removed from the executable pipeline: post-commit branch repair reopened
+   * sealed choices/scenes. Kept temporarily as migration history only.
   async repairSceneGraphBranchingChoices(
     brief: FullCreativeBrief,
     worldBible: WorldBible,
@@ -668,6 +481,7 @@ export class SceneGraphValidation {
 
     return repaired;
   }
+  */
 }
 
 function blueprintHasSafeSceneGraphBranchSlot(blueprint: EpisodeBlueprint): boolean {

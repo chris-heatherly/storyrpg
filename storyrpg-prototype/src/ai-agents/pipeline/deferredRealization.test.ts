@@ -34,15 +34,11 @@ const themeTask: NarrativeRealizationTask = {
 };
 
 describe('deferred realization handoff', () => {
-  it('defers missing evidence (including events/premises) and keeps only structural or forbidden findings critical', () => {
-    expect(isCriticalOwnerRealizationFinding(finding, [themeTask])).toBe(false);
-    // Missing evidence on event/premise tasks defers to the episode-level
-    // semantic contract instead of aborting the run at owner stage.
-    expect(isCriticalOwnerRealizationFinding(finding, [{ ...themeTask, canonicalEventId: 'event:1' }])).toBe(false);
-    expect(isCriticalOwnerRealizationFinding(finding, [{ ...themeTask, repairHandler: 'premise_realization' }])).toBe(false);
-    // An unknown task is a graph inconsistency — still critical.
+  it('treats every blocking owner finding as critical before scene commit', () => {
+    expect(isCriticalOwnerRealizationFinding(finding, [themeTask])).toBe(true);
+    expect(isCriticalOwnerRealizationFinding(finding, [{ ...themeTask, canonicalEventId: 'event:1' }])).toBe(true);
+    expect(isCriticalOwnerRealizationFinding(finding, [{ ...themeTask, repairHandler: 'premise_realization' }])).toBe(true);
     expect(isCriticalOwnerRealizationFinding({ ...finding, taskId: 'task:unknown' }, [themeTask])).toBe(true);
-    // Prohibited meaning present on the page — still critical.
     expect(isCriticalOwnerRealizationFinding(
       { ...finding, matchedForbiddenAtoms: ['atom:forbidden:1'] },
       [themeTask],

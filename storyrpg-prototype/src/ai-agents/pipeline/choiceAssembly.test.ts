@@ -6,11 +6,38 @@ import {
   isSafeChoiceAttachmentBeat,
   normalizeConsequence,
   normalizeConsequences,
+  namespaceSceneBeatIdsForCommit,
   routeFallbackChoicesAcrossTargets,
   repairBranchFanOut,
   reconcileChoiceSetBeatIds,
   bakeWitnessReactionsIntoOutcomeTexts,
 } from './choiceAssembly';
+
+describe('namespaceSceneBeatIdsForCommit', () => {
+  it('updates local navigation and choice attachments idempotently before commit', () => {
+    const scene = {
+      sceneId: 's1-2',
+      startingBeatId: 'beat-1',
+      beats: [
+        { id: 'beat-1', nextBeatId: 'beat-2' },
+        { id: 'beat-2', choices: [{ nextBeatId: 'beat-1' }] },
+      ],
+    };
+    const choiceSets = [{ sceneId: 's1-2', beatId: 'beat-2', choices: [{ nextBeatId: 'beat-1' }] }];
+
+    expect(namespaceSceneBeatIdsForCommit(scene, choiceSets)).toBe(2);
+    expect(scene).toMatchObject({
+      startingBeatId: 's1-2__beat-1',
+      beats: [
+        { id: 's1-2__beat-1', nextBeatId: 's1-2__beat-2' },
+        { id: 's1-2__beat-2', choices: [{ nextBeatId: 's1-2__beat-1' }] },
+      ],
+    });
+    expect(choiceSets[0].beatId).toBe('s1-2__beat-2');
+    expect(choiceSets[0].choices[0].nextBeatId).toBe('s1-2__beat-1');
+    expect(namespaceSceneBeatIdsForCommit(scene, choiceSets)).toBe(0);
+  });
+});
 
 describe('buildReaderFacingFallbackChoiceOptions', () => {
   it('filters planning-register option hints instead of inventing choices from narration', () => {

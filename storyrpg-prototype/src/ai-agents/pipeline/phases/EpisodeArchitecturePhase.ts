@@ -46,6 +46,7 @@ import { captureEpisodeContractSurface, diffEpisodeContractSurface } from '../ep
 import type { FullCreativeBrief } from '../FullStoryPipeline';
 import type { StoryCouncilRunner } from '../../quality-council/QualityCouncilRunner';
 import { PipelineContext } from './index';
+import { resolveSceneIdentityReferencePolicies } from '../../utils/identityReferencePolicy';
 
 // ========================================
 // DEPENDENCY TYPES
@@ -143,11 +144,19 @@ export class EpisodeArchitecturePhase {
     // populate its episode arc block against the correct beat(s).
     const seasonPlan = brief.seasonPlan;
     const seasonEpisode = seasonPlan?.episodes.find((e) => e.episodeNumber === brief.episode.number);
-    const identitySchedules = seasonPlan?.scenePlan?.narrativeContractGraph?.identityScheduleContracts ?? [];
+    const narrativeGraph = seasonPlan?.scenePlan?.narrativeContractGraph;
+    const identitySchedules = narrativeGraph?.identityScheduleContracts ?? [];
+    const identityPolicies = resolveSceneIdentityReferencePolicies({
+      episodeNumber: brief.episode.number,
+      identityScheduleContracts: identitySchedules,
+      lexicalArtifactContracts: narrativeGraph?.lexicalArtifactContracts,
+      realizationTasks: narrativeGraph?.realizationTasks,
+    });
     const promptSafeNpcName = (character: CharacterBible['characters'][number]): string => {
       const schedule = identitySchedules.find((candidate) => candidate.characterId === character.id);
       if (!schedule || brief.episode.number >= schedule.firstNamedEpisode) return character.name;
-      return schedule.allowedAliases[0] || `anonymous ${character.role || 'figure'}`;
+      const policy = identityPolicies.find((candidate) => candidate.characterId === character.id);
+      return policy?.availableAliases[0] || `anonymous ${character.role || 'figure'}`;
     };
     const configuredTargetSceneCount = clampSceneCount(
       brief.multiEpisode?.preferences?.targetScenesPerEpisode ||

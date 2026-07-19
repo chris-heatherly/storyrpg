@@ -31,7 +31,6 @@ import { applyPromptContract } from '../images/imagePromptContracts';
 import { selectStyleAdaptation, type SceneSettingContext } from '../utils/styleAdaptation';
 import { resolvePlayerTemplatesInObject } from '../utils/playerTemplateResolver';
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
-import type { Story } from '../../types';
 import type { PipelineEvent } from './events';
 
 /**
@@ -350,22 +349,6 @@ export class ImagePromptSupport {
     const normalized = this.normalizeNarrativeText(raw, fallback);
     const resolved = this.resolvePlayerTemplates(normalized, brief);
     return this.scrubPromptArtifacts(resolved);
-  }
-
-  resolveGeneratedStoryPlayerTemplates(story: Story, brief: ProtagonistPromptBrief): Story {
-    const resolution = resolvePlayerTemplatesInObject(story, {
-      name: brief.protagonist.name,
-      pronouns: brief.protagonist.pronouns,
-    });
-    if (resolution.replacements > 0) {
-      this.deps.emit({
-        type: 'warning',
-        phase: 'assembly',
-        message: `Resolved ${resolution.replacements} protagonist template token(s) before saving story output.`,
-      });
-      console.warn(`[Pipeline] Resolved ${resolution.replacements} protagonist template token(s) before saving story output.`);
-    }
-    return resolution.value;
   }
 
   sanitizeImagePrompt(prompt: ImagePrompt, brief: ProtagonistPromptBrief): ImagePrompt {

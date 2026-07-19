@@ -4,6 +4,7 @@ import {
   postLlmMetadataHygiene,
   validateChoiceProducerOutput,
   validateEncounterProducerOutput,
+  validateIdentityReferenceProducerOutput,
   validateSceneProducerOutput,
 } from './producerBlockerChecks';
 
@@ -134,5 +135,29 @@ describe('producer blocker ownership', () => {
         fieldPath: 'choiceSet.choices[0].consequences[0]',
       }),
     ]);
+  });
+
+  it('blocks unavailable identity references only on reader-facing producer surfaces', () => {
+    const policies = [{
+      characterId: 'radu',
+      canonicalName: 'Radu Stoian',
+      availableAliases: ['the charcoal-suited stranger'],
+      unavailableAliases: ['The Mountain'],
+      forbiddenReferences: ['Radu Stoian', 'Radu', 'The Mountain'],
+    }];
+    const scene = {
+      keyMoments: ['The Mountain is coined in a future episode.'],
+      beats: [{ id: 'b1', text: 'A message arrives from The Mountain.' }],
+    };
+
+    const findings = validateIdentityReferenceProducerOutput('s1-final', 'scene', scene, policies);
+    expect(findings).toEqual([
+      expect.objectContaining({
+        type: 'premature_identity_reference',
+        ownerPhase: 'scene',
+        repairSurface: 'scene-prose',
+      }),
+    ]);
+    expect(findings[0].fieldPath).toContain('beat_text');
   });
 });

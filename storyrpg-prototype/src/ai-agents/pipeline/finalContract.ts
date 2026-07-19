@@ -92,7 +92,6 @@ import {
 import { normalizeChoiceSetStatChecks, normalizeStoryStatChecks } from '../utils/statCheckNormalization';
 import { buildSceneConstructionPromptView } from '../utils/sceneConstructionProfile';
 import { PipelineError } from './errors';
-import type { NarrativeContractGraph } from '../../types/narrativeContract';
 import type { PipelineEvent } from './events';
 // Type-only import — erased at runtime, so no runtime cycle with the monolith.
 import type { FullCreativeBrief } from './FullStoryPipeline';
@@ -101,61 +100,6 @@ import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { validateStorySemanticRealization } from './semanticValidationCoordinator';
 
 type FinalContractWarning = NonNullable<FinalStoryContractReport['warnings']>[number];
-
-/** Re-apply pre-reveal identity policy after any LLM repair pass. */
-function scrubPreRevealSceneIdentityReferences(story: Story, graph: NarrativeContractGraph | undefined): number {
-  const replacements = (graph?.identityScheduleContracts ?? [])
-    .filter((contract) => contract.firstNamedEpisode > 1 && contract.canonicalName.trim())
-    .flatMap((contract) => {
-      const replacement = contract.allowedAliases[0]?.trim() || 'the stranger';
-      const canonical = contract.canonicalName.trim();
-      const firstName = canonical.split(/\s+/)[0];
-      return [
-        { pattern: canonical, replacement },
-        ...(firstName.length >= 3 && firstName !== canonical ? [{ pattern: firstName, replacement }] : []),
-      ];
-    });
-  if (replacements.length === 0) return 0;
-  const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const replaceValue = (value: unknown, key?: string): [unknown, number] => {
-    if (typeof value === 'string') {
-      if (key === 'id' || /(?:Id|ID)$/.test(key ?? '')) return [value, 0];
-      let next = value;
-      for (const replacement of replacements) {
-        next = next.replace(new RegExp(`\\b${escapeRegExp(replacement.pattern)}\\b`, 'gi'), replacement.replacement);
-      }
-      return [next, next === value ? 0 : 1];
-    }
-    if (Array.isArray(value)) {
-      let count = 0;
-      const next = value.map((item) => {
-        const [replaced, changed] = replaceValue(item);
-        count += changed;
-        return replaced;
-      });
-      return [next, count];
-    }
-    if (!value || typeof value !== 'object') return [value, 0];
-    let count = 0;
-    const next: Record<string, unknown> = {};
-    for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
-      const [replaced, changed] = replaceValue(entryValue, entryKey);
-      next[entryKey] = replaced;
-      count += changed;
-    }
-    return [next, count];
-  };
-  let count = 0;
-  for (const episode of story.episodes ?? []) {
-    if ((episode.number ?? 0) >= 2) continue;
-    for (let index = 0; index < episode.scenes.length; index += 1) {
-      const [scene, changed] = replaceValue(episode.scenes[index]);
-      episode.scenes[index] = scene as typeof episode.scenes[number];
-      count += changed;
-    }
-  }
-  return count;
-}
 
 function plannedMomentSourcesFromScenePlan(scenePlan: SeasonScenePlan | undefined) {
   if (!scenePlan?.scenes?.length) return undefined;
@@ -834,8 +778,6 @@ export interface FinalContractDeps {
   ) => Promise<void>;
   /** Persist the still-failing repaired candidate so the next enforcement (after a resume) starts from it. */
   saveRepairCandidate?: (candidate: FinalContractRepairCandidate, story: Story) => Promise<void>;
-  disambiguateProtagonistPronouns: (story: Story, brief: FullCreativeBrief) => Promise<void>;
-  authorEncounterOutcomeVariants: (story: Story) => Promise<void>;
   relationshipDimensionsForNpc: (
     initialStats: CharacterBible['characters'][number]['initialStats'] | undefined,
     tier?: 'core' | 'supporting' | 'background',
@@ -875,6 +817,10 @@ export class FinalContract {
     if (!this.deps.config.validation?.enabled || this.deps.config.validation?.mode === 'disabled') {
       return undefined;
     }
+    // Final enforcement is permanently read-only. Historical repair handlers
+    // remain below only until their producer-boundary replacements finish
+    // migrating; no caller can activate them.
+    const allowRepair = false;
 
     // Defense-in-depth (G10): canonicalize relationship-consequence npcIds across the
     // ASSEMBLED final story before the contract's MechanicalStorytellingValidator scans for
@@ -882,24 +828,17 @@ export class FinalContract {
     // refs, but anything reconstructed during assembly is caught here against the story's own
     // roster. Idempotent (resolvable ids already canonical → no-op); remaps stragglers and
     // drops the genuinely-unknown so GATE_RELATIONSHIP_ID_INTEGRITY fires only on real residue.
-    canonicalizeStoryRelationshipConsequences(input.story);
-    const normalizedStatChecks = normalizeStoryStatChecks(input.story);
-    if (normalizedStatChecks > 0) {
-      this.deps.emit({
-        type: 'debug',
-        phase: input.phase,
-        message: `Final story stat checks normalized ${normalizedStatChecks} choice(s).`,
-      } as any);
-    }
+    if (allowRepair) {
+      canonicalizeStoryRelationshipConsequences(input.story);
+      const normalizedStatChecks = normalizeStoryStatChecks(input.story);
+      if (normalizedStatChecks > 0) {
+        this.deps.emit({
+          type: 'debug',
+          phase: input.phase,
+          message: `Final story stat checks normalized ${normalizedStatChecks} choice(s).`,
+        } as any);
+      }
 
-    // Season-final skill rebalance: the per-scene ChoiceAuthor rebalance can't hit a
-    // SEASON coverage target (>=6/8 skills, <30% dominance), so an over-concentrated season
-    // can still ship. This deterministic pass reassigns
-    // single-skill checks off the over-used skill onto under-used ones (within each choice
-    // type's plausible set) until the season clears the target. No LLM; fiction-first
-    // (skill behind a check never surfaces). Logged for telemetry; runs before the contract
-    // so SkillCoverageValidator sees the rebalanced result.
-    {
       const r = rebalanceSeasonSkillCoverage(input.story);
       if (r.reassignments > 0) {
         console.info(
@@ -910,20 +849,6 @@ export class FinalContract {
         );
       }
     }
-
-    // W1 regen route: BEFORE the contract reads protagonist-pronoun residue, run the
-    // ambiguous-sentence disambiguator so the gate fires only on residue the regen
-    // could not resolve (not on every protagonist+NPC sentence). Gated + LLM-backed,
-    // so it costs nothing with GATE_PROTAGONIST_PRONOUN off and degrades to a no-op on
-    // any failure. The contract's own deterministic resolver then re-scans the
-    // (now-disambiguated) prose; only true residue survives to block.
-    await this.deps.disambiguateProtagonistPronouns(input.story, input.brief);
-
-    // W4 regen route: BEFORE the contract detects encounter-outcome desyncs, author the
-    // missing outcome-conditioned opening variants so the gate fires only on
-    // reconvergences the author could not cover. Gated + LLM-backed (zero cost with
-    // GATE_ENCOUNTER_OUTCOME_VARIANT off; degrades to a no-op on failure).
-    await this.deps.authorEncounterOutcomeVariants(input.story);
 
     // Heuristic fidelity findings (RequiredBeatRealization / SignatureDevicePresence /
     // etc.) are RE-RUN inside runValidation on the CURRENT story, NOT frozen here; otherwise
@@ -947,17 +872,7 @@ export class FinalContract {
     let validationPass = 0;
     const runValidation = async (story: Story): Promise<FinalStoryContractReport> => {
       validationPass += 1;
-      const identityRepairs = scrubPreRevealSceneIdentityReferences(
-        story,
-        input.brief.seasonPlan?.scenePlan?.narrativeContractGraph,
-      );
-      if (identityRepairs > 0) {
-        this.deps.emit({
-          type: 'debug',
-          phase: input.phase,
-          message: `Pre-reveal identity policy normalized ${identityRepairs} scene surface(s) before validation.`,
-        } as any);
-      }
+      if (allowRepair) {
       const diceMetaphorRepairs = repairDiceMetaphorMechanicsLeakage(story);
       if (diceMetaphorRepairs > 0) {
         this.deps.emit({
@@ -1021,6 +936,7 @@ export class FinalContract {
           phase: input.phase,
           message: `Encounter outcome navigation normalized ${repairedEncounterOutcomes} dead-end outcome(s).`,
         } as any);
+      }
       }
       // Re-run the heuristic fidelity validators on THIS (possibly repaired) story so
       // a scene-prose rewrite is actually seen (cheap — no LLM). See refutedFidelityKeys.
@@ -1194,6 +1110,13 @@ export class FinalContract {
               : atom.description;
           })
           .filter((description): description is string => Boolean(description));
+        const forbiddenLiteralPatterns = (finding.matchedForbiddenAtoms ?? [])
+          .flatMap((atomId) => {
+            const atom = task?.evidenceAtoms.find((candidate) => candidate.id === atomId);
+            return atom?.verificationAuthority === 'literal' ? atom.acceptedPatterns ?? [] : [];
+          })
+          .map((pattern) => pattern.trim())
+          .filter(Boolean);
         const meaningDetails = [
           missingMeaningDetail.length > 0 ? `Missing meaning(s): ${missingMeaningDetail.join('; ')}.` : '',
           forbiddenMeaningDetail.length > 0 ? `Forbidden meaning(s) present — remove them: ${forbiddenMeaningDetail.join('; ')}.` : '',
@@ -1225,6 +1148,7 @@ export class FinalContract {
           requiredEvidenceAtoms: task?.evidenceAtoms.filter((atom) => atom.required).map((atom) => atom.id),
           realizationFingerprint: finding.fingerprint,
           matchedForbiddenAtoms: finding.matchedForbiddenAtoms,
+          forbiddenLiteralPatterns,
           suggestion: forbiddenMeaningDetail.length > 0
             ? forbiddenMeaningDetail.some((meaning) => /ending-displaced|displaces the protagonist|final emotional beat belongs to the new threat/i.test(meaning))
               ? 'Remove the unowned terminal threat or twist while preserving the protagonist\'s authored climax and immediate consequence as the ending. Do not replace it with another hook.'
@@ -1399,7 +1323,7 @@ export class FinalContract {
     // the contract's own findings (required-beat / signature-device realization),
     // so a prose-realization miss becomes a bounded repair instead of discarding
     // the entire generated season (2026-06-11 failure-cycle audit).
-    if (!report.passed && isGateEnabled('GATE_FINAL_CONTRACT_REPAIR')) {
+    if (!report.passed && allowRepair && isGateEnabled('GATE_FINAL_CONTRACT_REPAIR')) {
       const generatedThroughEpisode = Math.max(
         0,
         ...(input.requestedEpisodeNumbers ?? input.story.episodes?.map((episode) => episode.number).filter((n): n is number => typeof n === 'number') ?? []),
@@ -1674,6 +1598,7 @@ export class FinalContract {
     // re-validation still passes and reduces the scene-turn warning count.
     if (
       report.passed
+      && allowRepair
       && isGateEnabled('GATE_FINAL_CONTRACT_REPAIR')
       && isGateEnabled('GATE_FINAL_CONTRACT_SCENE_REGEN')
     ) {

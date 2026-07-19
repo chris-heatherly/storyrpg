@@ -131,17 +131,6 @@ const RAW_GATE_REGISTRY = [
 
   // ── Repair / judge infrastructure (the routes other gates rely on) ──
   { id: 'GATE_SCENE_REQUIRED_BEAT_CHECK', placement: 'scene', kind: 'remediation', defaultOn: true, repair: 'regen' },
-  // Escalation switch for the above: hard-abort the run at scene time when the
-  // realization retry still misses (two-tier policy: default is warn + defer
-  // to the season-final realization gate's bounded repair).
-  { id: 'GATE_SCENE_REALIZATION_ABORT', placement: 'scene', kind: 'blocking', defaultOn: false, policyException: 'Shadow-only escalation switch: turns advisory scene-realization findings into hard aborts; the non-abort path IS the repair (sceneRealizationGuard + owner-task patches). Planned fix: none needed while debugging-only — wire a route before any default-ON promotion.' },
-  // No-boilerplate abort split (2026-07-06): controls ONLY the 'template'
-  // (EncounterArchitect build-collapse) abort at encounter generation time.
-  // Registry-fallback (deterministic-injection) hits never abort — they get
-  // the targeted cost-field re-author and defer to the final contract's
-  // unsafe_fallback_prose net (repair: encounterCostRepairHandler +
-  // scene-prose rewrite).
-  { id: 'GATE_ENCOUNTER_TEMPLATE_ABORT', placement: 'scene', kind: 'blocking', defaultOn: true, repair: 'regen' },
   // Scene-time narration-tense check: a scene written wholesale in past tense
   // gets one SceneWriter retry with tense feedback at write time, where the
   // fix costs one scene instead of final-contract repair rounds.
@@ -177,7 +166,6 @@ const RAW_GATE_REGISTRY = [
   { id: 'GATE_FINAL_CONTRACT_OUTCOME_REGEN', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_FIDELITY_JUDGE_CONFIRM', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
   { id: 'GATE_ROUTE_RESTAGE_ARBITER', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
-  { id: 'GATE_RECONVERGENCE_RESIDUE_REPAIR', placement: 'episode', kind: 'remediation', defaultOn: true, repair: 'regen' },
   { id: 'GATE_TREATMENT_SOURCED_ARM', placement: 'season-final', lifecycle: 'repair-infra', finalRole: 'repair-router', kind: 'infra', defaultOn: true },
 
   // ── Wave 4: plan-time gates (blocking is cheap fail-fast before prose) ──

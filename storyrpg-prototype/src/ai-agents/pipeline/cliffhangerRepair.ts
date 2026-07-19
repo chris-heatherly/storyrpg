@@ -36,6 +36,7 @@ import { coerceFirstPersonNarrationToSecond } from '../validators/PovClarityVali
 import { isGateEnabled } from '../remediation/gateDefaults';
 import { stabilizeByHysteresis } from '../remediation/judgeStabilizer';
 import { withTimeout, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
+import { resolveSceneIdentityReferencePolicies } from '../utils/identityReferencePolicy';
 
 export interface CliffhangerRepairDeps {
   sceneWriterConfig: PipelineConfig['agents']['sceneWriter'];
@@ -113,6 +114,19 @@ function sceneTaskConstraints(
       if (!description) continue;
       if (atom.polarity === 'forbidden') forbiddenMeanings.add(description);
       else if (atom.required !== false) requiredMeanings.add(description);
+    }
+  }
+  const graph = brief.seasonPlan?.scenePlan?.narrativeContractGraph;
+  const identityPolicies = resolveSceneIdentityReferencePolicies({
+    episodeNumber: brief.episode.number,
+    sceneId,
+    identityScheduleContracts: graph?.identityScheduleContracts,
+    lexicalArtifactContracts: graph?.lexicalArtifactContracts,
+    realizationTasks: tasks,
+  });
+  for (const policy of identityPolicies) {
+    for (const reference of policy.forbiddenReferences) {
+      forbiddenMeanings.add(`Do not use the unavailable identity reference "${reference}" for ${policy.canonicalName}`);
     }
   }
   return { requiredMeanings: [...requiredMeanings], forbiddenMeanings: [...forbiddenMeanings] };

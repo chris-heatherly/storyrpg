@@ -36,6 +36,7 @@ import type {
 } from '../../types/narrativeContract';
 import { describeNarrativeEvidenceTarget } from '../pipeline/narrativeContractMigration';
 import { validateOwnerRealizationTasks } from '../pipeline/realizationTaskGate';
+import { resolveSceneIdentityReferencePolicies } from '../utils/identityReferencePolicy';
 
 /**
  * Distinctive, non-interpolated fragments of the deterministic fallback prose
@@ -365,6 +366,7 @@ export interface EncounterArchitectInput {
   /** Immutable first-contact policy for encounter cast and outcome surfaces. */
   characterPresenceContracts?: NarrativeCharacterPresenceContract[];
   identityScheduleContracts?: import('../../types/narrativeContract').NarrativeIdentityScheduleContract[];
+  lexicalArtifactContracts?: import('../../types/narrativeContract').NarrativeLexicalArtifactContract[];
   encounterParticipationContract?: NarrativeEncounterParticipationContract;
   characterRoleConstraints?: import('../../types/narrativeContract').NarrativeCharacterRoleConstraint[];
 }
@@ -5478,9 +5480,15 @@ CRITICAL RULES:
     const presence = input.characterPresenceContracts?.length
       ? `\n${input.characterPresenceContracts.map((contract) => `- ${contract.characterName}: ${contract.mode}; required evidence: ${contract.requiredEvidence.join('; ')}; forbidden evidence: ${contract.forbiddenEvidence.join(', ') || 'none'}`).join('\n')}`
       : '';
-    const identity = (input.identityScheduleContracts ?? [])
-      .filter((contract) => contract.firstNamedEpisode > (input.episodeNumber ?? 1))
-      .map((contract) => `- ${contract.canonicalName}: canonical name forbidden until episode ${contract.firstNamedEpisode}; allowed aliases: ${contract.allowedAliases.join(', ') || 'visual description only'}`)
+    const identity = resolveSceneIdentityReferencePolicies({
+      episodeNumber: input.episodeNumber ?? 1,
+      sceneId: input.sceneId,
+      identityScheduleContracts: input.identityScheduleContracts,
+      lexicalArtifactContracts: input.lexicalArtifactContracts,
+      realizationTasks: input.realizationTasks,
+    })
+      .filter((policy) => policy.forbiddenReferences.length > 0)
+      .map((policy) => `- ${policy.canonicalName}: forbidden references in this scene: ${policy.forbiddenReferences.join(', ')}; legal aliases now: ${policy.availableAliases.join(', ') || 'none — use visual/behavioral description only'}`)
       .join('\n');
     const roles = (input.characterRoleConstraints ?? [])
       .map((constraint) => `- ${constraint.characterName}: allowed functions ${constraint.allowedFunctions.join(', ')}; forbidden functions ${constraint.forbiddenFunctions.join(', ')}`)

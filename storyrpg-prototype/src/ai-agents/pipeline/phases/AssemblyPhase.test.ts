@@ -49,7 +49,6 @@ function makeDeps(overrides: Partial<AssemblyPhaseDeps> = {}): AssemblyPhaseDeps
     assetRegistry: { toSnapshot: vi.fn(() => ({})) } as any,
     assembleStory: vi.fn(() => makeStory()),
     recordRemediationSafe: vi.fn(async () => undefined),
-    resolveGeneratedStoryPlayerTemplates: vi.fn((story) => story),
     runFlagChronologyScan: vi.fn(() => []),
     saveDraftImageManifest: vi.fn(async () => undefined),
     buildImageManifestFromStory: vi.fn(() => ({ imagesStatus: 'complete' as any })),
@@ -101,7 +100,7 @@ vi.mock('../../images/storyAssetAssembler', () => ({
 }));
 
 describe('AssemblyPhase', () => {
-  it('assembles the story, applies structural autofix, and stamps imagesStatus', async () => {
+  it('assembles the story without template mutation and stamps imagesStatus', async () => {
     const deps = makeDeps();
     const events: PipelineEvent[] = [];
     const context = makeContext(events, { imageGen: { enabled: true } });
@@ -109,7 +108,6 @@ describe('AssemblyPhase', () => {
     const story = await new AssemblyPhase(deps).run(makeInput(), context);
 
     expect(deps.assembleStory).toHaveBeenCalledTimes(1);
-    expect(deps.resolveGeneratedStoryPlayerTemplates).toHaveBeenCalledTimes(1);
     expect(story.imagesStatus).toBe('complete');
     expect(events.some(e => e.type === 'phase_start' && (e as any).phase === 'assembly')).toBe(true);
     // Full coverage in the fixture: no completeness-gate throw, asset walk ran

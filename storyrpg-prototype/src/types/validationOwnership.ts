@@ -52,5 +52,7 @@ export interface ValidationOwnershipMetadata {
   missingEvidenceAtoms?: string[];
   requiredEvidenceAtoms?: string[];
   matchedForbiddenAtoms?: string[];
+  /** Exact literal evidence carried to the owning localized prose repair. */
+  forbiddenLiteralPatterns?: string[];
   findingFingerprint?: string;
 }

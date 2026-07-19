@@ -38,6 +38,7 @@ import { SYNTHETIC_FALLBACK_PROSE_PATTERNS } from '../constants/syntheticFallbac
 import { isUnsafeCoverageMetadataText } from '../utils/coverageMetadataHygiene';
 import { mergeRewrittenBeatsIntoStory, mergeRewrittenEncounterBeatsIntoStory } from '../pipeline/continuityRepair';
 import { PIPELINE_TIMEOUTS, withTimeout } from '../utils/withTimeout';
+import { literalPhraseMatch } from '../utils/literalPhraseMatch';
 import { hasDirectTreatmentEventRealization } from '../validators/TreatmentEventLedgerValidator';
 import {
   characterIntroductionIssueCleared,
@@ -510,7 +511,7 @@ export function buildSceneRepairDirectorNotes(
         );
       } else if (/canonical identity|identity .* before/i.test(issue.message ?? '')) {
         lines.push(
-          '  NON-NEGOTIABLE: preserve the visual/codename plant but remove the character\'s canonical name and first name from every reader-facing surface in this scene. Use only the allowed codename or distinctive visual description. Do not compensate by adding a recap or metadata name.',
+          '  NON-NEGOTIABLE: preserve the anonymous plant but remove every unavailable identity reference named by this finding from reader-facing prose. Use an alias only when the finding explicitly lists it as legal in this scene; otherwise use distinctive visual or behavioral description. Do not compensate by adding a recap or metadata name.',
         );
       } else if (/forbidden early role|forbidden.*role/i.test(issue.message ?? '')) {
         lines.push(
@@ -659,6 +660,15 @@ function flaggedBeatIdsForRepair(
   );
   for (const issue of issues) {
     if (issue.beatId && validIds.has(issue.beatId)) continue;
+    for (const pattern of issue.forbiddenLiteralPatterns ?? []) {
+      for (const beat of beats) {
+        const beatText = [
+          beat.text,
+          ...(((beat as RepairableTextCarrier).textVariants ?? []).map((variant) => variant.text)),
+        ].filter(Boolean).join(' ');
+        if (literalPhraseMatch(pattern, beatText)) selected.add(beat.id);
+      }
+    }
     for (const meaning of missingMeaningsForRepair(issue)) {
       const stopwords = stopwordsForRealization(issue.validator);
       const meaningTokens = new Set(contentTokensForRealization(meaning, stopwords));
@@ -1017,6 +1027,9 @@ function allMomentsDepicted(
 ): boolean {
   const prose = sceneProseForScoring(scene);
   return plannedSourceMomentsDepicted(scene, plannedSource) && issues.every((issue) => {
+    if ((issue.forbiddenLiteralPatterns?.length ?? 0) > 0) {
+      return issue.forbiddenLiteralPatterns!.every((pattern) => !literalPhraseMatch(pattern, prose));
+    }
     if (issue.validator === 'PovClarityValidator' && (issue.type === 'pov_break' || issue.type === 'encounter_pov_break')) {
       const validator = new PovClarityValidator();
       const texts = repairableBeatsFor(scene).flatMap((beat) => [

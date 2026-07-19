@@ -105,7 +105,7 @@ export function canonicalizeConditionOutcomeFlags(condition: unknown): number {
  * canonical spelling, so setters and consumers agree no matter which layer authored
  * them. Idempotent. Returns the number of rewrites.
  */
-export function normalizeEncounterOutcomeFlags(story: Story): number {
+export function normalizeEncounterOutcomeFlagsInObject(root: unknown): number {
   let rewritten = 0;
   const seen = new Set<object>();
   const visit = (node: unknown): void => {
@@ -128,8 +128,12 @@ export function normalizeEncounterOutcomeFlags(story: Story): number {
       }
     }
   };
-  visit(story.episodes);
+  visit(root);
   return rewritten;
+}
+
+export function normalizeEncounterOutcomeFlags(story: Story): number {
+  return normalizeEncounterOutcomeFlagsInObject(story.episodes);
 }
 
 export interface SeedEncounterOutcomeFlagsResult {

@@ -56,8 +56,8 @@ export function prioritizeOwnerRepairFindings(
   tasks: NarrativeRealizationTask[],
 ): RealizationTaskGateFinding[] {
   const taskById = new Map(tasks.map((task) => [task.id, task]));
-  // Infra judge outcomes are never authored-content repair targets — retry the
-  // judge / defer to final regression instead of spending scene-prose budget.
+  // Infra judge outcomes are never authored-content repair targets. The
+  // scene-final semantic gate retries or blocks them before the commit receipt.
   const contentFindings = findings.filter((finding) =>
     finding.code !== 'SEMANTIC_VALIDATION_INCONCLUSIVE'
     && finding.code !== 'SEMANTIC_VALIDATION_UNAVAILABLE',

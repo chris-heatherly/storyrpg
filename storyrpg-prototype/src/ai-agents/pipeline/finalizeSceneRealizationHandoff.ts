@@ -8,9 +8,6 @@ import { createValidatorExecutionRecord } from '../validators/validatorExecution
 import { saveEarlyDiagnostic } from '../utils/pipelineOutputWriter';
 import { stableHash } from './artifacts/store';
 import {
-  appendDeferredRealizationRecord,
-  buildDeferredRealizationRecord,
-  isCriticalOwnerRealizationFinding,
   type DeferredRealizationRecord,
 } from './deferredRealization';
 import { PipelineError } from './errors';
@@ -44,11 +41,7 @@ export async function finalizeSceneRealizationHandoff(input: {
 }): Promise<void> {
   const { sceneBlueprint, sceneContent, choiceSet, encounter } = input;
   const ownerStageFindings: RealizationTaskGateFinding[] = [];
-  const deferredFingerprints = new Set(
-    input.deferredRecords
-      .filter((record) => record.sceneId === sceneBlueprint.id)
-      .map((record) => record.finding.fingerprint),
-  );
+  void input.deferredRecords;
 
   for (const ownerStage of ['scene_writer', 'choice_author', 'encounter_architect'] as const) {
     const ownerTasks = (sceneBlueprint.realizationTasks ?? []).filter((task) => task.ownerStage === ownerStage);
@@ -84,18 +77,24 @@ export async function finalizeSceneRealizationHandoff(input: {
       currentStage: ownerStage,
       candidateHash,
     });
-    for (const finding of validation.deferredFindings) {
-      appendDeferredRealizationRecord(input.deferredRecords, buildDeferredRealizationRecord({
-        episodeNumber: input.episodeNumber,
-        sceneId: sceneBlueprint.id,
-        candidateHash,
-        finding,
-        tasks: ownerTasks,
-        reason: 'semantic_inconclusive',
-      }));
-      deferredFingerprints.add(finding.fingerprint);
+    if (validation.deferredFindings.length > 0) {
+      throw new PipelineError(
+        `[OwnerStageSemanticInconclusive] ${sceneBlueprint.id} has ${validation.deferredFindings.length} inconclusive ${ownerStage} finding(s); regenerate this scene before commit.`,
+        ownerStage === 'choice_author' ? 'choices' : ownerStage === 'encounter_architect' ? 'encounters' : 'scenes',
+        {
+          context: { sceneId: sceneBlueprint.id, findings: validation.deferredFindings },
+          failure: {
+            code: 'owner_realization_failed',
+            ownerStage,
+            retryClass: ownerStage === 'choice_author' ? 'repair_choice' : ownerStage === 'encounter_architect' ? 'repair_encounter_route' : 'repair_scene_prose',
+            issueCodes: validation.deferredFindings.map((finding) => finding.code),
+            artifactRefs: [],
+            repairTarget: sceneBlueprint.id,
+          },
+        },
+      );
     }
-    const findings = validation.findings.filter((finding) => !deferredFingerprints.has(finding.fingerprint));
+    const findings = validation.findings;
     ownerStageFindings.push(...findings);
     input.executionRecords.push(createValidatorExecutionRecord({
       policyId: `NarrativeRealizationTask@${ownerStage}`,
@@ -113,8 +112,8 @@ export async function finalizeSceneRealizationHandoff(input: {
         findingFingerprints: findings.map((finding) => finding.fingerprint).sort(),
         semanticVerdicts: validation.semanticReceipt.semanticVerdicts,
       },
-      issues: [...findings, ...validation.deferredFindings].map((finding) => ({
-        severity: deferredFingerprints.has(finding.fingerprint) ? 'warning' : finding.blocking ? 'error' : 'warning',
+      issues: findings.map((finding) => ({
+        severity: finding.blocking ? 'error' : 'warning',
         code: finding.code,
         message: finding.message,
         metadata: {
@@ -124,7 +123,7 @@ export async function finalizeSceneRealizationHandoff(input: {
           ownerStage: finding.ownerStage,
           sceneId: finding.sceneId,
           findingFingerprint: finding.fingerprint,
-          deferredToFinalContract: deferredFingerprints.has(finding.fingerprint),
+          deferredToFinalContract: false,
         },
       })),
     }));
@@ -140,18 +139,24 @@ export async function finalizeSceneRealizationHandoff(input: {
     mode: 'owner',
     candidateHash: combinedHash,
   });
-  for (const finding of regression.deferredFindings) {
-    appendDeferredRealizationRecord(input.deferredRecords, buildDeferredRealizationRecord({
-      episodeNumber: input.episodeNumber,
-      sceneId: sceneBlueprint.id,
-      candidateHash: combinedHash,
-      finding,
-      tasks: sceneBlueprint.realizationTasks ?? [],
-      reason: 'semantic_inconclusive',
-    }));
-    deferredFingerprints.add(finding.fingerprint);
+  if (regression.deferredFindings.length > 0) {
+    throw new PipelineError(
+      `[SceneRegressionSemanticInconclusive] ${sceneBlueprint.id} has ${regression.deferredFindings.length} inconclusive realization finding(s); regenerate this scene before commit.`,
+      'content',
+      {
+        context: { sceneId: sceneBlueprint.id, findings: regression.deferredFindings },
+        failure: {
+          code: 'owner_realization_failed',
+          ownerStage: 'scene_content',
+          retryClass: 'repair_scene_prose',
+          issueCodes: regression.deferredFindings.map((finding) => finding.code),
+          artifactRefs: [],
+          repairTarget: sceneBlueprint.id,
+        },
+      },
+    );
   }
-  const findings = regression.findings.filter((finding) => !deferredFingerprints.has(finding.fingerprint));
+  const findings = regression.findings;
   const ownerFingerprints = ownerStageFindings.map((finding) => finding.fingerprint).sort();
   const regressionFingerprints = findings.map((finding) => finding.fingerprint).sort();
   if (stableHash(ownerFingerprints) !== stableHash(regressionFingerprints)) {
@@ -213,36 +218,6 @@ export async function finalizeSceneRealizationHandoff(input: {
     });
   }
   if (blockers.length === 0) return;
-
-  // Terminal policy (same split as every other owner-stage site): only a graph
-  // inconsistency or forbidden meaning on the page may end the run. Missing
-  // evidence defers to the episode contract, which re-judges with full context
-  // and routes repair_scene_prose / repair_choice / repair_encounter_route.
-  // This finalizer aborting without the split is what killed the first
-  // encounter-scene run (bite-me_2026-07-14T21-31-30: six route findings, all
-  // non-critical, retryClass repair_encounter_route in its own metadata).
-  const criticalBlockers = blockers.filter((finding) =>
-    isCriticalOwnerRealizationFinding(finding, sceneBlueprint.realizationTasks ?? []));
-  if (criticalBlockers.length === 0) {
-    const deferHash = stableHash({ sceneContent, choiceSet, encounter });
-    for (const finding of blockers) {
-      appendDeferredRealizationRecord(input.deferredRecords, buildDeferredRealizationRecord({
-        episodeNumber: input.episodeNumber,
-        sceneId: sceneBlueprint.id,
-        candidateHash: deferHash,
-        finding,
-        tasks: sceneBlueprint.realizationTasks ?? [],
-        reason: 'owner_repair_exhausted',
-      }));
-    }
-    input.emit({
-      type: 'warning',
-      phase: 'content',
-      message: `Scene ${sceneBlueprint.id}: deferring ${blockers.length} non-critical realization finding(s) from the handoff regression to episode-contract repair.`,
-      data: { findings: blockers },
-    });
-    return;
-  }
 
   const artifactRef = `episode-${input.episodeNumber}-scene-${sceneBlueprint.id}-realization-blockers.json`;
   if (input.outputDirectory) {

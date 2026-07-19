@@ -145,6 +145,7 @@ export const ABORT_CLASS_BY_ISSUE_TYPE: Record<FinalStoryContractIssueType, Fina
   route_duplicate_event: 'ship_with_cap',
   unsafe_fallback_prose: 'core',
   role_fidelity_violation: 'ship_with_cap',
+  late_normalization_required: 'core',
   // Special-cased below: MechanicsLeakageValidator emissions are design leaks
   // (core); QARunner/best-practices aggregates are craft signals.
   qa_blocker_present: 'ship_with_cap',

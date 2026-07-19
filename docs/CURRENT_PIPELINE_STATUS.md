@@ -74,10 +74,12 @@ order or topology.
    `SceneWriter` / `ChoiceAuthor` / `EncounterArchitect` with ESC-compiled
    thread/twist/arc directives (Thread/Twist/Arc LLMs skipped unless
    `STORYRPG_THREAD_TWIST_PLANNING=1` / `STORYRPG_CHARACTER_ARC_TRACKING=1`).
-4. **Enforce** — plan-time fidelity + `EpisodeSpineContractValidator`; final
-   text contract with prose/field repair only. Structural classes
-   (`blueprint_rebalance` / `episode_replan`) fail closed toward architecture
-   retry or ESC/`rebuildTreatmentSeasonScenePlan` refresh.
+4. **Enforce** — plan-time fidelity + `EpisodeSpineContractValidator`; every
+   scene completes prose, choices, encounter content, deterministic
+   projections, critic review, and owner validation before receiving a commit
+   receipt. Episode and final text contracts are read-only regression nets.
+   A blocker invalidates the owning scene and dependent suffix (or routes an
+   architectural class to plan regeneration); it never reopens a sealed scene.
 5. **Media** — post-story images/video/audio after the text contract passes.
 
 Skip telemetry (debug events): `thread_twist_skipped_authored_lite`,
@@ -142,11 +144,11 @@ optional plan field.
    `BranchManager`, `SceneWriter`, `ChoiceAuthor`, and `EncounterArchitect`.
 5. Optional narrative scaffolding: `ThreadPlanner`, `TwistArchitect`,
    `CharacterArcTracker` (when generation flags enable them), plus
-   `CallbackLedger` and optional `SceneCritic`.
+   `CallbackLedger` and optional per-scene `SceneCritic` review.
 6. Mechanical story metadata: story verbs, affordance sources, witness
    reactions, failure residue, branch-shadow diagnostics, and visualizer
    diagnostics where enabled.
-7. Validation: incremental per-scene checks, quick best-practices checks,
+7. Validation: incremental per-scene checks before commit; read-only quick best-practices checks,
    LLM QA, branch/divergence checks, scene graph checks, setup/payoff checks,
    twist checks, arc-delta checks, mechanical storytelling checks, sequence
    continuity audits, and treatment-fidelity checks.
@@ -156,7 +158,7 @@ optional plan field.
    provider-aware reference packs, structured art-style profiles,
    preapproved style anchors, optional Stable-Diffusion LoRA training,
    optional video generation, and optional ElevenLabs narration.
-9. Finalization: runtime `Story` assembly from the story-first episodes plus
+9. Finalization: read-only runtime `Story` assembly from the story-first episodes plus
    post-story media assets, `SavingPhase`,
    `pipelineOutputWriter`, story codec packaging, asset HTTP validation,
    optional Playwright multi-path QA, and image remediation/re-save when
@@ -364,15 +366,35 @@ boundaries. Semantic verdicts are cached by task, atom, scoped evidence, judge
 policy, provider, model, and schema. Positive receipts may be reused after
 unrelated prose changes only when every cited excerpt still exists with the
 same text hash; inconclusive and infrastructure-failure verdicts are never
-cached. Late prose mutators follow the same adoption boundary: the flag-gated
-`SceneCritic` pass revalidates its exact scene against typed structured,
-literal, and semantic task evidence before replacing beats, and cliffhanger
-repair evaluates at most two isolated candidates against both cliffhanger
-quality and the final scene's canonical tasks. A regression, inconclusive
-canonical check, or provider failure retains the previously committed prose.
-Final-contract handlers likewise commit only when canonical revalidation clears
-a blocking fingerprint or strictly reduces its missing/forbidden atom set;
-zero-progress rewrites roll back.
+cached. Scene authoring is a sequential commit protocol. For each standard
+scene the pipeline completes `SceneWriter`, choice materialization, incremental
+validation/regeneration, optional `SceneCritic` review, realization handoff,
+producer validation, callback accounting, and a versioned scene commit receipt
+before the next scene is authored. The next scene therefore receives the
+critic-final realized closing prose. Scene and episode-draft checkpoints carry
+the receipt hashes; resume rejects missing or mismatched committed drafts. A
+critic candidate is an immutable clone, may replace only prose
+fields, and is adopted only after required-moment, POV, realization-task, and
+incremental-regression checks pass.
+
+Required-beat misses no longer use a two-tier defer policy. After the bounded
+SceneWriter retry, concrete missing moments fail the current scene; summary-
+shaped contracts require semantic proof at the precommit owner gate. Requested
+episode QA must also complete successfully before the episode can be sealed.
+
+There are no late narrative mutators in the active pipeline. Choice route
+canonicalization, bridge materialization, reader-text sanitation, protagonist
+template resolution, encounter POV/outcome-flag/clock normalization,
+callback/payoff annotation, episode-final cliffhanger
+repair, per-owner twist beat binding, and optional `SceneCritic` rewriting all
+run before the receipt is issued. Twist foreshadow metadata is bound while the
+foreshadow scene is mutable; generating the reveal never reopens it. The receipt hashes the complete `SceneContent`, its realized handoff,
+the scene-scoped `ChoiceSet`, and any `EncounterStructure`. Quick validation,
+QA, scene-graph validation, assembly, episode lock validation, and the final
+contract may only report findings. After each such phase the orchestrator
+rechecks receipts and aborts on any mutation. Corrective action is explicit
+invalidation plus regeneration of the earliest owning scene and every dependent
+scene, never receipt refresh or in-place repair.
 
 Every initial or regenerated choice set passes one transactional
 prepare/validate/commit path: canonical state setters, information markers,
@@ -380,11 +402,14 @@ residue, and route fan-out are applied to a clone; owner and producer gates run
 on that exact clone; only a valid candidate replaces the committed choice set
 and its within-episode plant projection. Route evidence
 is evaluated per playable outcome and cannot be borrowed across routes or from
-an undeclared surface. `NarrativeContractValidator` repeats deterministic
-contract checks after late story mutations, while the asynchronous final
-contract reuses or refreshes hash-bound semantic receipts as the meaning
-regression net. The owner-stage fingerprint is preserved through final-contract
-repair accounting. Each owner evaluation emits a receipt containing the task
+an undeclared surface. `NarrativeContractValidator` and the asynchronous final
+contract repeat checks on isolated validation projections; any legacy
+normalization performed inside a validator is discarded and emits a blocking
+`late_normalization_required` finding, so a repaired projection cannot mask a
+defect in the sealed bytes. Scene locks preserve all scene-time errors as
+blockers; they never demote craft failures for a later repair loop. The owner-stage
+fingerprint is preserved through final regression accounting. Each owner
+evaluation emits a receipt containing the task
 IDs, owner stage, candidate hash, finding fingerprints, judge identity,
 categorical verdicts, evidence references, response hash, and sample count. The
 per-scene pass is a regression net and must match

@@ -7,77 +7,80 @@
 6: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=366ccd071e07354b
 7: Thread Planner [anthropic/claude-sonnet-4-6] msgs=2 prompt=4a210e1531d20dfd
 8: Twist Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=50a24b407bd9dcd4
-9: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=7ce5c33f31e7c3a2
+9: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=dcc00bddcca82ef7
 10: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=25f6d26e74236766
-11: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=7ce5c33f31e7c3a2
+11: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=dcc00bddcca82ef7
 12: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=25f6d26e74236766
-13: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=ed747c1dfeb6fe99
-14: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=ed747c1dfeb6fe99
-15: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=cd0357f8b0bd9cc9
-16: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=7c1d2af3955c0274
-17: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=c30568c31d98cab0
-18: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=0940c6e638430430
-19: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=dfe6da46eb585332
-20: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=aecc6aac2e3008e6
-21: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=1c82b13417ab9fd2
-22: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=b5bb69e37420728f
-23: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=424c9656c40e9a39
-24: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=7c1d2af3955c0274
-25: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=c30568c31d98cab0
-26: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=0940c6e638430430
-27: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=dfe6da46eb585332
-28: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=aecc6aac2e3008e6
-29: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=1c82b13417ab9fd2
-30: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=b5bb69e37420728f
-31: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=424c9656c40e9a39
-32: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=ab9cff6f8d829959
-33: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=5a01da9266860c49
-34: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=9e250cbae9880ed9
-35: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=eedcf99a826b09d3
-36: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=a5c45e08f6c14549
-37: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=eedcf99a826b09d3
-38: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=a5c45e08f6c14549
-39: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=ddb2bd18368147a3
-40: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=b14e2a89f4a5e468
-41: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=e0078f5a0c881e1a
-42: Pronoun Disambiguator [anthropic/claude-sonnet-4-6] msgs=1 prompt=f19826b48c3ee69d
-43: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=b4f3d1de9f3a82f6
-44: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=43930345897c51b0
-45: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=43930345897c51b0
-46: Thread Planner [anthropic/claude-sonnet-4-6] msgs=2 prompt=82c4e6387ed15113
-47: Twist Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=b54c3f39a4c65fd5
-48: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=4cac1f972e659603
-49: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=2baae1f71c7ed9ee
-50: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=4cac1f972e659603
-51: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=2baae1f71c7ed9ee
-52: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=340c9fad75982f95
-53: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=340c9fad75982f95
-54: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=5a09fda959c3b585
-55: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=35d9aa78661aecd0
-56: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=892a813ec443d0bf
-57: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=ba9de588b2d780ab
-58: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=8c6130cdcfe339e8
-59: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=da96294abbdde6c0
-60: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=f33f417225c0cd22
-61: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=a97b539d59b5af51
-62: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=77abbe08146bda23
-63: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=35d9aa78661aecd0
-64: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=892a813ec443d0bf
-65: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=ba9de588b2d780ab
-66: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=8c6130cdcfe339e8
-67: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=da96294abbdde6c0
-68: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=f33f417225c0cd22
-69: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=a97b539d59b5af51
-70: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=77abbe08146bda23
-71: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=5b422592711d300c
-72: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=81cf9f674c0c7126
-73: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=719bc5ef393721fc
-74: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=83390f928948e16b
-75: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=08ecdb3100c7e633
-76: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=83390f928948e16b
-77: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=08ecdb3100c7e633
-78: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=29869e6af1355728
-79: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=b4fc5b7e030423fd
-80: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=406582b918f250bd
-81: Pronoun Disambiguator [anthropic/claude-sonnet-4-6] msgs=1 prompt=c42293302eb4d8d3
-82: Pronoun Disambiguator [anthropic/claude-sonnet-4-6] msgs=1 prompt=778ad4155189a3e6
+13: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=e22abc49fa52ce49
+14: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=e22abc49fa52ce49
+15: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=4ec834622848e4c8
+16: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=e9b33b8e9af7a704
+17: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=7686a03e59adb200
+18: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=687dd75e1c0c5140
+19: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=7b4f41e485d88f82
+20: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=a7a1941f7a808f36
+21: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=8b5cd6e277b50d62
+22: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=564e9d0b64d4c93f
+23: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=c292d89a75f2ad29
+24: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=e9b33b8e9af7a704
+25: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=7686a03e59adb200
+26: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=687dd75e1c0c5140
+27: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=7b4f41e485d88f82
+28: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=a7a1941f7a808f36
+29: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=8b5cd6e277b50d62
+30: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=564e9d0b64d4c93f
+31: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=c292d89a75f2ad29
+32: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=cfe4b373a191d103
+33: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=c0fc355574f84c40
+34: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=958e3edb8b3fe527
+35: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=c12dcc4ffa1d9a3f
+36: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=5a01da9266860c49
+37: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=8cfd7276532cdf22
+38: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=6f054e7858d4f420
+39: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=8f5f11ce9e18e948
+40: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=2650b0089664ee9c
+41: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=8f5f11ce9e18e948
+42: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=2650b0089664ee9c
+43: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=9f21e98bc8fad790
+44: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=bdb649e620b0e1bd
+45: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=1383ad29ad870713
+46: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=b4f3d1de9f3a82f6
+47: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=43930345897c51b0
+48: Story Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=43930345897c51b0
+49: Thread Planner [anthropic/claude-sonnet-4-6] msgs=2 prompt=82c4e6387ed15113
+50: Twist Architect [anthropic/claude-sonnet-4-6] msgs=2 prompt=b54c3f39a4c65fd5
+51: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=7d11238b1fe90cca
+52: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=2baae1f71c7ed9ee
+53: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=7d11238b1fe90cca
+54: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=2baae1f71c7ed9ee
+55: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=ab392fb355c42cc5
+56: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=ab392fb355c42cc5
+57: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=61d49c10c7af7074
+58: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=09a78d33d2cad3a0
+59: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=e5a83043c22d05ef
+60: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=870d1ab1c1013c1b
+61: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=5265106fa2873138
+62: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=b668da3048cfd230
+63: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=3f812ea88de29592
+64: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=65486825c4938d21
+65: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=022974a289d9f0b3
+66: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=09a78d33d2cad3a0
+67: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=e5a83043c22d05ef
+68: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=870d1ab1c1013c1b
+69: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=5265106fa2873138
+70: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=b668da3048cfd230
+71: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=3f812ea88de29592
+72: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=65486825c4938d21
+73: Semantic Realization Judge [anthropic/claude-sonnet-4-6] msgs=2 prompt=022974a289d9f0b3
+74: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=596d8fc0400e9f7f
+75: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=b599ef9aafaf6de9
+76: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=81cf9f674c0c7126
+77: Choice Author [anthropic/claude-sonnet-4-6] msgs=2 prompt=73f5b9faffd7f585
+78: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=f0f33e49b6d7a957
+79: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=5f715c9e4bb41de9
+80: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=9228c1bbe4f9e6b0
+81: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=5f715c9e4bb41de9
+82: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=9228c1bbe4f9e6b0
+83: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=bb6299d64370e361
+84: Scene Writer [anthropic/claude-sonnet-4-6] msgs=2 prompt=08ecdb3100c7e633
+85: Scene Critic [anthropic/claude-sonnet-4-6] msgs=2 prompt=eaf5a4085e2e523a

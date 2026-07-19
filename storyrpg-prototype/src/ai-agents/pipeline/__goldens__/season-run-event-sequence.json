@@ -242,6 +242,26 @@
     },
     {
       "type": "debug",
+      "phase": "scene_critic",
+      "message": "SceneCritic reviewing scene-1 before scene commit"
+    },
+    {
+      "type": "warning",
+      "phase": "scene_critic",
+      "message": "SceneCritic kept the accepted prose for scene-1: critic returned no usable rewritten beats"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Bound planned twist foreshadow to scene-1/scene-1__beat-1 before commit."
+    },
+    {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-1"
+    },
+    {
+      "type": "debug",
       "phase": "content",
       "message": "Writing scene scene-2"
     },
@@ -254,6 +274,16 @@
       "type": "debug",
       "phase": "scenes",
       "message": "SceneWriter input compacted for scene-2: 7945 -> 7882 bytes"
+    },
+    {
+      "type": "regeneration_triggered",
+      "phase": "scenes",
+      "message": "SceneWriter failed for scene-2, retrying with error feedback"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "SceneWriter retry succeeded for scene-2"
     },
     {
       "type": "agent_complete",
@@ -307,6 +337,26 @@
     },
     {
       "type": "debug",
+      "phase": "scene_critic",
+      "message": "SceneCritic reviewing scene-2 before scene commit"
+    },
+    {
+      "type": "warning",
+      "phase": "scene_critic",
+      "message": "SceneCritic kept the accepted prose for scene-2: critic returned no usable rewritten beats"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Bound planned twist reveal to scene-2/scene-2__beat-3-payoff-3 before commit."
+    },
+    {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-2"
+    },
+    {
+      "type": "debug",
       "phase": "content",
       "message": "Writing scene scene-3"
     },
@@ -321,9 +371,14 @@
       "message": "Best-of-2 for critical scene scene-3 (bottleneck)"
     },
     {
+      "type": "regeneration_triggered",
+      "phase": "scenes",
+      "message": "SceneWriter failed for scene-3, retrying with error feedback"
+    },
+    {
       "type": "debug",
       "phase": "scenes",
-      "message": "Best-of-2 winner for scene-3: score 100 vs 100"
+      "message": "SceneWriter retry succeeded for scene-3"
     },
     {
       "type": "agent_complete",
@@ -351,6 +406,21 @@
       "message": "Scene scene-3: PASSED"
     },
     {
+      "type": "debug",
+      "phase": "scene_critic",
+      "message": "SceneCritic reviewing scene-3 before scene commit"
+    },
+    {
+      "type": "warning",
+      "phase": "scene_critic",
+      "message": "SceneCritic kept the accepted prose for scene-3: critic returned no usable rewritten beats"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-3"
+    },
+    {
       "type": "validation_aggregated",
       "phase": "incremental_validation",
       "message": "Incremental validation complete: 3/3 scenes passed"
@@ -362,38 +432,13 @@
     },
     {
       "type": "debug",
-      "phase": "scene_critic",
-      "message": "SceneCritic pass reviewing 3 scene(s)"
-    },
-    {
-      "type": "checkpoint",
-      "phase": "scene_critic",
-      "message": "Rewrote 3 beat(s) in scene scene-1"
-    },
-    {
-      "type": "checkpoint",
-      "phase": "scene_critic",
-      "message": "Rewrote 3 beat(s) in scene scene-2"
-    },
-    {
-      "type": "checkpoint",
-      "phase": "scene_critic",
-      "message": "Rewrote 3 beat(s) in scene scene-3"
-    },
-    {
-      "type": "debug",
-      "phase": "content",
-      "message": "Materialized planned twist markers on beat-1 → beat-1"
-    },
-    {
-      "type": "debug",
       "phase": "episode_1_obligations",
       "message": "Obligation ledger: 1 thread(s) registered (1 paid), 0 seed(s) registered (0 paid)."
     },
     {
       "type": "debug",
       "phase": "episode_1_callbacks",
-      "message": "Callback ledger: +12 new hook(s), +0 authored payoff(s), +2 auto-realized this episode; 7 total"
+      "message": "Callback ledger: +12 new hook(s), +0 authored payoff(s); episode-tail prose injection is disabled; 7 total"
     },
     {
       "type": "checkpoint",
@@ -411,11 +456,6 @@
       "message": "Narrative diagnostics passed: twist_quality:passed(100), arc_delta:skipped, divergence:passed(100), failure_modes:passed(100), intensity_distribution:passed(100), prop_introduction:passed(100), choice_coverage:passed(100)"
     },
     {
-      "type": "debug",
-      "phase": "continuity_repair_ep_1",
-      "message": "Continuity repair gate: seasonCanonOn=true hasQaReport=false"
-    },
-    {
       "type": "phase_complete",
       "phase": "episode_1",
       "message": "Episode 1 complete!"
@@ -426,49 +466,9 @@
       "message": "Saved 5 revisioned episode planning artifact(s)."
     },
     {
-      "type": "debug",
+      "type": "warning",
       "phase": "incremental_contract_ep_1",
-      "message": "Episode 1 contract has 25 blocker(s) and 0 deferred realization handoff(s); running episode-local semantic repair before completion."
-    },
-    {
-      "type": "debug",
-      "phase": "pronoun_disambiguation",
-      "message": "Protagonist pronoun disambiguation: 2 ambiguous sentence(s), 0 rewritten, 0 field replacement(s)."
-    },
-    {
-      "type": "debug",
-      "phase": "incremental_contract_ep_1",
-      "message": "Choice residue planning-register leakage normalized 6 hint(s)."
-    },
-    {
-      "type": "debug",
-      "phase": "incremental_contract_ep_1",
-      "message": "Transition bridge continuity normalized 1 beat(s)."
-    },
-    {
-      "type": "checkpoint",
-      "phase": "incremental_contract_ep_1",
-      "message": "Final contract repair routing: diagnostic_stop:24"
-    },
-    {
-      "type": "debug",
-      "phase": "incremental_contract_ep_1",
-      "message": "Final contract repair will defer LLM prose/outcome repair while 24 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
-    },
-    {
-      "type": "checkpoint",
-      "phase": "incremental_contract_ep_1",
-      "message": "Final contract repair ran 1 round(s); now passing"
-    },
-    {
-      "type": "debug",
-      "phase": "incremental_contract_ep_1",
-      "message": "Flag-consumption audit: 1 unread choice flag(s), 1 asymmetric variant famil(y/ies). Advisory."
-    },
-    {
-      "type": "checkpoint",
-      "phase": "incremental_contract_ep_1",
-      "message": "Final story contract passed (1 episode(s), 3 scene(s))"
+      "message": "Episode 1 validator attempted a late normalization on its isolated projection; the mutation was discarded. Move that normalization to the owning producer boundary."
     },
     {
       "type": "debug",
@@ -622,6 +622,26 @@
     },
     {
       "type": "debug",
+      "phase": "scene_critic",
+      "message": "SceneCritic reviewing scene-4 before scene commit"
+    },
+    {
+      "type": "warning",
+      "phase": "scene_critic",
+      "message": "SceneCritic kept the accepted prose for scene-4: critic returned no usable rewritten beats"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Bound planned twist foreshadow to scene-4/scene-4__beat-1 before commit."
+    },
+    {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-4"
+    },
+    {
+      "type": "debug",
       "phase": "content",
       "message": "Writing scene scene-5"
     },
@@ -687,6 +707,26 @@
     },
     {
       "type": "debug",
+      "phase": "scene_critic",
+      "message": "SceneCritic reviewing scene-5 before scene commit"
+    },
+    {
+      "type": "warning",
+      "phase": "scene_critic",
+      "message": "SceneCritic kept the accepted prose for scene-5: critic returned no usable rewritten beats"
+    },
+    {
+      "type": "debug",
+      "phase": "content",
+      "message": "Bound planned twist reveal to scene-5/scene-5__beat-3-payoff-3 before commit."
+    },
+    {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-5"
+    },
+    {
+      "type": "debug",
       "phase": "content",
       "message": "Writing scene scene-6"
     },
@@ -701,9 +741,14 @@
       "message": "Best-of-2 for critical scene scene-6 (bottleneck)"
     },
     {
+      "type": "regeneration_triggered",
+      "phase": "scenes",
+      "message": "SceneWriter failed for scene-6, retrying with error feedback"
+    },
+    {
       "type": "debug",
       "phase": "scenes",
-      "message": "Best-of-2 winner for scene-6: score 100 vs 100"
+      "message": "SceneWriter retry succeeded for scene-6"
     },
     {
       "type": "agent_complete",
@@ -731,6 +776,21 @@
       "message": "Scene scene-6: PASSED"
     },
     {
+      "type": "debug",
+      "phase": "scene_critic",
+      "message": "SceneCritic reviewing scene-6 before scene commit"
+    },
+    {
+      "type": "warning",
+      "phase": "scene_critic",
+      "message": "SceneCritic kept the accepted prose for scene-6: critic returned no usable rewritten beats"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-6"
+    },
+    {
       "type": "validation_aggregated",
       "phase": "incremental_validation",
       "message": "Incremental validation complete: 3/3 scenes passed"
@@ -742,38 +802,13 @@
     },
     {
       "type": "debug",
-      "phase": "scene_critic",
-      "message": "SceneCritic pass reviewing 3 scene(s)"
-    },
-    {
-      "type": "checkpoint",
-      "phase": "scene_critic",
-      "message": "Rewrote 3 beat(s) in scene scene-4"
-    },
-    {
-      "type": "checkpoint",
-      "phase": "scene_critic",
-      "message": "Rewrote 3 beat(s) in scene scene-5"
-    },
-    {
-      "type": "checkpoint",
-      "phase": "scene_critic",
-      "message": "Rewrote 3 beat(s) in scene scene-6"
-    },
-    {
-      "type": "debug",
-      "phase": "content",
-      "message": "Materialized planned twist markers on beat-1 → beat-1"
-    },
-    {
-      "type": "debug",
       "phase": "episode_2_obligations",
       "message": "Obligation ledger: 2 thread(s) registered (2 paid), 0 seed(s) registered (0 paid)."
     },
     {
       "type": "debug",
       "phase": "episode_2_callbacks",
-      "message": "Callback ledger: +10 new hook(s), +0 authored payoff(s), +5 auto-realized this episode; 14 total"
+      "message": "Callback ledger: +10 new hook(s), +0 authored payoff(s); episode-tail prose injection is disabled; 14 total"
     },
     {
       "type": "checkpoint",
@@ -791,11 +826,6 @@
       "message": "Narrative diagnostics passed: twist_quality:passed(100), arc_delta:skipped, divergence:passed(100), failure_modes:passed(100), intensity_distribution:passed(100), prop_introduction:passed(100), choice_coverage:passed(100)"
     },
     {
-      "type": "debug",
-      "phase": "continuity_repair_ep_2",
-      "message": "Continuity repair gate: seasonCanonOn=true hasQaReport=false"
-    },
-    {
       "type": "phase_complete",
       "phase": "episode_2",
       "message": "Episode 2 complete!"
@@ -806,44 +836,9 @@
       "message": "Saved 5 revisioned episode planning artifact(s)."
     },
     {
-      "type": "debug",
+      "type": "warning",
       "phase": "incremental_contract_ep_2",
-      "message": "Episode 2 contract has 24 blocker(s) and 0 deferred realization handoff(s); running episode-local semantic repair before completion."
-    },
-    {
-      "type": "debug",
-      "phase": "pronoun_disambiguation",
-      "message": "Protagonist pronoun disambiguation: 3 ambiguous sentence(s), 0 rewritten, 0 field replacement(s)."
-    },
-    {
-      "type": "debug",
-      "phase": "incremental_contract_ep_2",
-      "message": "Choice residue planning-register leakage normalized 6 hint(s)."
-    },
-    {
-      "type": "checkpoint",
-      "phase": "incremental_contract_ep_2",
-      "message": "Final contract repair routing: diagnostic_stop:24"
-    },
-    {
-      "type": "debug",
-      "phase": "incremental_contract_ep_2",
-      "message": "Final contract repair will defer LLM prose/outcome repair while 24 blocker(s) require blueprint, route, or relationship architecture repair first. Fail closed: diagnostic_stop — do not invent structure in final-contract prose repair."
-    },
-    {
-      "type": "checkpoint",
-      "phase": "incremental_contract_ep_2",
-      "message": "Final contract repair ran 1 round(s); now passing"
-    },
-    {
-      "type": "debug",
-      "phase": "incremental_contract_ep_2",
-      "message": "Flag-consumption audit: 1 unread choice flag(s), 1 asymmetric variant famil(y/ies). Advisory."
-    },
-    {
-      "type": "checkpoint",
-      "phase": "incremental_contract_ep_2",
-      "message": "Final story contract passed (1 episode(s), 3 scene(s))"
+      "message": "Episode 2 validator attempted a late normalization on its isolated projection; the mutation was discarded. Move that normalization to the owning producer boundary."
     },
     {
       "type": "debug",
@@ -932,13 +927,8 @@
     },
     {
       "type": "debug",
-      "phase": "pronoun_disambiguation",
-      "message": "Protagonist pronoun disambiguation: 5 ambiguous sentence(s), 0 rewritten, 0 field replacement(s)."
-    },
-    {
-      "type": "debug",
       "phase": "final_story_contract",
-      "message": "Flag-consumption audit: 1 unread choice flag(s), 1 asymmetric variant famil(y/ies). Advisory."
+      "message": "Flag-consumption audit: 5 unread choice flag(s), 0 asymmetric variant famil(y/ies). Advisory."
     },
     {
       "type": "checkpoint",

@@ -298,12 +298,11 @@ export const VALIDATOR_REGISTRY: ValidatorRegistryEntry[] = [
   // setFlag consequence on some choice in its episode, so the named ending it drives is
   // mechanically reachable (presence-only, deterministic).
   { validator: 'EndingReachabilityValidator', stage: 'final', tier: 'advisory', remediation: 'plan-time', rolloutFlag: 'GATE_ENDING_REACHABILITY', dispatchedFrom: 'FullStoryPipeline (episode validation)' },
-  // Protagonist pronoun integrity: the resolver ALWAYS repairs safe wrong-gender cases
-  // in place at the final contract; GATE_PROTAGONIST_PRONOUN promotes ambiguous residue
-  // to a blocking issue routed to scene/encounter regen.
+  // Protagonist pronoun integrity: final validation is read-only; any safe or
+  // ambiguous correction that remains is routed to scene/encounter regeneration.
   { validator: 'protagonistPronounResolver (ambiguous-residue class)', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_PROTAGONIST_PRONOUN', dispatchedFrom: 'FinalStoryContractValidator' },
-  // Encounter-outcome state: flags are always seeded; this flags a reconvergence scene
-  // that ignores the outcome (no outcome-conditioned variant) for regen.
+  // Encounter-outcome state: this flags a reconvergence scene that lacks
+  // producer-authored outcome flags/conditioned variants for suffix regeneration.
   { validator: 'encounterOutcomeFlags (reconvergence-desync class)', stage: 'final', tier: 'blocking', remediation: 'regen-scene', rolloutFlag: 'GATE_ENCOUNTER_OUTCOME_VARIANT', dispatchedFrom: 'FinalStoryContractValidator' },
   // Continuity remediation: promote cross-scene continuity ERRORS from the advisory QA
   // report to blocking so the final-contract repair loop engages.

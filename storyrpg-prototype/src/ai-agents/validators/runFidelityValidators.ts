@@ -118,6 +118,7 @@ export interface FidelityFinding {
   missingEvidenceAtoms?: string[];
   requiredEvidenceAtoms?: string[];
   matchedForbiddenAtoms?: string[];
+  forbiddenLiteralPatterns?: string[];
   findingFingerprint?: string;
   realizationFingerprint?: string;
 }

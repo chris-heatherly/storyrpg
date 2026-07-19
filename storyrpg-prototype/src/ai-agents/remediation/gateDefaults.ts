@@ -147,9 +147,9 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // written scene that under-realizes its authored moments gets ONE immediate
   // SceneWriter retry with the exact missing content words as feedback
   // (deterministic mirror of the final validators — no extra LLM to detect);
-  // if authored/signature moments remain missing after that retry, the miss is
-  // deferred to the season-final realization gate (which routes a bounded
-  // judge+regen repair) instead of aborting the run;
+  // if concrete authored/signature moments remain missing after that retry,
+  // the current scene fails before commit; summary-shaped contracts proceed
+  // only to the semantic owner gate in the same transaction;
   // (b) polish/regen rewrites that would LOSE a depicted authored moment are
   // reverted (free).
   GATE_SCENE_REQUIRED_BEAT_CHECK: true,
@@ -201,30 +201,7 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // (the broader configured pass supersedes it). Reversible via =0.
   GATE_SCENE_CRITIC_ON_FLAG: true,
 
-  // Two-tier gate policy (2026-07-05 stability audit). An under-realized scene
-  // after the bounded retry is a QUALITY finding, not a run-safety blocker: the
-  // prose is LLM-authored, the miss is re-detected identically at season-final
-  // (sceneContent.requiredBeats travels with the content), and the final
-  // contract routes a focused scene-regen repair there. Aborting mid-run
-  // discarded ~25 minutes of work per hit and was one of the top recurring
-  // blockers. OFF: warn + defer to the season-final realization gate (default).
-  // ON: restore the old hard abort at scene time.
-  GATE_SCENE_REALIZATION_ABORT: false,
-
   // No-boilerplate abort policy split (2026-07-06 encounter-cost postmortem).
-  // Generation-time template hits now carry a SOURCE: 'template' = the
-  // EncounterArchitect's own TEMPLATE_SIGNATURES survived regen (the build
-  // genuinely collapsed to deterministic filler — regeneration is the only
-  // fix, so failing the episode at generation time is correct and cheap);
-  // 'fallback' = a syntheticFallbackProse registry string DETERMINISTIC code
-  // injected because the LLM omitted a field. The fallback class NEVER aborts
-  // at generation time: the targeted cost-field re-author repairs it at the
-  // source, and any residue defers to the final contract where
-  // unsafe_fallback_prose blocks with a wired repair route. This gate only
-  // controls the 'template' (build-collapse) abort. OFF: defer template
-  // collapse to the final contract too (encounter_template_collapse).
-  GATE_ENCOUNTER_TEMPLATE_ABORT: true,
-
   // Authoring-time outcome-tier re-author (2026-07-04, late-detection audit).
   // When ChoiceAuthor only partially authors a choice, normalizeChoiceSet fills
   // the missing outcomeTexts tiers with deterministic fallback stubs; those
@@ -608,19 +585,16 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   // concatenation (one reaction sentence per tier, skipped when already present).
   // ON by default like the other pure assembly repairs; reversible via =0.
   GATE_WITNESS_BAKE: true,
-  // Encounter-outcome variant: outcome state flags are ALWAYS seeded (ungated). The
-  // generative half now exists — when this gate is on, authorEncounterOutcomeVariants
-  // runs the OutcomeVariantAuthor over each detected reconvergence desync to write the
-  // missing outcome-conditioned opening variants (gated on encounter_<id>_<outcome>)
-  // before the contract re-detects, so the gate blocks only on reconvergences the
-  // author could not cover.
+  // Encounter-outcome variant: a reconvergence must already contain its
+  // outcome-conditioned opening variants when that scene is committed. The
+  // season-final check is read-only and requests explicit suffix regeneration;
+  // it never authors variants into a sealed scene.
   // PROMOTED ON 2026-06-10 (G12 audit): the run shipped THREE flag spellings — the
   // seeder keyed on `<sceneId>-encounter`, authored variants on the scene id, and
   // architect storylets on `partial_victory`/`escaped` — so every encounter's outcome
   // residue was dead and this gate, off, never even surfaced the desync.
-  // normalizeEncounterOutcomeFlags now unifies setters/consumers at both chokepoints
-  // (FullStoryPipeline.authorEncounterOutcomeVariants + enforceFinalStoryContract),
-  // making the author's variants reachable at runtime. Reversible via =0.
+  // Encounter/choice producer boundaries own canonical flag spelling. Any
+  // final-stage normalization requirement is blocking. Reversible via =0.
   GATE_ENCOUNTER_OUTCOME_VARIANT: true,
   // Continuity remediation: promotes high-precision cross-scene continuity ERRORS
   // (impossible_knowledge/contradiction/missing_setup/timeline_error) to blocking. The
@@ -690,21 +664,6 @@ export const GATE_DEFAULTS: Record<string, boolean> = {
   GATE_INFORMATION_LEDGER_SCHEDULE: true,
   GATE_SIGNATURE_DEVICE_PRESENCE: true,
   GATE_STORY_CIRCLE_ANCHOR_CONFORMANCE: true,
-  // WS2a (CONSISTENCY_PLAN 2026-06-09): reconvergence-residue repair + degrade.
-  // The #1 archived-run killer (16 zero-output runs) was the SceneGraphBranchValidator
-  // missing_branch_residue ERROR escalating straight to a pipeline abort. With this ON,
-  // that finding instead gets (a) ONE targeted SceneCritic regen per offending scene with
-  // the residue requirement injected (reconvergenceResidueRepair.ts), and (b) terminal
-  // degrade-to-advisory — the story SHIPS with a recorded `[advisory]` warning rather
-  // than producing zero output. PROMOTED ON at introduction, mirroring the
-  // GATE_FINAL_CONTRACT_REPAIR rationale: it only runs on an ALREADY-FAILING validation,
-  // its repair is merge-by-beat-id idempotent, and its terminal state is strictly less
-  // destructive than the abort it replaces — it can only rescue a failing run, never
-  // fail a passing one. (Residue is also now authored by construction: planning stamps
-  // a ResidueRequirement on reconvergence-target blueprints and SceneWriter renders it
-  // as a mandatory deliverable, so this gate should rarely fire at all.) Kill-switch:
-  // `GATE_RECONVERGENCE_RESIDUE_REPAIR=0` restores the historical hard-abort behavior.
-  GATE_RECONVERGENCE_RESIDUE_REPAIR: true,
   // G10: SignatureDevicePresence demoted ALL design-note signatures (anything with an
   // em-dash / parenthetical / >12 tokens) to advisory, so two genuinely-staged-but-
   // verbosely-described signatures that were summarized away (Bite Me ep1 Cișmigiu

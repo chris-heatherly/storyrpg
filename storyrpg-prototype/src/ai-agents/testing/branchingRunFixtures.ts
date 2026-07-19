@@ -525,6 +525,7 @@ function branchChoiceSetFixture(): Record<string, unknown> {
         text: 'Step through the hidden door before he can object',
         choiceType: 'relationship',
         nextSceneId: 'scene-2b',
+        allowSceneSkip: true,
         consequences: [
           {
             type: 'relationship',
@@ -553,6 +554,7 @@ function branchChoiceSetFixture(): Record<string, unknown> {
         text: 'Turn from the passage and ask Edric for the truth',
         choiceType: 'relationship',
         nextSceneId: 'scene-2a',
+        allowSceneSkip: true,
         consequences: [
           {
             type: 'relationship',
@@ -606,7 +608,7 @@ function expressionChoiceSetFixture(): Record<string, unknown> {
         reactionText: 'His jaw tightens around the word he will not give you.',
         outcomeTexts: {
           success: 'He gives you a direction if not a name, and the silence after it costs him visibly.',
-          partial: 'He parries the question, but the parry itself tells you where the wound is.',
+          partial: 'He parries the question, but the parry itself tells you where the wound is. You leave the candle and follow the passage into the east garden.',
           failure: 'The shutters come down behind his eyes, and the bell finishes tolling alone.',
         },
       },
@@ -624,7 +626,7 @@ function expressionChoiceSetFixture(): Record<string, unknown> {
         reactionText: 'You let the unsaid name stay where he buried it.',
         outcomeTexts: {
           success: 'Something unknots in his shoulders, and he holds the garden door wider for you.',
-          partial: 'He nods once, grateful and unreadable, and the moment closes without mending anything.',
+          partial: 'He nods once, grateful and unreadable, then walks you through the passage to the east garden door.',
           failure: 'Your restraint reads as indifference, and he mistakes mercy for dismissal.',
         },
       },
@@ -659,7 +661,9 @@ function ensureThreeChoiceSurface(base: Record<string, unknown>): void {
     reactionText: 'You let the silence hold long enough to show what the choice costs.',
     outcomeTexts: {
       success: 'The named cost steadies you, and the next step lands with intent.',
-      partial: 'Naming the cost clarifies the choice without making it easier.',
+      partial: base.sceneId === 'scene-2a'
+        ? 'Naming the cost clarifies the choice. You leave the candle behind, follow the hidden passage, and emerge into the east garden.'
+        : 'Naming the cost clarifies the choice without making it easier.',
       failure: 'The cost grows teeth once spoken, and the room hears it too.',
     },
   });

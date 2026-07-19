@@ -38,11 +38,6 @@ import {
   classifyPhaseError,
   isRuntimeCodeDefectError,
 } from '../../agents/EncounterArchitect';
-import {
-  QuarantinedEncounterUnit,
-  buildQuarantineRetryInput,
-  runQuarantineRetryPass,
-} from './encounterQuarantine';
 import { GeneratedBeat, SceneContent, SceneWriter } from '../../agents/SceneWriter';
 import { EpisodeBlueprint, SceneBlueprint } from '../../agents/StoryArchitect';
 import { TwistPlan } from '../../agents/TwistArchitect';
@@ -117,6 +112,18 @@ import {
   type EncounterProseScanHit,
 } from '../../validators/EncounterQualityValidator';
 import { convertEncounterStructureToEncounter } from '../../converters/encounterConverter';
+import { collectNarrativeEvidenceSurfaceIndex } from '../../validators/encounterTextSurfaces';
+import {
+  findIdentityReferenceViolations,
+  resolveSceneIdentityReferencePolicies,
+} from '../../utils/identityReferencePolicy';
+import { resolvePlayerTemplatesInObject } from '../../utils/playerTemplateResolver';
+import { shrinkClockToAttainable } from '../../utils/encounterDepthContract';
+import {
+  encounterOutcomeFlag,
+  normalizeEncounterOutcomeFlagsInObject,
+} from '../../utils/encounterOutcomeFlags';
+import { applyEncounterPovBackstopToEncounter } from '../encounterPovBackstop';
 
 function ensureCanonicalStateSetters(
   choices: ChoiceSet['choices'],
@@ -142,61 +149,6 @@ function ensureCanonicalStateSetters(
       { type: 'setFlag', flag: stateId, value: true } as never,
     ];
   }
-}
-
-/**
- * Keep pre-reveal identities anonymous even when an encounter model ignores a
- * prompt-only naming prohibition. This is a provenance-preserving rewrite of
- * generated encounter surfaces, not new story authorship: the canonical
- * character remains linked by id while reader-facing names use the scheduled
- * alias or a visual stranger reference.
- */
-function scrubPreRevealIdentityReferences<T>(
-  value: T,
-  contracts: Array<{
-    canonicalName: string;
-    allowedAliases: string[];
-    firstNamedEpisode: number;
-  }> | undefined,
-  episodeNumber: number,
-): T {
-  const replacements = (contracts ?? [])
-    .filter((contract) => contract.firstNamedEpisode > episodeNumber && contract.canonicalName.trim())
-    .flatMap((contract) => {
-      const canonical = contract.canonicalName.trim();
-      const firstName = canonical.split(/\s+/)[0];
-      return [
-        { pattern: canonical, replacement: contract.allowedAliases[0]?.trim() || 'the stranger' },
-        ...(firstName.length >= 3 && firstName !== canonical
-          ? [{ pattern: firstName, replacement: contract.allowedAliases[0]?.trim() || 'the stranger' }]
-          : []),
-      ];
-    });
-  if (replacements.length === 0) return value;
-
-  const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const replaceText = (text: string): string => replacements.reduce(
-    (current, replacement) => current.replace(
-      new RegExp(`\\b${escapeRegExp(replacement.pattern)}\\b`, 'gi'),
-      replacement.replacement,
-    ),
-    text,
-  );
-  const walk = (input: unknown, key?: string): unknown => {
-    if (typeof input === 'string') {
-      if (key === 'id' || /(?:Id|ID)$/.test(key ?? '')) return input;
-      return replaceText(input);
-    }
-    if (Array.isArray(input)) return input.map((item) => walk(item));
-    if (!input || typeof input !== 'object') return input;
-    return Object.fromEntries(
-      Object.entries(input as Record<string, unknown>).map(([entryKey, entryValue]) => [
-        entryKey,
-        walk(entryValue, entryKey),
-      ]),
-    );
-  };
-  return walk(value) as T;
 }
 
 /**
@@ -258,7 +210,17 @@ import {
 } from '../blueprintRouteCuePreflight';
 import { UnresolvedCallbackForPrompt, recordScenePayoffs } from '../callbackOrchestration';
 import { capabilityNoteForProfile } from '../characterCanonFacts';
-import { repairBranchFanOut } from '../choiceAssembly';
+import {
+  namespaceSceneBeatIdsForCommit,
+  normalizeChoiceSetForCommit,
+  reconcileChoiceSetBeatIds,
+  repairBranchFanOut,
+} from '../choiceAssembly';
+import { ensureChoiceBridgeBeats } from '../choiceBridgeBeats';
+import {
+  ensureBlueprintFidelityText,
+  sanitizeSceneContentForReader,
+} from '../readerTextFallbacks';
 import { assignChoiceTypes } from '../choiceTypePlanner';
 import {
   EpisodePlant,
@@ -290,6 +252,7 @@ import { runBoundedDensityRepair } from '../boundedDensityRepair';
 import {
   validateChoiceProducerOutput,
   validateEncounterProducerOutput,
+  validateIdentityReferenceProducerOutput,
   validateSceneProducerOutput,
   type ProducerBlockerFinding,
 } from '../producerBlockerChecks';
@@ -308,13 +271,21 @@ import type {
   NarrativeRealizationTask,
 } from '../../../types/narrativeContract';
 import { stableHash } from '../artifacts/store';
-import {
-  appendDeferredRealizationRecord,
-  buildDeferredRealizationRecord,
-  isCriticalOwnerRealizationFinding,
-  type DeferredRealizationRecord,
-} from '../deferredRealization';
+import type { DeferredRealizationRecord } from '../deferredRealization';
 import { finalizeSceneRealizationHandoff } from '../finalizeSceneRealizationHandoff';
+import {
+  createSceneCriticBudget,
+  type SceneCriticReviewInput,
+  type SceneCriticReviewOutcome,
+} from '../sceneCriticContinuity';
+import {
+  assertNoCommittedSceneMutation,
+  buildSceneCheckpointEnvelope,
+  buildSceneCommitReceipt,
+  readSceneCheckpoint,
+  sceneCommitReceiptMatches,
+  type SceneCommitReceipt,
+} from '../sceneCommit';
 
 export type ContentGenerationResult = {
   sceneContents: SceneContent[];
@@ -322,7 +293,36 @@ export type ContentGenerationResult = {
   encounters: Map<string, EncounterStructure>;
   validationExecutionRecords: ValidatorExecutionRecord[];
   deferredRealizationRecords: DeferredRealizationRecord[];
+  sceneCommitReceipts: SceneCommitReceipt[];
 };
+
+function sceneCriticValidationRegression(
+  baseline: SceneValidationResult | undefined,
+  candidate: SceneValidationResult,
+): string | undefined {
+  if (!baseline) return undefined;
+  if (baseline.overallPassed && !candidate.overallPassed) return 'incremental validation no longer passes';
+  if (baseline.regenerationRequested === 'none' && candidate.regenerationRequested !== 'none') {
+    return `candidate newly requests ${candidate.regenerationRequested} regeneration`;
+  }
+  if (baseline.povClarity?.passed && candidate.povClarity && !candidate.povClarity.passed) {
+    return 'candidate regressed POV clarity';
+  }
+  if (baseline.sensitivity?.passed && candidate.sensitivity && !candidate.sensitivity.passed) {
+    return 'candidate introduced a sensitivity regression';
+  }
+  if (baseline.continuity?.passed && candidate.continuity && !candidate.continuity.passed) {
+    return 'candidate introduced a continuity regression';
+  }
+  if (
+    typeof baseline.voice?.score === 'number'
+    && typeof candidate.voice?.score === 'number'
+    && candidate.voice.score < baseline.voice.score
+  ) {
+    return `candidate lowered the voice score (${baseline.voice.score} -> ${candidate.voice.score})`;
+  }
+  return undefined;
+}
 import { SeasonChoicePlan, episodeTypeCounts } from '../seasonChoicePlan';
 import {
   SeasonSkillPlan,
@@ -335,7 +335,7 @@ import {
   TwistArchitectLike,
   isThreadTwistPlanningEnabled,
   mergeIntoSeasonLedger,
-  materializeTwistPlan,
+  materializeTwistSceneBeforeCommit,
   openPriorThreads,
   planEpisodeThreadsAndTwist,
   sceneActiveThreads,
@@ -559,11 +559,16 @@ export interface ContentGenerationPhaseDeps {
     sceneBlueprint: Pick<SceneBlueprint, 'location' | 'name' | 'description'>,
     worldBible: WorldBible
   ) => WorldBible['locations'][number] | undefined;
-  runSceneCriticPass: (
-    sceneContents: SceneContent[],
-    characterBible: CharacterBible,
-    realizationTasksBySceneId?: Map<string, NarrativeRealizationTask[]>,
-  ) => Promise<void>;
+  reviewSceneBeforeCommit: (input: SceneCriticReviewInput) => Promise<SceneCriticReviewOutcome>;
+  repairEpisodeFinalSceneBeforeCommit: (input: {
+    brief: FullCreativeBrief;
+    worldBible: WorldBible;
+    characterBible: CharacterBible;
+    blueprint: EpisodeBlueprint;
+    sceneContents: SceneContent[];
+    choiceSets: ChoiceSet[];
+    encounters: Map<string, EncounterStructure>;
+  }) => Promise<void>;
   sanitizeReaderFacingSceneName: (name: string | undefined, fallback?: string) => string;
   saveResumeUnit: <T>(
     outputDirectory: string | undefined,
@@ -681,7 +686,7 @@ export class ContentGenerationPhase {
     }
     if (inconclusive.length > 0 && (input.mode ?? 'owner') === 'owner') {
       console.warn(
-        `[SemanticValidation] ${input.sceneId}: ${inconclusive.length} inconclusive judge finding(s) deferred to final regression (no authored repair debit).`,
+        `[SemanticValidation] ${input.sceneId}: ${inconclusive.length} inconclusive judge finding(s) will block the scene-final commit gate.`,
       );
     }
     // Owner-stage returns content findings only — inconclusive/unavailable are infra.
@@ -792,6 +797,81 @@ export class ContentGenerationPhase {
       .filter((p): p is CharacterVoiceProfile => p !== null);
   }
 
+  /** Complete every deterministic projection that used to happen in assembly.
+   * The resulting scene/choice artifacts are the exact objects hashed by the
+   * commit receipt and consumed by descendants. */
+  private finalizeSceneForCommit(
+    brief: FullCreativeBrief,
+    characterBible: CharacterBible,
+    blueprint: EpisodeBlueprint,
+    sceneBlueprint: SceneBlueprint,
+    sceneContents: SceneContent[],
+    choiceSets: ChoiceSet[],
+    encounters: Map<string, EncounterStructure>,
+  ): void {
+    const content = sceneContents.find((scene) => scene.sceneId === sceneBlueprint.id);
+    if (!content) return;
+    namespaceSceneBeatIdsForCommit(content, choiceSets);
+    reconcileChoiceSetBeatIds(sceneContents, choiceSets);
+    ensureBlueprintFidelityText(sceneBlueprint, content);
+    ensureChoiceBridgeBeats(
+      blueprint,
+      sceneBlueprint,
+      content,
+      new Map(choiceSets.map((choiceSet) => [
+        choiceSet.sceneId ? `${choiceSet.sceneId}::${choiceSet.beatId}` : choiceSet.beatId,
+        choiceSet,
+      ])),
+    );
+    sanitizeSceneContentForReader(sceneBlueprint, content);
+    const protagonist = {
+      name: brief.protagonist.name,
+      pronouns: brief.protagonist.pronouns,
+    };
+    const sceneIndex = sceneContents.findIndex((scene) => scene.sceneId === sceneBlueprint.id);
+    if (sceneIndex >= 0) {
+      sceneContents[sceneIndex] = resolvePlayerTemplatesInObject(sceneContents[sceneIndex], protagonist).value;
+      normalizeEncounterOutcomeFlagsInObject(sceneContents[sceneIndex]);
+    }
+    const choiceIndex = choiceSets.findIndex((choiceSet) => choiceSet.sceneId === sceneBlueprint.id);
+    if (choiceIndex >= 0) {
+      choiceSets[choiceIndex] = resolvePlayerTemplatesInObject(
+        normalizeChoiceSetForCommit(choiceSets[choiceIndex]),
+        protagonist,
+      ).value;
+      normalizeEncounterOutcomeFlagsInObject(choiceSets[choiceIndex]);
+    }
+    const encounter = encounters.get(sceneBlueprint.id);
+    if (encounter) {
+      const committedEncounter = resolvePlayerTemplatesInObject(encounter, protagonist).value;
+      normalizeEncounterOutcomeFlagsInObject(committedEncounter);
+      for (const [outcome, storylet] of Object.entries(committedEncounter.storylets ?? {})) {
+        if (!storylet) continue;
+        const flag = encounterOutcomeFlag(committedEncounter.id ?? sceneBlueprint.id, outcome);
+        storylet.consequences = storylet.consequences ?? [];
+        if (!storylet.consequences.some((change) =>
+          change.type === 'flag' && change.name === flag && change.change === true
+        )) {
+          storylet.consequences.push({ type: 'flag', name: flag, change: true });
+        }
+      }
+      const sameGenderNpcNames = characterBible.characters
+        .filter((character) => character.id !== brief.protagonist.id
+          && character.pronouns === brief.protagonist.pronouns)
+        .map((character) => character.name);
+      applyEncounterPovBackstopToEncounter(committedEncounter, protagonist, sameGenderNpcNames);
+      // The depth analyzer operates on the canonical reader encounter shape.
+      // Project once here and carry the honest clock back to the authored
+      // structure so assembly cannot become the first mutating stage.
+      const readerEncounter = convertEncounterStructureToEncounter(committedEncounter, sceneBlueprint);
+      const clockProjection = shrinkClockToAttainable(readerEncounter);
+      if (clockProjection.goalShrunk && clockProjection.goalTo !== undefined) {
+        committedEncounter.goalClock.segments = clockProjection.goalTo;
+      }
+      encounters.set(sceneBlueprint.id, committedEncounter);
+    }
+  }
+
   private async recordResumedSceneValidation(params: {
     sceneBlueprint: SceneBlueprint;
     sceneContent: SceneContent;
@@ -801,8 +881,8 @@ export class ContentGenerationPhase {
     episodeNumber: number;
     encounterValidationEnabled: boolean;
     context: PipelineContext;
-  }): Promise<void> {
-    if (!this.deps.incrementalValidator) return;
+  }): Promise<SceneValidationResult | undefined> {
+    if (!this.deps.incrementalValidator) return undefined;
 
     const {
       sceneBlueprint,
@@ -847,6 +927,7 @@ export class ContentGenerationPhase {
         regenerationRequested: sceneValidation.regenerationRequested,
       },
     });
+    return sceneValidation;
   }
 
   async run(
@@ -869,16 +950,10 @@ export class ContentGenerationPhase {
     const encounters: Map<string, EncounterStructure> = new Map();
     const validationExecutionRecords: ValidatorExecutionRecord[] = [];
     const deferredRealizationRecords: DeferredRealizationRecord[] = [];
-
-    // UNIT QUARANTINE (P2, 2026-07-06): an encounter unit that exhausts its
-    // in-place ladder no longer aborts the run mid-phase (the bite-me abort
-    // discarded 62 minutes of checkpointed work over one encounter). The unit
-    // is quarantined, every other scene finishes and checkpoints, and an
-    // escalated retry pass runs at the end of the phase. Only if THAT fails
-    // does the phase throw — with all sibling units checkpointed, so resume
-    // retries just the failed unit. The missing-encounter guard below and the
-    // final story contract still refuse to ship a story with a missing unit.
-    const quarantinedEncounters: QuarantinedEncounterUnit[] = [];
+    const sceneCommitReceipts: SceneCommitReceipt[] = [];
+    const sceneCriticBudget = createSceneCriticBudget(
+      context.config.sceneCritic?.maxScenesPerEpisode ?? 3,
+    );
 
     // Fix 3: re-assert the choice-type plan on the blueprint THIS loop iterates.
     // assignChoiceTypes also runs right after StoryArchitect, but choicePoint.type
@@ -1683,17 +1758,45 @@ export class ContentGenerationPhase {
           { context: { sceneId: sceneBlueprint.id, unresolvedDeps } }
         );
       }
+      assertNoCommittedSceneMutation(`starting scene ${sceneBlueprint.id}`, {
+        receipts: sceneCommitReceipts,
+        sceneContents,
+        choiceSets,
+        encounters,
+        blueprintScenes: blueprint.scenes,
+      });
 
       const canHydrateResume = outputDirectory && episodeNumber
         && (this.deps.canLoadResumeUnit?.(episodeNumber, sceneUnitId) ?? true);
       if (canHydrateResume) {
-        const resumedScene = this.deps.loadResumeUnit<SceneContent>(outputDirectory, sceneUnitId, sceneCheckpointPath);
-        const resumedChoice = sceneBlueprint.choicePoint
+        const resumedSceneCheckpoint = readSceneCheckpoint(
+          this.deps.loadResumeUnit<unknown>(outputDirectory, sceneUnitId, sceneCheckpointPath),
+          sceneBlueprint,
+        );
+        const resumedScene = resumedSceneCheckpoint?.scene;
+        let resumedChoice = sceneBlueprint.choicePoint
           ? this.deps.loadResumeUnit<ChoiceSet>(outputDirectory, choiceUnitId, choiceCheckpointPath)
           : undefined;
-        const resumedEncounter = sceneBlueprint.isEncounter && sceneBlueprint.encounterType
+        let resumedEncounter = sceneBlueprint.isEncounter && sceneBlueprint.encounterType
           ? this.deps.loadResumeUnit<EncounterStructure>(outputDirectory, encounterUnitId, encounterCheckpointPath)
           : undefined;
+        const resumedReceiptValid = !resumedSceneCheckpoint?.receipt || Boolean(
+          resumedScene
+          && sceneCommitReceiptMatches(
+            resumedSceneCheckpoint.receipt,
+            resumedScene,
+            resumedChoice,
+            resumedEncounter,
+            sceneBlueprint,
+          )
+        );
+        if (resumedSceneCheckpoint?.receipt && !resumedReceiptValid) {
+          context.emit({
+            type: 'warning',
+            phase: 'resume',
+            message: `Discarding committed scene checkpoint for ${sceneBlueprint.id}: scene/choice/encounter hashes no longer agree with its commit receipt.`,
+          });
+        }
         const resumedEncounterTurn = resumedEncounter
           ? assessEncounterTurnRealization(sceneBlueprint, resumedEncounter)
           : undefined;
@@ -1766,13 +1869,88 @@ export class ContentGenerationPhase {
             && resumedEncounterBoilerplate.length === 0
             && resumedEncounterBlockers.length === 0,
           );
-        if (resumedScene && hasRequiredChoice && hasRequiredEncounter) {
+        if (resumedScene && resumedReceiptValid && hasRequiredChoice && hasRequiredEncounter) {
           if (sceneBlueprint.isEncounter && sceneBlueprint.encounterType) {
             this.ensureEncounterBridgeBeat(sceneBlueprint, resumedScene);
           }
-          sceneContents.push(resumedScene);
+          const resumedValidation = await this.recordResumedSceneValidation({
+            sceneBlueprint,
+            sceneContent: resumedScene,
+            choiceSet: resumedChoice,
+            encounter: resumedEncounter,
+            characterBible,
+            episodeNumber: episodeNumber ?? brief.episode.number,
+            encounterValidationEnabled: Boolean(incrementalConfig.encounterValidation),
+            context,
+          });
+          let committedResumedScene = resumedScene;
+          let resumedCriticReview: SceneCriticReviewOutcome;
+          if (resumedSceneCheckpoint.receipt && !resumedSceneCheckpoint.legacy) {
+            resumedCriticReview = {
+              disposition: resumedSceneCheckpoint.receipt.critic.disposition,
+              scene: resumedScene,
+              rewrittenBeatIds: [...resumedSceneCheckpoint.receipt.critic.rewrittenBeatIds],
+              reason: resumedSceneCheckpoint.receipt.critic.reason,
+            };
+            if (['accepted', 'rejected', 'failed'].includes(resumedCriticReview.disposition)) {
+              sceneCriticBudget.attempted += 1;
+              if (resumedCriticReview.disposition === 'accepted') sceneCriticBudget.accepted += 1;
+              if (resumedCriticReview.disposition === 'rejected') sceneCriticBudget.rejected += 1;
+              if (resumedCriticReview.disposition === 'failed') sceneCriticBudget.failed += 1;
+            }
+          } else {
+            let resumedCandidateValidation: SceneValidationResult | undefined;
+            const voiceProfiles = this.buildVoiceProfiles(sceneBlueprint, characterBible);
+            const resumedIdentityPolicies = resolveSceneIdentityReferencePolicies({
+              episodeNumber: densityEpisodeNumber,
+              sceneId: sceneBlueprint.id,
+              identityScheduleContracts: sceneBlueprint.identityScheduleContracts,
+              lexicalArtifactContracts: sceneBlueprint.lexicalArtifactContracts,
+              realizationTasks: sceneBlueprint.realizationTasks,
+            });
+            resumedCriticReview = await this.deps.reviewSceneBeforeCommit({
+              scene: resumedScene,
+              characterBible,
+              realizationTasks: sceneBlueprint.realizationTasks,
+              voiceScore: resumedValidation?.voice?.score,
+              isEncounter: Boolean(sceneBlueprint.isEncounter),
+              budget: sceneCriticBudget,
+              validateCandidate: async (candidate) => {
+                    const identityBlockers = validateIdentityReferenceProducerOutput(
+                      sceneBlueprint.id, 'scene', candidate, resumedIdentityPolicies,
+                    );
+                    if (identityBlockers.length > 0) {
+                      return { accepted: false, reason: identityBlockers.map((finding) => finding.message).join('; ') };
+                    }
+                    if (!this.deps.incrementalValidator) return { accepted: true };
+                    const validation = await this.deps.incrementalValidator!.validateScene(
+                      candidate,
+                      resumedChoice,
+                      voiceProfiles,
+                      undefined,
+                    );
+                    validation.episodeNumber = episodeNumber ?? brief.episode.number;
+                    const regression = sceneCriticValidationRegression(resumedValidation, validation);
+                    if (regression) return { accepted: false, reason: regression };
+                    resumedCandidateValidation = validation;
+                    return { accepted: true };
+                  },
+            });
+            if (resumedCriticReview.disposition === 'accepted') {
+              committedResumedScene = resumedCriticReview.scene;
+              if (resumedCandidateValidation) this.deps.recordSceneValidationResult(resumedCandidateValidation);
+            }
+          }
+          sceneContents.push(committedResumedScene);
           if (resumedChoice) choiceSets.push(resumedChoice);
           if (resumedEncounter) encounters.set(sceneBlueprint.id, resumedEncounter);
+          // Legacy raw checkpoints are unsealed inputs. Upgrade every resumed
+          // artifact through the current pre-commit finalizer before issuing
+          // a v2 receipt; already-sealed checkpoints pass through idempotently.
+          this.finalizeSceneForCommit(brief, characterBible, blueprint, sceneBlueprint, sceneContents, choiceSets, encounters);
+          committedResumedScene = sceneContents.find((scene) => scene.sceneId === sceneBlueprint.id) ?? committedResumedScene;
+          resumedChoice = findChoiceSetForScene(choiceSets, committedResumedScene);
+          resumedEncounter = encounters.get(sceneBlueprint.id);
           if (resumedEncounter && this.deps.incrementalValidator) {
             const conditionIssues = this.deps.incrementalValidator.checkEncounterChoiceConditions(resumedEncounter);
             if (conditionIssues.length > 0) {
@@ -1784,20 +1962,63 @@ export class ContentGenerationPhase {
             }
             this.deps.trackEncounterFlagConsequences(resumedEncounter);
           }
-          await this.recordResumedSceneValidation({
+          await finalizeSceneRealizationHandoff({
             sceneBlueprint,
-            sceneContent: resumedScene,
+            sceneContent: committedResumedScene,
             choiceSet: resumedChoice,
             encounter: resumedEncounter,
-            characterBible,
-            episodeNumber: episodeNumber ?? brief.episode.number,
-            encounterValidationEnabled: Boolean(incrementalConfig.encounterValidation),
-            context,
+            episodeNumber: densityEpisodeNumber,
+            outputDirectory,
+            deferredRecords: deferredRealizationRecords,
+            executionRecords: validationExecutionRecords,
+            emit: context.emit,
+            validate: (request) => this.validateNarrativeRealization(request),
           });
+          const resumedIdentityPolicies = resolveSceneIdentityReferencePolicies({
+            episodeNumber: densityEpisodeNumber,
+            sceneId: sceneBlueprint.id,
+            identityScheduleContracts: sceneBlueprint.identityScheduleContracts,
+            lexicalArtifactContracts: sceneBlueprint.lexicalArtifactContracts,
+            realizationTasks: sceneBlueprint.realizationTasks,
+          });
+          const resumedProducerBlockers: ProducerBlockerFinding[] = [
+            ...validateSceneProducerOutput(sceneBlueprint.id, committedResumedScene),
+            ...(resumedChoice ? validateChoiceProducerOutput(sceneBlueprint.id, resumedChoice) : []),
+            ...(resumedEncounter ? validateEncounterProducerOutput(sceneBlueprint.id, resumedEncounter) : []),
+            ...validateIdentityReferenceProducerOutput(sceneBlueprint.id, 'scene', committedResumedScene, resumedIdentityPolicies),
+            ...(resumedChoice ? validateIdentityReferenceProducerOutput(sceneBlueprint.id, 'choice', resumedChoice, resumedIdentityPolicies) : []),
+            ...(resumedEncounter ? validateIdentityReferenceProducerOutput(sceneBlueprint.id, 'encounter', resumedEncounter, resumedIdentityPolicies) : []),
+          ];
+          if (resumedProducerBlockers.length > 0) {
+            throw new PipelineError(
+              `[ProducerPhaseBlocker] Resumed ${sceneBlueprint.id} failed producer validation before commit.`,
+              'content',
+              { context: { sceneId: sceneBlueprint.id, findings: resumedProducerBlockers } },
+            );
+          }
+          recordScenePayoffs(this.deps.callbackLedger, brief.episode?.number ?? 1, {
+            sceneId: committedResumedScene.sceneId,
+            beats: (committedResumedScene.beats ?? []) as unknown as Parameters<typeof recordScenePayoffs>[2]['beats'],
+          });
+          const resumedReceipt = buildSceneCommitReceipt({
+            episodeNumber: densityEpisodeNumber,
+            scene: committedResumedScene,
+            blueprint: sceneBlueprint,
+            choiceSet: resumedChoice,
+            encounter: resumedEncounter,
+            critic: resumedCriticReview,
+          });
+          sceneCommitReceipts.push(resumedReceipt);
+          await this.deps.saveResumeUnit(
+            outputDirectory,
+            sceneUnitId,
+            sceneCheckpointPath,
+            buildSceneCheckpointEnvelope(committedResumedScene, resumedReceipt),
+          );
           contentWorkCompleted += 1 + (resumedChoice ? 1 : 0) + (resumedEncounter ? 1 : 0);
           finalizedScenes.add(sceneBlueprint.id);
           if (this.deps.generationPlan) {
-            setSceneBeats(this.deps.generationPlan, episodeNumber ?? brief.episode.number, sceneBlueprint.id, resumedScene.beats?.length ?? 0);
+            setSceneBeats(this.deps.generationPlan, episodeNumber ?? brief.episode.number, sceneBlueprint.id, committedResumedScene.beats?.length ?? 0);
           }
           this.deps.emitPhaseProgress(
             'content',
@@ -1814,6 +2035,7 @@ export class ContentGenerationPhase {
         if (resumedScene || resumedChoice || resumedEncounter) {
           const rejectionReasons = [
             !resumedScene ? 'scene draft missing' : '',
+            resumedSceneCheckpoint?.receipt && !resumedReceiptValid ? 'scene commit receipt hash mismatch' : '',
             !hasRequiredChoice
               ? (resumedChoice ? `choice set has ${resumedChoiceBlockers.length} unresolved blocker(s)` : 'choice-set checkpoint missing')
               : '',
@@ -2467,42 +2689,18 @@ export class ContentGenerationPhase {
               },
             });
 
-            sceneContents.push({
-              sceneId: sceneBlueprint.id,
-              sceneName: sceneBlueprint.name,
-              locationId: sceneSettingContext.locationId,
-              beats: [{
-                id: `${sceneBlueprint.id}-fallback-beat-1`,
-                text: `[Scene content generation failed: ${sceneResult.error || 'Unknown error'}]`,
-                nextBeatId: undefined,
-              }],
-              startingBeatId: `${sceneBlueprint.id}-fallback-beat-1`,
-              moodProgression: [sceneBlueprint.mood],
-              charactersInvolved: sceneBlueprint.npcsPresent,
-              keyMoments: [sceneBlueprint.description],
-              continuityNotes: [`SceneWriter failed: ${sceneResult.error}`],
-              settingContext: sceneSettingContext,
+            throw new PipelineError(swFailMsg, 'content', {
+              agent: 'SceneWriter',
+              context: { sceneId: sceneBlueprint.id, sceneName: sceneBlueprint.name },
+              failure: {
+                code: 'prose_realization_failed',
+                ownerStage: 'scene_writer',
+                retryClass: 'repair_scene_prose',
+                issueCodes: ['SCENE_WRITER_EXHAUSTED'],
+                artifactRefs: [],
+                repairTarget: sceneBlueprint.id,
+              },
             });
-            finalizedScenes.add(sceneBlueprint.id);
-            contentWorkCompleted += 1;
-            this.deps.emitPhaseProgress(
-              'content',
-              contentWorkCompleted,
-              contentWorkTotal,
-              'content:work',
-              `Fallback scene scaffold created for ${sceneBlueprint.id}`
-            );
-            if (sceneBlueprint.choicePoint) {
-              contentWorkCompleted += 1;
-              this.deps.emitPhaseProgress(
-                'content',
-                contentWorkCompleted,
-                contentWorkTotal,
-                'content:work',
-                `Skipped choice generation for ${sceneBlueprint.id}`
-              );
-            }
-            continue;
           }
         }
 
@@ -2589,12 +2787,22 @@ export class ContentGenerationPhase {
             const residualBeatDrifts = detectBeatTenseDrift(sceneContent.beats);
             const residualCensus = sceneTenseCensus(sceneContent.beats);
             if (residualBeatDrifts.length > 0 || isSceneWideTenseDrift(residualCensus)) {
-              context.emit({
-                type: 'warning',
-                phase: 'scenes',
-                message: `Scene ${sceneBlueprint.id} still narrates in past tense after tense retry (${residualBeatDrifts.length} blocking beat(s); ${residualCensus.driftedBeats}/${residualCensus.eligibleBeats} beats) — deferring to the final-contract tense repair route.`,
-                data: { driftedBeatIds: residualBeatDrifts.length > 0 ? residualBeatDrifts.map((drift) => drift.beatId ?? '') : residualCensus.driftedBeatIds },
-              });
+              throw new PipelineError(
+                `Scene ${sceneBlueprint.id} still narrates live action in past tense after its bounded retry.`,
+                'scenes',
+                {
+                  agent: 'SceneWriter',
+                  context: { sceneId: sceneBlueprint.id, driftedBeatIds: residualBeatDrifts.map((drift) => drift.beatId ?? '') },
+                  failure: {
+                    code: 'prose_realization_failed',
+                    ownerStage: 'scene_writer',
+                    retryClass: 'repair_scene_prose',
+                    issueCodes: ['SCENE_TENSE_DRIFT'],
+                    artifactRefs: [],
+                    repairTarget: sceneBlueprint.id,
+                  },
+                },
+              );
             }
           }
         }
@@ -2718,58 +2926,39 @@ export class ContentGenerationPhase {
                   message: `Realization retry ${attempt}/2 for ${sceneBlueprint.id}: ${missing.length} under-realized moment(s) remain`,
                 });
               }
-              // Moments the guard refuses to insert BECAUSE they are summary
-              // text (story-circle contracts, design-note prose) are not
-              // scene-fail material: their prose realization is judged
-              // semantically at season-final (judge+regen), where token
-              // heuristics don't force literal summary words into fiction.
-              const deferredSummaryMoments = new Set<string>();
+              // Summary-shaped contracts are not safe literal-token gates.
+              // Hand them to the semantic owner gate later in this same scene
+              // transaction; they never defer past the commit receipt.
+              const semanticSummaryMoments = new Set<string>();
               if (missing.length > 0) {
                 const currentProse = sceneContent.beats.map((beat) => beat.text ?? '').join('\n');
                 for (const moment of missing) {
                   if (isNonStageableRequiredMomentSource(moment, currentProse)) {
-                    deferredSummaryMoments.add(moment.moment);
+                    semanticSummaryMoments.add(moment.moment);
                   }
                 }
                 context.emit({
                   type: 'warning',
                   phase: 'scenes',
-                  message: `Scene ${sceneBlueprint.id} left ${missing.length} authored moment(s) for LLM-owned final realization repair; deterministic prose insertion is disabled.`,
-                  data: { deferred: missing.map((moment) => ({ tier: moment.tier, moment: moment.moment })) },
+                  message: `Scene ${sceneBlueprint.id} has ${missing.length} heuristic realization miss(es); concrete misses block now and summary-shaped misses require scene-final semantic proof.`,
+                  data: { findings: missing.map((moment) => ({ tier: moment.tier, moment: moment.moment })) },
                 });
               }
-              const hardMissing = missing.filter((m) => !deferredSummaryMoments.has(m.moment));
+              const hardMissing = missing.filter((m) => !semanticSummaryMoments.has(m.moment));
               if (missing.length > hardMissing.length) {
                 context.emit({
-                  type: 'warning',
+                  type: 'debug',
                   phase: 'scenes',
-                  message: `Scene ${sceneBlueprint.id} defers ${missing.length - hardMissing.length} summary-shaped authored moment(s) to the season-final realization gate (never inserted as prose).`,
+                  message: `Scene ${sceneBlueprint.id} routes ${missing.length - hardMissing.length} summary-shaped authored moment(s) to its pre-commit semantic owner gate.`,
                 });
               }
               if (hardMissing.length > 0) {
                 const unresolved = hardMissing
                   .map((m) => `[${m.tier}] ${m.moment}`)
                   .join('; ');
-                if (isGateEnabled('GATE_SCENE_REALIZATION_ABORT')) {
-                  throw new Error(
-                    `Scene ${sceneBlueprint.id} still under-realizes authored moment(s) after realization retry: ${unresolved}`,
-                  );
-                }
-                // Two-tier policy: an under-realized scene after the bounded
-                // retry is a quality finding, not a run-safety blocker. The
-                // contract (sceneContent.requiredBeats) travels with the
-                // content, so the season-final realization gate re-detects the
-                // same miss and routes a bounded judge+regen repair there —
-                // degrading here keeps 25 minutes of prior work instead of
-                // discarding the run.
-                context.emit({
-                  type: 'warning',
-                  phase: 'scenes',
-                  message:
-                    `Scene ${sceneBlueprint.id} still under-realizes ${hardMissing.length} authored moment(s) after realization retry — ` +
-                    `deferring to the season-final realization gate: ${unresolved}`,
-                  data: { missing: hardMissing.map((m) => ({ tier: m.tier, moment: m.moment, missingTokens: m.missingTokens })) },
-                });
+                throw new Error(
+                  `Scene ${sceneBlueprint.id} still under-realizes authored moment(s) after realization retry: ${unresolved}`,
+                );
               }
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
@@ -3255,34 +3444,6 @@ export class ContentGenerationPhase {
               }
             }
 
-            // R1.2 step 3/4: defer non-critical residuals to final-contract repair; abort critical.
-            if (ownerTaskFindings.length > 0) {
-              const critical = ownerTaskFindings.filter((finding) =>
-                isCriticalOwnerRealizationFinding(finding, canonicalSceneWriterTasks));
-              const deferrable = ownerTaskFindings.filter((finding) =>
-                !isCriticalOwnerRealizationFinding(finding, canonicalSceneWriterTasks));
-              if (critical.length === 0 && deferrable.length > 0) {
-                const candidateHash = stableHash(sceneContent);
-                for (const finding of deferrable) {
-                  appendDeferredRealizationRecord(deferredRealizationRecords, buildDeferredRealizationRecord({
-                    episodeNumber: densityEpisodeNumber,
-                    sceneId: sceneBlueprint.id,
-                    candidateHash,
-                    finding,
-                    tasks: canonicalSceneWriterTasks,
-                    reason: 'owner_repair_exhausted',
-                  }));
-                }
-                context.emit({
-                  type: 'warning',
-                  phase: 'scenes',
-                  message: `Scene ${sceneBlueprint.id}: deferring ${deferrable.length} non-critical owner finding(s) to final-contract repair.`,
-                  data: { findings: deferrable },
-                });
-                ownerTaskFindings = [];
-              }
-            }
-
             if (ownerTaskFindings.length > 0) {
             if (outputDirectory) {
               const committedSnapshot = JSON.parse(JSON.stringify(sceneContent));
@@ -3352,17 +3513,6 @@ export class ContentGenerationPhase {
         sceneContent.incomingChoiceContext = sceneBlueprint.incomingChoiceContext;
 
         sceneContents.push(sceneContent);
-
-        // Within-episode callback crediting: record this scene's textVariant payoffs
-        // NOW, so later scenes in the same episode see up-to-date hook counts in
-        // getUnresolvedCallbacksForPrompt (previously only the end-of-episode harvest
-        // credited them — scene 5 was still offered a hook scene 2 had already paid,
-        // double-acknowledging the same decision). The beat-level dedupe key makes
-        // the end-of-episode harvest re-scan a no-op for these beats.
-        recordScenePayoffs(this.deps.callbackLedger, brief.episode?.number ?? 1, {
-          sceneId: sceneContent.sceneId,
-          beats: (sceneContent.beats ?? []) as unknown as Parameters<typeof recordScenePayoffs>[2]['beats'],
-        });
 
         context.emit({
           type: 'agent_complete',
@@ -3746,40 +3896,24 @@ export class ContentGenerationPhase {
               }
             }
 
-            // Shared-resolution residue on an otherwise-valid choice set is
-            // missing MEANING, not broken structure: the options, consequences,
-            // and outcome tiers all passed. Its own failure metadata names
-            // repair_choice — the route the episode contract executes — so a
-            // non-critical residue flows into the normal commit path below and
-            // defers there instead of discarding the run (killed s1-4 in
-            // bite-me_2026-07-14T17-29-14 after cross-atom repair progress).
+            // Shared-resolution meaning belongs to the choice owner. Residue
+            // blocks this scene; it cannot ride into an episode repair pass.
             if (choiceResult.success && choiceResult.data && hasOnlySharedResolutionBlockers()) {
-              const sharedResolutionCritical = choiceOwnerBlockers.filter((finding) =>
-                isCriticalOwnerRealizationFinding(finding, sceneBlueprint.realizationTasks ?? []));
-              if (sharedResolutionCritical.length > 0) {
-                throw new PipelineError(
-                  `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} shared choice resolution did not satisfy its route-invariant contract after focused LLM repair.`,
-                  'choices',
-                  {
-                    agent: 'ChoiceAuthor',
-                    context: { sceneId: sceneBlueprint.id, findings: choiceOwnerBlockers },
-                    failure: {
-                      code: 'owner_realization_failed',
-                      ownerStage: 'choice_author',
-                      retryClass: 'repair_choice',
-                      issueCodes: Array.from(new Set(choiceOwnerBlockers.map((finding) => finding.code))),
-                      repairTarget: choiceOwnerBlockers[0]?.taskId,
-                    },
+              throw new PipelineError(
+                `[OwnerStageRealizationBlocker] ${sceneBlueprint.id} shared choice resolution did not satisfy its route-invariant contract after focused LLM repair.`,
+                'choices',
+                {
+                  agent: 'ChoiceAuthor',
+                  context: { sceneId: sceneBlueprint.id, findings: choiceOwnerBlockers },
+                  failure: {
+                    code: 'owner_realization_failed',
+                    ownerStage: 'choice_author',
+                    retryClass: 'repair_choice',
+                    issueCodes: Array.from(new Set(choiceOwnerBlockers.map((finding) => finding.code))),
+                    repairTarget: choiceOwnerBlockers[0]?.taskId,
                   },
-                );
-              }
-              context.emit({
-                type: 'warning',
-                phase: 'choices',
-                message: `Scene ${sceneBlueprint.id}: ${choiceOwnerBlockers.length} shared-resolution meaning miss(es) remain after focused repair — committing the valid choice set and deferring to episode-contract repair.`,
-                data: { findings: choiceOwnerBlockers },
-              });
-              choiceOwnerBlockers = [];
+                },
+              );
             }
 
             if (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0) {
@@ -3789,6 +3923,23 @@ export class ContentGenerationPhase {
               const caFailMsg = `Choice Author failed on ${sceneBlueprint.id} after ${choiceAuthorAttempt} attempt(s): ${choiceResult.error}`;
               console.error(`[Pipeline] ❌ ${caFailMsg}`);
               context.emit({ type: 'warning', phase: 'choices', message: caFailMsg });
+              throw new PipelineError(caFailMsg, 'choices', {
+                agent: 'ChoiceAuthor',
+                context: { sceneId: sceneBlueprint.id, findings: [...choiceOwnerBlockers, ...choiceProducerBlockers] },
+                failure: {
+                  code: 'owner_realization_failed',
+                  ownerStage: 'choice_author',
+                  retryClass: 'repair_choice',
+                  issueCodes: Array.from(new Set([
+                    ...choiceOwnerBlockers.map((finding) => finding.code),
+                    ...choiceProducerBlockers.map((finding) => finding.type),
+                  ])),
+                  artifactRefs: [],
+                  repairTarget: sceneBlueprint.id,
+                },
+              });
+              /* Legacy deterministic choice fallback removed from execution:
+               * a generated scene cannot be sealed with synthetic choices.
               // Branch-aware fallback: a choiceless BRANCH POINT would unrealize the branch
               // and hard-abort at GATE_BRANCH_FANOUT, so route across leadsTo. Any planned
               // choice point also needs a deterministic set when ChoiceAuthor fails; otherwise
@@ -3875,51 +4026,17 @@ export class ContentGenerationPhase {
                 refreshEpisodePlantsForChoiceSet(preparedFallback);
                 context.emit({ type: 'warning', phase: 'choices', message: `Inserted ${fallbackValidation.ownerBlockers.length > 0 ? 'best-available' : 'deterministic fallback'} choice set for ${sceneBlueprint.id} (${preparedFallback.choices.length} choice(s)) and planted its on-page contracts after ChoiceAuthor failed.` });
               }
+              */
             } else {
             const preparedChoiceSet = prepareChoiceCandidate(choiceResult.data, choicePointBeat);
             const preparedValidation = await validateChoiceCandidate(preparedChoiceSet);
-            // Structural damage (producer findings) or forbidden/unknown-task
-            // residue still blocks the commit; non-critical missing meaning on
-            // the prepared set defers to the episode contract's repair_choice
-            // route with a replayable diagnostic.
-            const preparedCritical = preparedValidation.ownerBlockers.filter((finding) =>
-              isCriticalOwnerRealizationFinding(finding, sceneBlueprint.realizationTasks ?? []));
-            if (preparedCritical.length > 0 || preparedValidation.producerBlockers.length > 0) {
+            // Every owner or producer blocker must be resolved before commit.
+            if (preparedValidation.ownerBlockers.length > 0 || preparedValidation.producerBlockers.length > 0) {
               throw new PipelineError(
                 `[ChoiceCommitBlocker] ${sceneBlueprint.id} failed its choice contract after deterministic projections were applied.`,
                 'choices',
                 { agent: 'ChoiceAuthor', context: { sceneId: sceneBlueprint.id, findings: [...preparedValidation.ownerBlockers, ...preparedValidation.producerBlockers] } },
               );
-            }
-            if (preparedValidation.ownerBlockers.length > 0) {
-              const candidateHash = stableHash(preparedChoiceSet);
-              if (outputDirectory) {
-                await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-choice-realization-blockers.json`, {
-                  schemaVersion: 1,
-                  episodeNumber: densityEpisodeNumber,
-                  sceneId: sceneBlueprint.id,
-                  candidateHash,
-                  findings: preparedValidation.ownerBlockers,
-                  realizationTasks: sceneBlueprint.realizationTasks ?? [],
-                  candidate: preparedChoiceSet,
-                });
-              }
-              for (const finding of preparedValidation.ownerBlockers) {
-                appendDeferredRealizationRecord(deferredRealizationRecords, buildDeferredRealizationRecord({
-                  episodeNumber: densityEpisodeNumber,
-                  sceneId: sceneBlueprint.id,
-                  candidateHash,
-                  finding,
-                  tasks: sceneBlueprint.realizationTasks ?? [],
-                  reason: 'owner_repair_exhausted',
-                }));
-              }
-              context.emit({
-                type: 'warning',
-                phase: 'choices',
-                message: `Scene ${sceneBlueprint.id}: committing choices with ${preparedValidation.ownerBlockers.length} deferred meaning miss(es) for episode-contract repair.`,
-                data: { findings: preparedValidation.ownerBlockers },
-              });
             }
             choiceResult.data = preparedChoiceSet;
             const choiceAdvisories = (await choiceRealizationFindings(choiceResult.data)).filter((finding) => !finding.blocking);
@@ -4714,20 +4831,27 @@ export class ContentGenerationPhase {
           brief.protagonist,
         ).filter(isStageablePresent).filter(isAnonymousPlantRef);
 
-        const identityScheduleFor = (npcId: string) =>
-          sceneBlueprint.identityScheduleContracts?.find((contract) => contract.characterId === npcId);
+        const promptIdentityPolicies = resolveSceneIdentityReferencePolicies({
+          episodeNumber: episodeNumber ?? brief.episode.number,
+          sceneId: sceneBlueprint.id,
+          identityScheduleContracts: sceneBlueprint.identityScheduleContracts,
+          lexicalArtifactContracts: sceneBlueprint.lexicalArtifactContracts,
+          realizationTasks: sceneBlueprint.realizationTasks,
+        });
+        const identityPolicyFor = (npcId: string) =>
+          promptIdentityPolicies.find((policy) => policy.characterId === npcId);
         const promptSafeIdentityText = (npcId: string, text: string, anonymous = false): string => {
-          const schedule = identityScheduleFor(npcId);
-          if (!schedule || (episodeNumber ?? brief.episode.number) >= schedule.firstNamedEpisode) return text;
-          const replacement = anonymous ? 'the stranger' : (schedule.allowedAliases[0] || 'the unnamed figure');
-          return [schedule.canonicalName, ...schedule.forbiddenBeforeNamedEpisode]
+          const policy = identityPolicyFor(npcId);
+          if (!policy || policy.forbiddenReferences.length === 0) return text;
+          const replacement = anonymous ? 'the stranger' : (policy.availableAliases[0] || 'the unnamed figure');
+          return policy.forbiddenReferences
             .filter(Boolean)
             .reduce((value, forbidden) => value.replace(new RegExp(`\\b${forbidden.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'gi'), replacement), text);
         };
         const promptSafeNpcName = (npcId: string, fallback: string, anonymous = false): string => {
-          const schedule = identityScheduleFor(npcId);
-          if (!schedule || (episodeNumber ?? brief.episode.number) >= schedule.firstNamedEpisode) return fallback;
-          return anonymous ? 'the stranger' : (schedule.allowedAliases[0] || 'the unnamed figure');
+          const policy = identityPolicyFor(npcId);
+          if (!policy || policy.forbiddenReferences.length === 0) return fallback;
+          return anonymous ? 'the stranger' : (policy.availableAliases[0] || 'the unnamed figure');
         };
 
         let npcsInvolved = [
@@ -4937,6 +5061,7 @@ export class ContentGenerationPhase {
           encounterRequiredNpcIds,
           characterPresenceContracts: sceneBlueprint.characterPresenceContracts,
           identityScheduleContracts: sceneBlueprint.identityScheduleContracts,
+          lexicalArtifactContracts: sceneBlueprint.lexicalArtifactContracts,
           characterRoleConstraints: sceneBlueprint.characterRoleConstraints,
           encounterParticipationContract: sceneBlueprint.encounterParticipationContract,
           encounterRelevantSkills,
@@ -5074,6 +5199,19 @@ export class ContentGenerationPhase {
             candidateHash: stableHash(encounter),
           })).findings;
         };
+        const encounterIdentityPolicies = resolveSceneIdentityReferencePolicies({
+          episodeNumber: episodeNumber ?? brief.episode.number,
+          sceneId: sceneBlueprint.id,
+          identityScheduleContracts: sceneBlueprint.identityScheduleContracts,
+          lexicalArtifactContracts: sceneBlueprint.lexicalArtifactContracts,
+          realizationTasks: sceneBlueprint.realizationTasks,
+        });
+        const encounterIdentityViolations = (encounter: EncounterStructure) =>
+          findIdentityReferenceViolations(
+            collectNarrativeEvidenceSurfaceIndex({ encounter }),
+            encounterIdentityPolicies,
+            'encounter',
+          );
         const maxEncounterAttempts = 2;
         for (let encAttempt = 1; encAttempt <= maxEncounterAttempts; encAttempt++) {
           // Failure-class-aware retry (P1): prompt feedback only helps content
@@ -5118,8 +5256,13 @@ export class ContentGenerationPhase {
                   if (encounterOwnerBlockers.length > 0) {
                     lastEncounterFailure = `EncounterArchitect missed canonical owner-stage realization task(s): ${encounterOwnerBlockers.map((finding) => ownerRealizationRepairFeedback(finding, sceneBlueprint.realizationTasks)).join('; ')}`;
                   } else {
-                    encounterResult = attemptResult;
-                    break;
+                    const identityViolations = encounterIdentityViolations(attemptResult.data);
+                    if (identityViolations.length > 0) {
+                      lastEncounterFailure = `EncounterArchitect used identity reference(s) unavailable in this scene: ${identityViolations.map((violation) => `"${violation.reference}" at ${violation.fieldPath}`).join('; ')}. Keep those identities anonymous using only legal visual or behavioral descriptions.`;
+                    } else {
+                      encounterResult = attemptResult;
+                      break;
+                    }
                   }
                 }
               }
@@ -5156,6 +5299,31 @@ export class ContentGenerationPhase {
         };
 
         if (!encounterResult) {
+          // A scene cannot be skipped and recovered after its descendants are
+          // authored. All local encounter attempts are exhausted here, so fail
+          // this owner transaction and let resume retain only earlier receipts.
+          throw new PipelineError(
+            `Encounter ${sceneBlueprint.id} exhausted ${maxEncounterAttempts} owner-stage attempt(s): ${lastEncounterFailure || 'unknown failure'}`,
+            'encounters',
+            {
+              agent: 'EncounterArchitect',
+              context: {
+                sceneId: sceneBlueprint.id,
+                diagnostics: lastEncounterFailureDiagnostics,
+                failureKind: 'content',
+              },
+              failure: {
+                code: 'encounter_owner_repair_exhausted',
+                ownerStage: 'encounter_architect',
+                retryClass: 'repair_encounter_route',
+                issueCodes: ['ENCOUNTER_OWNER_ATTEMPTS_EXHAUSTED'],
+                artifactRefs: [],
+                repairTarget: sceneBlueprint.id,
+              },
+            },
+          );
+          /* Legacy end-of-phase quarantine removed from execution: it allowed
+           * descendants to consume an uncommitted encounter scene.
           // UNIT QUARANTINE (P2): do NOT abort the run here. Quarantine this
           // unit, keep generating (and checkpointing) every other scene, and
           // give it one escalated retry at the end of the phase. A budget-class
@@ -5208,22 +5376,21 @@ export class ContentGenerationPhase {
               if (quarantineOwnerBlockers.length > 0) {
                 return `quarantine retry missed canonical owner-stage realization task(s): ${quarantineOwnerBlockers.map((finding) => `${finding.taskId}: ${finding.message}`).join('; ')}`;
               }
-              const sanitizedStructure = scrubPreRevealIdentityReferences(
-                structure,
-                sceneBlueprint.identityScheduleContracts,
-                episodeNumber ?? brief.episode.number,
-              );
-              plantEncounterInfoMarkers(sanitizedStructure);
-              encounters.set(sceneBlueprint.id, sanitizedStructure);
+              const identityViolations = encounterIdentityViolations(structure);
+              if (identityViolations.length > 0) {
+                return `quarantine retry used unavailable identity reference(s): ${identityViolations.map((violation) => `"${violation.reference}" at ${violation.fieldPath}`).join('; ')}`;
+              }
+              plantEncounterInfoMarkers(structure);
+              encounters.set(sceneBlueprint.id, structure);
               this.deps.captureEncounterTelemetry(result.metadata, sceneBlueprint.id);
               if (this.deps.incrementalValidator) {
-                this.deps.trackEncounterFlagConsequences(sanitizedStructure);
+                this.deps.trackEncounterFlagConsequences(structure);
               }
               // Quarantine recovery bypasses the normal encounterResult path;
               // record its incremental scene lock here so the episode lock can
               // distinguish a recovered encounter from a missing scene.
               if (this.deps.incrementalValidator && incrementalConfig.encounterValidation) {
-                const encounterValidation = this.deps.incrementalValidator.validators.encounter.validateEncounter(sanitizedStructure);
+                const encounterValidation = this.deps.incrementalValidator.validators.encounter.validateEncounter(structure);
                 this.deps.recordSceneValidationResult({
                   sceneId: sceneBlueprint.id,
                   episodeNumber: brief.episode.number,
@@ -5245,16 +5412,17 @@ export class ContentGenerationPhase {
                   this.deps.generationPlan,
                   episodeNumber ?? brief.episode.number,
                   sceneBlueprint.id,
-                  sanitizedStructure.beats.length,
+                  structure.beats.length,
                 );
                 this.deps.emitPlanUpdate(`Encounter ${sceneBlueprint.id} recovered from quarantine`);
               }
               if (outputDirectory && episodeNumber) {
-                await this.deps.saveResumeUnit(outputDirectory, encounterUnitId, encounterCheckpointPath, sanitizedStructure);
+                await this.deps.saveResumeUnit(outputDirectory, encounterUnitId, encounterCheckpointPath, structure);
               }
               return null;
             },
           });
+          */
         }
 
         // Only register encounter + run validation if EncounterArchitect succeeded
@@ -5269,11 +5437,6 @@ export class ContentGenerationPhase {
               data: { findings: encounterAdvisories },
             });
           }
-          encounterResult.data = scrubPreRevealIdentityReferences(
-            encounterResult.data,
-            sceneBlueprint.identityScheduleContracts,
-            episodeNumber ?? brief.episode.number,
-          );
           plantEncounterInfoMarkers(encounterResult.data);
           encounters.set(sceneBlueprint.id, encounterResult.data);
           this.deps.captureEncounterTelemetry(encounterResult.metadata, sceneBlueprint.id);
@@ -5432,12 +5595,11 @@ export class ContentGenerationPhase {
                     // the same budget as every other repair, or a pathological
                     // producer could re-author unbounded fields for free.
                     if (!shouldAttemptRemediation(this.deps.remediationBudget)) {
-                      context.emit({
-                        type: 'warning',
-                        phase: 'encounter',
-                        message: `Encounter ${sceneBlueprint.id}: remediation budget exhausted — leaving planning-register prose in ${field.path} for final-contract repair.`,
-                      });
-                      break;
+                      throw new PipelineError(
+                        `Encounter ${sceneBlueprint.id} cannot seal with planning-register prose in ${field.path}; local remediation budget is exhausted.`,
+                        'encounters',
+                        { agent: 'EncounterArchitect', context: { sceneId: sceneBlueprint.id, fieldPath: field.path } },
+                      );
                     }
                     this.deps.remediationBudget?.spend(1);
                     sanitationAttempts += 1;
@@ -5450,11 +5612,11 @@ export class ContentGenerationPhase {
                       field.set(next.trim());
                       sanitized += 1;
                     } else {
-                      context.emit({
-                        type: 'warning',
-                        phase: 'encounter',
-                        message: `Encounter ${sceneBlueprint.id}: planning-register prose remains in ${field.path} after re-author — final contract will re-detect it.`,
-                      });
+                      throw new PipelineError(
+                        `Encounter ${sceneBlueprint.id} still contains planning-register prose in ${field.path} after re-author.`,
+                        'encounters',
+                        { agent: 'EncounterArchitect', context: { sceneId: sceneBlueprint.id, fieldPath: field.path } },
+                      );
                     }
                   }
                   if (sanitationAttempts > 0) {
@@ -5550,6 +5712,7 @@ export class ContentGenerationPhase {
                     const regenCollisions = this.deps.getPhase4DefaultCollisions(regenEncounterResult.metadata);
                     const regenTemplateHits = scanEncounterBoilerplate(regenEncounterResult.data, sceneBlueprint);
                     const regenTurnRealization = assessEncounterTurnRealization(sceneBlueprint, regenEncounterResult.data);
+                    const regenIdentityViolations = encounterIdentityViolations(regenEncounterResult.data);
 
                     if (!regenTurnRealization.passed) {
                       context.emit({
@@ -5560,17 +5723,12 @@ export class ContentGenerationPhase {
                       continue;
                     }
 
-                    if (regenValidation.passed ||
+                    if (regenIdentityViolations.length === 0 && (regenValidation.passed ||
                         regenValidation.issues.length < encounterValidation.issues.length ||
                         regenCollisions.length < phase4Collisions.length ||
-                        regenTemplateHits.length < templateHits.length) {
-                      const sanitizedRegen = scrubPreRevealIdentityReferences(
-                        regenEncounterResult.data,
-                        sceneBlueprint.identityScheduleContracts,
-                        episodeNumber ?? brief.episode.number,
-                      );
-                      plantEncounterInfoMarkers(sanitizedRegen);
-                      encounters.set(sceneBlueprint.id, sanitizedRegen);
+                        regenTemplateHits.length < templateHits.length)) {
+                      plantEncounterInfoMarkers(regenEncounterResult.data);
+                      encounters.set(sceneBlueprint.id, regenEncounterResult.data);
                       this.deps.captureEncounterTelemetry(regenEncounterResult.metadata, sceneBlueprint.id);
                       // overallPassed is driven only by the real validator —
                       // collisions never flip a passing scene to failed.
@@ -5648,11 +5806,11 @@ export class ContentGenerationPhase {
                 }
                 const fallbackResidue = templateHits.filter((hit) => hit.source === 'fallback');
                 if (fallbackResidue.length > 0) {
-                  context.emit({
-                    type: 'warning',
-                    phase: 'encounters',
-                    message: `Encounter ${sceneBlueprint.id}: ${fallbackResidue.length} deterministic fallback string(s) remain after the targeted re-author (${fallbackResidue.slice(0, 3).map((hit) => hit.label).join(', ')}) — deferred to the final contract's unsafe_fallback_prose repair loop.`,
-                  });
+                  throw new PipelineError(
+                    `Encounter ${sceneBlueprint.id} still contains ${fallbackResidue.length} deterministic fallback string(s) after targeted re-author.`,
+                    'encounters',
+                    { agent: 'EncounterArchitect', context: { sceneId: sceneBlueprint.id, fallbackFields: fallbackResidue.map((hit) => hit.label) } },
+                  );
                 }
               }
 
@@ -5662,14 +5820,11 @@ export class ContentGenerationPhase {
               // the only fix, so failing the episode here is correct and far
               // cheaper than the guaranteed run-level abort at the final
               // contract after every remaining episode had been paid for.
-              // Gated (GATE_ENCOUNTER_TEMPLATE_ABORT, default ON); when off,
-              // the collapse defers to encounter_template_collapse at the
-              // final contract. Validation ISSUES without template prose keep
-              // the existing ship-with-advisory behavior.
+              // Template collapse always blocks this encounter before commit;
+              // there is no late-stage kill switch or repair pass.
               const templateCollapseHits = templateHits.filter((hit) => hit.source === 'template');
               if (templateCollapseHits.length > 0) {
-                if (isGateEnabled('GATE_ENCOUNTER_TEMPLATE_ABORT')) {
-                  throw new PipelineError(
+                throw new PipelineError(
                     `Encounter ${sceneBlueprint.id} still contains template prose after regeneration (${templateCollapseHits.slice(0, 3).map(hit => `"${hit.snippet.slice(0, 60)}…"`).join(', ')}). Template prose must never ship — failing at generation time.`,
                     'encounters',
                     {
@@ -5683,12 +5838,6 @@ export class ContentGenerationPhase {
                       },
                     }
                   );
-                }
-                context.emit({
-                  type: 'warning',
-                  phase: 'encounters',
-                  message: `Encounter ${sceneBlueprint.id}: ${templateCollapseHits.length} template signature(s) remain with GATE_ENCOUNTER_TEMPLATE_ABORT off — deferred to the final contract's template-collapse gate.`,
-                });
               }
             }
           }
@@ -5702,11 +5851,140 @@ export class ContentGenerationPhase {
           `Encounter pass complete for ${sceneBlueprint.id}`
         );
       }
-      const completedScene = sceneContents.find((sc) => sc.sceneId === sceneBlueprint.id);
-      const completedChoice = completedScene ? findChoiceSetForScene(choiceSets, completedScene) : undefined;
-      const completedEncounter = encounters.get(sceneBlueprint.id);
-      const quarantinePending = !completedEncounter
-        && quarantinedEncounters.some((unit) => unit.sceneId === sceneBlueprint.id);
+      // Scene sealing boundary: assembly-compatible routing, bridge, reader-text,
+      // and choice canonicalization all happen before critique and receipt issue.
+      this.finalizeSceneForCommit(brief, characterBible, blueprint, sceneBlueprint, sceneContents, choiceSets, encounters);
+      if (this.deps.isEpisodeFinalScene(sceneBlueprint, blueprint)) {
+        await this.deps.repairEpisodeFinalSceneBeforeCommit({
+          brief,
+          worldBible,
+          characterBible,
+          blueprint,
+          sceneContents,
+          choiceSets,
+          encounters,
+        });
+        // A cliffhanger candidate may replace final-scene prose. Re-run the
+        // idempotent canonicalizer so the committed artifact remains exact.
+        this.finalizeSceneForCommit(brief, characterBible, blueprint, sceneBlueprint, sceneContents, choiceSets, encounters);
+      }
+      let completedScene = sceneContents.find((sc) => sc.sceneId === sceneBlueprint.id);
+      let completedChoice = completedScene ? findChoiceSetForScene(choiceSets, completedScene) : undefined;
+      let completedEncounter = encounters.get(sceneBlueprint.id);
+      const quarantinePending = false;
+      let criticReview: SceneCriticReviewOutcome = {
+        disposition: 'not_eligible',
+        scene: completedScene ?? ({ sceneId: sceneBlueprint.id, beats: [] } as unknown as SceneContent),
+        rewrittenBeatIds: [],
+        reason: completedScene ? 'scene did not qualify for review' : 'scene content unavailable',
+      };
+      let criticCandidateValidation: SceneValidationResult | undefined;
+      if (completedScene && !quarantinePending) {
+        const baselineValidation = [...this.deps.sceneValidationResults]
+          .reverse()
+          .find((result) => result.sceneId === sceneBlueprint.id && (
+            result.episodeNumber === undefined || result.episodeNumber === densityEpisodeNumber
+          ));
+        const voiceProfiles = this.buildVoiceProfiles(sceneBlueprint, characterBible);
+        const criticIdentityPolicies = resolveSceneIdentityReferencePolicies({
+          episodeNumber: densityEpisodeNumber,
+          sceneId: sceneBlueprint.id,
+          identityScheduleContracts: sceneBlueprint.identityScheduleContracts,
+          lexicalArtifactContracts: sceneBlueprint.lexicalArtifactContracts,
+          realizationTasks: sceneBlueprint.realizationTasks,
+        });
+        criticReview = await this.deps.reviewSceneBeforeCommit({
+          scene: completedScene,
+          characterBible,
+          realizationTasks: sceneBlueprint.realizationTasks,
+          voiceScore: baselineValidation?.voice?.score,
+          isEncounter: Boolean(sceneBlueprint.isEncounter),
+          budget: sceneCriticBudget,
+          validateCandidate: async (candidate) => {
+                const identityBlockers = validateIdentityReferenceProducerOutput(
+                  sceneBlueprint.id, 'scene', candidate, criticIdentityPolicies,
+                );
+                if (identityBlockers.length > 0) {
+                  return { accepted: false, reason: identityBlockers.map((finding) => finding.message).join('; ') };
+                }
+                if (!this.deps.incrementalValidator) return { accepted: true };
+                const validation = await this.deps.incrementalValidator!.validateScene(
+                  candidate,
+                  completedChoice,
+                  voiceProfiles,
+                  undefined,
+                );
+                validation.episodeNumber = densityEpisodeNumber;
+                const regression = sceneCriticValidationRegression(baselineValidation, validation);
+                if (regression) return { accepted: false, reason: regression };
+                criticCandidateValidation = validation;
+                return { accepted: true };
+              },
+        });
+        if (criticReview.disposition === 'accepted') {
+          const sceneIndex = sceneContents.findIndex((scene) => scene.sceneId === sceneBlueprint.id);
+          if (sceneIndex >= 0) sceneContents[sceneIndex] = criticReview.scene;
+          completedScene = criticReview.scene;
+          if (criticCandidateValidation) this.deps.recordSceneValidationResult(criticCandidateValidation);
+          context.emit({
+            type: 'checkpoint',
+            phase: 'scene_critic',
+            message: `Rewrote ${criticReview.rewrittenBeatIds.length} beat(s) in scene ${sceneBlueprint.id} before commit`,
+            data: {
+              sceneId: sceneBlueprint.id,
+              beatsRewritten: criticReview.rewrittenBeatIds.length,
+              commentary: criticReview.commentary,
+            },
+          });
+        } else if (criticReview.disposition === 'rejected' || criticReview.disposition === 'failed') {
+          context.emit({
+            type: 'warning',
+            phase: 'scene_critic',
+            message: `SceneCritic kept the accepted prose for ${sceneBlueprint.id}: ${criticReview.reason || criticReview.disposition}`,
+          });
+        }
+      }
+      if (completedScene && !quarantinePending) {
+        this.finalizeSceneForCommit(brief, characterBible, blueprint, sceneBlueprint, sceneContents, choiceSets, encounters);
+        const twistBinding = materializeTwistSceneBeforeCommit(
+          this.deps.episodeTwistPlans.get(episodeNumber ?? brief.episode.number),
+          sceneContents.find((scene) => scene.sceneId === sceneBlueprint.id)
+            ?? ({ sceneId: sceneBlueprint.id, beats: [] } as unknown as SceneContent),
+        );
+        if (twistBinding.status === 'invalid') {
+          throw new PipelineError(
+            twistBinding.reason ?? `Twist plan could not bind scene ${sceneBlueprint.id} before commit.`,
+            'content',
+            {
+              context: { sceneId: sceneBlueprint.id, twistBinding },
+              failure: {
+                code: 'prose_realization_failed',
+                ownerStage: 'scene_content',
+                retryClass: 'repair_scene_prose',
+                issueCodes: ['TWIST_MATERIALIZATION_FAILED'],
+                repairTarget: sceneBlueprint.id,
+              },
+            },
+          );
+        }
+        if (twistBinding.status === 'bound') {
+          context.emit({
+            type: 'debug',
+            phase: 'content',
+            message: `Bound planned twist ${twistBinding.role} to ${sceneBlueprint.id}/${twistBinding.beatId} before commit.`,
+          });
+        }
+        completedScene = sceneContents.find((scene) => scene.sceneId === sceneBlueprint.id);
+        completedChoice = completedScene ? findChoiceSetForScene(choiceSets, completedScene) : undefined;
+        completedEncounter = encounters.get(sceneBlueprint.id);
+        assertNoCommittedSceneMutation(`finalizing scene ${sceneBlueprint.id}`, {
+          receipts: sceneCommitReceipts,
+          sceneContents,
+          choiceSets,
+          encounters,
+          blueprintScenes: blueprint.scenes,
+        });
+      }
       if (!quarantinePending) {
         await finalizeSceneRealizationHandoff({
           sceneBlueprint,
@@ -5726,6 +6004,16 @@ export class ContentGenerationPhase {
         ...(completedChoice ? validateChoiceProducerOutput(sceneBlueprint.id, completedChoice) : []),
         ...(completedEncounter ? validateEncounterProducerOutput(sceneBlueprint.id, completedEncounter) : []),
       ];
+      const sceneIdentityPolicies = resolveSceneIdentityReferencePolicies({
+        episodeNumber: densityEpisodeNumber,
+        sceneId: sceneBlueprint.id,
+        identityScheduleContracts: sceneBlueprint.identityScheduleContracts,
+        lexicalArtifactContracts: sceneBlueprint.lexicalArtifactContracts,
+        realizationTasks: sceneBlueprint.realizationTasks,
+      });
+      if (completedScene) producerBlockers.push(...validateIdentityReferenceProducerOutput(sceneBlueprint.id, 'scene', completedScene, sceneIdentityPolicies));
+      if (completedChoice) producerBlockers.push(...validateIdentityReferenceProducerOutput(sceneBlueprint.id, 'choice', completedChoice, sceneIdentityPolicies));
+      if (completedEncounter) producerBlockers.push(...validateIdentityReferenceProducerOutput(sceneBlueprint.id, 'encounter', completedEncounter, sceneIdentityPolicies));
       if (producerBlockers.length > 0) {
         if (outputDirectory) {
           await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-producer-blockers.json`, {
@@ -5756,8 +6044,44 @@ export class ContentGenerationPhase {
           },
         );
       }
-      if (completedScene && outputDirectory && episodeNumber) {
-        await this.deps.saveResumeUnit(outputDirectory, sceneUnitId, sceneCheckpointPath, completedScene);
+      if (completedScene && !quarantinePending) {
+        // Prose-derived callback credit belongs to the committed scene, not the
+        // pre-critic SceneWriter draft. Later scenes now read the same prose the
+        // checkpoint and final story retain.
+        recordScenePayoffs(this.deps.callbackLedger, brief.episode?.number ?? 1, {
+          sceneId: completedScene.sceneId,
+          beats: (completedScene.beats ?? []) as unknown as Parameters<typeof recordScenePayoffs>[2]['beats'],
+        });
+        const receipt = buildSceneCommitReceipt({
+          episodeNumber: densityEpisodeNumber,
+          scene: completedScene,
+          blueprint: sceneBlueprint,
+          choiceSet: completedChoice,
+          encounter: completedEncounter,
+          critic: criticReview,
+        });
+        sceneCommitReceipts.push(receipt);
+        context.emit({
+          type: 'checkpoint',
+          phase: 'content',
+          message: `Committed scene ${sceneBlueprint.id}`,
+          data: {
+            sceneId: sceneBlueprint.id,
+            sceneHash: receipt.sceneHash,
+            handoffHash: receipt.handoffHash,
+            criticDisposition: receipt.critic.disposition,
+          },
+        });
+        if (outputDirectory && episodeNumber) {
+          await this.deps.saveResumeUnit(
+            outputDirectory,
+            sceneUnitId,
+            sceneCheckpointPath,
+            buildSceneCheckpointEnvelope(completedScene, receipt),
+          );
+        }
+      }
+      if (completedScene && outputDirectory && episodeNumber && !quarantinePending) {
         if (completedChoice) {
           await this.deps.saveResumeUnit(outputDirectory, choiceUnitId, choiceCheckpointPath, completedChoice);
         }
@@ -5768,6 +6092,8 @@ export class ContentGenerationPhase {
       if (!quarantinePending) finalizedScenes.add(sceneBlueprint.id);
     }
 
+    /* Legacy quarantine tail pass removed from execution. Failed encounters
+     * now stop at their own pre-commit boundary, preserving prior receipts.
     // === QUARANTINE RETRY PASS (P2) ===
     // Every non-quarantined scene is now generated and checkpointed. Give each
     // quarantined encounter one escalated retry (budget-class failures run the
@@ -5850,6 +6176,35 @@ export class ContentGenerationPhase {
             },
           );
         }
+        if (completedScene) {
+          const criticReview: SceneCriticReviewOutcome = {
+            disposition: 'not_eligible',
+            scene: completedScene,
+            rewrittenBeatIds: [],
+            reason: 'encounter prose is owned by EncounterArchitect',
+          };
+          const receipt = buildSceneCommitReceipt({
+            episodeNumber: densityEpisodeNumber,
+            scene: completedScene,
+            blueprint: sceneBlueprint,
+            choiceSet: completedChoice,
+            encounter: recoveredEncounter,
+            critic: criticReview,
+          });
+          sceneCommitReceipts.push(receipt);
+          recordScenePayoffs(this.deps.callbackLedger, brief.episode?.number ?? 1, {
+            sceneId: completedScene.sceneId,
+            beats: (completedScene.beats ?? []) as unknown as Parameters<typeof recordScenePayoffs>[2]['beats'],
+          });
+          if (outputDirectory && episodeNumber) {
+            await this.deps.saveResumeUnit(
+              outputDirectory,
+              `scene_content:episode-${episodeNumber}:${unit.sceneId}`,
+              this.deps.episodeCheckpointFile(episodeNumber, 'scene', unit.sceneId),
+              buildSceneCheckpointEnvelope(completedScene, receipt),
+            );
+          }
+        }
         if (outputDirectory && episodeNumber) {
           await this.deps.saveResumeUnit(
             outputDirectory,
@@ -5861,6 +6216,7 @@ export class ContentGenerationPhase {
         finalizedScenes.add(unit.sceneId);
       }
     }
+    */
 
     // Emit aggregated validation summary
     if (this.deps.incrementalValidator && this.deps.sceneValidationResults.length > 0) {
@@ -5910,39 +6266,19 @@ export class ContentGenerationPhase {
     // later SceneWriter uses (final-contract regens, repair handlers).
     this.deps.sceneWriter.setContractLoadTemperature(undefined);
 
-    // r117 gap analysis (2026-07-18): give the critic pass visibility into
-    // each scene's assigned premise/event realization tasks so it can refuse
-    // a rewrite that silently drops content those tasks already confirmed.
-    const realizationTasksBySceneId = new Map(
-      blueprint.scenes.map((sceneBlueprint) => [sceneBlueprint.id, sceneBlueprint.realizationTasks ?? []]),
-    );
-    await this.deps.runSceneCriticPass(sceneContents, characterBible, realizationTasksBySceneId);
-    const twistMaterialization = materializeTwistPlan(
-      this.deps.episodeTwistPlans.get(episodeNumber ?? brief.episode.number),
-      sceneContents,
-    );
-    if (twistMaterialization.status === 'invalid') {
-      context.emit({
-        type: 'warning',
-        phase: 'content',
-        message: `Planned twist did not materialize: ${twistMaterialization.reason}`,
-      });
-    } else if (twistMaterialization.status === 'materialized') {
-      context.emit({
-        type: 'debug',
-        phase: 'content',
-        message: `Materialized planned twist markers on ${twistMaterialization.foreshadowBeatId} → ${twistMaterialization.twistBeatId}`,
-      });
-    }
-
-    if (deferredRealizationRecords.length > 0 && outputDirectory) {
-      await saveEarlyDiagnostic(
-        outputDirectory,
-        `episode-${this.episodeNumber ?? brief.episode.number}-deferred-realization-ledger.json`,
+    if (deferredRealizationRecords.length > 0) {
+      throw new PipelineError(
+        `Episode ${this.episodeNumber ?? brief.episode.number} produced deferred realization records after scene sealing; regenerate from the earliest owning scene.`,
+        'content',
         {
-          schemaVersion: 1,
-          episodeNumber: this.episodeNumber ?? brief.episode.number,
-          records: deferredRealizationRecords,
+          context: { deferredRealizationRecords },
+          failure: {
+            code: 'owner_realization_failed',
+            ownerStage: deferredRealizationRecords[0]?.ownerStage ?? 'scene_content',
+            retryClass: 'none',
+            issueCodes: deferredRealizationRecords.map((record) => record.finding.code),
+            repairTarget: deferredRealizationRecords[0]?.sceneId,
+          },
         },
       );
     }
@@ -5953,6 +6289,7 @@ export class ContentGenerationPhase {
       encounters,
       validationExecutionRecords,
       deferredRealizationRecords,
+      sceneCommitReceipts,
     };
   }
 

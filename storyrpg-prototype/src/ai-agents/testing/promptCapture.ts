@@ -190,6 +190,9 @@ function scrubTimings(message: string | undefined): string {
     .replace(/\b\d{13}\b/g, '<epoch>')
     // Timestamped run-directory names (the-locked-wing_2026-06-10T03-11-52).
     .replace(/_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}/g, '_<ts>')
+    // Current writer format also includes milliseconds, an epoch-derived id,
+    // and a random suffix (the-locked-wing_2026-07-19-22-25-34-081_.../).
+    .replace(/generated-stories\/[^/\s"]+_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}[^/\s"]*\//g, 'generated-stories/<run>/')
     // Observability report embeds per-phase wall-clock durations as JSON.
     .replace(/"phaseDurationsMs":\{[^}]*\}/g, '"phaseDurationsMs":{}')
     .replace(/"(avgDurationMs|avgQueueWaitMs|durationMs|elapsedMs)":\d+(\.\d+)?/g, '"$1":0');

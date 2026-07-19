@@ -68,6 +68,7 @@ export interface ContractRepairReport {
     requiredEvidenceAtoms?: string[];
     realizationFingerprint?: string;
     matchedForbiddenAtoms?: string[];
+    forbiddenLiteralPatterns?: string[];
   }>;
   /** Advisory findings participate in monotonic repair checks when requested. */
   warnings?: ContractRepairReport['blockingIssues'];

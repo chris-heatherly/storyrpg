@@ -32,12 +32,6 @@ export interface EpisodeSceneLockReport {
   passed: boolean;
   locks: SceneLockEvidence[];
   validation: ArtifactValidationSummary;
-  /**
-   * Craft findings (POV/voice/stakes/craft/etc. from scene-time validation)
-   * demoted to warnings at lock time and deferred to the final contract's
-   * repair machinery. Only SceneLockGate structural facts block the lock.
-   */
-  deferredFindingCount: number;
 }
 
 interface ExpectedScene {
@@ -137,7 +131,6 @@ export function buildEpisodeSceneLockReport(params: {
       path: `episodes[${params.episodeNumber}].scenes[${scene.id}]`,
     }));
 
-  let deferredFindingCount = 0;
   const lockIssues = locks.flatMap((lock) => {
     const issues = [...lock.validation.issues];
     if (!lock.passed && !issues.some((issue) => issue.severity === 'error')) {
@@ -149,23 +142,9 @@ export function buildEpisodeSceneLockReport(params: {
         path: `episodes[${params.episodeNumber}].scenes[${lock.sceneId}]`,
       });
     }
-    // Two-tier lock policy: only SceneLockGate structural facts (missing locks,
-    // empty scenes/prose, unexplained validation failures) may block the lock.
-    // Craft findings from scene-time validators (POV, voice, stakes, continuity…)
-    // were already accepted-as-degraded during authoring; re-blocking on that stale
-    // evidence at lock time aborts the run with no repair route (bite-me
-    // 2026-07-05T23-54-17: PovClarity opening-anchor on s1-1). Demote them to
-    // annotated warnings — the final contract re-validates the CURRENT text and
-    // owns the repair machinery for anything still wrong.
-    return issues.map((issue): ArtifactValidationIssue => {
-      if (issue.severity !== 'error' || issue.validator === 'SceneLockGate') return issue;
-      deferredFindingCount += 1;
-      return {
-        ...issue,
-        severity: 'warning',
-        message: `[deferred to final contract] ${issue.message}`,
-      };
-    });
+    // Every scene-time error blocks the lock. A sealed scene cannot rely on a
+    // later episode/final pass to reopen and repair its prose or choices.
+    return issues;
   });
   const issues = [...missingIssues, ...lockIssues];
   const validation: ArtifactValidationSummary = {
@@ -183,7 +162,6 @@ export function buildEpisodeSceneLockReport(params: {
     passed: validation.passed,
     locks,
     validation,
-    deferredFindingCount,
   };
 }
 

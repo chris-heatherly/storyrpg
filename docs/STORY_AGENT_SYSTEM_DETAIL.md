@@ -115,7 +115,7 @@ Always respond with valid JSON that matches the requested schema.
 |---|---|---|---|
 | **Story Architect** | `StoryArchitect.ts` | Episode blueprints, scene graphs, branch-and-bottleneck structure, encounter placement | 0.7 |
 | **Scene Writer** | `SceneWriter.ts` | Prose content for beats, atmosphere, dialogue, text variants. Absorbs the former `BeatWriter`, `DialogueSpecialist`, and `ScriptCompiler` roles. | 0.85 |
-| **Scene Critic** | `SceneCritic.ts` | Optional Phase-9 subtext / reversals rewrite pass; gated by `config.sceneCritic.enabled`. | 0.7 |
+| **Scene Critic** | `SceneCritic.ts` | Optional transactional subtext/reversals review inside each standard scene's pre-commit transaction; gated by `config.sceneCritic.enabled`. Accepted prose is finalized and receipt-hashed before dependent scenes are authored; downstream QA/assembly cannot reopen it. | 0.7 |
 | **Choice Author** | `ChoiceAuthor.ts` | Player choices, consequences, stat checks, branching routing. Resolution-check difficulty now authored inline (the old `ResolutionDesigner` is gone). | 0.75 |
 | **Branch Manager** | `BranchManager.ts` | Branch analysis, reconvergence validation, state tracking | 0.7 |
 | **Encounter Architect** | `EncounterArchitect.ts` | Encounter structure, skill challenges, decision trees, storylets | 0.75 |
@@ -782,7 +782,7 @@ interface GenerationSettingsConfig {
 - `src/ai-agents/agents/TwistArchitect.ts` — Per-episode reversal + foreshadow scheduling
 - `src/ai-agents/agents/CharacterArcTracker.ts` — Per-episode identity/relationship milestones
 - `src/ai-agents/agents/StyleArchitect.ts` — Art-style string → ArtStyleProfile expansion
-- `src/ai-agents/agents/SceneCritic.ts` — Optional Phase-9 subtext/reversals rewrite
+- `src/ai-agents/agents/SceneCritic.ts` — Optional per-scene pre-commit subtext/reversals review
 - `src/ai-agents/agents/SeasonPlannerAgent.ts` — Season planning along the Story Circle spine
 
 ### 17.2.1 Validator & QA Files

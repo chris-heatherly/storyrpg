@@ -97,31 +97,24 @@ we touch the hard dependency-heavy phases):
      injected as closures; `wireEncounterTreeImages` and the provider
      preflight stay in the monolith with their callers (assembly /
      call-site regions).
-8. [x] `QAPhase` — **wired** (2026-06-10): the Phase 5 block (QARunner +
-   `IntegratedBestPracticesValidator` in parallel, choice-distribution
-   checkpoint, the QA-driven targeted repair loop with SceneWriter/
-   ChoiceAuthor re-authoring, threshold warning) plus `runQualityAssurance`
-   with its incremental-validation skip stubs. `runQualityAssurance` stays
-   publicly callable for the multi-episode loop's per-episode QA pass.
-   Run-scoped incremental-validation state (incrementalValidator,
-   sceneValidationResults, cachedPipelineMemory) is accessor-backed;
-   repairs mutate the shared sceneContents/choiceSets arrays in place.
-9. [x] `QuickValidationPhase` — **wired** (2026-06-10): the Phase 4.5 fast
-   validator gate (`runQuickValidation`), incremental POV/voice escalation
-   into blocking categories, the targeted repair pass (ChoiceAuthor
-   re-authoring for stakes/five-factor/stat-balance issues, missing
-   choice-point generation for choice-density, scoped SceneWriter rewrites
-   for POV/voice/skill-surface), one post-repair re-validation, and the
-   blocking `ValidationError`. Repairs mutate the shared
-   sceneContents/choiceSets arrays in place; sceneValidationResults and
-   cachedPipelineMemory are accessor-backed.
+8. [x] `QAPhase` — **wired** (2026-06-10; read-only since 2026-07-19):
+   QARunner + `IntegratedBestPracticesValidator` in parallel,
+   choice-distribution telemetry, and threshold diagnostics. It never invokes
+   authoring agents or mutates committed scene/choice arrays; findings route to
+   explicit owner/suffix regeneration.
+9. [x] `QuickValidationPhase` — **wired** (2026-06-10; read-only since
+   2026-07-19): fast validation plus incremental POV/voice escalation. A
+   blocker throws before episode lock and requests owner/suffix regeneration;
+   no SceneWriter or ChoiceAuthor dependency remains.
 10. [x] `ContentGenerationPhase` — **wired** (2026-06-10): the full
     `runContentGeneration` loop (scene-wave ordering, SceneWriter best-of-N,
     ChoiceAuthor with branch fan-out repair + per-target regeneration +
-    deterministic branch fallback, EncounterArchitect with incremental
+    fail-closed owner gating, EncounterArchitect with incremental
     validation/regeneration, episode plant context, callback crediting,
     thread/twist planning, prevention context, season-canon prompt blocks,
-    SceneCritic pass dispatch). Both call sites (generate() and the
+    per-owner twist binding, SceneCritic pass dispatch, and complete scene
+    commit receipts). Failed synthetic fallbacks and deferred owner findings
+    block the current scene instead of reaching episode/final repair. Both call sites (generate() and the
     multi-episode generateEpisodeFromOutline) delegate through a thin
     wrapper; run-scoped state is accessor-backed and the four fields the
     phase assigns (incrementalValidator, sceneValidationResults,

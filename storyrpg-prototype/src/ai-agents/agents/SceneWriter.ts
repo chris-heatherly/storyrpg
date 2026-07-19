@@ -71,6 +71,7 @@ import { applySequenceDirectorPlan } from './SequenceDirector';
 import { buildSceneContentJsonSchema } from '../schemas/sceneContentSchema';
 import { isPlanningRegisterText } from '../constants/planningRegisterText';
 import { describeNarrativeEvidenceTarget } from '../pipeline/narrativeContractMigration';
+import { resolveSceneIdentityReferencePolicies } from '../utils/identityReferencePolicy';
 
 const SCENE_WRITER_MAX_PROCESSING_TEXT_CHARS = 3500;
 const SCENE_WRITER_REVISION_TEXT_CHARS = 1200;
@@ -2152,9 +2153,16 @@ Return exactly one complete SceneContent JSON object with:
           ? `- ${contract.characterName}: OFFSCREEN ONLY. Do not place this character in scene prose or cast metadata.`
           : `- ${contract.characterName}: NAMED INTRODUCTION. Name them naturally on-page and show how the protagonist learns who they are.`)
       .join('\n');
-    const identitySchedule = (input.sceneBlueprint.identityScheduleContracts ?? [])
-      .filter((contract) => contract.firstNamedEpisode > input.sceneBlueprint.episodeNumber)
-      .map((contract) => `- ${contract.canonicalName}: canonical name forbidden until episode ${contract.firstNamedEpisode}; allowed aliases: ${contract.allowedAliases.join(', ') || 'visual description only'}`)
+    const identityPolicies = resolveSceneIdentityReferencePolicies({
+      episodeNumber: input.sceneBlueprint.episodeNumber,
+      sceneId: input.sceneBlueprint.id,
+      identityScheduleContracts: input.sceneBlueprint.identityScheduleContracts,
+      lexicalArtifactContracts: input.sceneBlueprint.lexicalArtifactContracts,
+      realizationTasks: input.sceneBlueprint.realizationTasks,
+    });
+    const identitySchedule = identityPolicies
+      .filter((policy) => policy.forbiddenReferences.length > 0)
+      .map((policy) => `- ${policy.canonicalName}: forbidden references in this scene: ${policy.forbiddenReferences.join(', ')}; legal aliases now: ${policy.availableAliases.join(', ') || 'none — use visual/behavioral description only'}`)
       .join('\n');
     const lexicalSchedule = (input.sceneBlueprint.lexicalArtifactContracts ?? [])
       .map((contract) => contract.creatorSceneId === input.sceneBlueprint.id

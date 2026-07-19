@@ -142,9 +142,16 @@ describe('prompt capture harness', () => {
         timestamp: new Date(),
         telemetry: { elapsedSeconds: 12 },
       },
+      {
+        type: 'phase_complete',
+        phase: 'saving',
+        message: 'Saved 20 files to generated-stories/the-locked-wing_2026-07-19-22-25-34-081_4499933825-8ytqfme/',
+        timestamp: new Date(),
+      },
     ];
     expect(normalizeEventsForSnapshot(events)).toEqual([
       { type: 'phase_complete', phase: 'world_building', message: 'World building done in <t>' },
+      { type: 'phase_complete', phase: 'saving', message: 'Saved 20 files to generated-stories/<run>/' },
     ]);
   });
 

@@ -554,7 +554,7 @@ describe('FinalStoryContractValidator', () => {
     expect(direct.valid).toBe(true);
   });
 
-  it('uses the roster protagonist instead of an unsafe brief protagonist for encounter POV repair', async () => {
+  it('uses the roster protagonist on an isolated encounter POV validation projection', async () => {
     const encounter = validEncounter();
     (encounter.phases[0].beats[0] as any).setupText =
       'The Cișmigiu paths are dead quiet. A second figure steps from the fog.';
@@ -589,14 +589,18 @@ describe('FinalStoryContractValidator', () => {
       }],
     });
 
-    await new FinalStoryContractValidator().validate({
+    const report = await new FinalStoryContractValidator().validate({
       story,
       protagonist: { name: 'The', pronouns: 'she/her' },
     });
 
     const beat = (story.episodes[0].scenes[0].encounter as any).phases[0].beats[0];
     expect(beat.setupText).toBe('The Cișmigiu paths are dead quiet. A second figure steps from the fog.');
-    expect(beat.choices[0].outcomes.success.narrativeText).toBe('You straighten your collar as Victor watches.');
+    expect(beat.choices[0].outcomes.success.narrativeText).toBe('Kylie straightens her collar as Victor watches.');
+    expect(report.blockingIssues.some((issue) => issue.type === 'pov_break')).toBe(false);
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'late_normalization_required' }),
+    ]));
   });
 
   it('r127: never admits "The Hero" as a canonical alias or corrupts its nearby reflexive', async () => {

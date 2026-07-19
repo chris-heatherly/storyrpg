@@ -13,6 +13,24 @@ vi.mock('expo-file-system', () => ({
 
 import { isEncounterNarrativelyHollow } from '../encounterCompleteness';
 import { collectEncounterParticipantRefs, filterProtagonistEncounterRefs } from '../encounterParticipants';
+import type { SceneContent } from '../../agents/SceneWriter';
+
+const passingSemanticJudge = {
+  identity: () => ({ policyVersion: 'test', provider: 'test', model: 'test' }),
+  execute: async (claims: Array<{ id: string; excerpts: Array<{ id: string; text: string }> }>) => ({
+    success: true,
+    data: {
+      verdicts: claims.map((claim) => ({
+        id: claim.id,
+        verdict: 'fulfilled' as const,
+        evidenceRefs: claim.excerpts.map((excerpt) => excerpt.id),
+        evidenceQuotes: claim.excerpts.map((excerpt) => excerpt.text),
+        missingCriteria: [],
+        rationale: 'test fixture accepts the authored excerpt',
+      })),
+    },
+  }),
+};
 
 describe('ContentGenerationPhase encounter completeness', () => {
   it('treats an id-only encounter beat as hollow', () => {
@@ -126,6 +144,7 @@ describe('ContentGenerationPhase checkpoint resume validation', () => {
           throw new Error('EncounterArchitect should not run for resumed scene content');
         },
       },
+      semanticRealizationJudge: passingSemanticJudge,
       getThreadPlanner: () => ({}),
       getTwistArchitect: () => ({}),
       getCharacterArcTracker: () => ({}),
@@ -182,7 +201,7 @@ describe('ContentGenerationPhase checkpoint resume validation', () => {
         });
       },
       resolveWorldLocationForScene: () => undefined,
-      runSceneCriticPass: async () => undefined,
+      reviewSceneBeforeCommit: async ({ scene }: { scene: SceneContent }) => ({ disposition: 'not_eligible' as const, scene, rewrittenBeatIds: [] }),
       sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
       saveResumeUnit: async () => undefined,
       throwIfFailFast: () => undefined,
@@ -250,10 +269,7 @@ describe('ContentGenerationPhase checkpoint resume validation', () => {
           throw new Error('EncounterArchitect must not re-roll a validated resumed encounter');
         },
       },
-      semanticRealizationJudge: {
-        identity: () => ({ policyVersion: 'test', provider: 'stub', model: 'stub' }),
-        execute: async () => ({ success: true, data: { verdicts: [] } }),
-      },
+      semanticRealizationJudge: passingSemanticJudge,
       getThreadPlanner: () => ({}),
       getTwistArchitect: () => ({}),
       getCharacterArcTracker: () => ({}),
@@ -294,17 +310,45 @@ describe('ContentGenerationPhase checkpoint resume validation', () => {
         }
         if (unitId === 'encounter:episode-1:enc-1') {
           return {
+            sceneId: 'enc-1',
+            encounterType: 'romantic',
+            description: 'You hold the fogbound park path while a stranger opens a route to safety.',
+            startingBeatId: 'enc-beat-1',
+            goalClock: { name: 'Open the path', segments: 2, description: 'Create a safe route through the park.' },
+            threatClock: { name: 'Closing fog', segments: 3, description: 'The attackers close around you.' },
+            stakes: { victory: 'The stranger reaches safety.', defeat: 'The attackers seal the path.' },
+            tensionCurve: [],
             beats: [{
               id: 'enc-beat-1',
               setupText: 'Fog closes over the park path as the stranger steps between you and the attackers.',
               choices: [{
                 id: 'enc-choice-1',
                 text: 'Hold your ground.',
+                approach: 'steadfast',
                 outcomes: {
-                  success: { narrativeText: 'You plant your feet and the attackers scatter into the dark hedges.' },
+                  success: { tier: 'success', goalTicks: 2, threatTicks: 0, narrativeText: 'You plant your feet and the attackers scatter into the dark hedges.' },
+                  complicated: { tier: 'complicated', goalTicks: 1, threatTicks: 1, narrativeText: 'You open the path, but one attacker follows close enough to tear your sleeve.' },
+                  failure: { tier: 'failure', goalTicks: 0, threatTicks: 2, narrativeText: 'The attackers force you back beneath the dripping willow branches.' },
                 },
               }],
             }],
+            storylets: {
+              victory: {
+                id: 'victory-storylet', name: 'Path opened', triggerOutcome: 'victory', tone: 'relieved',
+                narrativeFunction: 'The rescue succeeds cleanly.', startingBeatId: 'victory-beat', consequences: [],
+                beats: [{ id: 'victory-beat', text: 'You guide the stranger beyond the fog before the attackers can regroup.' }],
+              },
+              partialVictory: {
+                id: 'partial-storylet', name: 'Narrow escape', triggerOutcome: 'partialVictory', tone: 'tense',
+                narrativeFunction: 'The rescue succeeds with pursuit still close.', startingBeatId: 'partial-beat', consequences: [],
+                beats: [{ id: 'partial-beat', text: 'You reach the lit avenue together, with running footsteps still sounding behind you.' }],
+              },
+              defeat: {
+                id: 'defeat-storylet', name: 'Path closed', triggerOutcome: 'defeat', tone: 'desperate',
+                narrativeFunction: 'The rescue fails and demands another route.', startingBeatId: 'defeat-beat', consequences: [],
+                beats: [{ id: 'defeat-beat', text: 'You retreat with the stranger as the attackers claim the path through the park.' }],
+              },
+            },
           };
         }
         return undefined;
@@ -312,7 +356,7 @@ describe('ContentGenerationPhase checkpoint resume validation', () => {
       recordRemediationSafe: async () => undefined,
       recordSceneValidationResult: () => undefined,
       resolveWorldLocationForScene: () => undefined,
-      runSceneCriticPass: async () => undefined,
+      reviewSceneBeforeCommit: async ({ scene }: { scene: SceneContent }) => ({ disposition: 'not_eligible' as const, scene, rewrittenBeatIds: [] }),
       sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
       saveResumeUnit: async () => undefined,
       throwIfFailFast: () => undefined,
@@ -341,6 +385,7 @@ describe('ContentGenerationPhase checkpoint resume validation', () => {
           requiredBeats: [],
           isEncounter: true,
           encounterType: 'romantic',
+          encounterStakes: 'If you cannot hold the path, the stranger is trapped with the attackers.',
           choicePoint: { description: 'How the rescue lands.' },
         }],
       } as never,
@@ -418,7 +463,7 @@ describe('ContentGenerationPhase checkpoint resume validation', () => {
       recordRemediationSafe: async () => undefined,
       recordSceneValidationResult: () => undefined,
       resolveWorldLocationForScene: () => undefined,
-      runSceneCriticPass: async () => undefined,
+      reviewSceneBeforeCommit: async ({ scene }: { scene: SceneContent }) => ({ disposition: 'not_eligible' as const, scene, rewrittenBeatIds: [] }),
       sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
       saveResumeUnit: async () => undefined,
       throwIfFailFast: () => undefined,
@@ -599,7 +644,7 @@ describe('ContentGenerationPhase treatment density gate', () => {
       recordRemediationSafe: async () => undefined,
       recordSceneValidationResult: () => undefined,
       resolveWorldLocationForScene: () => undefined,
-      runSceneCriticPass: async () => undefined,
+      reviewSceneBeforeCommit: async ({ scene }: { scene: SceneContent }) => ({ disposition: 'not_eligible' as const, scene, rewrittenBeatIds: [] }),
       sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
       saveResumeUnit: async () => undefined,
       throwIfFailFast: () => undefined,
@@ -745,7 +790,7 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
       });
   });
 
-  it('defers unresolved prose ownership to the episode contract and continues past the scene', async () => {
+  it('blocks unresolved prose ownership before committing the scene', async () => {
     const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
     const calls: string[] = [];
     const patchCapacityTiers: string[] = [];
@@ -806,7 +851,7 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
       getUnresolvedCallbacksForPrompt: () => undefined, inferBranchType: () => 'neutral', isEpisodeFinalScene: () => false,
       loadResumeUnit: () => undefined, recordRemediationSafe: async () => undefined,
       recordSceneValidationResult: () => undefined, resolveWorldLocationForScene: () => undefined,
-      runSceneCriticPass: async () => undefined, sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
+      reviewSceneBeforeCommit: async ({ scene }: { scene: SceneContent }) => ({ disposition: 'not_eligible' as const, scene, rewrittenBeatIds: [] }), sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
       saveResumeUnit: async () => undefined, throwIfFailFast: () => undefined, trackEncounterFlagConsequences: () => undefined,
     } as never);
     const task = {
@@ -826,25 +871,128 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
       story: { title: 'Story', genre: 'romance', tone: 'tense' }, world: { premise: 'A dangerous city.' },
     } as never;
 
-    // Exhausted owner repair on a missing-evidence event task no longer aborts
-    // the run: the finding defers to the episode-level semantic contract (which
-    // re-judges and routes repair_scene_prose) and generation continues, so
-    // previously passed scenes are never discarded.
-    const result = await phase.run(brief, { locations: [] } as never, { characters: [] } as never, blueprint, undefined, undefined, 1, {
+    await expect(phase.run(brief, { locations: [] } as never, { characters: [] } as never, blueprint, undefined, undefined, 1, {
       config: { generation: {} }, emit: () => undefined,
-    } as never);
-    expect(result.deferredRealizationRecords).toEqual([
-      expect.objectContaining({
-        taskId: 'task:event:ep1-u3:owner-event',
-        sceneId: 's1-3',
-        reason: 'owner_repair_exhausted',
-      }),
-    ]);
-    expect(calls.filter((call) => call === 'choiceAuthor').length).toBeGreaterThan(0);
-    // Initial authoring + the escalation regen, plus any post-deferral authoring
-    // now that the scene continues instead of aborting the run.
+    } as never)).rejects.toThrow(/OwnerStageRealizationBlocker/);
+    expect(calls.filter((call) => call === 'choiceAuthor')).toHaveLength(0);
+    // The scene consumes its bounded local patch + full-regeneration ladder,
+    // then fails before any dependent artifact is authored.
     expect(calls.filter((call) => call === 'sceneWriter').length).toBeGreaterThanOrEqual(2);
     expect(calls.filter((call) => call === 'semanticPatch')).toHaveLength(2);
     expect(patchCapacityTiers).toEqual(['standard', 'expanded']);
+  });
+});
+
+describe('ContentGenerationPhase sequential scene commit', () => {
+  it('authors scene 2 from scene 1 critic-final closing prose', async () => {
+    const { ContentGenerationPhase } = await import('./ContentGenerationPhase');
+    const writerInputs: Array<{ sceneBlueprint: { id: string }; previousSceneSummary?: string }> = [];
+    const phase = new ContentGenerationPhase({
+      sceneWriter: {
+        execute: async (input: { sceneBlueprint: { id: string; name: string }; previousSceneSummary?: string }) => {
+          writerInputs.push(input);
+          const first = input.sceneBlueprint.id === 's1-1';
+          return {
+            success: true,
+            data: {
+              sceneId: input.sceneBlueprint.id,
+              sceneName: input.sceneBlueprint.name,
+              beats: [{
+                id: first ? 's1-1-b1' : 's1-2-b1',
+                text: first ? 'You stop before the sealed door.' : 'You enter the next room.',
+              }],
+              keyMoments: [],
+              charactersInvolved: [],
+            },
+          };
+        },
+        setContractLoadTemperature: () => undefined,
+      },
+      choiceAuthor: { execute: async () => ({ success: true, data: { choices: [] } }), setEpisodeSkillTargets: () => undefined },
+      encounterArchitect: { execute: async () => ({ success: true, data: {} }) },
+      semanticRealizationJudge: passingSemanticJudge,
+      getThreadPlanner: () => ({}),
+      getTwistArchitect: () => ({}),
+      getCharacterArcTracker: () => ({}),
+      incrementalValidator: null,
+      sceneValidationResults: [],
+      seasonSkillPlan: undefined,
+      encounterTelemetry: [],
+      cachedPipelineMemory: null,
+      callbackLedger: { threads: [] },
+      dependencySchedulerStats: { hasCycle: false, waveCount: 0, fallbackToSerial: false },
+      episodeArcTargets: new Map(),
+      episodeTwistPlans: new Map(),
+      generationPlan: null,
+      remediationBudget: null,
+      seasonChoicePlan: undefined,
+      seasonThreadLedger: { threads: [] },
+      assertSceneDependencyInvariants: () => undefined,
+      buildBranchFallbackChoiceSet: () => undefined,
+      buildDeterministicChoiceSet: () => undefined,
+      buildChoiceAuthorNpcs: () => [],
+      buildCompactWorldContext: () => '',
+      buildEncounterPriorStateContext: () => undefined,
+      captureEncounterTelemetry: () => undefined,
+      checkCancellation: async () => undefined,
+      deriveStoryVerbsForBrief: () => [],
+      emitPhaseProgress: () => undefined,
+      emitPlanUpdate: () => undefined,
+      episodeCheckpointFile: () => '',
+      establishedCanonForPrompt: () => undefined,
+      getPhase4DefaultCollisions: () => [],
+      getTargetBeatCountForScene: () => 1,
+      getUnresolvedCallbacksForPrompt: () => undefined,
+      inferBranchType: () => 'neutral',
+      isEpisodeFinalScene: (_blueprint: unknown, sceneId: string) => sceneId === 's1-2',
+      loadResumeUnit: () => undefined,
+      recordRemediationSafe: async () => undefined,
+      recordSceneValidationResult: () => undefined,
+      resolveWorldLocationForScene: () => undefined,
+      reviewSceneBeforeCommit: async ({ scene }: { scene: SceneContent }) => {
+        if (scene.sceneId !== 's1-1') return { disposition: 'not_eligible' as const, scene, rewrittenBeatIds: [] };
+        return {
+          disposition: 'accepted' as const,
+          scene: {
+            ...scene,
+            beats: scene.beats.map((beat) => ({ ...beat, text: 'You open the sealed door and leave it swinging behind you.' })),
+          },
+          rewrittenBeatIds: ['s1-1-b1'],
+        };
+      },
+      sanitizeReaderFacingSceneName: (name: string | undefined) => name || 'Scene',
+      saveResumeUnit: async () => undefined,
+      throwIfFailFast: () => undefined,
+      trackEncounterFlagConsequences: () => undefined,
+    } as never);
+
+    const result = await phase.run(
+      {
+        episode: { number: 1 },
+        story: { title: 'Commit Order', genre: 'mystery', tone: 'tense' },
+        world: { premise: 'A locked house.' },
+        protagonist: { id: 'protagonist', name: 'Ari', pronouns: 'they/them' },
+        options: {},
+      } as never,
+      { locations: [] } as never,
+      { characters: [] } as never,
+      {
+        suggestedFlags: [],
+        suggestedScores: [],
+        scenes: [
+          { id: 's1-1', name: 'The Door', description: 'Ari opens the sealed door.', npcsPresent: [], leadsTo: ['s1-2'], requiredBeats: [] },
+          { id: 's1-2', name: 'Beyond', description: 'Ari enters the next room.', npcsPresent: [], leadsTo: [], requiredBeats: [] },
+        ],
+      } as never,
+      undefined,
+      undefined,
+      1,
+      { config: { generation: {}, sceneCritic: { maxScenesPerEpisode: 1 } }, emit: () => undefined } as never,
+    );
+
+    expect(result.sceneContents[0].beats[0].text).toBe('You open the sealed door and leave it swinging behind you.');
+    expect(writerInputs[1].previousSceneSummary).toContain('You open the sealed door and leave it swinging behind you.');
+    expect(writerInputs[1].previousSceneSummary).not.toContain('You stop before the sealed door.');
+    expect(result.sceneCommitReceipts.map((receipt) => receipt.sceneId)).toEqual(['s1-1', 's1-2']);
   });
 });

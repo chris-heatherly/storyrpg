@@ -69,9 +69,9 @@ flowchart TD
         E5[EncounterArchitect: encounter phases, choices, storylets]
         E6[ChoiceAuthor: choices, consequences, checks]
         E7[Incremental validators]
-        E8[Quick structural and best-practice validation]
-        E9[Optional SceneCritic rewrite pass]
-        E10[Episode assembly]
+        E8[Read-only quick structural and best-practice validation]
+        E9[Pre-commit scene/choice/encounter projections, twist-role binding, optional SceneCritic, owner gates, scene receipt]
+        E10[Read-only episode assembly and lock validation]
         E11[Episode summary for continuity]
     end
 
@@ -85,9 +85,9 @@ flowchart TD
     E5 --> E6
     E6 --> E7
     E7 -->|repair feedback if needed| E4
-    E7 --> E8
-    E8 --> E9
-    E9 --> E10
+    E7 --> E9
+    E9 -->|next scene uses critic-final handoff| E3
+    E9 -->|episode scenes complete; receipts frozen| E8
     E8 --> E10
     E10 --> E11
     E11 --> E0

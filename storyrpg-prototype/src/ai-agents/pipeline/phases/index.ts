@@ -13,15 +13,15 @@
  *                          generation + retry, branch analysis + topology)
  *   [x] ContentGenerationPhase (wired — the scene/choice/encounter
  *                          authoring loop, both call sites delegated)
- *   [x] QuickValidationPhase (wired — fast validator gate, escalation,
- *                          targeted repair, blocking ValidationError)
- *   [x] QAPhase           (wired — QA + best practices parallel block,
- *                          repair loop, runQualityAssurance)
+ *   [x] QuickValidationPhase (wired — read-only fast validator gate,
+ *                          escalation, blocking ValidationError)
+ *   [x] QAPhase           (wired — read-only QA + best-practices block,
+ *                          runQualityAssurance)
  *   [x] ImagePhase          (MasterImagePhase + SceneImagePhase +
  *                            EncounterImagePhase wired)
  *   [x] VideoPhase          (wired — beat selection, direction, clip generation)
  *   [x] CoverArtPhase       (wired — poster-concept distillation + cover render)
- *   [x] AssemblyPhase     (wired — assembly, auto-fixes, completeness gate,
+ *   [x] AssemblyPhase     (wired — read-only assembly, completeness gate,
  *                          asset verification, deterministic scans)
  *   [x] AudioPhase          (wired — preGenerateAudio block + beat binding)
  *   [x] BrowserQAPhase      (wired — Playwright QA retry/remediation loop)
@@ -44,6 +44,7 @@ import { BranchAnalysis } from '../../agents/BranchManager';
 import { QAReport } from '../../agents/QAAgents';
 import { Story, Episode } from '../../../types';
 import type { DeferredRealizationRecord } from '../deferredRealization';
+import type { SceneCommitReceipt } from '../sceneCommit';
 
 // ========================================
 // PHASE CONTEXT & RESULTS
@@ -143,6 +144,7 @@ export interface ContentGenerationResult {
   choiceSets: ChoiceSet[];
   encounters: Map<string, EncounterStructure>;
   deferredRealizationRecords: DeferredRealizationRecord[];
+  sceneCommitReceipts: SceneCommitReceipt[];
 }
 
 export interface QAValidationResult {

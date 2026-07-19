@@ -524,6 +524,43 @@ describe('buildSceneProseRepairHandler', () => {
     expect((story as any).episodes[0].scenes[0].beats[0].text).toContain('on her own terms');
   });
 
+  it('localizes exact forbidden evidence to its carrier beat', async () => {
+    const story = makeStory();
+    (story as any).episodes[0].scenes[0].beats[1].text = 'A message waits from The Mountain.';
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's1-4',
+          rewrittenBeats: [{ id: 'b2', text: 'A message waits from the charcoal-suited stranger.' }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const handler = buildSceneProseRepairHandler({
+      critic: () => critic as never,
+      requirePredictedClear: true,
+    });
+
+    const result = await handler({
+      story,
+      blockingIssues: [{
+        type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',
+        repairHandler: 'scene_prose', sceneId: 's1-4', episodeNumber: 1,
+        message: 'Forbidden meaning present: the future codename appears before it is coined.',
+        matchedForbiddenAtoms: ['atom:mountain'],
+        forbiddenLiteralPatterns: ['The Mountain'],
+      }] as never,
+    });
+
+    expect(critic.execute).toHaveBeenCalledTimes(1);
+    expect(critic.execute.mock.calls[0][0].flaggedBeatIds).toEqual(['b2']);
+    expect((story as any).episodes[0].scenes[0].beats[0].text).toBe('Kylie walks home through the park.');
+    expect((story as any).episodes[0].scenes[0].beats[1].text).not.toContain('The Mountain');
+    expect(result.changed).toBe(true);
+  });
+
   it('commits a deferred semantic rewrite only when canonical revalidation clears the finding', async () => {
     const issue = {
       type: 'semantic_realization_violation', severity: 'error', validator: 'SemanticRealizationJudge',

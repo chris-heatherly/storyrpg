@@ -211,6 +211,11 @@
       "message": "Scene scene-1: PASSED"
     },
     {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-1"
+    },
+    {
       "type": "debug",
       "phase": "content",
       "message": "Writing scene scene-2"
@@ -224,6 +229,16 @@
       "type": "debug",
       "phase": "scenes",
       "message": "SceneWriter input compacted for scene-2: 7943 -> 7880 bytes"
+    },
+    {
+      "type": "regeneration_triggered",
+      "phase": "scenes",
+      "message": "SceneWriter failed for scene-2, retrying with error feedback"
+    },
+    {
+      "type": "debug",
+      "phase": "scenes",
+      "message": "SceneWriter retry succeeded for scene-2"
     },
     {
       "type": "agent_complete",
@@ -276,6 +291,11 @@
       "message": "Scene scene-2: PASSED"
     },
     {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-2"
+    },
+    {
       "type": "debug",
       "phase": "content",
       "message": "Writing scene scene-3"
@@ -291,9 +311,14 @@
       "message": "Best-of-2 for critical scene scene-3 (bottleneck)"
     },
     {
+      "type": "regeneration_triggered",
+      "phase": "scenes",
+      "message": "SceneWriter failed for scene-3, retrying with error feedback"
+    },
+    {
       "type": "debug",
       "phase": "scenes",
-      "message": "Best-of-2 winner for scene-3: score 100 vs 100"
+      "message": "SceneWriter retry succeeded for scene-3"
     },
     {
       "type": "agent_complete",
@@ -319,6 +344,11 @@
       "type": "incremental_validation",
       "phase": "scene_complete",
       "message": "Scene scene-3: PASSED"
+    },
+    {
+      "type": "checkpoint",
+      "phase": "content",
+      "message": "Committed scene scene-3"
     },
     {
       "type": "validation_aggregated",
@@ -361,32 +391,14 @@
       "message": "SceneGraphBranchValidator: 6 choices, 6 scene branches, 0 encounters, 0 encounter choices, 0 storylets"
     },
     {
+      "type": "debug",
+      "phase": "episode_1_artifacts",
+      "message": "Saved 5 revisioned episode planning artifact(s)."
+    },
+    {
       "type": "phase_start",
       "phase": "assembly",
       "message": "Phase 6: Assembling final story"
-    },
-    {
-      "type": "pipeline_event",
-      "message": ""
-    },
-    {
-      "type": "pipeline_event",
-      "message": ""
-    },
-    {
-      "type": "debug",
-      "phase": "pronoun_disambiguation",
-      "message": "Protagonist pronoun disambiguation: 2 ambiguous sentence(s), 0 rewritten, 0 field replacement(s)."
-    },
-    {
-      "type": "debug",
-      "phase": "final_story_contract",
-      "message": "Choice residue planning-register leakage normalized 6 hint(s)."
-    },
-    {
-      "type": "debug",
-      "phase": "final_story_contract",
-      "message": "Transition bridge continuity normalized 1 beat(s)."
     },
     {
       "type": "debug",
@@ -411,7 +423,7 @@
     {
       "type": "phase_complete",
       "phase": "saving",
-      "message": "Saved 15 files to generated-stories/the-locked-wing_<ts>/"
+      "message": "Saved 15 files to generated-stories/<run>/"
     },
     {
       "type": "phase_complete",
@@ -497,6 +509,7 @@
         "deferredRealizationRecords",
         "encounters",
         "episodeNumber",
+        "sceneCommitReceipts",
         "sceneContents",
         "version"
       ]
@@ -506,22 +519,6 @@
       "requiresApproval": false,
       "dataKeys": [
         "outputDirectory"
-      ]
-    },
-    {
-      "phase": "structural_autofix",
-      "requiresApproval": false,
-      "dataKeys": [
-        "fixedCount",
-        "fixes"
-      ]
-    },
-    {
-      "phase": "craft_autofix",
-      "requiresApproval": false,
-      "dataKeys": [
-        "fixedCount",
-        "records"
       ]
     },
     {

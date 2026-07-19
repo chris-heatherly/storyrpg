@@ -1000,6 +1000,15 @@ describe('pipelineOutputWriter', () => {
       legacySubscores: expect.objectContaining({ finalStoryContractScore: 100 }),
     });
 
+    const disposition = JSON.parse(await readFile(`${outputDir}quality-disposition.json`, 'utf8'));
+    expect(disposition).toMatchObject({
+      version: 1,
+      status: 'promoted',
+      band: 'ship',
+      eligibleForReader: true,
+      reasonCodes: [],
+    });
+
     const manifest = JSON.parse(await readFile(`${outputDir}manifest.json`, 'utf8'));
     expect(manifest.files).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'Final Story Contract', type: 'final-story-contract' }),
@@ -1014,6 +1023,7 @@ describe('pipelineOutputWriter', () => {
         evidenceCoverage: 100,
         legacySubscores: expect.objectContaining({ finalStoryContractScore: 100 }),
       }),
+      qualityDisposition: expect.objectContaining({ status: 'promoted', band: 'ship' }),
     });
     expect(manifest.summary.qualityScore).toBeGreaterThan(90);
   });
@@ -1067,6 +1077,36 @@ describe('pipelineOutputWriter', () => {
       '07b-final-story-contract.failed.json',
       '99-pipeline-errors.json',
     ]));
+  });
+
+  it('holds a package when its QA evidence is stale', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-output-stale-qa-'));
+    tempDirs.push(tempDir);
+    const outputDir = `${tempDir}/`;
+    const qaReport = judgedQAReport();
+    qaReport.qaEvidence = {
+      gradedContentHash: 'old-content',
+      currentContentHash: 'new-content',
+      gradedAt: '2026-07-19T00:00:00.000Z',
+      stale: true,
+      staleReason: 'continuity repair changed prose after grading',
+    };
+
+    await savePipelineOutputs(outputDir, {
+      brief: { story: { id: 'story-writer-test', title: 'Story Writer Test', genre: 'Mystery', synopsis: '', themes: [] } },
+      finalStory: makeStoryCircleStory(),
+      qaReport,
+      finalStoryContractReport: passingFinalStoryContract(),
+    } as any, 123);
+
+    const disposition = JSON.parse(await readFile(`${outputDir}quality-disposition.json`, 'utf8'));
+    expect(disposition).toMatchObject({
+      status: 'held',
+      band: 'warn',
+      eligibleForReader: false,
+      qaEvidenceStale: true,
+      reasonCodes: expect.arrayContaining(['qa_evidence_stale']),
+    });
   });
 
   it('only records success after the retained story package verifies', async () => {

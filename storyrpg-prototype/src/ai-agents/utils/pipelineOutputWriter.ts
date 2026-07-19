@@ -29,7 +29,15 @@ import { parseRepairCandidate, type FinalContractRepairCandidate } from '../reme
 import type { QualityCouncilReport } from '../quality-council/types';
 import type { LlmLedger } from './pipelineTelemetry';
 import type { BranchShadowDiff } from './branchShadowDiff';
-import { appendQualityLedger } from './qualityLedger';
+import { appendQualityLedger, scoreBand } from './qualityLedger';
+import {
+  buildQualityBaselineKey,
+  compareQualityBaseline,
+  deriveQualityDisposition,
+  qualityDomainSnapshot,
+  type QualityBaselineSnapshot,
+  type QualityDisposition,
+} from './qualityDisposition';
 import { resolveWorkerGitSha } from './buildInfo';
 import { analyzeStory as analyzeSentenceOpeners } from './sentenceOpenerStats';
 import {
@@ -568,6 +576,7 @@ export interface OutputManifest {
     validationScore?: number;
     qualityScore?: number;
     qualityScoreBasis?: QualityScoreBasis;
+    qualityDisposition?: QualityDisposition;
     validationPassed?: boolean;
     finalStoryContractPassed?: boolean;
     finalStoryContractBlockingIssues?: number;
@@ -872,6 +881,26 @@ function ledgerBaseDir(outputDir: string): string {
 function runNameFromDir(outputDir: string): string {
   const trimmed = outputDir.replace(/\/+$/, '');
   return trimmed.slice(trimmed.lastIndexOf('/') + 1);
+}
+
+function qualityBaselinePath(outputDir: string, key: string): string {
+  return `${ledgerBaseDir(outputDir)}quality-baselines/${key}.json`;
+}
+
+function readQualityBaseline(outputDir: string, key: string): QualityBaselineSnapshot | undefined {
+  if (!hasNodeFs()) return undefined;
+  try {
+    const fs = nodeRequire<typeof import('fs')>('fs');
+    const parsed = JSON.parse(fs.readFileSync(qualityBaselinePath(outputDir, key), 'utf8')) as QualityBaselineSnapshot;
+    return parsed?.version === 1 && parsed.key === key ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function commitQualityBaseline(outputDir: string, baseline: QualityBaselineSnapshot): void {
+  if (!hasNodeFs()) return;
+  atomicWriteNodeSync(qualityBaselinePath(outputDir, baseline.key), JSON.stringify(baseline, null, 2));
 }
 
 export function reconcileBestPracticesReportForFinalStory(
@@ -2324,6 +2353,56 @@ export async function savePipelineOutputs(
     size: qualityReportSize,
   });
 
+  const capIds = quality.basis.caps.map((cap) => cap.id);
+  const blockingCapCount = quality.basis.caps.filter((cap) => cap.maxScore < 90).length;
+  const generationManifest = outputs.brief.generationManifest;
+  const baselineKey = buildQualityBaselineKey({
+    storyId,
+    requestedEpisodes: generationManifest?.requestedEpisodes,
+    sourceAnalysisHash: generationManifest?.sourceAnalysisHash,
+    seasonPlanHash: generationManifest?.seasonPlanHash,
+    compilerVersion: generationManifest?.compilerVersion,
+    generator: outputs.generator,
+  });
+  const baselineCandidate = {
+    key: baselineKey,
+    runDir: runNameFromDir(outputDir),
+    finalScore: quality.score,
+    evidenceCoverage: quality.basis.evidenceCoverage,
+    capIds,
+    domains: qualityDomainSnapshot(quality.basis.domains),
+    candidateStoryHash: quality.report.candidateStoryHash,
+  };
+  const baselineComparison = compareQualityBaseline(
+    baselineCandidate,
+    readQualityBaseline(outputDir, baselineKey),
+  );
+  const qualityDisposition = deriveQualityDisposition({
+    score: quality.score,
+    rawBand: scoreBand(quality.score, blockingCapCount),
+    capIds,
+    blockingCapCount,
+    qaEvidenceStale: outputs.qaReport?.qaEvidence?.stale === true,
+    candidateStoryHash: quality.report.candidateStoryHash,
+    baselineKey,
+    baselineComparison,
+    createdAt: new Date().toISOString(),
+  });
+  const pendingQualityDisposition: QualityDisposition = {
+    ...qualityDisposition,
+    status: 'held',
+    band: qualityDisposition.band === 'block' ? 'block' : 'warn',
+    eligibleForReader: false,
+    reasonCodes: [...new Set([...qualityDisposition.reasonCodes, 'promotion_commit_pending'])],
+  };
+  const dispositionPath = outputDir + 'quality-disposition.json';
+  const dispositionSize = await writeJsonFile(dispositionPath, pendingQualityDisposition);
+  files.push({
+    name: 'Quality Disposition',
+    path: dispositionPath,
+    type: 'quality-disposition',
+    size: dispositionSize,
+  });
   // Create manifest
   const manifest: OutputManifest = {
     storyTitle,
@@ -2365,6 +2444,7 @@ export async function savePipelineOutputs(
       validationScore: outputs.bestPracticesReport?.overallScore,
       qualityScore: quality.score,
       qualityScoreBasis: quality.basis,
+      qualityDisposition: pendingQualityDisposition,
       validationPassed: outputs.bestPracticesReport?.overallPassed,
       finalStoryContractPassed: outputs.finalStoryContractReport?.passed,
       finalStoryContractBlockingIssues: outputs.finalStoryContractReport?.blockingIssues.length,
@@ -2395,6 +2475,19 @@ export async function savePipelineOutputs(
   const retainedPackage = outputs.finalStory
     ? verifyRetainedPackage(outputDir)
     : { verified: false, storyArtifact: `${outputDir}story.json`, manifestArtifact: manifestPath };
+  if (retainedPackage.verified) {
+    manifest.summary.qualityDisposition = qualityDisposition;
+    await writeJsonFile(manifestPath, manifest);
+    // Last atomic write: the catalog treats this sidecar as the promotion pointer.
+    await writeJsonFile(dispositionPath, qualityDisposition);
+    if (qualityDisposition.eligibleForReader) {
+      commitQualityBaseline(outputDir, {
+        version: 1,
+        ...baselineCandidate,
+        committedAt: qualityDisposition.createdAt,
+      });
+    }
+  }
 
   console.log(`[OutputWriter] ✓ Saved ${files.length} files to ${outputDir}`);
   console.log(`[OutputWriter] Summary:`, manifest.summary);
@@ -2439,8 +2532,10 @@ export async function savePipelineOutputs(
       memory: outputs.memorySummary,
       secondPersonOpenerRatio: openerRatio,
       openerMonotonyPassages: openerMonotony,
-      capIds: quality.basis.caps.map((cap) => cap.id),
-      blockingCapCount: quality.basis.caps.filter((cap) => cap.maxScore < 90).length,
+      capIds,
+      blockingCapCount,
+      promotionBand: qualityDisposition.band,
+      promotionStatus: qualityDisposition.status,
       durationMs: duration,
       llmCalls: outputs.llmLedger?.totals.calls,
       llmFailures: outputs.llmLedger?.totals.failures,

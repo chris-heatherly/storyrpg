@@ -834,6 +834,8 @@ export interface SourceMaterialAnalysis {
   protagonist: {
     id: string;
     name: string;
+    /** Explicit source-canon pronouns. Optional only for schema-v1 analysis migration. */
+    pronouns?: 'he/him' | 'she/her' | 'they/them';
     description: string;
     arc: string;
     fashionStyle?: CharacterFashionStyle;

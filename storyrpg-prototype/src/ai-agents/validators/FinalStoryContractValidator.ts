@@ -16,7 +16,12 @@ import { IncrementalEncounterValidator } from './IncrementalValidators';
 import { MechanicsLeakageValidator, type MechanicsLeakageText } from './MechanicsLeakageValidator';
 import { gateDesignNoteLeak, isEscalatedIssue } from './issueEscalation';
 import { canonicalizeStoryWitnessReactions, canonicalizeStoryRelationshipConsequences } from '../utils/witnessNpcResolver';
-import { canonicalizeProtagonistPronouns, otherGenderNamesFromStory } from '../utils/protagonistPronounResolver';
+import {
+  canonicalizeProtagonistPronouns,
+  findProtagonistPlaceholderReferences,
+  otherGenderNamesFromStory,
+} from '../utils/protagonistPronounResolver';
+import { isPlaceholderPersonName, normalizeCanonicalPersonName } from '../utils/canonicalIdentity';
 import { findNpcPronounInconsistencies, findInternalPronounConflicts } from '../utils/npcPronounResolver';
 import { OutcomeTextQualityValidator } from './OutcomeTextQualityValidator';
 import { FlagContractValidator } from './FlagContractValidator';
@@ -224,6 +229,7 @@ export type FinalStoryContractIssueType =
   | 'partial_season_scope'
   | 'treatment_fidelity_violation'
   | 'ambiguous_protagonist_pronoun'
+  | 'protagonist_placeholder_leak'
   | 'npc_pronoun_inconsistency'
   | 'outcome_text_stub'
   | 'echo_summary_variant'
@@ -420,23 +426,8 @@ const PLACEHOLDER_TEXT_PATTERN = /\b(what happened in|scene content was not gene
 
 type ContractProtagonist = NonNullable<FinalStoryContractInput['protagonist']>;
 
-const UNSAFE_PROTAGONIST_NAMES = new Set([
-  'a',
-  'an',
-  'hero',
-  'lead',
-  'main',
-  'protagonist',
-  'the',
-  'unknown',
-]);
-
 function normalizeProtagonistName(name?: string): string | undefined {
-  const trimmed = name?.trim();
-  if (!trimmed) return undefined;
-  if (trimmed.length < 3) return undefined;
-  if (UNSAFE_PROTAGONIST_NAMES.has(trimmed.toLowerCase())) return undefined;
-  return trimmed;
+  return normalizeCanonicalPersonName(name);
 }
 
 function protagonistFromStoryRoster(story: Story): ContractProtagonist | undefined {
@@ -501,6 +492,18 @@ export class FinalStoryContractValidator {
 
     if (mode === 'disabled') {
       return this.buildReport([], metrics);
+    }
+
+    const unsafeProvidedNames = [input.protagonist?.name?.trim(), ...(input.protagonist?.aliases ?? [])]
+      .filter((name): name is string => Boolean(name && isPlaceholderPersonName(name)));
+    for (const reference of findProtagonistPlaceholderReferences(input.story, unsafeProvidedNames)) {
+      issues.push({
+        type: 'protagonist_placeholder_leak',
+        severity: mode === 'strict' ? 'error' : 'warning',
+        message: `Placeholder protagonist identity appears in reader-facing prose at ${reference.location}.`,
+        validator: 'FinalStoryContractValidator',
+        suggestion: 'Rewrite the passage using second person or the canonical protagonist identity.',
+      });
     }
 
     issues.push(...this.collectChoiceCountContractIssues(input.story));

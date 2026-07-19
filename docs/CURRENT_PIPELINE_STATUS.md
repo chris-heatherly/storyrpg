@@ -78,6 +78,32 @@ Skip telemetry (debug events): `thread_twist_skipped_authored_lite`,
 Cognee remains advisory-only: index compiled ESC/ledger facts, not competing
 LLM plans.
 
+### Package quality promotion
+
+Generation completion and Reader publication are separate outcomes. Every new
+retained package writes an atomic `quality-disposition.json` derived from the
+run score, quality caps, QA evidence freshness, and a treatment/config-scoped
+best-known baseline. `ship` packages are promoted; `warn` and `block` packages
+remain available to generator diagnostics but are excluded from local and GCS
+Reader catalogs unless an explicit audited override is present. When equally
+complete promoted packages exist, the catalog chooses the highest-quality
+package before using recency as a tie-breaker.
+
+Historical packages without an explicit disposition remain Reader-visible for
+backward compatibility. Legacy manifest scores inform ranking and diagnostics
+only; the proxy does not reinterpret them as retroactive publication decisions.
+
+An override is recorded with `npm run quality:override -- --run <run-dir> --approved-by <identity> --reason <reason>`. It updates only the promotion
+receipt and appends `quality-override-audit.jsonl`; it never changes scores,
+caps, QA evidence, or story content.
+
+Source analysis now carries explicit protagonist pronouns. Treatment-bound
+generation preflight rejects a creative-brief protagonist that conflicts with
+the locked season plan, and placeholder names such as `Hero` or `The Hero`
+cannot become canonical aliases. Final-contract repair is monotonic across
+blocking and advisory canonical findings, so a rewrite that loses a previously
+realized anchor is rolled back rather than committed.
+
 Authored generation is admitted through `GenerationManifest` preflight. The
 manifest pins `sourceKind`, requested episodes, source-analysis hash,
 season-plan id/hash, graph hash, and compiler version using the JSON wire

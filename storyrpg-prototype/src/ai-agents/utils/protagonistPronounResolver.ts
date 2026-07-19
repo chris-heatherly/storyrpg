@@ -39,6 +39,11 @@ export interface ProtagonistPronounResult {
   fieldsScanned: number;
 }
 
+export interface ProtagonistPlaceholderReference {
+  location: string;
+  value: string;
+}
+
 // Reader-facing text fields anywhere in the story graph (incl. nested encounter
 // situations). Agent-facing planning fields are deliberately excluded.
 const TEXT_KEYS = new Set([
@@ -214,6 +219,34 @@ export function canonicalizeProtagonistPronouns(
 
   walk(story, '');
   return result;
+}
+
+/** Locate a known launch placeholder only on reader-facing text surfaces. */
+export function findProtagonistPlaceholderReferences(
+  story: Story,
+  placeholderNames: string[],
+): ProtagonistPlaceholderReference[] {
+  const names = placeholderNames.map((name) => name.trim()).filter(Boolean);
+  if (names.length === 0) return [];
+  const pattern = new RegExp(`\\b(?:${names.map(escapeRegExp).join('|')})\\b`, 'i');
+  const found: ProtagonistPlaceholderReference[] = [];
+  const walk = (node: unknown, path: string): void => {
+    if (Array.isArray(node)) {
+      node.forEach((child, index) => walk(child, `${path}[${index}]`));
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      const location = `${path}/${key}`;
+      if (typeof value === 'string' && TEXT_KEYS.has(key) && pattern.test(value)) {
+        found.push({ location, value });
+      } else if (value && typeof value === 'object') {
+        walk(value, location);
+      }
+    }
+  };
+  walk(story, 'story');
+  return found;
 }
 
 /**

@@ -1637,6 +1637,7 @@ export class FinalContract {
         canSpend: () => shouldAttemptRemediation(this.deps.remediationBudget),
         requireMutationEvidence: true,
         rejectIntroducedBlockingIssues: true,
+        rejectIntroducedWarnings: true,
         onRoundSnapshot: this.deps.saveRepairRoundSnapshot,
         deadlineAt: input.repairDeadlineAt,
       });

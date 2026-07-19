@@ -30,6 +30,10 @@ describe('scoreBand', () => {
     expect(scoreBand(74, 2)).toBe('warn');
     expect(scoreBand(45, 3)).toBe('block');
   });
+
+  it('holds a high-scoring run when its QA evidence is stale', () => {
+    expect(scoreBand(92, 0, true)).toBe('warn');
+  });
 });
 
 describe('appendQualityLedger', () => {

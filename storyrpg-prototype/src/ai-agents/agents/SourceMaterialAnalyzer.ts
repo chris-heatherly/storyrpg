@@ -193,6 +193,7 @@ interface StoryStructureAnalysis {
   };
   protagonist: {
     name: string;
+    pronouns?: 'he/him' | 'she/her' | 'they/them';
     description: string;
     arc: string;
     fashionStyle?: Partial<CharacterFashionStyle>;
@@ -590,6 +591,7 @@ ${STORY_CIRCLE_GEOMETRY_PRINCIPLES.join('\n')}
   },
   "protagonist": {
     "name": "<protagonist name>",
+    "pronouns": "<he/him, she/her, or they/them only when the source establishes it>",
     "description": "<brief description>",
     "arc": "<what they learn/how they change>",
     "fashionStyle": {
@@ -1596,6 +1598,7 @@ Return ONLY valid JSON.
       protagonist: {
         id: protagonistId,
         name: structure.protagonist.name,
+        pronouns: structure.protagonist.pronouns,
         description: structure.protagonist.description,
         arc: structure.protagonist.arc,
         fashionStyle: normalizeCharacterFashionStyle(structure.protagonist.fashionStyle),

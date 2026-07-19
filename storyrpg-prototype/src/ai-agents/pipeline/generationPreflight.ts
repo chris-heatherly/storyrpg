@@ -2,6 +2,7 @@ import type { SeasonPlan } from '../../types/seasonPlan';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import { stableHash } from './artifacts/store';
 import { PipelineError } from './errors';
+import { canonicalPersonNamesEqual, isPlaceholderPersonName } from '../utils/canonicalIdentity';
 
 export const GENERATION_MANIFEST_VERSION = 1 as const;
 
@@ -28,6 +29,7 @@ export interface GenerationPreflightIssue {
     | 'generation_season_plan_missing'
     | 'generation_season_plan_id_mismatch'
     | 'generation_season_plan_hash_mismatch'
+    | 'generation_protagonist_identity_mismatch'
     | 'generation_season_graph_missing'
     | 'generation_season_graph_invalid'
     | 'generation_season_graph_hash_mismatch'
@@ -48,6 +50,7 @@ export function generationArtifactHash(value: unknown): string {
 interface GenerationBriefSurface {
   seasonPlan?: SeasonPlan;
   generationManifest?: GenerationManifest;
+  protagonist?: { id?: string; name?: string };
 }
 
 export function inferGenerationSourceKind(
@@ -150,6 +153,24 @@ export function validateGenerationPreflight(input: {
   }
   if (manifest.seasonPlanHash !== generationArtifactHash(plan)) {
     issues.push({ code: 'generation_season_plan_hash_mismatch', message: 'Season plan changed after the generation manifest was committed.' });
+  }
+  const planProtagonist = plan.protagonist;
+  const briefProtagonist = input.brief.protagonist;
+  if (
+    planProtagonist?.name
+    && briefProtagonist?.name
+    && (
+      isPlaceholderPersonName(briefProtagonist.name)
+      || (
+        briefProtagonist.id !== planProtagonist.id
+        && !canonicalPersonNamesEqual(briefProtagonist.name, planProtagonist.name)
+      )
+    )
+  ) {
+    issues.push({
+      code: 'generation_protagonist_identity_mismatch',
+      message: `Creative brief protagonist "${briefProtagonist.name}" does not match locked season-plan protagonist "${planProtagonist.name}".`,
+    });
   }
 
   const scenePlan = plan.scenePlan;

@@ -353,6 +353,44 @@ describe('runFinalContractRepair', () => {
     expect(out.story).toBe(localStory);
   });
 
+  it('rejects a repair candidate that loses a previously realized canonical anchor', async () => {
+    const localStory = { id: 'anchor-loss', title: 'Anchor Loss', marker: 'realized' } as unknown as Story;
+    const initial: ContractRepairReport = {
+      passed: false,
+      blockingIssues: [{ validator: 'TargetValidator', sceneId: 's1', message: 'target miss' }],
+      warnings: [],
+    };
+    const regressed: ContractRepairReport = {
+      passed: false,
+      blockingIssues: initial.blockingIssues,
+      warnings: [{
+        validator: 'SemanticRealizationJudge',
+        issueCode: 'SEMANTIC_REALIZATION_MISSING',
+        taskId: 'task:anchor:1:4:protection:planting',
+        contractId: 'anchor:1:4:protection',
+        sceneId: 's1-3',
+        severity: 'warning',
+        message: 'The authored protection anchor is no longer planted.',
+      }],
+    };
+
+    const out = await runFinalContractRepair({
+      story: localStory,
+      initialReport: initial,
+      handlers: [({ story: candidate }) => {
+        (candidate as any).marker = 'lossy rewrite';
+        return { story: candidate, changed: true };
+      }],
+      revalidate: async () => regressed,
+      maxAttempts: 1,
+      rejectIntroducedBlockingIssues: true,
+      rejectIntroducedWarnings: true,
+    });
+
+    expect((localStory as any).marker).toBe('realized');
+    expect(out.report).toEqual(initial);
+  });
+
   it('rejects only the offending handler and commits a safe sibling repair', async () => {
     const localStory = {
       id: 'handler-transactions',

@@ -22,6 +22,7 @@ describe('buildGeneratorCreativeBrief', () => {
       protagonist: {
         id: 'char-kylie-marinescu',
         name: 'Kylie Marinescu',
+        pronouns: 'she/her',
         description: 'A food writer rebuilding herself after a public breakup.',
       },
       majorCharacters: [
@@ -80,6 +81,7 @@ describe('buildGeneratorCreativeBrief', () => {
     });
     expect(brief?.story.genre).not.toBe('Action');
     expect(brief?.protagonist.name).toBe('Kylie Marinescu');
+    expect(brief?.protagonist.pronouns).toBe('she/her');
     expect(brief?.protagonist.name).not.toBe('Hero');
     expect(brief?.world.keyLocations[0].id).toBe('loc-cismigiu-gardens');
     expect(brief?.episode).toMatchObject({ number: 1, title: 'Dating After Dusk' });
@@ -134,5 +136,27 @@ describe('buildGeneratorCreativeBrief', () => {
     expect(brief?.story.title).toBe('Analyzed Title');
     expect(brief?.story.genre).toBe('Mystery');
     expect(brief?.protagonist.name).toBe('Detective Vale');
+  });
+
+  it('does not carry placeholder document pronouns into analyzed source canon', () => {
+    const documentBrief = {
+      story: { title: 'Bite Me', genre: 'Action', synopsis: '', tone: '', themes: [] },
+      world: { premise: '', timePeriod: '', technologyLevel: '', keyLocations: [] },
+      protagonist: { id: 'protagonist', name: 'The Hero', pronouns: 'he/him', description: '', role: 'protagonist' },
+      npcs: [],
+      episode: { number: 1, title: 'Episode 1', synopsis: '', startingLocation: '' },
+    } as FullCreativeBrief;
+    const sourceAnalysis = {
+      sourceTitle: 'Bite Me', genre: 'romance', tone: 'darkly comic', themes: [],
+      setting: { location: 'Bucharest', timePeriod: 'Now', worldDetails: '' },
+      protagonist: { id: 'char-kylie', name: 'Kylie Marinescu', pronouns: 'she/her', description: '', arc: '' },
+      majorCharacters: [], keyLocations: [], episodeBreakdown: [{ episodeNumber: 1, title: 'One', synopsis: '' }],
+    } as unknown as SourceMaterialAnalysis;
+
+    const brief = buildGeneratorCreativeBrief({
+      documentBrief, sourceAnalysis, seasonPlan: null, customStoryTitle: 'Bite Me', userPrompt: '',
+    });
+
+    expect(brief?.protagonist).toMatchObject({ name: 'Kylie Marinescu', pronouns: 'she/her' });
   });
 });

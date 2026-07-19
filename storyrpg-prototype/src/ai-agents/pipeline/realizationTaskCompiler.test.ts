@@ -429,7 +429,7 @@ describe('compileNarrativeRealizationTasks', () => {
     expect(tasks.find((task) => task.id === 'task:transition:club-to-club-back:departure')).toBeUndefined();
   });
 
-  it('compiles an advisory judge-verified planting task for a season anchor on its owning scene', () => {
+  it('compiles a blocking judge-verified planting task for a major season anchor on its owning scene', () => {
     const graph = {
       events: [],
       dependencies: [],
@@ -448,7 +448,7 @@ describe('compileNarrativeRealizationTasks', () => {
 
     expect(tasks.find((task) => task.id === 'task:anchor:1:2:stela-s-protection:planting')).toMatchObject({
       sceneId: 's1-3',
-      blocking: false,
+      blocking: true,
       evidenceAtoms: [expect.objectContaining({
         description: 'Kylie accepts a protective object or blessing from Stela with visible consent.',
         verificationAuthority: 'semantic_judge',

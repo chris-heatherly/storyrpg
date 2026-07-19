@@ -5,7 +5,10 @@ function registerCatalogRoutes(app, { listLatestStoryRecords, createStoryCatalog
 
   app.get('/list-stories', async (req, res) => {
     try {
-      const result = await listLatestStoryRecords({ includeInvalid: true });
+      const result = await listLatestStoryRecords({
+        includeInvalid: true,
+        includeHeld: req.query.includeHeld === '1',
+      });
       const valid = Array.isArray(result) ? result : result.valid;
       const invalid = Array.isArray(result) ? [] : (result.invalid || []);
 
@@ -32,7 +35,10 @@ function registerCatalogRoutes(app, { listLatestStoryRecords, createStoryCatalog
   app.get('/stories/:storyId', async (req, res) => {
     try {
       const { storyId } = req.params;
-      const result = await listLatestStoryRecords({ includeInvalid: true });
+      const result = await listLatestStoryRecords({
+        includeInvalid: true,
+        includeHeld: req.query.includeHeld === '1',
+      });
       const valid = Array.isArray(result) ? result : result.valid;
       const record = valid.find(
         (candidate) => candidate.pkg?.storyId === storyId || candidate.story?.id === storyId,

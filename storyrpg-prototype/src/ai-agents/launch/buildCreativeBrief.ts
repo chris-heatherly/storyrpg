@@ -1,6 +1,10 @@
 import type { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
 import type { SeasonPlan } from '../../types/seasonPlan';
+import {
+  canonicalPersonNamesEqual,
+  normalizeCanonicalPronouns,
+} from '../utils/canonicalIdentity';
 
 export interface BuildGeneratorCreativeBriefInput {
   documentBrief: FullCreativeBrief | null;
@@ -12,10 +16,18 @@ export interface BuildGeneratorCreativeBriefInput {
 
 function analyzedBrief(
   sourceAnalysis: SourceMaterialAnalysis,
+  documentBrief: FullCreativeBrief | null,
   customStoryTitle: string,
   userPrompt: string,
 ): FullCreativeBrief {
   const firstEpisode = sourceAnalysis.episodeBreakdown?.[0];
+  const sourcePronouns = normalizeCanonicalPronouns(sourceAnalysis.protagonist?.pronouns);
+  const alignedDocumentPronouns = canonicalPersonNamesEqual(
+    sourceAnalysis.protagonist?.name,
+    documentBrief?.protagonist?.name,
+  ) || sourceAnalysis.protagonist?.id === documentBrief?.protagonist?.id
+    ? normalizeCanonicalPronouns(documentBrief?.protagonist?.pronouns)
+    : undefined;
   return {
     story: {
       title: customStoryTitle || sourceAnalysis.sourceTitle || 'New Story',
@@ -39,7 +51,7 @@ function analyzedBrief(
     protagonist: {
       id: sourceAnalysis.protagonist?.id || 'protagonist',
       name: sourceAnalysis.protagonist?.name || 'Hero',
-      pronouns: 'they/them',
+      pronouns: sourcePronouns || alignedDocumentPronouns || 'they/them',
       description: sourceAnalysis.protagonist?.description || '',
       role: 'protagonist',
     },
@@ -86,7 +98,7 @@ export function buildGeneratorCreativeBrief(input: BuildGeneratorCreativeBriefIn
   let brief: FullCreativeBrief | null = null;
 
   if (input.sourceAnalysis) {
-    brief = analyzedBrief(input.sourceAnalysis, input.customStoryTitle, prompt);
+    brief = analyzedBrief(input.sourceAnalysis, input.documentBrief, input.customStoryTitle, prompt);
   } else if (input.documentBrief) {
     brief = {
       ...input.documentBrief,

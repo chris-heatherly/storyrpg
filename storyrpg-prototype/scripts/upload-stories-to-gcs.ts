@@ -3,6 +3,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { Storage } from '@google-cloud/storage';
 import { decodeStory } from '../src/ai-agents/codec/storyCodec';
+import type { QualityDisposition } from '../src/ai-agents/utils/qualityDisposition';
 
 type UploadMode = 'latest' | 'all';
 
@@ -24,6 +25,7 @@ type CatalogEntry = {
   /** Optional proxy-style cover image path */
   coverImage?: string;
   updatedAt?: string;
+  qualityDisposition?: QualityDisposition;
 };
 
 function usageAndExit(message?: string): never {
@@ -110,7 +112,31 @@ function readStoryJson(storiesDir: string, runDir: string): any | null {
   }
 }
 
-function buildCatalogEntry(runDir: string, story: any, updatedAt: string): CatalogEntry | null {
+function readQualityDisposition(storiesDir: string, runDir: string): QualityDisposition | null {
+  const target = path.join(storiesDir, runDir, 'quality-disposition.json');
+  if (!fs.existsSync(target)) return null;
+  try {
+    const value = JSON.parse(fs.readFileSync(target, 'utf8')) as QualityDisposition;
+    return value?.version === 1 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function isReaderEligible(disposition: QualityDisposition | null): boolean {
+  if (!disposition) return true;
+  if (disposition.override?.approvedBy && disposition.override.approvedAt && disposition.override.reason) return true;
+  return disposition.eligibleForReader === true
+    && disposition.status === 'promoted'
+    && disposition.band === 'ship';
+}
+
+function buildCatalogEntry(
+  runDir: string,
+  story: any,
+  updatedAt: string,
+  qualityDisposition?: QualityDisposition | null,
+): CatalogEntry | null {
   if (!story?.id || !story?.title) return null;
   const coverImage = typeof story.coverImage === 'string' ? story.coverImage : undefined;
 
@@ -126,6 +152,7 @@ function buildCatalogEntry(runDir: string, story: any, updatedAt: string): Catal
     storyPath: `generated-stories/${runDir}/story.json`,
     coverImage,
     updatedAt,
+    qualityDisposition: qualityDisposition || undefined,
   };
 }
 
@@ -204,8 +231,13 @@ async function main() {
   for (const { dirName } of selected) {
     const localRunDir = path.join(storiesDir, dirName);
     const story = readStoryJson(storiesDir, dirName);
+    const qualityDisposition = readQualityDisposition(storiesDir, dirName);
     if (!story) {
       console.warn(`[upload-stories-to-gcs] Skipping ${dirName} (missing or invalid story.json; run scripts/migrate-stories.ts for legacy-only directories)`);
+      continue;
+    }
+    if (!isReaderEligible(qualityDisposition)) {
+      console.warn(`[upload-stories-to-gcs] Skipping held package ${dirName}`);
       continue;
     }
 
@@ -213,7 +245,7 @@ async function main() {
     await uploadDirectoryRecursive(storage, bucketName, localRunDir, `${prefix}/${dirName}`);
 
     const updatedAt = new Date().toISOString();
-    const entry = buildCatalogEntry(dirName, story, updatedAt);
+    const entry = buildCatalogEntry(dirName, story, updatedAt, qualityDisposition);
     if (entry) catalog.push(entry);
   }
 
@@ -223,7 +255,9 @@ async function main() {
   for (const { dirName, mtimeMs } of catalogSource) {
     const story = readStoryJson(storiesDir, dirName);
     if (!story) continue;
-    const entry = buildCatalogEntry(dirName, story, new Date(mtimeMs).toISOString());
+    const qualityDisposition = readQualityDisposition(storiesDir, dirName);
+    if (!isReaderEligible(qualityDisposition)) continue;
+    const entry = buildCatalogEntry(dirName, story, new Date(mtimeMs).toISOString(), qualityDisposition);
     if (entry) fullCatalog.push(entry);
   }
 

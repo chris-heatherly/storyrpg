@@ -14,7 +14,7 @@
 export const QUALITY_SCORE_BANDS = {
   /** >= ship: good to publish. */
   ship: 70,
-  /** >= warn (and < ship): publishable but flagged for review. */
+  /** >= warn (and < ship): retained for generator review, not reader promotion. */
   warn: 50,
   // < warn: block / needs rework.
 } as const;
@@ -28,9 +28,9 @@ export type QualityBand = 'ship' | 'warn' | 'block';
  * of them can score >= 70 but must not band "ship"; it lands in "warn" for
  * review instead.
  */
-export function scoreBand(score: number | undefined, blockingCapCount?: number): QualityBand {
+export function scoreBand(score: number | undefined, blockingCapCount?: number, qaEvidenceStale?: boolean): QualityBand {
   if (typeof score !== 'number') return 'block';
-  if (score >= QUALITY_SCORE_BANDS.ship && !(blockingCapCount && blockingCapCount > 0)) return 'ship';
+  if (score >= QUALITY_SCORE_BANDS.ship && !(blockingCapCount && blockingCapCount > 0) && !qaEvidenceStale) return 'ship';
   if (score >= QUALITY_SCORE_BANDS.warn) return 'warn';
   return 'block';
 }
@@ -110,6 +110,9 @@ export interface QualityLedgerEntry {
   candidateStoryHash?: string;
   /** G9 evidence sync: true when the QA grades in this row scored content that was later mutated. */
   qaEvidenceStale?: boolean;
+  /** Promotion decision after stale-evidence and best-known comparison. */
+  promotionBand?: QualityBand;
+  promotionStatus?: 'promoted' | 'held';
   /** Successful rows are only emitted after both retained package files parse. */
   packageVerified?: boolean;
   packageRetention?: 'retain_success_package';
@@ -176,5 +179,5 @@ export async function appendQualityLedger(baseDir: string, entry: QualityLedgerE
 
 /** Attach the derived band so the JSONL is self-describing for dashboards. */
 function withBand(entry: QualityLedgerEntry): QualityLedgerEntry & { band: QualityBand } {
-  return { ...entry, band: scoreBand(entry.overallScore, entry.blockingCapCount) };
+  return { ...entry, band: entry.promotionBand ?? scoreBand(entry.overallScore, entry.blockingCapCount, entry.qaEvidenceStale) };
 }

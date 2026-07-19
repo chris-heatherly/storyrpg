@@ -115,6 +115,25 @@ describe('generation preflight', () => {
     }).map((issue) => issue.code)).toContain('generation_manifest_copy_mismatch');
   });
 
+  it('rejects a stale placeholder protagonist before provider calls', () => {
+    const sourceAnalysis = authoredAnalysis();
+    const seasonPlan = canonicalPlan();
+    seasonPlan.protagonist = { id: 'char-kylie', name: 'Kylie Marinescu', description: '' };
+    const manifest = buildGenerationManifest({ sourceAnalysis, seasonPlan, requestedEpisodes: [1] });
+
+    const issues = validateGenerationPreflight({
+      brief: {
+        seasonPlan,
+        generationManifest: manifest,
+        protagonist: { id: 'protagonist', name: 'The Hero' },
+      },
+      sourceAnalysis,
+      manifest,
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain('generation_protagonist_identity_mismatch');
+  });
+
   it('rejects missing ownership projections and episode-scope drift', () => {
     const sourceAnalysis = authoredAnalysis();
     const seasonPlan = canonicalPlan();

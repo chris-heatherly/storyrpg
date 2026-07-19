@@ -68,6 +68,8 @@ export interface ContractRepairReport {
     realizationFingerprint?: string;
     matchedForbiddenAtoms?: string[];
   }>;
+  /** Advisory findings participate in monotonic repair checks when requested. */
+  warnings?: ContractRepairReport['blockingIssues'];
 }
 
 /**
@@ -247,6 +249,13 @@ function introducedBlockingIssueKeys(
     }
   }
   return Array.from(introduced);
+}
+
+function introducedWarningIssueKeys(
+  beforeReport: ContractRepairReport,
+  afterReport: ContractRepairReport,
+): string[] {
+  return introducedBlockingIssueKeys(beforeReport.warnings ?? [], afterReport.warnings ?? []);
 }
 
 export function finalContractRepairInputHash(value: unknown): string {
@@ -527,6 +536,8 @@ export async function runFinalContractRepair(opts: {
   requireMutationEvidence?: boolean;
   /** Reject a candidate that introduces any new blocking fingerprint. */
   rejectIntroducedBlockingIssues?: boolean;
+  /** Reject a candidate that introduces a new canonical advisory fingerprint. */
+  rejectIntroducedWarnings?: boolean;
   /**
    * Wall-clock deadline (epoch ms). Checked BEFORE each round: when reached,
    * the loop exits gracefully with its current report so the caller's
@@ -565,6 +576,7 @@ export async function runFinalContractRepair(opts: {
     const roundInputHash = finalContractRepairInputHash(story);
     const roundBefore = cloneForRepairEvidence(story);
     const allBeforeIssues = [...report.blockingIssues];
+    const allBeforeWarnings = [...(report.warnings ?? [])];
     const allBeforeIssueKeys = allBeforeIssues.map(contractRepairIssueFingerprint);
     const beforeIssueKeys = round.issues.map(contractRepairIssueFingerprint);
     let roundChanged = false;
@@ -596,9 +608,16 @@ export async function runFinalContractRepair(opts: {
       let acceptedWholeCandidate = result.changed;
       if (result.changed) {
         if (opts.rejectIntroducedBlockingIssues) {
+          const beforeHandlerReport = report;
           const beforeHandlerIssues = [...report.blockingIssues];
           const candidateReport = await opts.revalidate(story);
-          const introduced = introducedBlockingIssueKeys(beforeHandlerIssues, candidateReport.blockingIssues);
+          const introducedWarnings = opts.rejectIntroducedWarnings
+            ? introducedWarningIssueKeys(beforeHandlerReport, candidateReport)
+            : [];
+          const introduced = [
+            ...introducedBlockingIssueKeys(beforeHandlerIssues, candidateReport.blockingIssues),
+            ...introducedWarnings.map((key) => `warning::${key}`),
+          ];
           if (introduced.length > 0) {
             introduced.forEach((key) => rejectedIntroducedKeys.add(key));
             const handlerCandidate = cloneForRepairEvidence(story);
@@ -609,7 +628,13 @@ export async function runFinalContractRepair(opts: {
               const scopeBefore = cloneForRepairEvidence(story);
               if (!applyAtomicScope(story, handlerCandidate, scope)) continue;
               const scopedReport = await opts.revalidate(story);
-              const scopedIntroduced = introducedBlockingIssueKeys(report.blockingIssues, scopedReport.blockingIssues);
+              const scopedIntroducedWarnings = opts.rejectIntroducedWarnings
+                ? introducedWarningIssueKeys(report, scopedReport)
+                : [];
+              const scopedIntroduced = [
+                ...introducedBlockingIssueKeys(report.blockingIssues, scopedReport.blockingIssues),
+                ...scopedIntroducedWarnings.map((key) => `warning::${key}`),
+              ];
               if (scopedIntroduced.length > 0) {
                 restoreStoryInPlace(story, scopeBefore);
                 scopedIntroduced.forEach((key) => rejectedIntroducedKeys.add(key));
@@ -678,7 +703,16 @@ export async function runFinalContractRepair(opts: {
       : await opts.revalidate(story);
     const candidateIssueKeys = candidateReport.blockingIssues.map(contractRepairIssueFingerprint);
     const beforeIssueSet = new Set(allBeforeIssueKeys);
-    const introducedCandidateKeys = introducedBlockingIssueKeys(allBeforeIssues, candidateReport.blockingIssues);
+    const introducedCandidateWarnings = opts.rejectIntroducedWarnings
+      ? introducedWarningIssueKeys(
+          { ...report, blockingIssues: allBeforeIssues, warnings: allBeforeWarnings },
+          candidateReport,
+        )
+      : [];
+    const introducedCandidateKeys = [
+      ...introducedBlockingIssueKeys(allBeforeIssues, candidateReport.blockingIssues),
+      ...introducedCandidateWarnings.map((key) => `warning::${key}`),
+    ];
     if (opts.rejectIntroducedBlockingIssues && introducedCandidateKeys.length > 0) {
       // A repair is transactional for the offending round: revert, then continue
       // attempting other repairable issues instead of aborting the entire loop

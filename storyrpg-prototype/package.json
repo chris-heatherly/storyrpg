@@ -60,6 +60,7 @@
     "validation:audit": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/audit-validation.ts",
     "validation:kill-table": "node scripts/gate-kill-table.mjs",
     "validation:explain": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/explain-validation.ts",
+    "quality:override": "node scripts/override-quality-disposition.mjs",
     "corpus:check": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/defect-corpus/replay-corpus.ts",
     "audit:episode": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/audit-generated-episode-vs-treatment.ts",
     "smoke:check": "TS_NODE_PROJECT=tsconfig.worker.json npx ts-node --transpile-only scripts/smoke-live.ts",

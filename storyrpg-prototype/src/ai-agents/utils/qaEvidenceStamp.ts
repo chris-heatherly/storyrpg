@@ -8,7 +8,8 @@
  * re-derived — so `*-qa-report.post-repair.json` (and the scores derived from
  * it) could grade text the reader never sees, invisibly.
  *
- * Reporting-layer only: staleness never gates, caps, or blocks anything.
+ * Staleness does not abort generation, but the package quality disposition
+ * holds stale evidence out of reader promotion until fresh QA is committed.
  */
 import { fnv1a32Json } from './contentHash';
 

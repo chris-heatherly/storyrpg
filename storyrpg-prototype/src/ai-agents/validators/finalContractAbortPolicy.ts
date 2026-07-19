@@ -107,6 +107,7 @@ export const ABORT_CLASS_BY_ISSUE_TYPE: Record<FinalStoryContractIssueType, Fina
   partial_season_scope: 'core',
   treatment_fidelity_violation: 'ship_with_cap',
   ambiguous_protagonist_pronoun: 'core',
+  protagonist_placeholder_leak: 'ship_with_cap',
   npc_pronoun_inconsistency: 'ship_with_cap',
   outcome_text_stub: 'core',
   echo_summary_variant: 'core',

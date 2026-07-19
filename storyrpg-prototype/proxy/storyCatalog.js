@@ -5,6 +5,7 @@ const { Storage } = require('@google-cloud/storage');
 
 const codec = require('./storyCodec');
 const manifestModule = require('./storyManifest');
+const qualityDispositionModule = require('./qualityDisposition');
 const {
   getStoryStorageMode,
   getGcsBucketName,
@@ -142,6 +143,8 @@ function createStoryCatalog(storiesDir, port) {
     const dirAbs = path.join(storiesDir, dirName);
     const primary = resolvePrimaryStoryFile(dirAbs);
     if (!primary) return null;
+    const qualityDisposition = qualityDispositionModule.readQualityDisposition(dirAbs);
+    const readerEligible = qualityDispositionModule.isReaderEligible(qualityDisposition);
 
     const stats = fs.statSync(primary.abs);
     const cacheKey = primary.abs;
@@ -155,6 +158,8 @@ function createStoryCatalog(storiesDir, port) {
         primaryFilename: primary.filename,
         mtimeMs: cached.mtimeMs,
         manifestVerified: cached.manifestVerified,
+        qualityDisposition,
+        readerEligible,
         error: cached.error || null,
       };
     }
@@ -250,6 +255,8 @@ function createStoryCatalog(storiesDir, port) {
       primaryFilename: primary.filename,
       mtimeMs: stats.mtimeMs,
       manifestVerified,
+      qualityDisposition,
+      readerEligible,
       error: null,
     };
   }
@@ -287,8 +294,29 @@ function createStoryCatalog(storiesDir, port) {
     };
   }
 
-  function mergeContinuationRecords(records) {
-    const sorted = [...records].sort((a, b) => b.mtimeMs - a.mtimeMs);
+  function recordEpisodeProgress(record) {
+    const episodes = Array.isArray(record.pkg?.story?.episodes) ? record.pkg.story.episodes : [];
+    const numbers = episodes.map((episode) => Number(episode?.number)).filter(Number.isFinite);
+    return {
+      maxEpisode: numbers.length > 0 ? Math.max(...numbers) : 0,
+      episodeCount: episodes.length,
+      qualityScore: typeof record.qualityDisposition?.score === 'number'
+        ? record.qualityDisposition.score
+        : Number.NEGATIVE_INFINITY,
+    };
+  }
+
+  function comparePromotedRecords(left, right) {
+    const a = recordEpisodeProgress(left);
+    const b = recordEpisodeProgress(right);
+    return b.maxEpisode - a.maxEpisode
+      || b.episodeCount - a.episodeCount
+      || b.qualityScore - a.qualityScore
+      || right.mtimeMs - left.mtimeMs;
+  }
+
+  function mergeContinuationRecords(records, comparator = comparePromotedRecords) {
+    const sorted = [...records].sort(comparator);
     const newest = sorted[0];
     const newestEpisodes = newest.pkg?.story?.episodes;
     if (!Array.isArray(newestEpisodes) || newestEpisodes.length === 0) return newest;
@@ -342,7 +370,7 @@ function createStoryCatalog(storiesDir, port) {
     };
   }
 
-  function listLatestStoryRecords({ includeInvalid = false } = {}) {
+  function listLatestStoryRecords({ includeInvalid = false, includeHeld = false } = {}) {
     const recordsByStoryId = new Map();
     const invalid = [];
     for (const dirName of listStoryDirectories()) {
@@ -352,6 +380,7 @@ function createStoryCatalog(storiesDir, port) {
         invalid.push(record);
         continue;
       }
+      if (!includeHeld && record.readerEligible === false) continue;
       if (!record.pkg?.storyId) continue;
       const id = record.pkg.storyId;
       const group = recordsByStoryId.get(id) || [];
@@ -361,14 +390,17 @@ function createStoryCatalog(storiesDir, port) {
 
     const valid = Array.from(recordsByStoryId.entries())
       .map(([id, records]) => {
+        const comparator = includeHeld
+          ? (left, right) => right.mtimeMs - left.mtimeMs
+          : comparePromotedRecords;
         if (records.length > 1) {
           const dirNames = records
-            .sort((a, b) => b.mtimeMs - a.mtimeMs)
+            .sort(comparator)
             .map((record) => record.dirName)
             .join(', ');
           console.error(`[StoryCatalog] duplicate storyId="${id}": resolving catalog view from ${dirNames}`);
         }
-        return mergeContinuationRecords(records);
+        return mergeContinuationRecords(records, comparator);
       })
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
     return includeInvalid ? { valid, invalid } : valid;
@@ -412,9 +444,10 @@ function createStoryCatalog(storiesDir, port) {
     }
   }
 
-  function projectGcsCatalogEntries(entries) {
+  function projectGcsCatalogEntries(entries, { includeHeld = false } = {}) {
     const records = [];
     for (const entry of entries) {
+      if (!includeHeld && !qualityDispositionModule.isReaderEligible(entry.qualityDisposition)) continue;
       const outputDir = String(entry.outputDir || '');
       const dirNameMatch = /^generated-stories\/([^/]+)\//.exec(outputDir);
       const dirName = dirNameMatch ? dirNameMatch[1] : null;
@@ -431,10 +464,13 @@ function createStoryCatalog(storiesDir, port) {
           episodes: Array.isArray(entry.episodes) ? entry.episodes : [],
           episodeCount: typeof entry.episodeCount === 'number' ? entry.episodeCount : undefined,
           outputDir: entry.outputDir,
+          qualityDisposition: entry.qualityDisposition,
         },
         dirName,
         storyFile: entry.storyPath || `generated-stories/${dirName}/${MODERN_STORY_FILENAME}`,
         mtimeMs: entry.updatedAt ? new Date(entry.updatedAt).getTime() : Date.now(),
+        qualityDisposition: entry.qualityDisposition,
+        readerEligible: qualityDispositionModule.isReaderEligible(entry.qualityDisposition),
       });
     }
 
@@ -451,7 +487,7 @@ function createStoryCatalog(storiesDir, port) {
     const mode = getStoryStorageMode();
     if (mode !== 'gcs') return listLatestStoryRecords(options);
 
-    return loadGcsCatalogEntries().then(projectGcsCatalogEntries);
+    return loadGcsCatalogEntries().then((entries) => projectGcsCatalogEntries(entries, options));
   }
 
   function createStoryCatalogEntryFromGcsRecord(record, req) {
@@ -470,6 +506,7 @@ function createStoryCatalog(storiesDir, port) {
       coverImage: codec.normalizeAssetUrlForRequest(story.coverImage || '', req, port),
       author: story.author,
       tags: story.tags,
+      qualityDisposition: record.qualityDisposition,
       outputDir: `generated-stories/${dirName}/`,
       isBuiltIn: story.isBuiltIn === true,
       updatedAt: new Date(mtimeMs).toISOString(),
@@ -533,6 +570,7 @@ function createStoryCatalog(storiesDir, port) {
       });
       return {
         ...entry,
+        qualityDisposition: record.qualityDisposition,
         imageArtifacts: getImageArtifactSummaryForSlug(record.dirName),
       };
     }

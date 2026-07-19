@@ -599,6 +599,32 @@ describe('FinalStoryContractValidator', () => {
     expect(beat.choices[0].outcomes.success.narrativeText).toBe('You straighten your collar as Victor watches.');
   });
 
+  it('r127: never admits "The Hero" as a canonical alias or corrupts its nearby reflexive', async () => {
+    const story = validStory({
+      npcs: [{
+        id: 'char-kylie',
+        name: 'Kylie Marinescu',
+        description: 'The protagonist.',
+        role: 'protagonist',
+        pronouns: 'she/her',
+      }],
+    });
+    story.episodes[0].scenes[0].beats[0].text =
+      'And the man himself, The Hero, waits beside the rain-dark window.';
+
+    const report = await new FinalStoryContractValidator().validate({
+      story,
+      protagonist: { name: 'The Hero', pronouns: 'he/him' },
+      mode: 'strict',
+    });
+
+    expect(story.episodes[0].scenes[0].beats[0].text).toContain('man himself, The Hero');
+    expect(story.episodes[0].scenes[0].beats[0].text).not.toContain('man herself');
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'protagonist_placeholder_leak' }),
+    ]));
+  });
+
   it('r115: a 3-sentence first-person player choice never triggers pov_break', async () => {
     // Exact shape of the run r115 false positive: legitimate player choice
     // text, first person because the PLAYER is speaking, three short

@@ -1019,15 +1019,12 @@ export function compileNarrativeRealizationTasks(
   // G5: season anchors must be PLANTED on-page in their owning scene — a
   // reader-visible action, judge-verified, never satisfied by character
   // metadata (run 20-44-49: "Stela's protection" was a pendant description;
-  // Kylie never accepted anything). ADVISORY (r115 postmortem): a prior
-  // commit here cited "confirmed r114 evidence" for promoting this to
-  // blocking — false; r114 crashed on an unrelated bug before reaching this
-  // check. r115 then showed the compiler inventing unsupported location
-  // specificity for bare anchor phrases (e.g. "Stela's protection" →
-  // "guides Kylie past the Valescu Club threshold" assigned to the
-  // bookshop scene) — an unfixable-by-prose defect that blocked a run for
-  // nothing. Returns to blocking once Phase 5/6 (anchor-compiler honesty +
-  // owner-plan feasibility) land and get a fresh shadow-evidence pass.
+  // Kylie never accepted anything). These contracts are authored major
+  // season obligations. Anchor compilation now constrains staged locations
+  // to the owning scene and drops infeasible outputs before graph commitment,
+  // so the prior false-blocker class cannot reach this task. A confirmed miss
+  // is repairable prose residue; abort-time triage may demote it, but the
+  // resulting quality cap keeps that package out of reader promotion.
   for (const anchor of graph.anchorContracts ?? []) {
     const scene = sceneById.get(anchor.owningSceneId);
     if (!scene || !anchor.onPageAction?.trim()) continue;
@@ -1058,7 +1055,7 @@ export function compileNarrativeRealizationTasks(
       }],
       target: { scope: 'owner', surfaces: execution.surfaces },
       sourceContractIds: [anchor.id],
-      blocking: false,
+      blocking: true,
     });
   }
 

@@ -936,6 +936,7 @@ const ALL_FINAL_STORY_CONTRACT_ISSUE_TYPES: Record<FinalStoryContractIssueType, 
   partial_season_scope: true,
   treatment_fidelity_violation: true,
   ambiguous_protagonist_pronoun: true,
+  protagonist_placeholder_leak: true,
   npc_pronoun_inconsistency: true,
   outcome_text_stub: true,
   echo_summary_variant: true,
@@ -986,6 +987,17 @@ interface NativeTypeCase {
  * directive with an admitting handler.
  */
 const NATIVE_TYPE_ROUTES: NativeTypeCase[] = [
+  {
+    name: 'protagonist_placeholder_leak: stale launch identity reached reader prose',
+    issue: {
+      validator: 'FinalStoryContractValidator',
+      type: 'protagonist_placeholder_leak',
+      severity: 'error',
+      message: 'Placeholder protagonist identity appears in reader-facing prose at story/episodes[0]/scenes[0]/beats[0]/text.',
+      sceneId: 's1-1',
+      episodeNumber: 1,
+    },
+  },
   {
     name: 'duplicate_high_pressure_event: later scene restages an earlier staged event',
     issue: {

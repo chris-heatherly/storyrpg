@@ -9,10 +9,111 @@ import {
   CouncilFinding,
   CouncilRepairRoute,
   CouncilSeverity,
+  StoryCouncilCandidateComparison,
+  StoryCouncilCandidateEvaluation,
 } from './types';
 
 const severities: readonly CouncilSeverity[] = ['info', 'warning', 'error'] as const;
 const confidences: readonly CouncilConfidence[] = ['low', 'medium', 'high'] as const;
+const candidateScoreKeys = [
+  'dramaticCausality',
+  'characterPressure',
+  'playerAgency',
+  'routeDifferentiation',
+  'setupPayoff',
+  'relationshipPacing',
+  'sceneEconomy',
+  'sourceFidelity',
+] as const;
+
+export function buildCandidateComparisonSchema(): StructuredJsonSchema {
+  return {
+    name: 'story_council_candidate_comparison',
+    description: 'Blinded Story Council comparison of already-qualified planning candidates.',
+    maxOutputTokens: 4096,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['summary', 'winnerId', 'complementaryMerits', 'evaluations'],
+      properties: {
+        summary: { type: 'string' },
+        winnerId: { type: 'string' },
+        complementaryMerits: { type: 'boolean' },
+        evaluations: {
+          type: 'array',
+          minItems: 2,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['candidateId', 'scores', 'strengths', 'risks'],
+            properties: {
+              candidateId: { type: 'string' },
+              scores: {
+                type: 'object',
+                additionalProperties: false,
+                required: [...candidateScoreKeys],
+                properties: Object.fromEntries(candidateScoreKeys.map((key) => [key, {
+                  type: 'number', minimum: 0, maximum: 100,
+                }])),
+              },
+              strengths: { type: 'array', items: { type: 'string' }, maxItems: 5 },
+              risks: { type: 'array', items: { type: 'string' }, maxItems: 5 },
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+function boundedScore(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5)
+    : [];
+}
+
+export function normalizeCandidateComparison(
+  value: Partial<StoryCouncilCandidateComparison> | undefined,
+  allowedCandidateIds: string[],
+): StoryCouncilCandidateComparison | undefined {
+  if (!value || !allowedCandidateIds.includes(String(value.winnerId || ''))) return undefined;
+  const evaluations = (Array.isArray(value.evaluations) ? value.evaluations : [])
+    .map((raw): StoryCouncilCandidateEvaluation | undefined => {
+      const candidateId = String(raw?.candidateId || '');
+      if (!allowedCandidateIds.includes(candidateId)) return undefined;
+      const scores = raw?.scores as unknown as Record<string, unknown> | undefined;
+      return {
+        candidateId,
+        scores: {
+          dramaticCausality: boundedScore(scores?.dramaticCausality),
+          characterPressure: boundedScore(scores?.characterPressure),
+          playerAgency: boundedScore(scores?.playerAgency),
+          routeDifferentiation: boundedScore(scores?.routeDifferentiation),
+          setupPayoff: boundedScore(scores?.setupPayoff),
+          relationshipPacing: boundedScore(scores?.relationshipPacing),
+          sceneEconomy: boundedScore(scores?.sceneEconomy),
+          sourceFidelity: boundedScore(scores?.sourceFidelity),
+        },
+        strengths: stringList(raw?.strengths),
+        risks: stringList(raw?.risks),
+      };
+    })
+    .filter((entry): entry is StoryCouncilCandidateEvaluation => Boolean(entry));
+  const evaluatedIds = new Set(evaluations.map((evaluation) => evaluation.candidateId));
+  if (evaluatedIds.size !== allowedCandidateIds.length
+    || allowedCandidateIds.some((candidateId) => !evaluatedIds.has(candidateId))) return undefined;
+  return {
+    summary: String(value.summary || 'Story Council candidate comparison completed.'),
+    winnerId: String(value.winnerId),
+    complementaryMerits: value.complementaryMerits === true,
+    evaluations,
+  };
+}
 
 export interface CouncilParseDiagnostics {
   parseStatus: 'ok' | 'recovered' | 'raw_findings_dropped' | 'error';

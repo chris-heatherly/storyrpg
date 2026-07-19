@@ -418,3 +418,11 @@ export function isSceneWriterCompactRetryReason(reason: string | undefined): boo
   if (!reason) return false;
   return /raw processing budget|response exceeded|max_tokens|TruncatedLLMResponseError|stop_reason=max_tokens/i.test(reason);
 }
+
+export function shouldRunCompactSceneProtocolRecovery(
+  initialFailureReason: string | undefined,
+  retryFailureReason: string | undefined,
+): boolean {
+  return !isSceneWriterCompactRetryReason(initialFailureReason)
+    && isSceneWriterCompactRetryReason(retryFailureReason);
+}

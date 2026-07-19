@@ -3,7 +3,7 @@ import type { PipelineConfig } from '../config';
 import type { FullCreativeBrief } from '../pipeline/FullStoryPipeline';
 import type { SeasonPlan } from '../../types/seasonPlan';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
-import { prepareGenerationJob } from './GenerationLaunchService';
+import { prepareGenerationJob, prepareVariantBatch } from './GenerationLaunchService';
 
 function fixtureConfig(provider: 'gemini' | 'anthropic' = 'gemini'): PipelineConfig {
   const agent = { provider, model: provider === 'gemini' ? 'gemini-test' : 'claude-test', apiKey: '', maxTokens: 100, temperature: 0 };
@@ -117,5 +117,35 @@ describe('GenerationLaunchService', () => {
       providerPolicy: 'gemini-only',
       runId: 'fresh-2',
     })).toThrow(/non-Gemini routes/i);
+  });
+
+  it('prepares two to four isolated variants from one locked analysis and plan', () => {
+    const batch = prepareVariantBatch({
+      config: fixtureConfig(),
+      draftBrief: fixtureBrief(),
+      sourceAnalysis: fixtureSourceAnalysis(),
+      seasonPlan: fixtureSeasonPlan(),
+      requestedEpisodes: [1],
+      providerPolicy: 'gemini-only',
+      runId: 'variant-run',
+      variantCount: 4,
+    });
+
+    expect(batch.request.kind).toBe('variant-batch');
+    expect(batch.request.requests).toHaveLength(4);
+    expect(new Set(batch.request.requests.map((request) => request.idempotencyKey)).size).toBe(4);
+    expect(batch.request.requests.map((request) => request.payload.generationInput.runContext)).toEqual(
+      [1, 2, 3, 4].map((ordinal) => expect.objectContaining({
+        kind: 'variant',
+        batchId: batch.batchId,
+        ordinal,
+        total: 4,
+        sharedAnalysisHash: batch.sharedAnalysisHash,
+      })),
+    );
+    expect(() => prepareVariantBatch({
+      config: fixtureConfig(), draftBrief: fixtureBrief(), sourceAnalysis: fixtureSourceAnalysis(),
+      requestedEpisodes: [1], runId: 'too-many', variantCount: 5,
+    })).toThrow(/between 2 and 4/i);
   });
 });

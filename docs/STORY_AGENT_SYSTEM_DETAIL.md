@@ -242,7 +242,8 @@ Each episode goes through a sub-flow inside `FullStoryPipeline`:
 
 ### 3.3 Pipeline Parallelism
 
-- **Episode parallelism**: Available only when `episodeParallelismEnabled === true` and `episodeDependencyMode === 'independent'`; sequential remains the dependency-safe default.
+- **Variant Batch**: `kind: "variant-batch"` starts two to four independent full-story workers from the same locked analysis and season plan. Each child owns its complete downstream pipeline and output package.
+- **Episode execution**: Sequential inside each story run so canon, setup/payoff, and prior-episode state remain ordered.
 - **Image/audio/video worker queues**: `LocalWorkerQueue` handles local work queues; image worker mode is on by default and capped by generation settings.
 - **LLM guardrails**: `BaseAgent` enforces global and per-provider in-flight limits, retries, jitter, and quota/circuit-breaker behavior.
 - **Provider throttling**: Image providers use adapter-level rate/concurrency controls via `providerThrottle.ts`.
@@ -748,8 +749,6 @@ interface AgentConfig {
 
 ```typescript
 interface GenerationSettingsConfig {
-  maxParallelEpisodes?: number;
-  maxParallelScenes?: number;
   llmMaxGlobalInFlight?: number;
   llmMaxPerProviderInFlight?: number;
   failurePolicy?: 'fail_fast' | 'recover';

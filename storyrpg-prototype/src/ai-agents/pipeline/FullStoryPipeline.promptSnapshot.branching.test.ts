@@ -124,7 +124,6 @@ async function buildPipeline() {
   config.generation = {
     ...(config.generation ?? {}),
     assetGenerationMode: 'story-only',
-    episodeParallelismEnabled: false,
     imageWorkerModeEnabled: false,
     audioWorkerModeEnabled: false,
     // This slice REQUIRES the branch: the blueprint carries one branch point

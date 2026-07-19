@@ -711,6 +711,8 @@ describe('ChoiceAuthor.normalizeConsequenceTier (1.3 flag → callback)', () => 
 });
 
 describe('ChoiceAuthor closed-cast prose', () => {
+  afterEach(() => BaseAgent.setLlmTransportOverride(null));
+
   it('rejects unknown acting names in reader-facing outcome prose', () => {
     const author: any = new ChoiceAuthor(config);
     const input = makeInput({
@@ -745,6 +747,72 @@ describe('ChoiceAuthor closed-cast prose', () => {
       expect.stringContaining('"Mateo"'),
     ]));
     expect(issues.join(' ')).not.toMatch(/unknown acting character "(?:Stela|Mika|Dusk|Club)"/);
+  });
+
+  it('does not mistake sentence-opening pronouns for invented characters', () => {
+    const author: any = new ChoiceAuthor(config);
+    const input = makeInput({
+      protagonistInfo: { name: 'Kylie Marinescu', pronouns: 'she/her' },
+      npcsInScene: [{ id: 'char-mika-dragan', name: 'Mika Dragan', pronouns: 'she/her', description: 'A photographer.' }],
+    });
+    const choiceSet = makeChoiceSet({
+      sharedResolutionText: 'You and Mika raise a glass. She nods. They leave together.',
+      choices: [{
+        id: 'c1', text: 'Tell the truth', choiceType: 'relationship', consequences: [],
+        reactionText: 'You hold her gaze. She smiles.',
+        outcomeTexts: { success: 'You answer. She raises her glass.' },
+      }],
+    });
+
+    expect(author.collectUnknownActingCharacterIssues(choiceSet, input)).toEqual([]);
+  });
+
+  it('uses only canonical scene NPC ids in every choice-author prompt', () => {
+    const author: any = new ChoiceAuthor(config);
+    const input = makeInput({
+      npcsInScene: [{ id: 'char-mika-dragan', name: 'Mika Dragan', pronouns: 'she/her', description: 'A photographer.' }],
+    });
+
+    for (const prompt of [
+      author.buildPrompt(input),
+      author.buildCompactPrompt(input),
+      author.buildCompactRepairPrompt(input, 'Correct the relationship participant.'),
+    ]) {
+      expect(prompt).toContain('char-mika-dragan');
+      expect(prompt).not.toContain('char-mihaela-mika-drgan');
+    }
+  });
+
+  it('repairs only invalid structured participant ids against the canonical roster', async () => {
+    const author: any = new ChoiceAuthor(config);
+    const input = makeInput({
+      npcsInScene: [{ id: 'char-mika-dragan', name: 'Mika Dragan', pronouns: 'she/her', description: 'A photographer.' }],
+    });
+    const choiceSet = makeChoiceSet({ choices: [{
+      id: 'c1',
+      text: 'Trust Mika with the truth',
+      choiceType: 'relationship',
+      consequences: [{ type: 'relationship', npcId: 'char-mihaela-mika-drgan', dimension: 'trust', change: 2 }],
+      conditions: [{ type: 'relationship', npcId: 'mika-typo', dimension: 'trust', operator: 'gte', value: 1 }],
+      reactionText: 'Mika lowers her camera and listens.',
+    }] });
+    const invalid = author.collectInvalidCanonicalChoiceParticipants(choiceSet, input);
+    expect(invalid.map((target: any) => target.fieldPath)).toEqual([
+      'choices[0].consequences[0].npcId',
+      'choices[0].conditions[0].npcId',
+    ]);
+    BaseAgent.setLlmTransportOverride(async () => JSON.stringify({ corrections: invalid.map((target: any) => ({
+      fieldPath: target.fieldPath,
+      npcId: 'char-mika-dragan',
+    })) }));
+
+    const result = await author.repairCanonicalChoiceParticipants(choiceSet, input, invalid);
+
+    expect(result.success).toBe(true);
+    expect(choiceSet.choices[0].text).toBe('Trust Mika with the truth');
+    expect(choiceSet.choices[0].reactionText).toBe('Mika lowers her camera and listens.');
+    expect((choiceSet.choices[0].consequences[0] as any).npcId).toBe('char-mika-dragan');
+    expect((choiceSet.choices[0] as any).conditions[0].npcId).toBe('char-mika-dragan');
   });
 });
 

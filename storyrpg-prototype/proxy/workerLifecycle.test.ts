@@ -8,6 +8,15 @@ import crypto from 'node:crypto';
 const require = createRequire(import.meta.url);
 const { createWorkerLifecycle, __test__ } = require('./workerLifecycle.js');
 
+describe('worker queue limits', () => {
+  it('defaults story batches to four and never admits more than four story workers', () => {
+    expect(__test__.resolveWorkerQueueLimit('story', undefined)).toBe(4);
+    expect(__test__.resolveWorkerQueueLimit('story', '3')).toBe(3);
+    expect(__test__.resolveWorkerQueueLimit('story', '20')).toBe(4);
+    expect(__test__.resolveWorkerQueueLimit('image', '6')).toBe(6);
+  });
+});
+
 function createInMemoryStore(initial = []) {
   let value = JSON.parse(JSON.stringify(initial));
   return {

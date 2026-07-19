@@ -1,7 +1,16 @@
 import type { AgentConfig } from '../config';
 import { AgentResponse, BaseAgent } from '../agents/BaseAgent';
-import { buildCouncilOutputSchema, normalizeCouncilOutputWithDiagnostics } from './schema';
-import type { CouncilAgentOutput, CouncilCheckpoint } from './types';
+import {
+  buildCandidateComparisonSchema,
+  buildCouncilOutputSchema,
+  normalizeCandidateComparison,
+  normalizeCouncilOutputWithDiagnostics,
+} from './schema';
+import type {
+  CouncilAgentOutput,
+  CouncilCheckpoint,
+  StoryCouncilCandidateComparison,
+} from './types';
 
 export interface QualityCouncilAgentInput {
   brief?: unknown;
@@ -18,6 +27,70 @@ export interface QualityCouncilAgentInput {
   notes?: string;
 }
 
+export interface CandidateComparisonAgentInput {
+  stage: 'episode-blueprint';
+  lockedContext: unknown;
+  candidates: Array<{ candidateId: string; artifact: unknown }>;
+}
+
+export class CandidateComparisonAgent extends BaseAgent {
+  constructor(config: AgentConfig) {
+    super('Story Council Candidate Judge', { ...config, temperature: Math.min(config.temperature ?? 0.25, 0.3) });
+    this.includeSystemPrompt = true;
+  }
+
+  protected getAgentSpecificPrompt(): string {
+    return `
+## Your Role: Story Council Blinded Planning Judge
+
+Compare only the anonymous, already-qualified planning candidates provided.
+You are not a validator and you do not create blocking findings. Deterministic
+contracts, source authority, topology, and owner-stage gates have already run.
+
+Score each candidate from 0-100 on the requested dimensions. Prefer executable,
+causal interactive-fiction plans over attractive synopsis language. Do not infer
+author identity, provider, or model. Select one candidate id. Mark
+complementaryMerits=true only when the strongest merits can coexist coherently.
+Return only JSON matching the schema.
+`;
+  }
+
+  async compare(input: CandidateComparisonAgentInput): Promise<AgentResponse<StoryCouncilCandidateComparison>> {
+    const allowedIds = input.candidates.map((candidate) => candidate.candidateId);
+    try {
+      const { data, rawResponse } = await this.callLLMForJson<Partial<StoryCouncilCandidateComparison>>([
+        {
+          role: 'user',
+          content: [
+            `# Story Council Candidate Comparison: ${input.stage}`,
+            '\n## Locked Context',
+            JSON.stringify(compact(input.lockedContext, 10000), null, 2),
+            '\n## Anonymous Candidates',
+            JSON.stringify(input.candidates.map((candidate) => ({
+              candidateId: candidate.candidateId,
+              artifact: compact(candidate.artifact, 16000),
+            })), null, 2),
+          ].join('\n'),
+        },
+      ], { jsonSchema: buildCandidateComparisonSchema() });
+      const normalized = normalizeCandidateComparison(data, allowedIds);
+      if (!normalized) {
+        return { success: false, rawResponse, error: 'Candidate comparison did not select a valid candidate id.' };
+      }
+      return { success: true, data: normalized, rawResponse };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async execute(input: unknown): Promise<AgentResponse<StoryCouncilCandidateComparison>> {
+    return this.compare(input as CandidateComparisonAgentInput);
+  }
+}
+
 abstract class QualityCouncilAgent extends BaseAgent {
   protected abstract readonly checkpoint: CouncilCheckpoint;
   protected abstract readonly councilRole: string;
@@ -31,7 +104,7 @@ abstract class QualityCouncilAgent extends BaseAgent {
     return `
 ## Your Role: ${this.councilRole}
 
-You are part of StoryRPG's optional Quality Council. You do not author content.
+You are an independent holdout reviewer in StoryRPG's optional Story Council. You do not author content.
 You inspect current typed artifacts and produce bounded diagnostic findings.
 
 Rules:
@@ -80,7 +153,7 @@ Rules:
 
   private buildPrompt(input: QualityCouncilAgentInput): string {
     return [
-      `# Quality Council Checkpoint: ${this.checkpoint}`,
+      `# Story Council Holdout: ${this.checkpoint}`,
       input.notes ? `\n## Notes\n${input.notes}` : '',
       '\n## Artifact Packet',
       JSON.stringify(compactCouncilInput(input), null, 2),

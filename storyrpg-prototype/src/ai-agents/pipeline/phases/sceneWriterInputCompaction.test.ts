@@ -3,6 +3,7 @@ import {
   compactSceneWriterInput,
   droppedBlockingContracts,
   isSceneWriterCompactRetryReason,
+  shouldRunCompactSceneProtocolRecovery,
   totalContractBlocks,
 } from './sceneWriterInputCompaction';
 import type { SceneWriterInput } from '../../agents/SceneWriter';
@@ -121,6 +122,18 @@ describe('sceneWriterInputCompaction', () => {
     expect(isSceneWriterCompactRetryReason('TruncatedLLMResponseError: stop_reason=max_tokens')).toBe(true);
     expect(isSceneWriterCompactRetryReason('SceneWriter response exceeded raw processing budget')).toBe(true);
     expect(isSceneWriterCompactRetryReason('network down')).toBe(false);
+  });
+
+  it('runs one compact protocol recovery when a narrative retry newly exceeds its output budget', () => {
+    expect(shouldRunCompactSceneProtocolRecovery(
+      'Three required text variants are missing.',
+      'SceneWriter response exceeded raw processing budget',
+    )).toBe(true);
+    expect(shouldRunCompactSceneProtocolRecovery(
+      'TruncatedLLMResponseError: stop_reason=max_tokens',
+      'SceneWriter response exceeded raw processing budget',
+    )).toBe(false);
+    expect(shouldRunCompactSceneProtocolRecovery('Missing variants', 'provider unavailable')).toBe(false);
   });
 
   // R3 (contract-budget honesty): compaction reports WHAT it dropped, and

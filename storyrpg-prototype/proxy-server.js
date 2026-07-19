@@ -66,7 +66,7 @@ if (!process.env.STORYRPG_MEMORY_OUTBOX_URL) {
   process.env.STORYRPG_MEMORY_OUTBOX_URL = `http://127.0.0.1:${PORT}/internal/memory/outbox`;
 }
 
-const { listLatestStoryRecords, createStoryCatalogEntry, createFullStoryResponse } =
+const { listLatestStoryRecords, getStoryRecord, createStoryCatalogEntry, createFullStoryResponse } =
   createStoryCatalog(STORIES_DIR, PORT);
 
 // General request logger
@@ -95,6 +95,7 @@ app.use(createExposureGuard());
 
 registerCatalogRoutes(app, {
   listLatestStoryRecords,
+  getStoryRecord,
   createStoryCatalogEntry,
   createFullStoryResponse,
 });

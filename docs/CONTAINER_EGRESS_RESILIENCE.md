@@ -122,7 +122,7 @@ The call site `FullStoryPipeline` source-analysis phase uses `withTimeoutAbort`.
 
 **Concurrency caveat:** `activeAbortSignal` is an instance field, so it is only
 safe when an agent instance runs **one** `execute()` at a time. Agents invoked
-concurrently on a shared instance (e.g. parallel-episode `StoryArchitect`) must
+concurrently on a shared instance (for example, a local candidate council) must
 thread a per-call `signal` explicitly instead of using the field. See
 "Follow-ups" below.
 
@@ -197,8 +197,8 @@ cleanly (#3). Remaining work, if/when an agent proves to need it:
 - Thread `{ signal }` through the other long-running agents (`StoryArchitect`,
   `SceneWriter`, encounter/image/audio agents) and switch their pipeline call
   sites to `withTimeoutAbort`.
-- For agents that run **concurrently on a shared instance** (parallel-episode
-  `StoryArchitect`), thread a per-call `signal` explicitly rather than using the
+- For agents that run **concurrently on a shared instance**, thread a per-call
+  `signal` explicitly rather than using the
   `BaseAgent.activeAbortSignal` instance field (which assumes one `execute()` at
   a time).
 

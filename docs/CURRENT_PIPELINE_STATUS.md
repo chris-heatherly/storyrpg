@@ -47,6 +47,14 @@ disk when the in-memory cache is empty, including after a proxy restart. Result
 retention follows the worker-job retention window rather than the short memory
 cache TTL.
 
+The versioned batch shorthand is **Variant Batch** (`kind: "variant-batch"`).
+It atomically admits two to four ordinary generation jobs with identical locked
+analysis, season-plan, manifest, and pipeline configuration. The children run
+the rest of `FullStoryPipeline` independently and concurrently. Each has an
+isolated memory scope and output package; all remain reader-held until one
+quality-eligible child is explicitly selected. Story-worker concurrency defaults
+to four and is hard-capped at four.
+
 ## Current Generation Flow
 
 ### Authored-lite treatments (`sourceKind === 'authored_lite'`)
@@ -153,6 +161,54 @@ optional plan field.
    `pipelineOutputWriter`, story codec packaging, asset HTTP validation,
    optional Playwright multi-path QA, and image remediation/re-save when
    possible.
+
+### Optional Story Council (`storyCouncil.enabled`)
+
+The Generator's **Story Council** switch is the single master gate for the
+planning swarm and its independent holdouts. Off means the normal
+`FullStoryPipeline` path: no council agents are constructed, no candidate calls
+run, and no council artifacts are written. Persisted `qualityCouncil*` settings
+are migrated to the canonical `storyCouncil*` fields for compatibility.
+
+The first live candidate stage is invent-mode episode architecture. Two to four
+independent `StoryArchitect` seats receive the same locked canon/graph context
+and different craft directives. The primary architect supplies the baseline;
+when model-family routing provides a council-plan assignment, alternate seats
+use that model as a planning expert. This is a bounded swarm, not a serial
+review: seats run concurrently under run-wide call, token, concurrency, and
+remediation budgets.
+
+Every candidate is projected onto locked scene shells and must pass the existing
+deterministic architecture, scene-order, `EpisodeEventPlan`, and
+`NarrativeContractGraph` checks before comparison. The blinded comparison model
+can select only qualified artifacts. `shadow` records the result but keeps the
+baseline; `select` adopts the qualified winner; `select-and-repair` may ask the
+canonical owner for one fresh synthesis of complementary finalist merits, then
+qualifies and compares that artifact again. Synthesis never mechanically merges
+JSON and never changes authored topology. Authored-lite architecture remains on
+its deterministic fill-slots path because its ESC-owned topology leaves no
+legitimate candidate search space.
+
+The old plan/choice "review at the end" checkpoints are retired from the active
+path. Route-playtest, final, and optional OpenRouter Fusion calls remain as
+independent holdouts. Their findings can identify a repair owner and appear in
+quality evidence, but they have no validator authority: a holdout finding or
+transport/parser failure cannot block generation or cap publishability unless a
+canonical validator independently reproduces the defect.
+
+Council evidence is inspectable and resumable. Episode artifact indexes retain
+`story-council-candidate-set` and `story-council-decision` revisions upstream of
+the selected `episode-blueprint`; final holdouts are stored as a revisioned
+`story-council-holdout`. The output bundle writes
+`07d-story-council-report.json` plus the former filename as a temporary
+compatibility alias. The report records candidates generated/qualified,
+synthesis use, call usage, and infrastructure failures.
+
+Season-plan, foundation, choice, encounter, and narrative-scaffolding candidate
+flags exist in the internal config contract but remain false and are not exposed
+in the Generator until those owners have stage-specific qualification and
+artifact persistence. This prevents a broad toggle from silently enabling
+unimplemented or topology-unsafe swarms.
 
 `SavingPhase` and `WorldBuildingPhase` are wired active paths under
 `src/ai-agents/pipeline/phases/`. Continue phase extraction as

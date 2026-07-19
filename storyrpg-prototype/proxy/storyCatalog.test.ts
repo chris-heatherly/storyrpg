@@ -81,4 +81,21 @@ describe('story catalog quality promotion', () => {
     expect(records).toHaveLength(1);
     expect(records[0].dirName).toBe('bite-me-r115');
   });
+
+  it('uses an explicitly selected Variant Batch package over an older higher-scoring peer', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'storyrpg-catalog-variant-'));
+    roots.push(root);
+    writeRun(root, 'bite-me-old', {
+      version: 1, status: 'promoted', band: 'ship', eligibleForReader: true,
+      reasonCodes: [], score: 95, capIds: [], blockingCapCount: 0, qaEvidenceStale: false, createdAt: '2026-07-18T00:00:00Z',
+    }, 1_000);
+    writeRun(root, 'bite-me-selected', {
+      version: 1, status: 'promoted', band: 'ship', eligibleForReader: true,
+      reasonCodes: [], score: 91, capIds: [], blockingCapCount: 0, qaEvidenceStale: false, createdAt: '2026-07-19T00:00:00Z',
+      selectedFromVariantBatch: 'batch-1', selectedAt: '2026-07-19T00:00:00Z',
+    }, 2_000);
+
+    const records = await createStoryCatalog(root, 3001).listLatestStoryRecords();
+    expect(records[0].dirName).toBe('bite-me-selected');
+  });
 });

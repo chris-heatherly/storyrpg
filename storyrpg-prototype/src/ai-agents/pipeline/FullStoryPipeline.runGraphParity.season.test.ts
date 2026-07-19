@@ -123,7 +123,6 @@ async function buildPipeline() {
   config.generation = {
     ...(config.generation ?? {}),
     assetGenerationMode: 'story-only',
-    episodeParallelismEnabled: false,
     imageWorkerModeEnabled: false,
     audioWorkerModeEnabled: false,
     minEncountersShort: 0,

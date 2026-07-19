@@ -675,6 +675,35 @@ describe('FinalStoryContractValidator', () => {
     expect(report.blockingIssues.some((i) => i.type === 'pov_break')).toBe(true);
   });
 
+  it('addresses a conditional POV break to the exact beat and text-variant field', async () => {
+    const story = validStory({
+      npcs: [{
+        id: 'char-kylie',
+        name: 'Kylie Marinescu',
+        description: 'The protagonist.',
+        role: 'protagonist',
+        pronouns: 'she/her',
+      }],
+    });
+    story.episodes[0].scenes[0].beats[0].textVariants = [{
+      condition: { type: 'flag', flag: 'opened_carefully', value: true },
+      text: 'Kylie closes her notebook and follows the quiet hinge into the room.',
+    } as any];
+
+    const report = await new FinalStoryContractValidator().validate({ story });
+
+    expect(report.blockingIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'pov_break',
+        validator: 'PovClarityValidator',
+        sceneId: 'scene-1',
+        beatId: 'beat-1',
+        fieldPath: 'beats[0].textVariants[0].text',
+        repairSurface: 'text_variant',
+      }),
+    ]));
+  });
+
   it('flags a routing contradiction: a choice targets a real scene not in scene.leadsTo', async () => {
     const mkScene = (id: string, leadsTo: string[], choiceTarget?: string) => ({
       id,

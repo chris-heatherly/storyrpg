@@ -1113,22 +1113,23 @@ function collectReportFindings(
     if (isOptionalFusionTransportError(checkpoint, inputs.qualityCouncilReport?.checkpoints || [])) return;
     if (checkpoint.status === 'error') {
       findings.push({
-        severity: 'critical',
-        source: 'quality-council',
-        validator: `QualityCouncil:${checkpoint.checkpoint}:error`,
-        message: checkpoint.error || checkpoint.summary || `${checkpoint.checkpoint} Quality Council checkpoint failed before producing findings.`,
+        severity: 'suggestion',
+        source: 'story-council-infrastructure',
+        validator: `StoryCouncil:${checkpoint.checkpoint}:infrastructure`,
+        message: checkpoint.error || checkpoint.summary || `${checkpoint.checkpoint} Story Council holdout failed before producing findings.`,
       });
     }
 
     (checkpoint.findings || []).forEach((finding) => {
       findings.push({
-        // v4: council severities are honored as-is. The LLM judges are the only
-        // semantic reviewers in the loop; demoting their errors below regex
-        // validators' (v3 behavior) inverted the signal hierarchy.
-        severity: finding.severity === 'error' ? 'error' : finding.severity === 'warning' ? 'warning' : 'suggestion',
-        source: 'quality-council',
-        validator: finding.validatorMapping || `QualityCouncil:${finding.category}`,
+        // Story Council holdouts are advisory evidence. They can target a
+        // canonical repair owner, but only deterministic validators may block
+        // or cap publishability.
+        severity: finding.severity === 'info' ? 'suggestion' : 'warning',
+        source: 'story-council-holdout',
+        validator: finding.validatorMapping || `StoryCouncil:${finding.category}`,
         message: `${finding.category}: ${finding.evidence.join(' ')}`,
+        domainId: councilCategoryDomain(finding.category),
         location: [
           finding.target?.episodeId,
           finding.target?.sceneId,
@@ -1145,6 +1146,21 @@ function collectReportFindings(
 
 function normalizeJudgeSeverity(severity: unknown): QualitySeverity {
   return severity === 'error' ? 'error' : severity === 'suggestion' ? 'suggestion' : 'warning';
+}
+
+function councilCategoryDomain(category: string): QualityDomainId | undefined {
+  const domains: Record<string, QualityDomainId> = {
+    'story-circle-spine': 'story_circle_spine',
+    'dramatic-structure': 'dramatic_structure_architecture',
+    'scene-coherence': 'scene_coherence_prose_continuity',
+    'choice-agency': 'choice_agency',
+    'branch-residue': 'branching_consequence_memory',
+    'character-relationship': 'character_npc_relationship_quality',
+    'fiction-first-mechanics': 'gameplay_mechanics_as_fiction',
+    'encounter-quality': 'encounters',
+    'treatment-fidelity': 'dramatic_structure_architecture',
+  };
+  return domains[category];
 }
 
 function finalContractIssueSeverity(issue: FinalStoryContractIssue, fallback: QualitySeverity): QualitySeverity {
@@ -1667,6 +1683,7 @@ function applyCaps(
     !isUngroundedAdvisory(finding.message)
     && finding.source !== 'qa-report'
     && finding.source !== 'quality-council'
+    && !finding.source.startsWith('story-council')
     && /chronolog|timeline|out.of.order|duplicate.*(?:event|atom)|route_duplicate_event|causal order|prerequisite/i
       .test(`${finding.validator ?? ''} ${finding.message}`),
   );
@@ -1862,38 +1879,6 @@ function applyCaps(
       maxScore: 79,
       reason: 'Branching is cosmetic or residue-free.',
       domainId: 'branching_consequence_memory',
-    });
-  }
-
-  const allCouncilCheckpoints = inputs.qualityCouncilReport?.checkpoints || [];
-  const councilCheckpoints = inputs.qualityCouncilReport?.enabled
-    ? allCouncilCheckpoints.filter((checkpoint) =>
-      checkpoint.status !== 'skipped'
-      && !isOptionalFusionTransportError(checkpoint, allCouncilCheckpoints)
-    )
-    : [];
-  const councilErrors = councilCheckpoints.filter((checkpoint) => checkpoint.status === 'error');
-  const councilParseErrors = councilCheckpoints.filter((checkpoint) =>
-    checkpoint.parseStatus === 'raw_findings_dropped' || checkpoint.parseStatus === 'error',
-  );
-  if (councilParseErrors.length > 0) {
-    caps.push({
-      id: 'quality_council_parser_failed_closed',
-      maxScore: 79,
-      reason: `${councilParseErrors.length} Quality Council checkpoint(s) had parse diagnostics that made acceptance unsafe.`,
-    });
-  }
-  if (councilErrors.length > 0 && councilErrors.length === councilCheckpoints.length) {
-    caps.push({
-      id: 'quality_council_all_checkpoints_failed',
-      maxScore: 69,
-      reason: 'Quality Council was enabled, but every runnable checkpoint failed before producing review findings.',
-    });
-  } else if (councilErrors.length > 0) {
-    caps.push({
-      id: 'quality_council_checkpoint_failed',
-      maxScore: 79,
-      reason: `${councilErrors.length} enabled Quality Council checkpoint(s) failed before producing review findings.`,
     });
   }
 

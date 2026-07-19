@@ -211,6 +211,52 @@ describe('buildSceneProseRepairHandler', () => {
     expect(result.record).toMatchObject({ rule: 'final_contract_scene_prose', scope: 'scene', succeeded: true });
   });
 
+  it('repairs an exact conditional POV surface while preserving its route condition', async () => {
+    const condition = { type: 'flag', flag: 'trusted_mika', value: true };
+    const critic = {
+      execute: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          sceneId: 's1-4',
+          rewrittenBeats: [{
+            id: 'b1',
+            text: 'You walk home through the park.',
+            textVariants: [{ condition, text: 'You close your notebook and follow Mika into the rain.' }],
+          }],
+          critiqueNotes: [],
+          overallCommentary: '',
+        },
+      }),
+    };
+    const story = makeStory();
+    const beat = (story as any).episodes[0].scenes[0].beats[0];
+    beat.text = 'You walk home through the park.';
+    beat.textVariants = [{ condition, text: 'Kylie closes her notebook and follows Mika into the rain.' }];
+    const handler = buildSceneProseRepairHandler({ critic: () => critic as never, protagonistName: 'Kylie' });
+
+    const result = await handler({
+      story,
+      blockingIssues: [{
+        type: 'pov_break',
+        severity: 'error',
+        validator: 'PovClarityValidator',
+        sceneId: 's1-4',
+        episodeNumber: 1,
+        beatId: 'b1',
+        fieldPath: 'beats[0].textVariants[0].text',
+        repairSurface: 'text_variant',
+        message: 'Conditional narration names Kylie in third person.',
+      }],
+    } as never);
+
+    expect(result.changed).toBe(true);
+    expect(critic.execute).toHaveBeenCalledTimes(1);
+    expect(critic.execute.mock.calls[0][0].flaggedBeatIds).toEqual(['b1']);
+    expect(critic.execute.mock.calls[0][0].directorNotes).toContain('beats[0].textVariants[0].text');
+    expect(beat.textVariants[0].text).toBe('You close your notebook and follow Mika into the rain.');
+    expect(beat.textVariants[0].condition).toEqual(condition);
+  });
+
   it('marks only the closest beat for a semantic realization repair', async () => {
     const critic = {
       execute: vi.fn().mockResolvedValue({

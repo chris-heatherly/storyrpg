@@ -124,7 +124,6 @@ const normalizePhaseId = (phase?: string): string | undefined => {
   if (phase === 'foundation') return 'world';
   if (phase === 'world_bible') return 'world';
   if (phase === 'character_bible' || phase === 'character_design') return 'characters';
-  if (phase === 'episode_parallelism') return 'content';
   if (phase.includes('architecture')) return 'architecture';
   if (phase.includes('branch')) return 'branch_analysis';
   if (phase.includes('scene')) return 'scenes';

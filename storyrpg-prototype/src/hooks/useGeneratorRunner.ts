@@ -236,6 +236,7 @@ export function useGeneratorRunner() {
           }
           baseResult = await resultResp.json() as Record<string, unknown>;
         }
+        const runId = typeof baseResult.runId === 'string' ? baseResult.runId : null;
         const storyId =
           typeof statusData.storyId === 'string' && statusData.storyId
             ? statusData.storyId
@@ -243,16 +244,19 @@ export function useGeneratorRunner() {
               ? (baseResult.storyId as string)
               : null;
         let story = (baseResult as { story?: unknown }).story;
-        if (storyId) {
+        if (runId || storyId) {
           try {
-            const storyResp = await fetch(`${PROXY_CONFIG.getProxyUrl()}/stories/${encodeURIComponent(storyId)}`, {
+            const packagePath = runId
+              ? `/story-runs/${encodeURIComponent(runId)}`
+              : `/stories/${encodeURIComponent(storyId as string)}`;
+            const storyResp = await fetch(`${PROXY_CONFIG.getProxyUrl()}${packagePath}`, {
               headers: { Accept: 'application/json' },
             });
             if (storyResp.ok) {
               story = await storyResp.json();
             }
           } catch (err) {
-            console.warn('[useGeneratorRunner] post-completion /stories/:id fetch failed:', err instanceof Error ? err.message : err);
+            console.warn('[useGeneratorRunner] post-completion story package fetch failed:', err instanceof Error ? err.message : err);
           }
         }
         const merged = { ...baseResult, ...(story ? { story } : {}) };

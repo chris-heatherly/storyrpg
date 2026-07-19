@@ -25,6 +25,7 @@ import {
 } from '../../constants/pipeline';
 import { TEXT_LIMITS } from '../../constants/validation';
 import type { NarrativeRealizationTask } from '../../types/narrativeContract';
+import type { GenerationRunContext } from '../server/workerPayload';
 import { WorldBuilder, WorldBible } from '../agents/WorldBuilder';
 import { CharacterDesigner, CharacterBible, CharacterProfile } from '../agents/CharacterDesigner';
 import {
@@ -160,7 +161,6 @@ import {
   type EpisodeCompletionLockEvidence,
 } from './episodeCheckpoints';
 import { runEpisodeLoopOnGraph, runFoundationOnGraph } from './episodeRunGraph';
-import { resolveEpisodeParallelism } from './episodeScheduling';
 import { lockGeneratedEpisodeArtifact, validateEpisodeOutputBoundary } from './episodeLocking';
 import type { ArtifactValidationSummary } from './artifacts';
 import { repairWeakCliffhangerBeforeImages as repairWeakCliffhangerBeforeImagesImpl } from './cliffhangerRepair';
@@ -218,7 +218,11 @@ import { WorldBuildingPhase } from './phases/WorldBuildingPhase';
 import { AudioPhase } from './phases/AudioPhase';
 import { BrowserQAPhase } from './phases/BrowserQAPhase';
 import { RunArtifactPhase, type RunArtifactRuntime } from './phases/RunArtifactPhase';
-import { persistEpisodePlanningArtifacts, persistPlanningArtifacts } from './planningArtifactPersistence';
+import {
+  persistEpisodePlanningArtifacts,
+  persistPlanningArtifacts,
+  persistStoryCouncilHoldoutArtifact,
+} from './planningArtifactPersistence';
 import { VideoPhase, bindGeneratedVideoToStory } from './phases/VideoPhase';
 import { MasterImagePhase } from './phases/MasterImagePhase';
 import { SceneImagePhase, type SceneImagePhaseDeps } from './phases/SceneImagePhase';
@@ -260,7 +264,7 @@ import { buildEpisodeDraftCheckpoint, readEpisodeDraftCheckpoint } from './episo
 import { BranchAnalysisPhase, type BranchAnalysisPhaseDeps } from './phases/BranchAnalysisPhase';
 import { CharacterDesignPhase, type CharacterDesignPhaseDeps } from './phases/CharacterDesignPhase';
 import { NPCDepthValidationPhase } from './phases/NPCDepthValidationPhase';
-import { QualityCouncilRunner } from '../quality-council/QualityCouncilRunner';
+import { StoryCouncilRunner } from '../quality-council/QualityCouncilRunner';
 import {
   createOutputDirectory,
   ensureDirectory,
@@ -407,7 +411,7 @@ import {
 } from '../utils/jobTracker';
 import { BaseAgent, isLlmQuotaError } from '../agents/BaseAgent';
 import { withTimeout, withTimeoutAbort, PIPELINE_TIMEOUTS } from '../utils/withTimeout';
-import { LocalWorkerQueue, mapWithConcurrency } from '../utils/concurrency';
+import { LocalWorkerQueue } from '../utils/concurrency';
 
 import { PipelineTelemetry, buildLlmCallObserver } from '../utils/pipelineTelemetry';
 import { analyzeBranchTopology } from '../utils/branchTopology';
@@ -755,7 +759,7 @@ export class FullStoryPipeline {
   private sourceMaterialAnalyzer: SourceMaterialAnalyzer;
   private branchManager: BranchManager;
   private sceneCritic?: SceneCritic;
-  private qualityCouncil?: QualityCouncilRunner;
+  private storyCouncil?: StoryCouncilRunner;
   private encounterArchitect: EncounterArchitect;
   private encounterImageAgent: EncounterImageAgent;
   private imageAgentTeam: ImageAgentTeam;
@@ -817,6 +821,7 @@ export class FullStoryPipeline {
   // Job tracking
   private jobId: string | null = null;
   private externallyAssignedJobId: string | null = null;
+  private generationRunContext: GenerationRunContext = { kind: 'standard' };
   private _cancelled = false;
   private currentEpisode: number = 0;
   private totalEpisodes: number = 1;
@@ -1081,8 +1086,8 @@ export class FullStoryPipeline {
     if (this.config.sceneCritic?.enabled) {
       this.sceneCritic = new SceneCritic(this.config.agents.sceneWriter);
     }
-    if (this.config.qualityCouncil?.enabled) {
-      this.resetQualityCouncil();
+    if ((this.config.storyCouncil ?? this.config.qualityCouncil)?.enabled) {
+      this.resetStoryCouncil();
     }
     const encounterArchitectConfig = { ...this.config.agents.storyArchitect, maxTokens: 16384 };
     this.encounterArchitect = new EncounterArchitect(encounterArchitectConfig);
@@ -1582,7 +1587,7 @@ export class FullStoryPipeline {
       if (numbers[i] < numbers[i - 1]) {
         throw new PipelineError(
           `Invariant violation: episode ordering is non-deterministic (${numbers[i - 1]} before ${numbers[i]})`,
-          'episode_parallelism'
+          'episode_ordering'
         );
       }
     }
@@ -1592,7 +1597,7 @@ export class FullStoryPipeline {
     if (duplicateResultNumbers.length > 0) {
       throw new PipelineError(
         `Invariant violation: duplicate episode results for episode numbers ${duplicateResultNumbers.join(', ')}`,
-        'episode_parallelism'
+        'episode_ordering'
       );
     }
   }
@@ -1607,6 +1612,10 @@ export class FullStoryPipeline {
    */
   setExternalJobId(jobId: string): void {
     this.externallyAssignedJobId = jobId;
+  }
+
+  setGenerationRunContext(runContext: GenerationRunContext): void {
+    this.generationRunContext = runContext;
   }
 
   getCurrentJobId(): string | null {
@@ -1948,6 +1957,8 @@ export class FullStoryPipeline {
       artStyleProfile: this.config.imageGen?.artStyleProfile,
       styleAnchors,
       imageProvider: this.config.imageGen?.provider,
+      workerJobId: this.jobId,
+      runContext: this.generationRunContext,
     };
   }
 
@@ -2662,7 +2673,7 @@ export class FullStoryPipeline {
     this.allSceneValidationResults = [];
     this.deferredRealizationRecords = [];
     this.allEncounterTelemetry = [];
-    this.resetQualityCouncil();
+    this.resetStoryCouncil();
     this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
     this.resetCollectedVisualPlanning(); // Reset visual planning collection for new run
     BaseAgent.resetBillingQuotaState(); // WS1b: stale quota latch must not poison a resumed run
@@ -3019,14 +3030,6 @@ export class FullStoryPipeline {
           },
         },
       });
-      await this.qualityCouncil?.runPlan({
-        brief,
-        sourceAnalysis: brief.multiEpisode?.sourceAnalysis,
-        seasonPlan: brief.seasonPlan,
-        episodeBlueprint,
-        notes: 'Single-episode checkpoint after episode architecture and before content generation.',
-      });
-
       // === PHASE 3.5: BRANCH ANALYSIS ===
       this.emit({ type: 'phase_start', phase: 'branch_analysis', message: 'Phase 3.5: Analyzing branch structure' });
       this.requirePhases('branch_analysis', ['episode_architecture']);
@@ -3148,14 +3151,6 @@ export class FullStoryPipeline {
         markEpisode(this.generationPlan, brief.episode.number, 'complete');
         this.emitPlanUpdate('Episode content complete');
       }
-      await this.qualityCouncil?.runChoice({
-        brief,
-        seasonPlan: brief.seasonPlan,
-        episodeBlueprint,
-        sceneContents,
-        choiceSets,
-        notes: 'Single-episode checkpoint after ChoiceAuthor and before quick validation.',
-      });
       if (resumedSceneContent) {
         this.emit({ type: 'debug', phase: 'content', message: 'Resumed from durable scene content checkpoint' });
 	      } else {
@@ -3426,18 +3421,24 @@ export class FullStoryPipeline {
       let videoResults: Map<string, string> | undefined;
       let videoDiagnostics: VideoGenerationDiagnostic[] = [];
       const audioDiagnostics: AudioGenerationDiagnostic[] = [];
+      let artifactRuntime: RunArtifactRuntime | undefined;
       
       try {
         const resumedOutputDir = this.getResumeOutput<{ outputDirectory: string }>(
           resumeCheckpoint, 'output_directory'
         )?.outputDirectory;
-        const artifactRuntime = await new RunArtifactPhase({
+        artifactRuntime = await new RunArtifactPhase({
           createOutputDirectory,
           ensureDirectory,
           save: saveEarlyDiagnostic,
           load: loadEarlyDiagnosticSync,
         }).run(
-          { storyTitle: brief.story.title, resumeOutputDirectory: resumedOutputDir },
+          {
+            storyTitle: brief.story.title,
+            resumeOutputDirectory: resumedOutputDir,
+            workerJobId: this.jobId || undefined,
+            runContext: this.generationRunContext,
+          },
           {
             config: this.config,
             emit: this.emit.bind(this),
@@ -3493,6 +3494,19 @@ export class FullStoryPipeline {
           choiceSets,
           residueRepair: { sceneContents, reassemble: () => this.assembleEpisode(brief, worldBible, characterBible, episodeBlueprint, sceneContents, choiceSets, undefined, encounters, undefined, videoResults) },
         });
+        const episodePlanningRefs = await persistEpisodePlanningArtifacts({
+          artifactRuntime,
+          episodeNumber: brief.episode.number,
+          blueprint: episodeBlueprint,
+          branchAnalysis,
+          sceneContents,
+          choiceSets,
+          encounters,
+          storyCouncilCandidateSet: this.storyCouncil?.getCandidateArtifactSet({ episodeNumber: brief.episode.number }),
+          storyCouncilDecision: this.storyCouncil?.getCandidateDecision({ episodeNumber: brief.episode.number }),
+          emit: this.emit.bind(this),
+        });
+        artifactRuntime.setEpisodeUpstreamRefs(brief.episode.number, episodePlanningRefs);
       } catch (setupError) {
         await rethrowAsImagePhaseFailure(setupError, {
           isLlmQuotaFailure: (err) => this.isLlmQuotaFailure(err),
@@ -3554,7 +3568,7 @@ export class FullStoryPipeline {
           generatedThroughEpisode: brief.episode.number,
         },
       });
-      await this.qualityCouncil?.runRoutePlaytest({
+      await this.storyCouncil?.runRoutePlaytest({
         brief,
         story,
         episodeBlueprint,
@@ -3562,7 +3576,7 @@ export class FullStoryPipeline {
         finalStoryContractReport,
         notes: 'Single-episode route playtest after final story contract validation.',
       });
-      await this.qualityCouncil?.runFinal({
+      await this.storyCouncil?.runFinal({
         brief,
         story,
         qaReport,
@@ -3570,7 +3584,13 @@ export class FullStoryPipeline {
         finalStoryContractReport,
         notes: 'Single-episode final council audit before saving.',
       });
-      this.enforceQualityCouncilStrictMode('quality_council_final');
+      if (artifactRuntime) {
+        await persistStoryCouncilHoldoutArtifact({
+          artifactRuntime,
+          report: this.storyCouncil?.getReport(),
+          emit: this.emit.bind(this),
+        });
+      }
 
       // === PHASE 6.5: IMAGE GENERATION (single-episode mode; after the text contract passed) ===
       await this.checkCancellation();
@@ -3837,7 +3857,10 @@ export class FullStoryPipeline {
       try {
         // outputDirectory already created above, just ensure it exists
         if (!outputDirectory) {
-          outputDirectory = await createOutputDirectory(brief.story.title);
+          outputDirectory = await createOutputDirectory(brief.story.title, {
+            workerJobId: this.jobId || undefined,
+            runContext: this.generationRunContext,
+          });
         }
         if (story) story.outputDir = outputDirectory;
 
@@ -3866,7 +3889,7 @@ export class FullStoryPipeline {
                 this.branchShadowDiffs.length > 0 ? this.branchShadowDiffs : undefined,
               bestPracticesReport,
               finalStoryContractReport,
-              qualityCouncilReport: this.qualityCouncil?.getReport(),
+              qualityCouncilReport: this.storyCouncil?.getReport(),
               finalStory: story,
               visualPlanning: visualPlanningOutputs,
               videoClipsGenerated: videoResults?.size || 0,
@@ -4243,8 +4266,26 @@ export class FullStoryPipeline {
       artifactKinds: ['source-analysis', 'season-plan', 'world-bible', 'character-bible'],
       characterIds: characterBible.characters.map((character) => character.id),
     });
+    const storyCouncilConfig = this.config.storyCouncil ?? this.config.qualityCouncil;
+    const episodeBlueprintCouncilEnabled = storyCouncilConfig?.enabled === true
+      && storyCouncilConfig.runEpisodeBlueprintCandidates;
     const deps = {
       storyArchitect: this.storyArchitect,
+      storyCouncilCandidateArchitects: episodeBlueprintCouncilEnabled
+        ? [
+            this.storyArchitect,
+            ...(this.config.agents.qualityCouncilPlan
+              ? [new StoryArchitect({
+                  ...this.config.agents.qualityCouncilPlan,
+                  maxTokens: this.config.agents.storyArchitect.maxTokens,
+                  temperature: this.config.agents.storyArchitect.temperature,
+                }, this.config.generation)]
+              : []),
+          ]
+        : undefined,
+      storyCouncil: episodeBlueprintCouncilEnabled
+        ? this.storyCouncil
+        : undefined,
       emitPlanUpdate: this.emitPlanUpdate.bind(this),
       getTargetBeatCountForScene: this.getTargetBeatCountForScene.bind(this),
       recordGateShadowSafe: this.recordGateShadowSafe.bind(this),
@@ -4888,22 +4929,9 @@ export class FullStoryPipeline {
     return this.finalContract().prepareValidationInput(sceneContents, choiceSets, characterBible, encounters, blueprint);
   }
 
-  private enforceQualityCouncilStrictMode(phase: string): void {
-    const blockingFindings = this.qualityCouncil?.getStrictBlockingFindings() || [];
-    if (blockingFindings.length === 0) return;
-    const summary = blockingFindings
-      .map((finding) => `[${finding.validatorMapping}] ${finding.evidence[0] || finding.category}`)
-      .join('; ');
-    throw new PipelineError(
-      `Quality Council strict mode blocked the run: ${summary}`,
-      phase,
-      { context: { blockingFindings } },
-    );
-  }
-
-  private resetQualityCouncil(): void {
-    this.qualityCouncil = this.config.qualityCouncil?.enabled
-      ? new QualityCouncilRunner({
+  private resetStoryCouncil(): void {
+    this.storyCouncil = (this.config.storyCouncil ?? this.config.qualityCouncil)?.enabled
+      ? new StoryCouncilRunner({
           config: this.config,
           emit: this.emit.bind(this),
         })
@@ -5236,7 +5264,7 @@ export class FullStoryPipeline {
     this.allSceneValidationResults = [];
     this.deferredRealizationRecords = [];
     this.allEncounterTelemetry = [];
-    this.resetQualityCouncil();
+    this.resetStoryCouncil();
     this.resetRemediationBudget(); // S3: fresh per-run remediation cap + counters
     this.seasonCanon = new SeasonCanon({ storyId: idSlugify(baseBrief.story.title) });
     this.sourceCanonPromptBlock = renderSourceCanonPrompt(analysis.sourceCanon);
@@ -5295,13 +5323,6 @@ export class FullStoryPipeline {
           'Re-run source analysis or check the treatment episode headings.'
         );
       }
-      await this.qualityCouncil?.runPlan({
-        brief: baseBrief,
-        sourceAnalysis: baseBrief.multiEpisode?.sourceAnalysis ?? filteredAnalysis,
-        seasonPlan: baseBrief.seasonPlan,
-        notes: 'Multi-episode checkpoint after plan-time fidelity checks and requested-episode filtering.',
-      });
-
       // Adoption flag (A2/A5): run the foundation phases and the sequential
       // episode loop on the run-graph runner. Default OFF; golden-parity
       // tested both ways (FullStoryPipeline.runGraphParity.season.test.ts).
@@ -5372,7 +5393,12 @@ export class FullStoryPipeline {
         save: saveEarlyDiagnostic,
         load: loadEarlyDiagnosticSync,
       }).run(
-        { storyTitle: baseBrief.story.title, resumeOutputDirectory: resumedOutputDir },
+        {
+          storyTitle: baseBrief.story.title,
+          resumeOutputDirectory: resumedOutputDir,
+          workerJobId: this.jobId || undefined,
+          runContext: this.generationRunContext,
+        },
         {
           config: this.config,
           emit: this.emit.bind(this),
@@ -5445,22 +5471,6 @@ export class FullStoryPipeline {
         }))
         .filter((item): item is { episodeNumber: number; idx: number; outline: EpisodeOutline } => Boolean(item.outline));
 
-      const dependencyMode = this.config.generation?.episodeDependencyMode || 'sequential';
-      const parallelism = resolveEpisodeParallelism({
-        episodeParallelismEnabled: this.config.generation?.episodeParallelismEnabled,
-        dependencyMode,
-        seasonCanonEnabled: this.seasonCanonOn,
-      });
-      const parallelEnabled = parallelism.enabled;
-      if (parallelism.disabledReason === 'season_canon_enabled') {
-        this.emit({
-          type: 'warning',
-          phase: 'episode_parallelism',
-          message:
-            'Episode parallelism disabled for this run because Season Canon is enabled. Canonical episodes must lock in dependency order so downstream prompts read sealed upstream facts.',
-        });
-      }
-      const maxParallelEpisodes = Math.max(1, this.config.generation?.maxParallelEpisodes ?? CONCURRENCY_DEFAULTS.maxParallelEpisodes);
       let completedEpisodeCount = 0;
       const totalEpisodeProgressItems = Math.max(1, episodeSpecs.length);
       const allStoryletFailures: string[] = [];
@@ -5528,119 +5538,15 @@ export class FullStoryPipeline {
       }
       this.emitPhaseProgress('content', completedEpisodeCount, totalEpisodeProgressItems, 'episodes', 'Preparing episode generation queue...');
 
-      if (parallelEnabled) {
-        this.emit({
-          type: 'phase_start',
-          phase: 'episode_parallelism',
-          message: `Parallel episode mode enabled with concurrency=${maxParallelEpisodes}`,
-        });
-        const queue = new LocalWorkerQueue(maxParallelEpisodes);
-        const processed = await mapWithConcurrency(
-          pendingEpisodeSpecs,
-          async (spec) => queue.run(async () => {
-            await this.checkCancellation();
-            const nextCompleted = episodeResults.length + 1;
-            const episodeProgress = Math.round((nextCompleted / this.totalEpisodes) * 80) + 10;
-            await this.updateJobProgress(`episode_${spec.episodeNumber}`, episodeProgress);
-            this.emit({
-              type: 'phase_start',
-              phase: `episode_${spec.episodeNumber}`,
-              message: `Generating Episode ${spec.episodeNumber}: ${spec.outline.title}`,
-            });
-            if (this.generationPlan) markEpisode(this.generationPlan, spec.episodeNumber, 'active');
-            const generatedEpisode = await this.generateEpisodeFromOutline({
-              episodeNumber: spec.episodeNumber,
-              episodeIndex: spec.idx,
-              episodeOutline: spec.outline,
-              baseBrief,
-              worldBrief,
-              characterBrief,
-              worldBible,
-              characterBible,
-              outputDirectory,
-              previousSummary: baseBrief.episode.previousSummary,
-            });
-            if (generatedEpisode.episode) {
-              const episodePlanningRefs = await persistEpisodePlanningArtifacts({
-                artifactRuntime,
-                episodeNumber: spec.episodeNumber,
-                blueprint: generatedEpisode.blueprint,
-                branchAnalysis: generatedEpisode.branchAnalysis,
-                sceneContents: generatedEpisode.sceneContents,
-                choiceSets: generatedEpisode.choiceSets,
-                encounters: generatedEpisode.encounters,
-                emit: this.emit.bind(this),
-              });
-              artifactRuntime.setEpisodeUpstreamRefs(spec.episodeNumber, episodePlanningRefs);
-              await this.lockGeneratedEpisode({
-                episodeNumber: spec.episodeNumber,
-                title: spec.outline.title,
-                episode: generatedEpisode.episode,
-                blueprint: generatedEpisode.blueprint,
-                episodeBrief: generatedEpisode.episodeBrief,
-                baseBrief,
-                analysis,
-                characterBible,
-                qaReport: generatedEpisode.qaReport,
-                bestPracticesReport: generatedEpisode.bestPracticesReport,
-                validationExecutionRecords: generatedEpisode.validationExecutionRecords,
-                outputDirectory,
-                artifactRuntime,
-                writeWatermark: true,
-              });
-            }
-            completedEpisodeCount += 1;
-            if (this.generationPlan) {
-              markEpisode(this.generationPlan, spec.episodeNumber, 'complete');
-              this.emitPlanUpdate(`Episode ${spec.episodeNumber} complete`);
-            }
-            this.emitPhaseProgress(
-              'content',
-              completedEpisodeCount,
-              totalEpisodeProgressItems,
-              'episodes',
-              `Episode ${spec.episodeNumber} finished (${completedEpisodeCount}/${totalEpisodeProgressItems})`,
-              { episodeNumber: spec.episodeNumber }
-            );
-            return generatedEpisode;
-          }),
-          { concurrency: maxParallelEpisodes, continueOnError: this.config.validation.mode !== 'strict' }
-        );
-        for (const result of processed.values) {
-          if (result.episode) episodes.push(result.episode);
-          if (
-            result.episode &&
-            result.episodeBrief &&
-            result.blueprint &&
-            result.sceneContents &&
-            result.choiceSets &&
-            result.encounters
-          ) {
-            authoredEpisodeArtifacts.push({
-              episode: result.episode,
-              episodeBrief: result.episodeBrief,
-              blueprint: result.blueprint,
-              branchAnalysis: result.branchAnalysis,
-              sceneContents: result.sceneContents,
-              choiceSets: result.choiceSets,
-              encounters: result.encounters,
-              validationExecutionRecords: result.validationExecutionRecords,
-            });
-          }
-          episodeResults.push(result.result);
-          if (result.qaReport) episodeQAReports.push(result.qaReport);
-          if (result.bestPracticesReport) episodeBPReports.push(result.bestPracticesReport);
-        }
-      } else {
-        // Sequential episode generation. The per-episode body is ONE closure
-        // shared by both execution paths below: the legacy for-loop, and the
-        // run-graph chain (adoption A2) that journals each episode as an
-        // artifact (resume/surgical-invalidation semantics owned by the
-        // runner). Same body either way — golden-parity tested.
-        const processPendingEpisode = async (
-          spec: (typeof pendingEpisodeSpecs)[number],
-          opts: { writeWatermark: boolean },
-        ): Promise<Episode | null> => {
+      // Sequential episode generation. The per-episode body is ONE closure
+      // shared by both execution paths below: the legacy for-loop, and the
+      // run-graph chain (adoption A2) that journals each episode as an
+      // artifact (resume/surgical-invalidation semantics owned by the
+      // runner). Same body either way — golden-parity tested.
+      const processPendingEpisode = async (
+        spec: (typeof pendingEpisodeSpecs)[number],
+        opts: { writeWatermark: boolean },
+      ): Promise<Episode | null> => {
           const i = spec.episodeNumber;
           try {
             await this.checkCancellation();
@@ -5699,6 +5605,8 @@ export class FullStoryPipeline {
                   sceneContents: generated.sceneContents,
                   choiceSets: generated.choiceSets,
                   encounters: generated.encounters,
+                  storyCouncilCandidateSet: this.storyCouncil?.getCandidateArtifactSet({ episodeNumber: i }),
+                  storyCouncilDecision: this.storyCouncil?.getCandidateDecision({ episodeNumber: i }),
                   emit: this.emit.bind(this),
                 });
                 artifactRuntime.setEpisodeUpstreamRefs(i, episodePlanningRefs);
@@ -5738,25 +5646,24 @@ export class FullStoryPipeline {
           } catch (error) {
             return handleEpisodeGenerationFailure({ error, episodeNumber: i, title: spec.outline.title, strict: this.config.validation.mode === 'strict', results: episodeResults, emit: this.emit.bind(this) });
           }
-        };
+      };
 
-        if (runGraphEnabled) {
-          // Adoption A2: same body, scheduled/journaled by the run-graph
-          // runner — see pipeline/episodeRunGraph.ts for the semantics.
-          await runEpisodeLoopOnGraph({
-            specs: pendingEpisodeSpecs,
-            strict: this.config.validation.mode === 'strict',
-            io: {
-              save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
-              load: <T,>(name: string) => loadEarlyDiagnosticSync<T>(outputDirectory, name),
-            },
-            processEpisode: (spec) => processPendingEpisode(spec, { writeWatermark: false }),
-            emitDebug: (message) => this.emit({ type: 'debug', phase: 'run_graph', message }),
-          });
-        } else {
-          for (const spec of pendingEpisodeSpecs) {
-            await processPendingEpisode(spec, { writeWatermark: true });
-          }
+      if (runGraphEnabled) {
+        // Adoption A2: same body, scheduled/journaled by the run-graph
+        // runner — see pipeline/episodeRunGraph.ts for the semantics.
+        await runEpisodeLoopOnGraph({
+          specs: pendingEpisodeSpecs,
+          strict: this.config.validation.mode === 'strict',
+          io: {
+            save: (name, data) => saveEarlyDiagnostic(outputDirectory, name, data),
+            load: <T,>(name: string) => loadEarlyDiagnosticSync<T>(outputDirectory, name),
+          },
+          processEpisode: (spec) => processPendingEpisode(spec, { writeWatermark: false }),
+          emitDebug: (message) => this.emit({ type: 'debug', phase: 'run_graph', message }),
+        });
+      } else {
+        for (const spec of pendingEpisodeSpecs) {
+          await processPendingEpisode(spec, { writeWatermark: true });
         }
       }
       episodes.sort((a, b) => (a.number || 0) - (b.number || 0));
@@ -6099,7 +6006,7 @@ export class FullStoryPipeline {
           generatedThroughEpisode: Math.max(0, ...story.episodes.map((episode) => episode.number).filter((n): n is number => typeof n === 'number')),
         },
       });
-      await this.qualityCouncil?.runRoutePlaytest({
+      await this.storyCouncil?.runRoutePlaytest({
         brief: baseBrief,
         sourceAnalysis: filteredAnalysis,
         seasonPlan: baseBrief.seasonPlan,
@@ -6107,7 +6014,7 @@ export class FullStoryPipeline {
         finalStoryContractReport,
         notes: 'Multi-episode route playtest after final story contract validation.',
       });
-      await this.qualityCouncil?.runFinal({
+      await this.storyCouncil?.runFinal({
         brief: baseBrief,
         sourceAnalysis: filteredAnalysis,
         seasonPlan: baseBrief.seasonPlan,
@@ -6117,7 +6024,11 @@ export class FullStoryPipeline {
         finalStoryContractReport,
         notes: 'Multi-episode final council audit before saving.',
       });
-      this.enforceQualityCouncilStrictMode('quality_council_final');
+      await persistStoryCouncilHoldoutArtifact({
+        artifactRuntime,
+        report: this.storyCouncil?.getReport(),
+        emit: this.emit.bind(this),
+      });
 
       // 6. Generate media (after the season text contract passed) and bind it
       // into the contract-passed story via the asset registry — NOT by
@@ -6210,7 +6121,7 @@ export class FullStoryPipeline {
           : undefined,
         bestPracticesReport: aggregatedBPReport,
         finalStoryContractReport,
-        qualityCouncilReport: this.qualityCouncil?.getReport(),
+        qualityCouncilReport: this.storyCouncil?.getReport(),
         encounterImageDiagnostics: allEncounterImageDiagnostics,
         remediationSummary: this.getRemediationSummary(),
       memorySummary: this.getMemorySummaryForLedger(),
@@ -6989,16 +6900,6 @@ export class FullStoryPipeline {
         deferredRealizationRecords,
       } = contentOutcome.content;
       mergeDeferredRealizationRecords(this.deferredRealizationRecords, deferredRealizationRecords);
-      await this.qualityCouncil?.runChoice({
-        brief: episodeBrief,
-        sourceAnalysis: episodeBrief.multiEpisode?.sourceAnalysis,
-        seasonPlan: episodeBrief.seasonPlan,
-        episodeBlueprint: blueprint,
-        sceneContents,
-        choiceSets,
-        notes: `Multi-episode checkpoint after ChoiceAuthor for episode ${i}.`,
-      });
-
       let callbackNewHooks = 0;
       let authoredCallbackPayoffs = 0;
 
@@ -9332,11 +9233,16 @@ export class FullStoryPipeline {
     return raw.split(',').map((part: string) => part.trim()).filter(Boolean);
   }
 
+  private scopeMemoryStoryId(storyId?: string): string | undefined {
+    if (!storyId || this.generationRunContext.kind !== 'variant') return storyId;
+    return `${storyId}::${this.generationRunContext.variantId}`;
+  }
+
   private async flushPipelineMemory(storyId: string, lifecycle: 'episode' | 'qa' | 'run'): Promise<void> {
     if (!this.memoryFlushTargets().includes(lifecycle)) return;
     await this.factMemoryService().flush();
     await this.pipelineMemory().cognifyDatasets([
-      `storyrpg-run-${slugifyMemoryKey(storyId)}`,
+      `storyrpg-run-${slugifyMemoryKey(this.scopeMemoryStoryId(storyId) || storyId)}`,
       this.config.memory?.validatorDataset || 'storyrpg-validator-history',
     ], { background: true });
   }
@@ -9390,7 +9296,7 @@ export class FullStoryPipeline {
     const artifactPack = await this.artifactContextResolver().resolveForAgent({
       agentRole: request.agentRole,
       lifecycle: request.lifecycle,
-      storyId: request.storyId,
+      storyId: this.scopeMemoryStoryId(request.storyId),
       episodeNumber: request.episodeNumber,
       sceneId: request.sceneId,
       characterIds: request.characterIds,
@@ -9430,8 +9336,8 @@ export class FullStoryPipeline {
   ): Promise<ValidatorEvidenceBundle> {
     const brief = typeof briefOrStoryId === 'string' ? undefined : briefOrStoryId;
     const mergedExtra = typeof briefOrStoryId === 'string'
-      ? { ...extra, storyId: briefOrStoryId }
-      : extra;
+      ? { ...extra, storyId: this.scopeMemoryStoryId(briefOrStoryId) }
+      : { ...extra, storyId: this.scopeMemoryStoryId(extra.storyId || brief?.story.title) };
     return recallValidatorMemory(
       this.validatorEvidenceService(),
       validator,
@@ -9442,7 +9348,10 @@ export class FullStoryPipeline {
   }
 
   private async writeArtifactMemory<T>(input: WritePipelineArtifactInput<T>): Promise<void> {
-    await this.artifactMemoryService().writeArtifact(input).then((envelope) =>
+    await this.artifactMemoryService().writeArtifact({
+      ...input,
+      storyId: this.scopeMemoryStoryId(input.storyId) || input.storyId,
+    }).then((envelope) =>
       this.factMemoryService().writeFactsForArtifact(envelope),
     ).catch((err) => {
       if (this.config.debug) {
@@ -9452,22 +9361,37 @@ export class FullStoryPipeline {
   }
 
   async writeGenerationMemory(opts: Parameters<PipelineMemory['writeGenerationMemory']>[0]): Promise<void> {
-    return this.pipelineMemory().writeGenerationMemory(opts);
+    return this.pipelineMemory().writeGenerationMemory({
+      ...opts,
+      storyId: this.scopeMemoryStoryId(opts.storyId),
+    });
   }
 
   async writeQALearnings(
     qaReport: Parameters<PipelineMemory['writeQALearnings']>[0],
     episodeTitle?: string,
   ): Promise<void> {
-    return this.pipelineMemory().writeQALearnings(qaReport, episodeTitle);
+    const scopedTitle = episodeTitle && this.generationRunContext.kind === 'variant'
+      ? `${episodeTitle}::${this.generationRunContext.variantId}`
+      : episodeTitle;
+    return this.pipelineMemory().writeQALearnings(qaReport, scopedTitle);
   }
 
   async writeCharacterMemory(opts: Parameters<PipelineMemory['writeCharacterMemory']>[0]): Promise<void> {
-    return this.pipelineMemory().writeCharacterMemory(opts);
+    if (this.generationRunContext.kind !== 'variant') return this.pipelineMemory().writeCharacterMemory(opts);
+    const suffix = `::${this.generationRunContext.variantId}`;
+    return this.pipelineMemory().writeCharacterMemory({
+      ...opts,
+      characterName: `${opts.characterName}${suffix}`,
+      characterId: `${opts.characterId}${suffix}`,
+    });
   }
 
   async readCharacterMemory(characterName: string): Promise<string | null> {
-    return this.pipelineMemory().readCharacterMemory(characterName);
+    const scopedName = this.generationRunContext.kind === 'variant'
+      ? `${characterName}::${this.generationRunContext.variantId}`
+      : characterName;
+    return this.pipelineMemory().readCharacterMemory(scopedName);
   }
 
   async readPipelineMemory(): Promise<string | null> {
@@ -9479,7 +9403,10 @@ export class FullStoryPipeline {
   }
 
   async writeValidatorMemory(opts: Parameters<PipelineMemory['writeValidatorMemory']>[0]): Promise<void> {
-    return this.pipelineMemory().writeValidatorMemory(opts);
+    return this.pipelineMemory().writeValidatorMemory({
+      ...opts,
+      storyId: this.scopeMemoryStoryId(opts.storyId),
+    });
   }
 
   async writePipelineMemoryRecord(opts: Parameters<PipelineMemory['writeRecord']>[0]): Promise<void> {

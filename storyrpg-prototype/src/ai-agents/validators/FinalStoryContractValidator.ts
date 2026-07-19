@@ -85,6 +85,53 @@ const NARRATION_SURFACES: NarrativeRealizationSurface[] = [
   'encounter_entry', 'encounter_setup', 'encounter_phase', 'encounter_outcome', 'terminal_storylet',
 ];
 
+interface PovNarrationOccurrence {
+  fieldPath: string;
+  beatId?: string;
+  surface: NarrativeRealizationSurface;
+  text: string;
+}
+
+function locatePovNarrationOccurrences(scene: Scene, snippets: string[]): PovNarrationOccurrence[] {
+  const matches = (text: string): boolean => snippets.some((snippet) => text.trim().startsWith(snippet.trim()));
+  const occurrences: PovNarrationOccurrence[] = [];
+  const visit = (value: unknown, fieldPath: string, beatId?: string, inChoice = false): void => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => visit(entry, `${fieldPath}[${index}]`, beatId, inChoice));
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    const currentBeatId = typeof record.id === 'string' && /beats?\[/.test(fieldPath) ? record.id : beatId;
+    for (const [key, child] of Object.entries(record)) {
+      const path = fieldPath ? `${fieldPath}.${key}` : key;
+      const childInChoice = inChoice || key === 'choices';
+      if (typeof child === 'string' && !childInChoice && matches(child)) {
+        const isVariant = /(?:text|setupText|escalationText)Variants\[\d+\]\.text$/.test(path);
+        const isEncounterDescription = key === 'description' && path.includes('encounter');
+        const isNarrationField = key === 'transitionIn'
+          || key === 'text'
+          || key === 'setupText'
+          || key === 'escalationText'
+          || key === 'narrativeText'
+          || key === 'outcomeText'
+          || isEncounterDescription;
+        if (isNarrationField) {
+          occurrences.push({
+            fieldPath: path,
+            beatId: currentBeatId,
+            surface: isVariant ? 'text_variant' : path.includes('encounter') ? 'encounter_phase' : 'beat_text',
+            text: child,
+          });
+        }
+      }
+      if (typeof child === 'object' && child !== null) visit(child, path, currentBeatId, childInChoice);
+    }
+  };
+  visit(scene, '', undefined, false);
+  return occurrences;
+}
+
 const TERMINAL_SCENE_TARGETS = new Set([
   'episode-end', 'story-end', 'season-end', 'end', 'the-end', 'ending',
 ]);
@@ -276,6 +323,9 @@ export interface FinalStoryContractIssue {
   episodeNumber?: number;
   sceneId?: string;
   beatId?: string;
+  /** Exact reader-facing field that produced the finding. */
+  fieldPath?: string;
+  repairSurface?: NarrativeRealizationSurface;
   validator?: string;
   suggestion?: string;
   taskId?: string;
@@ -1238,32 +1288,32 @@ export class FinalStoryContractValidator {
             ? isGateEnabledAt('GATE_ENCOUNTER_POV', 'season-final')
             : isGateEnabledAt('GATE_PROTAGONIST_PRONOUN', 'season-final');
           const povType = scene.encounter ? 'encounter_pov_break' : 'pov_break';
+          const pushPovIssues = (hits: string[], person: 'first' | 'third'): void => {
+            if (hits.length === 0) return;
+            const occurrences = locatePovNarrationOccurrences(scene, hits);
+            const targets = occurrences.length > 0
+              ? occurrences
+              : [{ text: hits[0], fieldPath: undefined, beatId: undefined, surface: undefined }];
+            for (const occurrence of targets) {
+              issues.push({
+                type: povType,
+                severity: povBlocking ? 'error' : 'warning',
+                message: `Scene "${scene.name || scene.id}" narrates the protagonist in the ${person} person in second-person story prose: "${occurrence.text.trim().slice(0, 160)}"`,
+                episodeId: episode.id,
+                episodeNumber: episode.number,
+                sceneId: scene.id,
+                beatId: occurrence.beatId,
+                fieldPath: occurrence.fieldPath,
+                repairSurface: occurrence.surface,
+                validator: 'PovClarityValidator',
+                suggestion: `Rewrite only this narration surface in second person ("you/your"); preserve its event, route condition, and outcome tier.`,
+              });
+            }
+          };
           const thirdHits = povValidator.findThirdPersonProtagonistTexts(povTexts, protagonistName);
-          if (thirdHits.length > 0) {
-            issues.push({
-              type: povType,
-              severity: povBlocking ? 'error' : 'warning',
-              message: `Scene "${scene.name || scene.id}" narrates the protagonist in the third person in ${thirdHits.length} place(s) — a POV break in a second-person story. e.g. "${thirdHits[0]}"`,
-              episodeId: episode.id,
-              episodeNumber: episode.number,
-              sceneId: scene.id,
-              validator: 'PovClarityValidator',
-              suggestion: 'Rewrite the prose in second person ("you/your"); reserve third-person + pronoun for NPCs only.',
-            });
-          }
+          pushPovIssues(thirdHits, 'third');
           const firstHits = povValidator.findFirstPersonProtagonistTexts(povTexts, protagonistName);
-          if (firstHits.length > 0) {
-            issues.push({
-              type: povType,
-              severity: povBlocking ? 'error' : 'warning',
-              message: `Scene "${scene.name || scene.id}" narrates the protagonist in the first person in ${firstHits.length} place(s) — a POV break in a second-person story. e.g. "${firstHits[0]}"`,
-              episodeId: episode.id,
-              episodeNumber: episode.number,
-              sceneId: scene.id,
-              validator: 'PovClarityValidator',
-              suggestion: 'Rewrite the prose in second person ("you/your"); reserve first-person ("I/my") for quoted dialogue only.',
-            });
-          }
+          pushPovIssues(firstHits, 'first');
         }
 
         // Opening-anchor POV: the first prose beat of every narrative scene must

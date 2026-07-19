@@ -36,11 +36,20 @@ describe('RunArtifactPhase', () => {
     });
     const context = makeContext();
 
-    const runtime = await phase.run({ storyTitle: 'My Story' }, context);
+    const runtime = await phase.run({
+      storyTitle: 'My Story',
+      workerJobId: 'worker-1',
+      runContext: { kind: 'variant', batchId: 'batch-1', variantId: 'variant-1', ordinal: 1, total: 4 },
+    }, context);
 
     expect(runtime.outputDirectory).toBe('generated-stories/my-run');
     expect(runtime.storyId).toBe('my-story');
     expect(runtime.runId).toBe('my-run');
+    expect(store.files.get('generated-stories/my-run/run-metadata.json')).toMatchObject({
+      runId: 'my-run',
+      workerJobId: 'worker-1',
+      runContext: { kind: 'variant', batchId: 'batch-1', variantId: 'variant-1', ordinal: 1, total: 4 },
+    });
     expect(context.addCheckpoint).toHaveBeenCalledWith('Output Directory', { outputDirectory: 'generated-stories/my-run' }, false);
   });
 

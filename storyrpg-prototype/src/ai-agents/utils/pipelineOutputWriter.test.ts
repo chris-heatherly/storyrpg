@@ -117,13 +117,13 @@ describe('deriveRunQualityScore', () => {
     expect(result.score).toBeGreaterThan(74);
   });
 
-  it('caps below 70 when every enabled Quality Council checkpoint errors before producing findings', () => {
+  it('does not cap publishability when every Story Council holdout has an infrastructure error', () => {
     const result = deriveRunQualityScore({
       finalStory: makeStoryCircleStory(),
       finalStoryContractReport: passingFinalStoryContract(),
       qualityCouncilReport: {
         enabled: true,
-        mode: 'repair-routing',
+        mode: 'select-and-repair',
         checkpoints: ['plan', 'choice', 'route-playtest', 'final'].map((checkpoint) => ({
           checkpoint,
           status: 'error',
@@ -142,8 +142,8 @@ describe('deriveRunQualityScore', () => {
       } as any,
     });
 
-    expect(result.score).toBeLessThanOrEqual(69);
-    expect(result.basis.caps.map((cap) => cap.id)).toContain('quality_council_all_checkpoints_failed');
+    expect(result.basis.caps.map((cap) => cap.id)).not.toContain('quality_council_all_checkpoints_failed');
+    expect(result.basis.unmappedFindings.some((finding) => finding.source === 'story-council-infrastructure')).toBe(true);
   });
 
   it('does not cap when optional Fusion transport fails after the base final council passes', () => {
@@ -1026,6 +1026,32 @@ describe('pipelineOutputWriter', () => {
       qualityDisposition: expect.objectContaining({ status: 'promoted', band: 'ship' }),
     });
     expect(manifest.summary.qualityScore).toBeGreaterThan(90);
+  });
+
+  it('holds a quality-eligible variant package until batch selection', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'storyrpg-output-variant-'));
+    tempDirs.push(tempDir);
+    const outputDir = `${tempDir}/`;
+
+    await savePipelineOutputs(outputDir, {
+      brief: { story: { id: 'variant-story', title: 'Variant Story', genre: 'Mystery', synopsis: '', themes: [] } },
+      finalStory: makeStoryCircleStory(),
+      qaReport: judgedQAReport(),
+      finalStoryContractReport: passingFinalStoryContract(),
+      generator: {
+        runContext: { kind: 'variant', batchId: 'batch-1', variantId: 'variant-1', ordinal: 1, total: 4 },
+      },
+    } as any, 123);
+
+    const disposition = JSON.parse(await readFile(`${outputDir}quality-disposition.json`, 'utf8'));
+    expect(disposition).toMatchObject({
+      status: 'held',
+      band: 'warn',
+      eligibleForReader: false,
+      selectionEligible: true,
+      selectionOriginalBand: 'ship',
+      reasonCodes: expect.arrayContaining(['variant_selection_pending']),
+    });
   });
 
   it('supersedes stale failure diagnostics when a later successful package is written', async () => {

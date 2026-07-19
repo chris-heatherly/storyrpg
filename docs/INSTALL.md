@@ -927,6 +927,11 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 # DEVELOPMENT / DEBUG
 # ===================================================================
 
+# Full story workers. Variant Batch submits 2-4 ordinary generation jobs.
+# The story value defaults to 4 and is hard-capped at 4 by the proxy.
+# STORYRPG_STORY_WORKER_CONCURRENCY=4
+# STORYRPG_IMAGE_WORKER_CONCURRENCY=1
+
 # Enable debug logging
 # EXPO_PUBLIC_DEBUG=true
 # EXPO_PUBLIC_LOG_LEVEL=info
@@ -936,6 +941,23 @@ EXPO_PUBLIC_GEMINI_MODEL=gemini-2.5-flash-image
 
 # Validation mode: 'strict', 'advisory', 'disabled'
 # EXPO_PUBLIC_VALIDATION_MODE=advisory
+
+# Optional Story Council (the Generator UI is the preferred control surface)
+# STORYRPG_STORY_COUNCIL=1
+# STORYRPG_STORY_COUNCIL_MODE=shadow        # shadow | select | select-and-repair
+# STORYRPG_STORY_COUNCIL_PRESET=adaptive    # adaptive | standard | deep | custom
+# STORYRPG_STORY_COUNCIL_CANDIDATES=2       # 2-4
+# STORYRPG_STORY_COUNCIL_SYNTHESIS=adaptive # never | adaptive | always
+# STORYRPG_STORY_COUNCIL_MAX_CALLS=24
+# STORYRPG_STORY_COUNCIL_MAX_CONCURRENCY=2
+# STORYRPG_STORY_COUNCIL_TOKEN_BUDGET=120000
+# STORYRPG_STORY_COUNCIL_REMEDIATION_BUDGET=4
+# STORYRPG_STORY_COUNCIL_FUSION=0
+# STORYRPG_STORY_COUNCIL_FUSION_MODEL=openrouter/fusion
+# STORYRPG_STORY_COUNCIL_FUSION_ONLY_WHEN=borderline-quality
+
+# Pre-Story-Council STORYRPG_QUALITY_COUNCIL* names remain migration aliases
+# for one compatibility window; new configuration should use the names above.
 
 # ===================================================================
 # PLAYWRIGHT / END-TO-END QA

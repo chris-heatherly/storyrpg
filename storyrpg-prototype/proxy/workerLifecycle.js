@@ -21,6 +21,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { publicCheckpoint, publicJobState, publicResumeContext, sanitizeJobState } = require('./sanitizeJobState');
 const { spawnTsNodeWorker } = require('./tsNodeSpawn');
+const { validateVariantBatchStartRequest } = require('./variantBatchContract');
 const { validateWorkerJobStartRequest } = require('./workerJobContract');
 
 const WORKER_STALE_RUNNING_MS = 3 * 60 * 1000;
@@ -42,6 +43,13 @@ const WORKER_MAX_TIMELINE_ENTRY_BYTES = 32 * 1024;
 // Paused is intentionally NOT swept by the stale reapers (they only look at
 // running/pending) and is never dead-lettered.
 const PROVIDER_QUOTA_FAILURE_KIND = 'provider-quota';
+
+function resolveWorkerQueueLimit(kind, rawValue) {
+  const fallback = kind === 'image' ? 1 : 4;
+  const parsed = Number(rawValue);
+  const requested = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  return kind === 'story' ? Math.min(requested, 4) : requested;
+}
 
 function isQuotaFailureContext(failureContext) {
   return failureContext?.failureKind === PROVIDER_QUOTA_FAILURE_KIND;
@@ -386,7 +394,10 @@ function buildWorkerFriendlyName(mode, payload, explicitStoryTitle, episodeCount
   let scope = 'Treatment import';
 
   if (mode === 'generation') {
-    task = isResume ? 'Resume generation' : 'Story generation';
+    const runContext = payload?.generationInput?.runContext;
+    task = runContext?.kind === 'variant'
+      ? `Variant ${runContext.ordinal} of ${runContext.total}`
+      : isResume ? 'Resume generation' : 'Story generation';
     scope = formatEpisodeScope(payload?.generationInput?.episodeRange, episodeCount);
     const failureStep = options.resumeFromStepId;
     if (isResume && typeof failureStep === 'string' && failureStep.trim()) {
@@ -468,6 +479,7 @@ function buildWorkerRequestSnapshot(mode, payload, explicitStoryTitle) {
         seasonPlanHash: generationInput?.manifest?.seasonPlanHash || brief?.generationManifest?.seasonPlanHash,
         narrativeGraphHash: generationInput?.manifest?.narrativeGraphHash || brief?.generationManifest?.narrativeGraphHash,
         compilerVersion: generationInput?.manifest?.compilerVersion || brief?.generationManifest?.compilerVersion,
+        runContext: generationInput?.runContext,
       }
       : mode === 'image-generation'
         ? {
@@ -1422,9 +1434,7 @@ function createWorkerLifecycle({
 
   function getWorkerQueueLimit(kind) {
     const envKey = kind === 'image' ? 'STORYRPG_IMAGE_WORKER_CONCURRENCY' : 'STORYRPG_STORY_WORKER_CONCURRENCY';
-    const fallback = kind === 'image' ? 1 : 2;
-    const parsed = Number(process.env[envKey]);
-    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+    return resolveWorkerQueueLimit(kind, process.env[envKey]);
   }
 
   function countRunningByKind(kind) {
@@ -2045,7 +2055,265 @@ function createWorkerLifecycle({
     return payload;
   }
 
+  function queueVariantBatchChild(request, batchId, batchIdempotencyKey) {
+    const {
+      protocolVersion,
+      mode,
+      payload,
+      idempotencyKey,
+      storyTitle,
+      episodeCount,
+      launchMetadata,
+    } = request;
+    const runContext = payload.generationInput.runContext;
+    const jobId = `worker-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    const hydratedPayload = hydrateWorkerConfigApiKeys(payload);
+    hydratedPayload.protocolVersion = protocolVersion;
+    const jobConfigHash = computeWorkerJobConfigHash(mode, hydratedPayload.config || {});
+    hydratedPayload.jobConfigHash = jobConfigHash;
+    const requestSnapshot = buildWorkerRequestSnapshot(mode, hydratedPayload, storyTitle);
+    requestSnapshot.jobConfigHash = jobConfigHash;
+    requestSnapshot.protocolVersion = protocolVersion;
+    requestSnapshot.launchMetadata = launchMetadata;
+    const friendlyName = buildWorkerFriendlyName(mode, hydratedPayload, storyTitle, episodeCount);
+    const processTitle = buildWorkerProcessTitle(mode, friendlyName);
+    const variantFields = {
+      variantBatchId: batchId,
+      variantBatchIdempotencyKey: batchIdempotencyKey,
+      variantId: runContext.variantId,
+      variantOrdinal: runContext.ordinal,
+      variantCount: runContext.total,
+    };
+    const resumeContext = {
+      mode,
+      requestPayload: hydratedPayload,
+      storyTitle,
+      friendlyName,
+      processTitle,
+      episodeCount,
+      protocolVersion,
+      launchMetadata,
+      ...variantFields,
+    };
+    const workerJob = upsertWorkerJob(jobId, {
+      mode,
+      status: 'pending',
+      progress: 0,
+      currentPhase: 'queued',
+      storyTitle,
+      friendlyName,
+      processTitle,
+      episodeCount,
+      idempotencyKey,
+      requestSnapshot,
+      jobConfigHash,
+      protocolVersion,
+      launchMetadata,
+      resumeContext,
+      ...variantFields,
+    });
+    updateCheckpoint(jobId, {
+      idempotencyKey,
+      jobConfigHash,
+      steps: {
+        queued: {
+          stepId: 'queued',
+          status: 'completed',
+          updatedAt: new Date().toISOString(),
+          idempotencyKey: `${jobId}:queued`,
+        },
+      },
+      resumeContext,
+    });
+    syncGenerationMirrorFromWorker(workerJob);
+    return workerJob;
+  }
+
+  function summarizeVariantBatch(batchId) {
+    const children = loadWorkerJobs()
+      .filter((job) => job.variantBatchId === batchId)
+      .sort((a, b) => Number(a.variantOrdinal || 0) - Number(b.variantOrdinal || 0));
+    if (children.length === 0) return null;
+    const statuses = children.map((job) => job.status);
+    const active = statuses.some((status) => status === 'running');
+    const queued = statuses.some((status) => status === 'pending');
+    const allCompleted = statuses.every((status) => status === 'completed');
+    const hasFailed = statuses.some((status) => status === 'failed');
+    const hasPaused = statuses.some((status) => status === 'paused');
+    const allCancelled = statuses.every((status) => status === 'cancelled');
+    const status = allCompleted
+      ? 'completed'
+      : active ? 'running'
+        : queued ? 'pending'
+          : hasPaused ? 'paused'
+            : allCancelled ? 'cancelled'
+              : hasFailed ? 'failed'
+                : 'cancelled';
+    const progress = Math.round(children.reduce((sum, job) => sum + Number(job.progress || 0), 0) / children.length);
+    return {
+      batchId,
+      status,
+      progress,
+      storyTitle: children[0].storyTitle,
+      variantCount: children.length,
+      selectedVariantId: children.find((job) => job.variantSelected)?.variantId,
+      children: children.map((job) => ({
+        ...publicWorkerStatus(job),
+        jobId: job.id,
+        ordinal: job.variantOrdinal,
+      })),
+    };
+  }
+
   function registerWorkerLifecycleRoutes(app) {
+    app.post('/worker-batches/start', (req, res) => {
+      const admission = validateVariantBatchStartRequest(req.body);
+      if (!admission.ok) {
+        return res.status(400).json({
+          error: 'Invalid Variant Batch request',
+          failureCode: admission.issues[0]?.code || 'variant_batch_invalid',
+          issues: admission.issues,
+        });
+      }
+      const existing = loadWorkerJobs().filter(
+        (job) => job.variantBatchIdempotencyKey === req.body.idempotencyKey,
+      );
+      if (existing.length > 0) {
+        const summary = summarizeVariantBatch(existing[0].variantBatchId);
+        return res.json({ success: true, deduped: true, ...summary });
+      }
+      const children = req.body.requests.map((request) =>
+        queueVariantBatchChild(request, admission.batchId, req.body.idempotencyKey));
+      scheduleQueuedWorkers();
+      return res.json({
+        success: true,
+        batchId: admission.batchId,
+        status: 'pending',
+        variantCount: children.length,
+        children: children.map((job) => ({
+          jobId: job.id,
+          variantId: job.variantId,
+          ordinal: job.variantOrdinal,
+          status: job.status,
+          friendlyName: job.friendlyName,
+          processTitle: job.processTitle,
+        })),
+      });
+    });
+
+    app.get('/worker-batches/:batchId', (req, res) => {
+      const summary = summarizeVariantBatch(req.params.batchId);
+      if (!summary) return res.status(404).json({ error: 'Variant Batch not found' });
+      return res.json(summary);
+    });
+
+    app.post('/worker-batches/:batchId/cancel', (req, res) => {
+      const children = loadWorkerJobs().filter((job) => job.variantBatchId === req.params.batchId);
+      if (children.length === 0) return res.status(404).json({ error: 'Variant Batch not found' });
+      for (const child of children) {
+        if (!['pending', 'running'].includes(child.status)) continue;
+        const updated = upsertWorkerJob(child.id, { status: 'cancelled', error: 'Variant Batch cancelled by user' });
+        const active = activeWorkers.get(child.id);
+        if (active?.proc && !active.proc.killed) {
+          try { active.proc.kill('SIGTERM'); } catch {
+            // best-effort; already-dead processes throw ESRCH
+          }
+        }
+        syncGenerationMirrorFromWorker(updated);
+      }
+      scheduleQueuedWorkers();
+      return res.json({ success: true, ...summarizeVariantBatch(req.params.batchId) });
+    });
+
+    app.post('/worker-batches/:batchId/select', (req, res) => {
+      const children = loadWorkerJobs().filter((job) => job.variantBatchId === req.params.batchId);
+      if (children.length === 0) return res.status(404).json({ error: 'Variant Batch not found' });
+      const selected = children.find((job) => job.variantId === req.body?.variantId);
+      if (!selected) return res.status(404).json({ error: 'Variant not found in batch' });
+      if (selected.status !== 'completed') {
+        return res.status(409).json({ error: 'Only a completed variant can be selected' });
+      }
+      const checkpoint = loadCheckpoints().find((candidate) => candidate.jobId === selected.id);
+      const outputDirectory = getOutputDirectoryFromJob(selected, checkpoint);
+      if (!outputDirectory) return res.status(409).json({ error: 'Selected variant has no committed output package' });
+      const resolvedOutput = path.resolve(outputDirectory);
+      const resolvedStories = path.resolve(storiesDir);
+      if (resolvedOutput !== resolvedStories && !resolvedOutput.startsWith(`${resolvedStories}${path.sep}`)) {
+        return res.status(400).json({ error: 'Selected variant output is outside the generated stories directory' });
+      }
+      const dispositionPath = path.join(resolvedOutput, 'quality-disposition.json');
+      const manifestPath = path.join(resolvedOutput, 'manifest.json');
+      let disposition;
+      let manifest;
+      try {
+        disposition = JSON.parse(fs.readFileSync(dispositionPath, 'utf8'));
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      } catch (error) {
+        return res.status(409).json({ error: `Selected variant package is incomplete: ${error.message}` });
+      }
+      if (disposition.selectionEligible !== true || disposition.selectionOriginalBand !== 'ship') {
+        return res.status(409).json({
+          error: 'Selected variant did not pass the existing reader promotion gate',
+          reasonCodes: disposition.reasonCodes || [],
+        });
+      }
+      const promotedDisposition = {
+        ...disposition,
+        status: 'promoted',
+        band: 'ship',
+        eligibleForReader: true,
+        reasonCodes: (disposition.reasonCodes || []).filter((code) => code !== 'variant_selection_pending'),
+        selectedFromVariantBatch: req.params.batchId,
+        selectedAt: new Date().toISOString(),
+      };
+      for (const child of children) {
+        if (child.id === selected.id || child.status !== 'completed') continue;
+        const childCheckpoint = loadCheckpoints().find((candidate) => candidate.jobId === child.id);
+        const childOutput = getOutputDirectoryFromJob(child, childCheckpoint);
+        if (!childOutput) continue;
+        const childDispositionPath = path.join(path.resolve(childOutput), 'quality-disposition.json');
+        const childManifestPath = path.join(path.resolve(childOutput), 'manifest.json');
+        try {
+          const childDisposition = JSON.parse(fs.readFileSync(childDispositionPath, 'utf8'));
+          if (childDisposition.selectedFromVariantBatch !== req.params.batchId) continue;
+          const heldDisposition = {
+            ...childDisposition,
+            status: 'held',
+            band: childDisposition.selectionOriginalBand === 'block' ? 'block' : 'warn',
+            eligibleForReader: false,
+            reasonCodes: [...new Set([...(childDisposition.reasonCodes || []), 'variant_selection_pending'])],
+          };
+          delete heldDisposition.selectedFromVariantBatch;
+          delete heldDisposition.selectedAt;
+          const childManifest = JSON.parse(fs.readFileSync(childManifestPath, 'utf8'));
+          childManifest.summary = childManifest.summary || {};
+          childManifest.summary.qualityDisposition = heldDisposition;
+          atomicWriteJsonSync(childManifestPath, childManifest, { pretty: true });
+          atomicWriteJsonSync(childDispositionPath, heldDisposition, { pretty: true });
+        } catch {
+          // A sibling with an incomplete package is already ineligible.
+        }
+      }
+      manifest.summary = manifest.summary || {};
+      manifest.summary.qualityDisposition = promotedDisposition;
+      atomicWriteJsonSync(manifestPath, manifest, { pretty: true });
+      atomicWriteJsonSync(dispositionPath, promotedDisposition, { pretty: true });
+      for (const child of children) {
+        const updated = upsertWorkerJob(child.id, {
+          variantSelected: child.id === selected.id,
+          selectedVariantId: selected.variantId,
+          variantSelectedAt: promotedDisposition.selectedAt,
+        });
+        syncGenerationMirrorFromWorker(updated);
+      }
+      return res.json({
+        success: true,
+        batchId: req.params.batchId,
+        selectedVariantId: selected.variantId,
+        runId: path.basename(resolvedOutput),
+      });
+    });
+
     app.post('/worker-jobs/start', (req, res) => {
       const admission = validateWorkerJobStartRequest(req.body);
       if (!admission.ok) {
@@ -2661,5 +2929,6 @@ module.exports = {
     compactPersistedWorkerJob,
     applyCanonicalIdentityToResumeContext,
     publicWorkerStatus,
+    resolveWorkerQueueLimit,
   },
 };

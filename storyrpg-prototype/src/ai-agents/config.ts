@@ -101,31 +101,64 @@ export interface AgentConfig {
   };
 }
 
-export type QualityCouncilMode = 'advisory' | 'repair-routing' | 'strict';
-export type QualityCouncilFusionTrigger = 'manual' | 'borderline-quality' | 'validator-disagreement' | 'always-final';
+export type StoryCouncilMode = 'shadow' | 'select' | 'select-and-repair';
+export type StoryCouncilPreset = 'adaptive' | 'standard' | 'deep' | 'custom';
+export type StoryCouncilSynthesisPolicy = 'never' | 'adaptive' | 'always';
+export type StoryCouncilFusionTrigger = 'manual' | 'borderline-quality' | 'validator-disagreement' | 'always-final';
 
-export interface QualityCouncilConfig {
+export interface StoryCouncilConfig {
   enabled: boolean;
-  mode: QualityCouncilMode;
+  mode: StoryCouncilMode;
+  preset: StoryCouncilPreset;
+  candidateCount: number;
+  synthesisPolicy: StoryCouncilSynthesisPolicy;
+  runEpisodeBlueprintCandidates: boolean;
+  runSeasonPlanningCandidates: boolean;
+  runFoundationCandidates: boolean;
+  runChoiceCandidates: boolean;
+  runEncounterCandidates: boolean;
+  runNarrativeScaffoldingCandidates: boolean;
+  /** @deprecated Compatibility-only review checkpoint. */
   runPlanCouncil: boolean;
+  /** @deprecated Compatibility-only review checkpoint. */
   runChoiceCouncil: boolean;
   runRoutePlaytestCouncil: boolean;
   runFinalCouncil: boolean;
   fusion?: {
     enabled: boolean;
     model: string;
-    onlyWhen: QualityCouncilFusionTrigger;
+    onlyWhen: StoryCouncilFusionTrigger;
   };
   maxCouncilCallsPerRun: number;
+  maxConcurrentCandidates: number;
+  councilTokenBudget: number;
+  councilRemediationBudget: number;
   maxCandidateChoiceSets: number;
   minQualityScoreForFinalSkip?: number;
 }
 
-function parseQualityCouncilMode(value: unknown): QualityCouncilMode {
-  return value === 'repair-routing' || value === 'strict' ? value : 'advisory';
+/** @deprecated Use StoryCouncilMode. */
+export type QualityCouncilMode = StoryCouncilMode;
+/** @deprecated Use StoryCouncilFusionTrigger. */
+export type QualityCouncilFusionTrigger = StoryCouncilFusionTrigger;
+/** @deprecated Use StoryCouncilConfig. */
+export type QualityCouncilConfig = StoryCouncilConfig;
+
+function parseStoryCouncilMode(value: unknown): StoryCouncilMode {
+  if (value === 'select' || value === 'select-and-repair') return value;
+  if (value === 'repair-routing' || value === 'strict') return 'select-and-repair';
+  return 'shadow';
 }
 
-function parseFusionTrigger(value: unknown): QualityCouncilFusionTrigger {
+function parseStoryCouncilPreset(value: unknown): StoryCouncilPreset {
+  return value === 'standard' || value === 'deep' || value === 'custom' ? value : 'adaptive';
+}
+
+function parseStoryCouncilSynthesisPolicy(value: unknown): StoryCouncilSynthesisPolicy {
+  return value === 'never' || value === 'always' ? value : 'adaptive';
+}
+
+function parseFusionTrigger(value: unknown): StoryCouncilFusionTrigger {
   return value === 'manual' || value === 'borderline-quality' || value === 'validator-disagreement' || value === 'always-final'
     ? value
     : 'borderline-quality';
@@ -141,28 +174,100 @@ function parsePositiveInt(value: unknown, defaultValue: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }
 
-export function resolveQualityCouncilConfig(
+function parseNonNegativeInt(value: unknown, defaultValue: number): number {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : defaultValue;
+}
+
+export function resolveStoryCouncilConfig(
   env: Record<string, string | undefined>,
-  overrides?: Partial<QualityCouncilConfig>,
-): QualityCouncilConfig {
-  const enabled = overrides?.enabled ?? parseBool(env.STORYRPG_QUALITY_COUNCIL ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL, false);
-  const fusionEnabled = overrides?.fusion?.enabled ?? parseBool(env.STORYRPG_QUALITY_COUNCIL_FUSION ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_FUSION, false);
+  overrides?: Partial<StoryCouncilConfig>,
+): StoryCouncilConfig {
+  const enabled = overrides?.enabled ?? parseBool(
+    env.STORYRPG_STORY_COUNCIL
+      ?? env.EXPO_PUBLIC_STORYRPG_STORY_COUNCIL
+      ?? env.STORYRPG_QUALITY_COUNCIL
+      ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL,
+    false,
+  );
+  const fusionEnabled = overrides?.fusion?.enabled ?? parseBool(
+    env.STORYRPG_STORY_COUNCIL_FUSION
+      ?? env.EXPO_PUBLIC_STORYRPG_STORY_COUNCIL_FUSION
+      ?? env.STORYRPG_QUALITY_COUNCIL_FUSION
+      ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_FUSION,
+    false,
+  );
+  const preset = parseStoryCouncilPreset(overrides?.preset ?? env.STORYRPG_STORY_COUNCIL_PRESET);
+  const presetDefaults = preset === 'deep'
+    ? { candidates: 4, synthesis: 'always' as const, calls: 48, concurrency: 4, tokens: 240000, remediation: 8 }
+    : preset === 'standard'
+      ? { candidates: 3, synthesis: 'adaptive' as const, calls: 32, concurrency: 2, tokens: 160000, remediation: 4 }
+      : { candidates: 2, synthesis: 'adaptive' as const, calls: 24, concurrency: 2, tokens: 120000, remediation: 4 };
   return {
     enabled,
-    mode: parseQualityCouncilMode(overrides?.mode ?? env.STORYRPG_QUALITY_COUNCIL_MODE ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_MODE),
-    runPlanCouncil: overrides?.runPlanCouncil ?? true,
-    runChoiceCouncil: overrides?.runChoiceCouncil ?? true,
+    mode: parseStoryCouncilMode(
+      overrides?.mode
+        ?? env.STORYRPG_STORY_COUNCIL_MODE
+        ?? env.EXPO_PUBLIC_STORYRPG_STORY_COUNCIL_MODE
+        ?? env.STORYRPG_QUALITY_COUNCIL_MODE
+        ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_MODE,
+    ),
+    preset,
+    candidateCount: parsePositiveInt(overrides?.candidateCount ?? env.STORYRPG_STORY_COUNCIL_CANDIDATES, presetDefaults.candidates),
+    synthesisPolicy: parseStoryCouncilSynthesisPolicy(
+      overrides?.synthesisPolicy ?? env.STORYRPG_STORY_COUNCIL_SYNTHESIS ?? presetDefaults.synthesis,
+    ),
+    runEpisodeBlueprintCandidates: overrides?.runEpisodeBlueprintCandidates ?? true,
+    runSeasonPlanningCandidates: overrides?.runSeasonPlanningCandidates ?? false,
+    runFoundationCandidates: overrides?.runFoundationCandidates ?? false,
+    runChoiceCandidates: overrides?.runChoiceCandidates ?? false,
+    runEncounterCandidates: overrides?.runEncounterCandidates ?? false,
+    runNarrativeScaffoldingCandidates: overrides?.runNarrativeScaffoldingCandidates ?? false,
+    runPlanCouncil: overrides?.runPlanCouncil ?? false,
+    runChoiceCouncil: overrides?.runChoiceCouncil ?? false,
     runRoutePlaytestCouncil: overrides?.runRoutePlaytestCouncil ?? true,
     runFinalCouncil: overrides?.runFinalCouncil ?? true,
     fusion: {
       enabled: fusionEnabled,
-      model: overrides?.fusion?.model || env.STORYRPG_QUALITY_COUNCIL_FUSION_MODEL || env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_FUSION_MODEL || 'openrouter/fusion',
-      onlyWhen: parseFusionTrigger(overrides?.fusion?.onlyWhen ?? env.STORYRPG_QUALITY_COUNCIL_FUSION_ONLY_WHEN ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_FUSION_ONLY_WHEN),
+      model: overrides?.fusion?.model
+        || env.STORYRPG_STORY_COUNCIL_FUSION_MODEL
+        || env.STORYRPG_QUALITY_COUNCIL_FUSION_MODEL
+        || env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_FUSION_MODEL
+        || 'openrouter/fusion',
+      onlyWhen: parseFusionTrigger(
+        overrides?.fusion?.onlyWhen
+          ?? env.STORYRPG_STORY_COUNCIL_FUSION_ONLY_WHEN
+          ?? env.STORYRPG_QUALITY_COUNCIL_FUSION_ONLY_WHEN
+          ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_FUSION_ONLY_WHEN,
+      ),
     },
-    maxCouncilCallsPerRun: overrides?.maxCouncilCallsPerRun ?? parsePositiveInt(env.STORYRPG_QUALITY_COUNCIL_MAX_CALLS ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_MAX_CALLS, 24),
+    maxCouncilCallsPerRun: overrides?.maxCouncilCallsPerRun ?? parsePositiveInt(
+      env.STORYRPG_STORY_COUNCIL_MAX_CALLS ?? env.STORYRPG_QUALITY_COUNCIL_MAX_CALLS,
+      presetDefaults.calls,
+    ),
+    maxConcurrentCandidates: parsePositiveInt(
+      overrides?.maxConcurrentCandidates ?? env.STORYRPG_STORY_COUNCIL_MAX_CONCURRENCY,
+      presetDefaults.concurrency,
+    ),
+    councilTokenBudget: parsePositiveInt(
+      overrides?.councilTokenBudget ?? env.STORYRPG_STORY_COUNCIL_TOKEN_BUDGET,
+      presetDefaults.tokens,
+    ),
+    councilRemediationBudget: parseNonNegativeInt(
+      overrides?.councilRemediationBudget ?? env.STORYRPG_STORY_COUNCIL_REMEDIATION_BUDGET,
+      presetDefaults.remediation,
+    ),
     maxCandidateChoiceSets: overrides?.maxCandidateChoiceSets ?? parsePositiveInt(env.STORYRPG_QUALITY_COUNCIL_MAX_CHOICE_CANDIDATES ?? env.EXPO_PUBLIC_STORYRPG_QUALITY_COUNCIL_MAX_CHOICE_CANDIDATES, 3),
     minQualityScoreForFinalSkip: overrides?.minQualityScoreForFinalSkip,
   };
+}
+
+/** @deprecated Compatibility facade for older callers and persisted jobs. */
+export function resolveQualityCouncilConfig(
+  env: Record<string, string | undefined>,
+  overrides?: Partial<StoryCouncilConfig>,
+): StoryCouncilConfig {
+  return resolveStoryCouncilConfig(env, overrides);
 }
 
 // Generation settings from UI
@@ -259,7 +364,6 @@ export interface GenerationSettingsConfig {
   assetGenerationMode?: 'story-and-images' | 'story-only' | 'image-only';
 
   // Concurrency and guardrail settings
-  episodeParallelismEnabled?: boolean;
   /**
    * Adoption A2 (run-graph decomposition): execute the sequential episode
    * loop as a declared run-graph chain (pipeline/runGraph.ts) journaled into
@@ -275,7 +379,6 @@ export interface GenerationSettingsConfig {
   imageWorkerModeEnabled?: boolean;
   audioWorkerModeEnabled?: boolean;
   shadowSchedulerEnabled?: boolean;
-  maxParallelEpisodes?: number;
   maxParallelScenes?: number;
   llmMaxGlobalInFlight?: number;
   llmMaxPerProviderInFlight?: number;
@@ -297,14 +400,12 @@ export interface GenerationSettingsConfig {
    * REMEDIATION_BUDGET_TOTAL if a run needs more headroom.
    */
   remediationBudgetTotal?: number;
-  // Sequential mode preserves previous-episode summary dependency chain.
-  episodeDependencyMode?: 'sequential' | 'independent';
   /**
-   * Season Canon (P4): when true, each sequentially-generated episode is sealed
+   * Season Canon (P4): when true, each generated episode is sealed sequentially
    * into a durable SeasonCanon + PromiseLedger and carries an EpisodeStateSnapshot
    * forward. The state-scoped promise/canon gates run in ADVISORY mode (issues are
    * logged + persisted, never blocking) until a multi-episode regen validates them.
-   * Off by default. Only meaningful with episodeDependencyMode: 'sequential'.
+   * Off by default.
    */
   seasonCanonEnabled?: boolean;
   /**
@@ -1002,7 +1103,9 @@ export interface PipelineConfig {
      */
     maxScenesPerEpisode?: number;
   };
-  qualityCouncil?: QualityCouncilConfig;
+  storyCouncil?: StoryCouncilConfig;
+  /** @deprecated Persisted worker compatibility. Prefer storyCouncil. */
+  qualityCouncil?: StoryCouncilConfig;
 }
 
 /**
@@ -1184,7 +1287,7 @@ export function loadConfig(): PipelineConfig {
   // Parse validation mode from environment
   const validationMode = (env.EXPO_PUBLIC_VALIDATION_MODE || env.VALIDATION_MODE) as 'strict' | 'advisory' | 'disabled' | undefined;
   const failurePolicy = ((env.EXPO_PUBLIC_FAILURE_POLICY || env.FAILURE_POLICY) as 'fail_fast' | 'recover' | undefined) || 'fail_fast';
-  const qualityCouncil = resolveQualityCouncilConfig(env);
+  const storyCouncil = resolveStoryCouncilConfig(env);
   const buildCouncilConfig = (
     envProvider: string,
     envModel: string,
@@ -1192,11 +1295,16 @@ export function loadConfig(): PipelineConfig {
     maxTokens = 4096,
     temperature = 0.25,
   ): AgentConfig => {
-    const provider = ((env[envProvider] as AgentConfig['provider']) || env.EXPO_PUBLIC_QA_LLM_PROVIDER || env.QA_LLM_PROVIDER || defaultConfig.provider) as AgentConfig['provider'];
+    const legacyProviderEnv = envProvider.replace('STORY_COUNCIL_', 'QUALITY_COUNCIL_');
+    const legacyModelEnv = envModel.replace('STORY_COUNCIL_', 'QUALITY_COUNCIL_');
+    const provider = ((env[envProvider] || env[legacyProviderEnv]) as AgentConfig['provider'])
+      || env.EXPO_PUBLIC_QA_LLM_PROVIDER
+      || env.QA_LLM_PROVIDER
+      || defaultConfig.provider;
     return {
       ...defaultConfig,
       provider,
-      model: env[envModel] || fallbackModel,
+      model: env[envModel] || env[legacyModelEnv] || fallbackModel,
       apiKey: resolveProviderApiKey(provider),
       maxTokens,
       temperature,
@@ -1205,16 +1313,16 @@ export function loadConfig(): PipelineConfig {
         : undefined,
     };
   };
-  const councilAgents = qualityCouncil.enabled
+  const councilAgents = storyCouncil.enabled
     ? {
-        qualityCouncilPlan: buildCouncilConfig('QUALITY_COUNCIL_PLAN_PROVIDER', 'QUALITY_COUNCIL_PLAN_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model),
-        qualityCouncilChoice: buildCouncilConfig('QUALITY_COUNCIL_CHOICE_PROVIDER', 'QUALITY_COUNCIL_CHOICE_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model),
-        qualityCouncilPlaytest: buildCouncilConfig('QUALITY_COUNCIL_PLAYTEST_PROVIDER', 'QUALITY_COUNCIL_PLAYTEST_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model),
-        qualityCouncilFinal: buildCouncilConfig('QUALITY_COUNCIL_FINAL_PROVIDER', 'QUALITY_COUNCIL_FINAL_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model, 4096, 0.2),
+        qualityCouncilPlan: buildCouncilConfig('STORY_COUNCIL_PLAN_PROVIDER', 'STORY_COUNCIL_PLAN_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model),
+        qualityCouncilChoice: buildCouncilConfig('STORY_COUNCIL_CHOICE_PROVIDER', 'STORY_COUNCIL_CHOICE_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model),
+        qualityCouncilPlaytest: buildCouncilConfig('STORY_COUNCIL_PLAYTEST_PROVIDER', 'STORY_COUNCIL_PLAYTEST_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model),
+        qualityCouncilFinal: buildCouncilConfig('STORY_COUNCIL_FINAL_PROVIDER', 'STORY_COUNCIL_FINAL_MODEL', env.EXPO_PUBLIC_QA_LLM_MODEL || env.QA_LLM_MODEL || defaultConfig.model, 4096, 0.2),
         qualityCouncilFusion: {
-          ...buildCouncilConfig('QUALITY_COUNCIL_FUSION_PROVIDER', 'QUALITY_COUNCIL_FUSION_MODEL', qualityCouncil.fusion?.model || 'openrouter/fusion', 8192, 0.2),
+          ...buildCouncilConfig('STORY_COUNCIL_FUSION_PROVIDER', 'STORY_COUNCIL_FUSION_MODEL', storyCouncil.fusion?.model || 'openrouter/fusion', 8192, 0.2),
           provider: 'openrouter' as const,
-          model: qualityCouncil.fusion?.model || 'openrouter/fusion',
+          model: storyCouncil.fusion?.model || 'openrouter/fusion',
           apiKey: resolveProviderApiKey('openrouter'),
           openRouter: {
             route: 'fusion' as const,
@@ -1316,7 +1424,8 @@ export function loadConfig(): PipelineConfig {
     debug: env.EXPO_PUBLIC_DEBUG === 'true' || env.DEBUG === 'true',
     outputDir: env.EXPO_PUBLIC_OUTPUT_DIR || env.OUTPUT_DIR || './generated-content',
     artStyle: env.EXPO_PUBLIC_ART_STYLE || env.ART_STYLE,
-    qualityCouncil,
+    storyCouncil,
+    qualityCouncil: storyCouncil,
     imageGen: {
       enabled: env.EXPO_PUBLIC_IMAGE_GENERATION_ENABLED !== 'false' && env.IMAGE_GENERATION_ENABLED !== 'false',
       apiKey: env.GEMINI_API_KEY,

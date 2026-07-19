@@ -46,6 +46,17 @@ status documented there.
 
 StoryRPG is a local-first interactive fiction application built with React Native/Expo, backed by a Node.js/Express proxy server, and powered by a TypeScript AI agent generation pipeline. The system generates, validates, and plays back branching interactive stories with images, optional video, and optional audio narration.
 
+Invent-mode episode planning can optionally run through the Generator-gated
+Story Council. `StoryCouncilRunner` (in the compatibility-named
+`quality-council/` module) owns a bounded candidate tournament:
+parallel `StoryArchitect` seats author independent blueprints, existing
+deterministic plan/graph validators qualify them, a separately routed model
+compares blinded survivors, and the canonical owner may synthesize complementary
+merits in `select-and-repair` mode. Authored-lite ESC topology bypasses this
+search. Route/final/Fusion council calls are non-blocking holdouts, not validator
+authority. Candidate sets, decisions, and holdout evidence are revisioned
+pipeline artifacts upstream of the selected blueprint and final report.
+
 The app now has two target-specific web entries in one package:
 
 - **Reader** (`apps/reader/ReaderApp.tsx`) is the public playback target.
@@ -959,7 +970,8 @@ graph TD
 
 Modern versions of the pipeline support parallel processing:
 
-- **Episode parallelism:** Available only when `episodeParallelismEnabled === true` and `episodeDependencyMode === 'independent'`; sequential remains the dependency-safe default.
+- **Variant Batch (`kind: "variant-batch"`):** Two to four independent worker jobs reuse one locked source analysis and season plan, then each executes the complete downstream pipeline and writes an isolated package. The proxy caps story-worker concurrency at four.
+- **Episode execution:** Sequential within each story run; the former dormant episode-parallel branch and configuration have been removed.
 - **Scene/image worker queues:** Scene-related image work and audio/video work use `LocalWorkerQueue` plus provider throttles, not a second orchestration pipeline.
 - **LLM concurrency guardrails:** `BaseAgent` enforces global and per-provider in-flight limits with jittered retry/backoff.
 - **Provider throttling:** `providerThrottle.ts` and image adapters enforce provider-specific RPM/concurrency limits.

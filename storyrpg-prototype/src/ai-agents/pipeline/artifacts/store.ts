@@ -153,7 +153,10 @@ export class ArtifactRevisionStore {
       revision += 1;
     }
 
-    const payloadHash = stableHash(input.payload);
+    // The committed revision owns its payload. Freezing the artifact must not
+    // recursively freeze the producer's live scene/choice objects.
+    const payload = clonePayload(input.payload);
+    const payloadHash = stableHash(payload);
     const artifactId = [
       input.storyId,
       input.runId,
@@ -179,7 +182,7 @@ export class ArtifactRevisionStore {
       validation: input.validation ?? defaultValidationSummary(input.kind),
       payloadHash,
       createdAt: new Date().toISOString(),
-      payload: input.payload,
+      payload,
     };
 
     await this.io.save(path, artifact);

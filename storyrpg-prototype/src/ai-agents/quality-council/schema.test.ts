@@ -1,7 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeCouncilOutput, normalizeCouncilOutputWithDiagnostics } from './schema';
+import {
+  normalizeCandidateComparison,
+  normalizeCouncilOutput,
+  normalizeCouncilOutputWithDiagnostics,
+} from './schema';
 
 describe('Quality Council schema normalization', () => {
+  it('rejects candidate comparisons that omit a qualified finalist', () => {
+    const comparison = normalizeCandidateComparison({
+      summary: 'incomplete',
+      winnerId: 'candidate-1',
+      complementaryMerits: false,
+      evaluations: [{
+        candidateId: 'candidate-1',
+        scores: {
+          dramaticCausality: 80, characterPressure: 80, playerAgency: 80, routeDifferentiation: 80,
+          setupPayoff: 80, relationshipPacing: 80, sceneEconomy: 80, sourceFidelity: 80,
+        },
+        strengths: [],
+        risks: [],
+      }],
+    }, ['candidate-1', 'candidate-2']);
+
+    expect(comparison).toBeUndefined();
+  });
+
   it('normalizes invalid enum values and drops findings without evidence', () => {
     const normalized = normalizeCouncilOutput({
       summary: 'mixed',

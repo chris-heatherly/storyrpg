@@ -346,7 +346,7 @@ describe('qualityScoring v4: routing and severity', () => {
     expect(encounters?.findings.some((finding) => finding.message.includes('no concrete impact'))).toBe(false);
   });
 
-  it('honors Quality Council error severity instead of demoting it', () => {
+  it('keeps Story Council holdout findings advisory and routes their explicit category', () => {
     const result = deriveStoryCircleQualityScore({
       finalStory: syntheticStory(),
       qualityCouncilReport: {
@@ -366,8 +366,8 @@ describe('qualityScoring v4: routing and severity', () => {
     }, { now: new Date('2026-01-01T00:00:00Z') });
 
     const choiceAgency = result.basis.domains.find((domain) => domain.id === 'choice_agency');
-    const councilFinding = choiceAgency?.findings.find((finding) => finding.source === 'quality-council');
-    expect(councilFinding?.severity).toBe('error');
+    const councilFinding = choiceAgency?.findings.find((finding) => finding.source === 'story-council-holdout');
+    expect(councilFinding?.severity).toBe('warning');
   });
 
   it('counts unmapped findings individually instead of collapsing them', () => {

@@ -37,7 +37,6 @@ export class ProgressTelemetryTracker {
   normalizeTelemetryPhase(phase?: string): string {
     if (!phase) return 'initialization';
     if (phase === 'multi_episode_init') return 'initialization';
-    if (phase === 'episode_parallelism') return 'content';
     if (/^episode_\d+$/.test(phase)) return 'content';
     if (phase.startsWith('qa_ep_')) return 'qa';
     if (phase.startsWith('images_ep_')) return 'images';

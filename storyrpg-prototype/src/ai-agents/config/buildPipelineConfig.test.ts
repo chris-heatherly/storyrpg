@@ -900,9 +900,9 @@ describe('buildPipelineConfig', () => {
       midjourneySettings: {} as any,
       generationSettings: {
         ...generationSettings,
-        qualityCouncilEnabled: true,
-        qualityCouncilMode: 'repair-routing',
-        qualityCouncilFusionEnabled: true,
+        storyCouncilEnabled: true,
+        storyCouncilMode: 'select-and-repair',
+        storyCouncilFusionEnabled: true,
       },
       generationMode: 'advisory',
       narrationSettings: { enabled: false } as any,
@@ -910,7 +910,8 @@ describe('buildPipelineConfig', () => {
     });
 
     expect(config.qualityCouncil?.enabled).toBe(true);
-    expect(config.qualityCouncil?.mode).toBe('repair-routing');
+    expect(config.storyCouncil?.enabled).toBe(true);
+    expect(config.qualityCouncil?.mode).toBe('select-and-repair');
     expect(config.agents.qualityCouncilPlan?.provider).toBe('openrouter');
     expect(config.agents.qualityCouncilPlan?.apiKey).toBe('or-key');
     expect(config.agents.qualityCouncilFusion?.model).toBe('openrouter/fusion');

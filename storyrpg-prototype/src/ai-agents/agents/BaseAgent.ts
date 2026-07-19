@@ -430,8 +430,8 @@ export abstract class BaseAgent {
    * fetch and halts the retry loop process-wide for that agent.
    *
    * Only safe when the agent instance runs ONE `execute()` at a time. Agents
-   * invoked concurrently on a shared instance (e.g. parallel-episode
-   * StoryArchitect) must thread a per-call `signal` explicitly instead.
+   * invoked concurrently on a shared instance (for example, a local candidate
+   * council) must thread a per-call `signal` explicitly instead.
    */
   protected activeAbortSignal?: AbortSignal;
 

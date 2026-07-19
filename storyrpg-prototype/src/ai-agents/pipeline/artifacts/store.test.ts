@@ -110,6 +110,27 @@ describe('ArtifactRevisionStore', () => {
     expect(() => upstream.push(store.refFor(source))).not.toThrow();
   });
 
+  it('does not freeze or alias the producer-owned payload while committing an artifact', async () => {
+    const io = makeIO();
+    const store = new ArtifactRevisionStore(io);
+    const payload = { scenes: [{ beats: [{ id: 'b1', text: 'Draft prose.' }] }] };
+
+    const artifact = await store.saveRevision({
+      kind: 'scene-plan',
+      storyId: 'story',
+      runId: 'run',
+      episodeNumber: 1,
+      payload,
+      status: 'valid',
+      provenance: { phase: 'episode_content' },
+    });
+
+    expect(Object.isFrozen(payload)).toBe(false);
+    expect(Object.isFrozen(payload.scenes[0].beats[0])).toBe(false);
+    expect(() => { payload.scenes[0].beats[0].text = 'Assembly rewrite.'; }).not.toThrow();
+    expect(artifact.payload.scenes[0].beats[0].text).toBe('Draft prose.');
+  });
+
   it('opens a mutable payload session without mutating the committed revision', async () => {
     const io = makeIO();
     const store = new ArtifactRevisionStore(io);

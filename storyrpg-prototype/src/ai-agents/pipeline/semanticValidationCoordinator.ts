@@ -91,7 +91,7 @@ function validJudgeVerdict(
   const evidenceQuotes = verdict.evidenceRefs
     .map((ref) => excerptById.get(ref)?.text.slice(0, 320))
     .filter((quote): quote is string => Boolean(quote));
-  if (verdict.verdict === 'fulfilled'
+  if ((verdict.verdict === 'fulfilled' || verdict.verdict === 'partial')
     && (verdict.evidenceRefs.length === 0 || !refsValid)) {
     return {
       ...verdict,
@@ -99,7 +99,7 @@ function validJudgeVerdict(
       evidenceRefs: [],
       evidenceQuotes: [],
       missingCriteria: claim.criteria,
-      rationale: 'Fulfilled verdict lacked a valid addressable evidence citation.',
+      rationale: 'Proposition-present verdict lacked a valid addressable evidence citation.',
     };
   }
   if (!refsValid) {
@@ -146,6 +146,21 @@ function majorityConsensus(
   const adjudicatedOutcome = outcomes.at(-1);
   if (samples.length >= 3 && (adjudicatedOutcome === 'pass' || adjudicatedOutcome === 'content_miss')) {
     const adjudicated = samples.at(-1)!;
+    // Adjudication can clear correlated false negatives, but it cannot create a
+    // blocker by itself against two clean samples. Blocking requires at least
+    // one independent evidence-backed sample to agree with the adjudicator.
+    if (adjudicatedOutcome === 'content_miss' && !outcomes.slice(0, -1).includes('content_miss')) {
+      return {
+        claim,
+        outcome: 'inconclusive',
+        verdict: 'uncertain',
+        verdictRecord: adjudicated.verdict,
+        responseHashes: samples.map((sample) => sample.responseHash),
+        sampleCount: samples.length,
+        executionStatus: 'inconclusive',
+        samples,
+      };
+    }
     return {
       claim,
       outcome: adjudicatedOutcome,
@@ -346,6 +361,34 @@ function targetRouteKey(task: NarrativeRealizationTask, groupIndex: number): str
   return undefined;
 }
 
+/** Closing-contract claims need chronological terminal evidence, not a scene-wide
+ * bucket grouped by surface type. The last three beats cover the authored climax,
+ * its immediate consequence, and the terminal coda without letting an earlier
+ * warning masquerade as the owner of the ending. */
+function terminalSceneEntries(sceneContent: unknown): Array<{
+  surface: 'beat_text' | 'dialogue' | 'text_variant';
+  text: string;
+}> {
+  if (!sceneContent || typeof sceneContent !== 'object') return [];
+  const beats = (sceneContent as { beats?: unknown[] }).beats;
+  if (!Array.isArray(beats)) return [];
+  return beats.slice(-3).flatMap((rawBeat) => {
+    if (!rawBeat || typeof rawBeat !== 'object') return [];
+    const beat = rawBeat as { text?: unknown; speaker?: unknown; textVariants?: unknown[] };
+    const entries: Array<{ surface: 'beat_text' | 'dialogue' | 'text_variant'; text: string }> = [];
+    if (typeof beat.text === 'string' && beat.text.trim()) {
+      entries.push({ surface: typeof beat.speaker === 'string' ? 'dialogue' : 'beat_text', text: beat.text });
+    }
+    for (const rawVariant of beat.textVariants ?? []) {
+      const text = rawVariant && typeof rawVariant === 'object'
+        ? (rawVariant as { text?: unknown }).text
+        : undefined;
+      if (typeof text === 'string' && text.trim()) entries.push({ surface: 'text_variant', text });
+    }
+    return entries;
+  });
+}
+
 function buildTaskClaims(input: {
   sceneId: string;
   task: NarrativeRealizationTask;
@@ -359,8 +402,9 @@ function buildTaskClaims(input: {
     : [{ groupKey: `${input.task.target.scope}:1`, texts: [], entries: [] }];
   return effectiveGroups.flatMap((group, groupIndex) => {
     const routeKey = targetRouteKey(input.task, groupIndex);
-    const occurrenceByText = new Map<string, number>();
-    const excerpts: NarrativeEvidenceExcerpt[] = group.entries.flatMap((entry) => {
+    const excerptsFor = (entries: typeof group.entries): NarrativeEvidenceExcerpt[] => {
+      const occurrenceByText = new Map<string, number>();
+      return entries.flatMap((entry) => {
       const spans = entry.text
         .split(/(?<=[.!?])\s+/)
         .map((text) => text.trim())
@@ -368,7 +412,7 @@ function buildTaskClaims(input: {
         .flatMap((text) => text.length <= 1200
           ? [text]
           : Array.from({ length: Math.ceil(text.length / 1200) }, (_, index) => text.slice(index * 1200, (index + 1) * 1200)));
-      return spans.map((text) => {
+        return spans.map((text) => {
         const textHash = stableHash(text);
         const occurrenceKey = `${entry.surface}:${textHash}`;
         const occurrence = (occurrenceByText.get(occurrenceKey) ?? 0) + 1;
@@ -385,12 +429,20 @@ function buildTaskClaims(input: {
           text,
           textHash,
         };
+        });
       });
-    });
-    return input.task.evidenceAtoms.filter(isSemanticNarrativeAtom).map((atom) => ({
-      groupKey: group.groupKey,
-      atom,
-      claim: {
+    };
+    const defaultExcerpts = excerptsFor(group.entries);
+    return input.task.evidenceAtoms.filter(isSemanticNarrativeAtom).map((atom) => {
+      const isEscalationBudget = atom.id.includes('escalation-budget:');
+      const terminalEntries = isEscalationBudget
+        ? terminalSceneEntries(input.sceneContent)
+        : [];
+      const isEndingDisplaced = atom.id.endsWith(':ending-displaced');
+      return {
+        groupKey: group.groupKey,
+        atom,
+        claim: {
         id: `${input.task.id}::${atom.id}::${group.groupKey}`,
         taskId: input.task.id,
         atomId: atom.id,
@@ -398,7 +450,13 @@ function buildTaskClaims(input: {
         // Atom descriptions are projected from canonical semantic propositions.
         // Treat them as the sole judge criterion so legacy checkpoint criteria
         // cannot strengthen or otherwise drift from the authored proposition.
-        criteria: [atom.description],
+        criteria: isEndingDisplaced
+          ? [
+              'Identify the protagonist-owned action, decision, victory, or emotional consequence in the closing beats.',
+              'Identify a distinct new threat introduced after that protagonist-owned climax.',
+              'Confirm that the terminal emotional beat centers the new threat instead of the protagonist\'s authored consequence. A warning, question, or future pressure that still addresses the protagonist does not transfer ownership.',
+            ]
+          : [atom.description],
         polarity: atom.polarity === 'forbidden' ? 'forbidden' : 'required',
         participantIds: [...(atom.participantIds ?? atom.subjectIds ?? [])],
         prerequisiteAtomIds: [...(atom.prerequisiteAtomIds ?? [])],
@@ -407,9 +465,10 @@ function buildTaskClaims(input: {
         stagedLocation: atom.stagedLocation,
         referencedLocations: [...(atom.referencedLocations ?? [])],
         narrativeVoice: 'second_person',
-        excerpts,
-      },
-    }));
+        excerpts: terminalEntries.length > 0 ? excerptsFor(terminalEntries) : defaultExcerpts,
+        },
+      };
+    });
   });
 }
 

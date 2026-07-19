@@ -359,6 +359,7 @@ import {
   compactSceneWriterInput,
   droppedBlockingContracts,
   isSceneWriterCompactRetryReason,
+  shouldRunCompactSceneProtocolRecovery,
   totalContractBlocks,
 } from './sceneWriterInputCompaction';
 import { PipelineContext } from './index';
@@ -2391,11 +2392,42 @@ export class ContentGenerationPhase {
             });
           }
 
-          const retrySceneResult = await withTimeout(
+          let retrySceneResult = await withTimeout(
             this.deps.sceneWriter.execute(retrySceneWriterInputForAuthoring),
             PIPELINE_TIMEOUTS.llmAgent,
             `SceneWriter.execute(${sceneBlueprint.id} retry)`,
           );
+
+          // A content retry can itself fail at the transport/structured-output
+          // boundary (r136: one missing variant prompted a 115k response). That
+          // is not a second narrative failure and must not consume the scene's
+          // authoring budget. Preserve the prior candidate and make one compact,
+          // bounded protocol correction; the hard raw-response cap remains.
+          if (
+            (!retrySceneResult.success || !retrySceneResult.data)
+            && shouldRunCompactSceneProtocolRecovery(sceneFailureReason, retrySceneResult.error)
+          ) {
+            const compactRecoveryInput = {
+              ...retrySceneWriterInput,
+              storyContext: {
+                ...retrySceneWriterInput.storyContext,
+                userPrompt: `${retrySceneWriterInput.storyContext.userPrompt || ''}\n\nCOMPACT PROTOCOL CORRECTION: the retry exceeded the raw-response budget. Return one complete SceneContent JSON object under the hard cap. Use 6-8 concise beats, preserve every required event and condition, and omit optional boilerplate.`,
+              },
+              targetBeatCount: Math.min(retrySceneWriterInput.targetBeatCount, 8),
+            };
+            const { input: compactRecoveryForAuthoring, diagnostics } = compactSceneWriterInput(compactRecoveryInput);
+            context.emit({
+              type: 'regeneration_triggered',
+              phase: 'scenes',
+              message: `SceneWriter retry for ${sceneBlueprint.id} exceeded its output budget; running one compact protocol correction`,
+              data: diagnostics,
+            });
+            retrySceneResult = await withTimeout(
+              this.deps.sceneWriter.execute(compactRecoveryForAuthoring),
+              PIPELINE_TIMEOUTS.llmAgent,
+              `SceneWriter.execute(${sceneBlueprint.id} compact protocol correction)`,
+            );
+          }
 
           if (retrySceneResult.success && retrySceneResult.data) {
             // Retry succeeded — replace the original result so the rest of the loop uses it

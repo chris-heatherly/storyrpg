@@ -1,4 +1,9 @@
-function registerCatalogRoutes(app, { listLatestStoryRecords, createStoryCatalogEntry, createFullStoryResponse }) {
+function registerCatalogRoutes(app, {
+  listLatestStoryRecords,
+  getStoryRecord,
+  createStoryCatalogEntry,
+  createFullStoryResponse,
+}) {
   app.get('/', (req, res) => {
     res.json({ status: 'ok' });
   });
@@ -49,6 +54,21 @@ function registerCatalogRoutes(app, { listLatestStoryRecords, createStoryCatalog
       res.json(await createFullStoryResponse(record, req));
     } catch (error) {
       res.status(500).json({ error: error.message, stack: error.stack });
+    }
+  });
+
+  app.get('/story-runs/:runId', async (req, res) => {
+    try {
+      const { runId } = req.params;
+      if (!/^[a-zA-Z0-9._-]+$/.test(runId)) {
+        return res.status(400).json({ error: 'Invalid story run id' });
+      }
+      const record = getStoryRecord(runId);
+      if (!record) return res.status(404).json({ error: 'Story run not found' });
+      if (record.error) return res.status(409).json({ error: 'Story run package is invalid', details: record.error });
+      return res.json(await createFullStoryResponse(record, req));
+    } catch (error) {
+      return res.status(500).json({ error: error.message, stack: error.stack });
     }
   });
 }

@@ -32,6 +32,25 @@ describe('assertValidWorkerPayload', () => {
     expect(() => assertValidWorkerPayload(payload)).not.toThrow();
   });
 
+  it('accepts a bounded variant run context and rejects ordinals outside the batch', () => {
+    const payload = {
+      protocolVersion: 2,
+      mode: 'generation',
+      config: {},
+      resultPath: '/tmp/result.json',
+      generationInput: {
+        brief: { story: { title: 'Test' } },
+        manifest: { version: 1, sourceKind: 'invent', requestedEpisodes: [1] },
+        runContext: { kind: 'variant', batchId: 'batch-1', variantId: 'variant-1', ordinal: 1, total: 4 },
+      },
+    };
+    expect(() => assertValidWorkerPayload(payload)).not.toThrow();
+    expect(() => assertValidWorkerPayload({
+      ...payload,
+      generationInput: { ...payload.generationInput, runContext: { ...payload.generationInput.runContext, ordinal: 5 } },
+    })).toThrow(/runContext is malformed/i);
+  });
+
   it('accepts an immutable generation manifest and rejects malformed episode scope', () => {
     const payload = {
       protocolVersion: 2,

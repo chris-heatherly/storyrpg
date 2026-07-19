@@ -128,7 +128,10 @@ will merge them back in, leaving untouched beats as-is. Return ONLY JSON.
       .map(b => {
         const flagged = input.flaggedBeatIds?.includes(b.id) ? ' [FLAGGED]' : '';
         const appendOnly = input.appendOnlyBeatIds?.includes(b.id) ? ' [APPEND ONLY]' : '';
-        return `### Beat ${b.id}${flagged}${appendOnly}\n- speaker: ${b.speaker || '(narrator)'}\n- mood: ${b.speakerMood || '(neutral)'}\n- plotPointType: ${b.plotPointType || 'none'}\n- text: ${b.text}`;
+        const variants = b.textVariants?.length
+          ? `\n- textVariants (preserve every condition exactly; rewrite only variant text when flagged): ${JSON.stringify(b.textVariants)}`
+          : '';
+        return `### Beat ${b.id}${flagged}${appendOnly}\n- speaker: ${b.speaker || '(narrator)'}\n- mood: ${b.speakerMood || '(neutral)'}\n- plotPointType: ${b.plotPointType || 'none'}\n- text: ${b.text}${variants}`;
       })
       .join('\n\n');
 
@@ -159,9 +162,19 @@ will merge them back in, leaving untouched beats as-is. Return ONLY JSON.
     );
     const appendOnlyIds = new Set(input.appendOnlyBeatIds ?? []);
     const originalTextById = new Map(input.scene.beats.map((beat) => [beat.id, beat.text ?? '']));
+    const originalVariantsById = new Map(input.scene.beats.map((beat) => [beat.id, beat.textVariants]));
     const rewrittenBeats = Array.isArray(critique.rewrittenBeats)
       ? critique.rewrittenBeats.filter((b) => {
           if (!b || typeof b.id !== 'string' || !validIds.has(b.id)) return false;
+          if (b.textVariants !== undefined) {
+            const original = originalVariantsById.get(b.id) ?? [];
+            if (b.textVariants.length !== original.length) return false;
+            const preservesConditions = b.textVariants.every((variant, index) =>
+              typeof variant.text === 'string'
+              && variant.text.trim().length > 0
+              && JSON.stringify(variant.condition) === JSON.stringify(original[index]?.condition));
+            if (!preservesConditions) return false;
+          }
           if (!appendOnlyIds.has(b.id)) return true;
           const original = originalTextById.get(b.id) ?? '';
           return typeof b.text === 'string'

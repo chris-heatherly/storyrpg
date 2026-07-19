@@ -15,6 +15,7 @@ import {
   assertGenerationPreflight,
   type GenerationManifest,
 } from '../pipeline/generationPreflight';
+import type { GenerationRunContext } from '../server/workerPayload';
 
 type StoryAnalysisPreferences = {
   targetScenesPerEpisode?: number;
@@ -71,6 +72,7 @@ export interface StoryGenerationRequest extends PipelineHookOptions {
   manifest?: GenerationManifest;
   resumeCheckpoint?: ResumeCheckpoint;
   externalJobId?: string;
+  runContext?: GenerationRunContext;
 }
 
 export interface StoryGenerationResponse {
@@ -305,6 +307,7 @@ export async function runStoryGeneration(request: StoryGenerationRequest): Promi
   if (request.externalJobId) {
     pipeline.setExternalJobId(request.externalJobId);
   }
+  pipeline.setGenerationRunContext?.(request.runContext || { kind: 'standard' });
   wirePipeline(pipeline, request);
 
   const result = request.sourceAnalysis

@@ -12,7 +12,7 @@ StoryRPG is currently a local-first Expo/React Native application with two web a
 
 The older monolithic `App.tsx` route shell has been removed. The current bundler target split is driven by `STORYRPG_APP_TARGET` and the app entries under `storyrpg-prototype/apps/`.
 
-The generation path is still centered on `FullStoryPipeline`. Parallelism now lives inside that pipeline and its helpers rather than in a separate `ParallelStoryPipeline`. `EpisodePipeline` and `ParallelStoryPipeline` have both been removed.
+The generation path is still centered on `FullStoryPipeline`. Alternative complete outputs use a **Variant Batch** (`kind: "variant-batch"`): two to four independent workers share locked analysis/plan inputs, then run the complete downstream pipeline separately. Internal episode execution is sequential. `EpisodePipeline` and `ParallelStoryPipeline` have both been removed.
 
 ## Current Runtime Targets
 

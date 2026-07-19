@@ -318,33 +318,58 @@ const CHOICE_AND_ENCOUNTER_FIELDS: SettingFieldConfig[] = [
   { type: 'number', key: 'minEncountersLong', label: 'Long Episode Encounters', description: 'Minimum encounters for episodes with 8+ scenes.', min: 0, max: 5 },
 ];
 
-const QUALITY_COUNCIL_FIELDS: SettingFieldConfig[] = [
+const STORY_COUNCIL_FIELDS: SettingFieldConfig[] = [
   {
     type: 'toggle',
-    key: 'qualityCouncilEnabled',
-    label: 'Quality Council',
-    description: 'Run optional specialist review agents. Off preserves normal generation.',
+    key: 'storyCouncilEnabled',
+    label: 'Story Council',
+    description: 'Generate and compare independent planning candidates, then run optional route and final holdouts. Off preserves normal generation.',
   },
   {
     type: 'select',
-    key: 'qualityCouncilMode',
+    key: 'storyCouncilMode',
     label: 'Council Mode',
-    description: 'Advisory writes reports; repair routing recommends existing repairs; strict may only block through existing validator mappings.',
+    description: 'Shadow records decisions without changing output; Select may adopt a qualified winner; Select + Repair permits one bounded owner repair.',
     options: [
-      { value: 'advisory', label: 'Advisory' },
-      { value: 'repair-routing', label: 'Repair Routing' },
-      { value: 'strict', label: 'Strict' },
+      { value: 'shadow', label: 'Shadow' },
+      { value: 'select', label: 'Select' },
+      { value: 'select-and-repair', label: 'Select + Repair' },
     ],
-    condition: (settings) => settings.qualityCouncilEnabled,
+    condition: (settings) => settings.storyCouncilEnabled,
   },
-  { type: 'toggle', key: 'qualityCouncilRunPlan', label: 'Plan Review', description: 'Review season plan, Story Circle spine, promises, and arc pressure.', condition: (settings) => settings.qualityCouncilEnabled },
-  { type: 'toggle', key: 'qualityCouncilRunChoice', label: 'Choice Review', description: 'Review choice agency, stakes, consequence memory, and fiction-first wording.', condition: (settings) => settings.qualityCouncilEnabled },
-  { type: 'toggle', key: 'qualityCouncilRunRoutePlaytest', label: 'Route Playtest', description: 'Simulate branch routes for cosmetic branching and lost residue.', condition: (settings) => settings.qualityCouncilEnabled },
-  { type: 'toggle', key: 'qualityCouncilRunFinal', label: 'Final Audit', description: 'Run a final regression-oriented council pass after deterministic validators.', condition: (settings) => settings.qualityCouncilEnabled },
-  { type: 'toggle', key: 'qualityCouncilFusionEnabled', label: 'OpenRouter Fusion Audit', description: 'Use OpenRouter Fusion as an optional deep review panel at final audit.', condition: (settings) => settings.qualityCouncilEnabled },
   {
     type: 'select',
-    key: 'qualityCouncilFusionOnlyWhen',
+    key: 'storyCouncilPreset',
+    label: 'Council Preset',
+    description: 'Adaptive is the bounded default; Deep permits broader comparison within the configured budgets.',
+    options: [
+      { value: 'adaptive', label: 'Adaptive' },
+      { value: 'standard', label: 'Standard' },
+      { value: 'deep', label: 'Deep' },
+      { value: 'custom', label: 'Custom' },
+    ],
+    condition: (settings) => settings.storyCouncilEnabled,
+  },
+  { type: 'toggle', key: 'storyCouncilRunEpisodeBlueprints', label: 'Episode Planning Swarm', description: 'Ask StoryArchitect for independent blueprint candidates and adopt only a canon-safe winner.', condition: (settings) => settings.storyCouncilEnabled },
+  { type: 'number', key: 'storyCouncilCandidateCount', label: 'Planning Candidates', description: 'Independent StoryArchitect candidates per eligible episode.', min: 2, max: 4, condition: (settings) => settings.storyCouncilEnabled && settings.storyCouncilRunEpisodeBlueprints },
+  {
+    type: 'select',
+    key: 'storyCouncilSynthesisPolicy',
+    label: 'Synthesis',
+    description: 'Adaptive synthesis runs only when finalist strengths are complementary and budgets permit it.',
+    options: [
+      { value: 'adaptive', label: 'Adaptive' },
+      { value: 'always', label: 'Always' },
+      { value: 'never', label: 'Never' },
+    ],
+    condition: (settings) => settings.storyCouncilEnabled && settings.storyCouncilRunEpisodeBlueprints,
+  },
+  { type: 'toggle', key: 'storyCouncilRunRoutePlaytest', label: 'Route Holdout', description: 'Run an independent route-experience regression audit after assembly.', condition: (settings) => settings.storyCouncilEnabled },
+  { type: 'toggle', key: 'storyCouncilRunFinal', label: 'Final Holdout', description: 'Run an independent final audit without granting it validator authority.', condition: (settings) => settings.storyCouncilEnabled },
+  { type: 'toggle', key: 'storyCouncilFusionEnabled', label: 'OpenRouter Fusion Holdout', description: 'Use OpenRouter Fusion as an optional deep final holdout.', condition: (settings) => settings.storyCouncilEnabled },
+  {
+    type: 'select',
+    key: 'storyCouncilFusionOnlyWhen',
     label: 'Fusion Trigger',
     description: 'Controls when the expensive Fusion panel runs.',
     options: [
@@ -353,10 +378,12 @@ const QUALITY_COUNCIL_FIELDS: SettingFieldConfig[] = [
       { value: 'always-final', label: 'Always Final' },
       { value: 'manual', label: 'Manual' },
     ],
-    condition: (settings) => settings.qualityCouncilEnabled && settings.qualityCouncilFusionEnabled,
+    condition: (settings) => settings.storyCouncilEnabled && settings.storyCouncilFusionEnabled,
   },
-  { type: 'number', key: 'qualityCouncilMaxCalls', label: 'Max Council Calls', description: 'Hard cap on Quality Council LLM calls per run.', min: 1, max: 96, condition: (settings) => settings.qualityCouncilEnabled },
-  { type: 'number', key: 'qualityCouncilMaxChoiceCandidates', label: 'Choice Candidate Cap', description: 'Maximum choice sets sent to the choice council per checkpoint.', min: 1, max: 8, condition: (settings) => settings.qualityCouncilEnabled },
+  { type: 'number', key: 'storyCouncilMaxCalls', label: 'Max Council Calls', description: 'Hard cap on Story Council LLM calls per run.', min: 1, max: 96, condition: (settings) => settings.storyCouncilEnabled },
+  { type: 'number', key: 'storyCouncilMaxConcurrentCandidates', label: 'Candidate Concurrency', description: 'Maximum candidate authors running at once; provider throttles still apply.', min: 1, max: 4, condition: (settings) => settings.storyCouncilEnabled },
+  { type: 'number', key: 'storyCouncilTokenBudget', label: 'Council Token Budget', description: 'Run-wide Story Council input/output token ceiling.', min: 10000, max: 500000, step: 10000, condition: (settings) => settings.storyCouncilEnabled },
+  { type: 'number', key: 'storyCouncilRemediationBudget', label: 'Council Repair Budget', description: 'Maximum bounded synthesis or owner-repair candidates per run.', min: 0, max: 12, condition: (settings) => settings.storyCouncilEnabled },
 ];
 
 // NOTE: Character asset toggles (generateCharacterRefs, generateExpressionSheets,
@@ -425,16 +452,52 @@ const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
   },
   {
     id: 'quality-council',
-    title: 'QUALITY COUNCIL',
+    title: 'STORY COUNCIL',
     icon: <Shield size={16} color={TERMINAL.colors.primary} />,
-    description: 'Optional generator-only expert review layer. Disabled runs keep the normal pipeline.',
-    fields: QUALITY_COUNCIL_FIELDS,
+    description: 'Optional generator-only planning swarm with independent route/final holdouts. Disabled runs keep the normal pipeline.',
+    fields: STORY_COUNCIL_FIELDS,
   },
 ];
 
 function areSettingsEqual(left: GenerationSettings, right: GenerationSettings): boolean {
   return (Object.keys(right) as Array<keyof GenerationSettings>).every((key) => left[key] === right[key]);
 }
+
+const STORY_COUNCIL_PRESETS: Record<Exclude<GenerationSettings['storyCouncilPreset'], 'custom'>, Partial<GenerationSettings>> = {
+  adaptive: {
+    storyCouncilCandidateCount: 2,
+    storyCouncilSynthesisPolicy: 'adaptive',
+    storyCouncilMaxCalls: 24,
+    storyCouncilMaxConcurrentCandidates: 2,
+    storyCouncilTokenBudget: 120000,
+    storyCouncilRemediationBudget: 4,
+  },
+  standard: {
+    storyCouncilCandidateCount: 3,
+    storyCouncilSynthesisPolicy: 'adaptive',
+    storyCouncilMaxCalls: 32,
+    storyCouncilMaxConcurrentCandidates: 2,
+    storyCouncilTokenBudget: 160000,
+    storyCouncilRemediationBudget: 4,
+  },
+  deep: {
+    storyCouncilCandidateCount: 4,
+    storyCouncilSynthesisPolicy: 'always',
+    storyCouncilMaxCalls: 48,
+    storyCouncilMaxConcurrentCandidates: 4,
+    storyCouncilTokenBudget: 240000,
+    storyCouncilRemediationBudget: 8,
+  },
+};
+
+const STORY_COUNCIL_TUNING_KEYS = new Set<keyof GenerationSettings>([
+  'storyCouncilCandidateCount',
+  'storyCouncilSynthesisPolicy',
+  'storyCouncilMaxCalls',
+  'storyCouncilMaxConcurrentCandidates',
+  'storyCouncilTokenBudget',
+  'storyCouncilRemediationBudget',
+]);
 
 // ========================================
 // MAIN COMPONENT (INLINE PANEL)
@@ -459,7 +522,20 @@ export const GenerationSettingsPanel: React.FC<GenerationSettingsPanelProps> = (
     key: K,
     value: GenerationSettings[K]
   ) => {
-    onChange({ ...settings, [key]: value });
+    if (key === 'storyCouncilPreset') {
+      const preset = value as GenerationSettings['storyCouncilPreset'];
+      onChange({
+        ...settings,
+        storyCouncilPreset: preset,
+        ...(preset === 'custom' ? {} : STORY_COUNCIL_PRESETS[preset]),
+      });
+      return;
+    }
+    onChange({
+      ...settings,
+      [key]: value,
+      ...(STORY_COUNCIL_TUNING_KEYS.has(key) ? { storyCouncilPreset: 'custom' as const } : {}),
+    });
   };
   
   const resetAll = () => {

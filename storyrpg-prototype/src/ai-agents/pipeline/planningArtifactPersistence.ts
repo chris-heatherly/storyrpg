@@ -5,6 +5,11 @@ import type { SceneContent } from '../agents/SceneWriter';
 import type { EpisodeBlueprint } from '../agents/StoryArchitect';
 import type { SeasonPlan } from '../../types/seasonPlan';
 import type { SourceMaterialAnalysis } from '../../types/sourceAnalysis';
+import type {
+  QualityCouncilReport,
+  StoryCouncilCandidateArtifactSet,
+  StoryCouncilCandidateDecision,
+} from '../quality-council/types';
 import type { ArtifactRef } from './artifacts';
 import type { RunArtifactRuntime } from './phases/RunArtifactPhase';
 
@@ -114,6 +119,8 @@ export async function persistEpisodePlanningArtifacts(params: {
   sceneContents?: SceneContent[];
   choiceSets?: ChoiceSet[];
   encounters?: Map<string, EncounterStructure>;
+  storyCouncilCandidateSet?: StoryCouncilCandidateArtifactSet;
+  storyCouncilDecision?: StoryCouncilCandidateDecision;
   emit: EmitArtifactEvent;
 }): Promise<ArtifactRef[]> {
   const {
@@ -124,16 +131,61 @@ export async function persistEpisodePlanningArtifacts(params: {
     sceneContents,
     choiceSets,
     encounters,
+    storyCouncilCandidateSet,
+    storyCouncilDecision,
     emit,
   } = params;
   const globalUpstream = artifactRuntime.getGlobalUpstreamRefs();
   const refs: ArtifactRef[] = [];
 
+  let councilCandidateSetRef: ArtifactRef | undefined;
+  if (storyCouncilCandidateSet) {
+    const artifact = await artifactRuntime.saveArtifact({
+      kind: 'story-council-candidate-set',
+      episodeNumber,
+      payload: storyCouncilCandidateSet,
+      status: 'valid',
+      makeCurrent: false,
+      upstream: globalUpstream,
+      provenance: { phase: `episode_${episodeNumber}_story_council`, agent: 'StoryArchitectSwarm' },
+    });
+    councilCandidateSetRef = artifactRuntime.refFor(artifact);
+    refs.push(councilCandidateSetRef);
+  }
+
+  let councilDecisionRef: ArtifactRef | undefined;
+  if (storyCouncilDecision) {
+    const artifact = await artifactRuntime.saveArtifact({
+      kind: 'story-council-decision',
+      episodeNumber,
+      payload: storyCouncilDecision,
+      // Infrastructure degradation is part of the evidence payload, not an
+      // invalid artifact state; committing it must never turn an advisory
+      // council outage into a generation blocker.
+      status: 'valid',
+      makeCurrent: false,
+      upstream: councilCandidateSetRef ? [councilCandidateSetRef] : globalUpstream,
+      provenance: { phase: `episode_${episodeNumber}_story_council`, agent: 'CandidateComparisonAgent' },
+      validation: {
+        passed: true,
+        gate: 'StoryCouncilEvidenceGate',
+        issues: storyCouncilDecision.infrastructureErrors.map((message) => ({
+          validator: 'StoryCouncilInfrastructure',
+          severity: 'warning' as const,
+          message,
+          code: 'story_council_infrastructure',
+        })),
+      },
+    });
+    councilDecisionRef = artifactRuntime.refFor(artifact);
+    refs.push(councilDecisionRef);
+  }
+
   let episodeBlueprintRef: ArtifactRef | undefined;
   if (blueprint) {
     const artifact = await artifactRuntime.saveArtifact({
       kind: 'episode-blueprint', episodeNumber, payload: blueprint, status: 'valid', makeCurrent: false,
-      upstream: globalUpstream,
+      upstream: councilDecisionRef ? [councilDecisionRef] : globalUpstream,
       provenance: { phase: `episode_${episodeNumber}_architecture`, agent: 'StoryArchitect' },
     });
     episodeBlueprintRef = artifactRuntime.refFor(artifact);
@@ -208,4 +260,38 @@ export async function persistEpisodePlanningArtifacts(params: {
     });
   }
   return refs;
+}
+
+export async function persistStoryCouncilHoldoutArtifact(params: {
+  artifactRuntime: RunArtifactRuntime;
+  report?: QualityCouncilReport;
+  emit: EmitArtifactEvent;
+}): Promise<ArtifactRef | undefined> {
+  const { artifactRuntime, report, emit } = params;
+  if (!report) return undefined;
+  const holdouts = report.checkpoints.filter((checkpoint) =>
+    checkpoint.checkpoint === 'route-playtest' || checkpoint.checkpoint === 'final',
+  );
+  if (holdouts.length === 0) return undefined;
+  const artifact = await artifactRuntime.saveArtifact({
+    kind: 'story-council-holdout',
+    payload: {
+      version: 1,
+      mode: report.mode,
+      checkpoints: holdouts,
+      infrastructureFailures: report.summary.infrastructureFailures,
+    },
+    status: 'valid',
+    makeCurrent: false,
+    upstream: artifactRuntime.getGlobalUpstreamRefs(),
+    provenance: { phase: 'story_council_holdout', agent: 'StoryCouncilHoldouts' },
+  });
+  const ref = artifactRuntime.refFor(artifact);
+  await artifactRuntime.commitCurrentSet([ref]);
+  emit({
+    type: 'debug',
+    phase: 'story_council',
+    message: `Saved ${holdouts.length} revisioned Story Council holdout checkpoint(s).`,
+  });
+  return ref;
 }

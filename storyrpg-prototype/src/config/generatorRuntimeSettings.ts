@@ -50,16 +50,40 @@ export interface GenerationSettings {
   generateBodyVocabulary: boolean;
   preGenerateAudio: boolean;
   failFastMode: boolean;
-  qualityCouncilEnabled: boolean;
-  qualityCouncilMode: 'advisory' | 'repair-routing' | 'strict';
-  qualityCouncilRunPlan: boolean;
-  qualityCouncilRunChoice: boolean;
-  qualityCouncilRunRoutePlaytest: boolean;
-  qualityCouncilRunFinal: boolean;
-  qualityCouncilFusionEnabled: boolean;
-  qualityCouncilFusionOnlyWhen: 'manual' | 'borderline-quality' | 'validator-disagreement' | 'always-final';
-  qualityCouncilMaxCalls: number;
-  qualityCouncilMaxChoiceCandidates: number;
+  storyCouncilEnabled: boolean;
+  storyCouncilMode: 'shadow' | 'select' | 'select-and-repair';
+  storyCouncilPreset: 'adaptive' | 'standard' | 'deep' | 'custom';
+  storyCouncilCandidateCount: number;
+  storyCouncilSynthesisPolicy: 'never' | 'adaptive' | 'always';
+  storyCouncilRunEpisodeBlueprints: boolean;
+  storyCouncilRunRoutePlaytest: boolean;
+  storyCouncilRunFinal: boolean;
+  storyCouncilFusionEnabled: boolean;
+  storyCouncilFusionOnlyWhen: 'manual' | 'borderline-quality' | 'validator-disagreement' | 'always-final';
+  storyCouncilMaxCalls: number;
+  storyCouncilMaxConcurrentCandidates: number;
+  storyCouncilTokenBudget: number;
+  storyCouncilRemediationBudget: number;
+  /** @deprecated Persisted-setting migration only. */
+  qualityCouncilEnabled?: boolean;
+  /** @deprecated Persisted-setting migration only. */
+  qualityCouncilMode?: 'advisory' | 'repair-routing' | 'strict';
+  /** @deprecated Persisted-setting migration only. */
+  qualityCouncilRunPlan?: boolean;
+  /** @deprecated Persisted-setting migration only. */
+  qualityCouncilRunChoice?: boolean;
+  /** @deprecated Persisted-setting migration only. */
+  qualityCouncilRunRoutePlaytest?: boolean;
+  /** @deprecated Persisted-setting migration only. */
+  qualityCouncilRunFinal?: boolean;
+  /** @deprecated Persisted-setting migration only. */
+  qualityCouncilFusionEnabled?: boolean;
+  /** @deprecated Persisted-setting migration only. */
+  qualityCouncilFusionOnlyWhen?: 'manual' | 'borderline-quality' | 'validator-disagreement' | 'always-final';
+  /** @deprecated Persisted-setting migration only. */
+  qualityCouncilMaxCalls?: number;
+  /** @deprecated Persisted-setting migration only. */
+  qualityCouncilMaxChoiceCandidates?: number;
   choiceDistExpression: number;
   choiceDistRelationship: number;
   choiceDistStrategic: number;
@@ -126,16 +150,20 @@ export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
   generateBodyVocabulary: true,
   preGenerateAudio: false,
   failFastMode: true,
-  qualityCouncilEnabled: false,
-  qualityCouncilMode: 'advisory',
-  qualityCouncilRunPlan: true,
-  qualityCouncilRunChoice: true,
-  qualityCouncilRunRoutePlaytest: true,
-  qualityCouncilRunFinal: true,
-  qualityCouncilFusionEnabled: false,
-  qualityCouncilFusionOnlyWhen: 'borderline-quality',
-  qualityCouncilMaxCalls: 24,
-  qualityCouncilMaxChoiceCandidates: 3,
+  storyCouncilEnabled: false,
+  storyCouncilMode: 'shadow',
+  storyCouncilPreset: 'adaptive',
+  storyCouncilCandidateCount: 2,
+  storyCouncilSynthesisPolicy: 'adaptive',
+  storyCouncilRunEpisodeBlueprints: true,
+  storyCouncilRunRoutePlaytest: true,
+  storyCouncilRunFinal: true,
+  storyCouncilFusionEnabled: false,
+  storyCouncilFusionOnlyWhen: 'borderline-quality',
+  storyCouncilMaxCalls: 24,
+  storyCouncilMaxConcurrentCandidates: 2,
+  storyCouncilTokenBudget: 120000,
+  storyCouncilRemediationBudget: 4,
   choiceDistExpression: 35,
   choiceDistRelationship: 30,
   choiceDistStrategic: 20,
@@ -145,3 +173,47 @@ export const DEFAULT_GENERATION_SETTINGS: GenerationSettings = {
   minEncountersMedium: 1,
   minEncountersLong: 2,
 };
+
+type LegacyGenerationSettings = Partial<GenerationSettings> & {
+  qualityCouncilEnabled?: boolean;
+  qualityCouncilMode?: 'advisory' | 'repair-routing' | 'strict';
+};
+
+/** Normalize persisted pre-Story-Council settings without retaining LLM-native blocking. */
+export function normalizeGenerationSettings(
+  input?: LegacyGenerationSettings | null,
+): GenerationSettings {
+  const value = input ?? {};
+  const {
+    qualityCouncilEnabled,
+    qualityCouncilMode: legacyMode,
+    qualityCouncilRunPlan: _qualityCouncilRunPlan,
+    qualityCouncilRunChoice: _qualityCouncilRunChoice,
+    qualityCouncilRunRoutePlaytest,
+    qualityCouncilRunFinal,
+    qualityCouncilFusionEnabled,
+    qualityCouncilFusionOnlyWhen,
+    qualityCouncilMaxCalls,
+    qualityCouncilMaxChoiceCandidates: _qualityCouncilMaxChoiceCandidates,
+    ...canonical
+  } = value;
+  const migratedMode: GenerationSettings['storyCouncilMode'] = legacyMode === 'repair-routing' || legacyMode === 'strict'
+    ? 'select-and-repair'
+    : 'shadow';
+  return {
+    ...DEFAULT_GENERATION_SETTINGS,
+    ...canonical,
+    storyCouncilEnabled: canonical.storyCouncilEnabled ?? qualityCouncilEnabled ?? false,
+    storyCouncilMode: canonical.storyCouncilMode ?? migratedMode,
+    storyCouncilRunRoutePlaytest:
+      canonical.storyCouncilRunRoutePlaytest ?? qualityCouncilRunRoutePlaytest ?? true,
+    storyCouncilRunFinal:
+      canonical.storyCouncilRunFinal ?? qualityCouncilRunFinal ?? true,
+    storyCouncilFusionEnabled:
+      canonical.storyCouncilFusionEnabled ?? qualityCouncilFusionEnabled ?? false,
+    storyCouncilFusionOnlyWhen:
+      canonical.storyCouncilFusionOnlyWhen ?? qualityCouncilFusionOnlyWhen ?? 'borderline-quality',
+    storyCouncilMaxCalls:
+      canonical.storyCouncilMaxCalls ?? qualityCouncilMaxCalls ?? 24,
+  };
+}

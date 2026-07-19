@@ -35,7 +35,6 @@ export const CONCURRENCY_DEFAULTS = {
   maxConcurrentScenes: 3,
   maxConcurrentBeats: 5,
   imageGenerationLimit: 10,
-  maxParallelEpisodes: 2,
   maxParallelScenes: 2,
   maxGlobalLlmInFlight: 4,
   maxPerProviderLlmInFlight: 2,

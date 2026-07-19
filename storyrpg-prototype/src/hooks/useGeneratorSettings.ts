@@ -16,6 +16,7 @@ import {
 } from '../ai-agents/config';
 import {
   DEFAULT_GENERATION_SETTINGS,
+  normalizeGenerationSettings,
   type GenerationSettings,
   type GeneratorNarrationSettings,
   type GeneratorVideoSettings,
@@ -311,7 +312,7 @@ export function useGeneratorSettings() {
       if (ps.imageStrategy) setImageStrategy(ps.imageStrategy as 'selective' | 'all-beats');
       if (ps.atlasCloudModel) setAtlasCloudModel(ps.atlasCloudModel);
       if (ps.generationSettings) {
-        setGenerationSettings({ ...DEFAULT_GENERATION_SETTINGS, ...ps.generationSettings });
+        setGenerationSettings(normalizeGenerationSettings(ps.generationSettings));
       }
       if (ps.narrationSettings) {
         setNarrationSettings(prev => ({ ...prev, ...ps.narrationSettings }));
@@ -533,7 +534,7 @@ export function useGeneratorSettings() {
 
           if (storedGenerationSettings) {
             try {
-              setGenerationSettings({ ...DEFAULT_GENERATION_SETTINGS, ...JSON.parse(storedGenerationSettings) });
+              setGenerationSettings(normalizeGenerationSettings(JSON.parse(storedGenerationSettings)));
             } catch (_) {}
           }
 
@@ -1007,10 +1008,11 @@ export function useGeneratorSettings() {
   }, []);
 
   const handleGenerationSettingsChange = useCallback(async (settings: GenerationSettings) => {
-    setGenerationSettings(settings);
-    patchProxySettings({ generationSettings: settings });
+    const normalized = normalizeGenerationSettings(settings);
+    setGenerationSettings(normalized);
+    patchProxySettings({ generationSettings: normalized });
     try {
-      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.generationSettings, JSON.stringify(settings));
+      await AsyncStorage.setItem(GENERATOR_STORAGE_KEYS.generationSettings, JSON.stringify(normalized));
     } catch (error) {
       log.debug('Failed to save generation settings:', error);
     }

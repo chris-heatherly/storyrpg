@@ -90,8 +90,10 @@ import {
   buildGeneratorPipelineConfig,
   prepareAnalysisJob,
   prepareGenerationJob,
+  prepareVariantBatch,
 } from '../ai-agents/launch';
 import { WORKER_JOB_PROTOCOL_VERSION } from '../ai-agents/server/workerPayload';
+import { submitVariantBatch } from '../ai-agents/launch/WorkerJobClient';
 import { StyleArchitect } from '../ai-agents/agents/StyleArchitect';
 import { ImageGenerationService } from '../ai-agents/services/imageGenerationService';
 import { useStyleSetup, AnchorRole } from './generator/hooks/useStyleSetup';
@@ -486,6 +488,17 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
   const [generatedCode, setGeneratedCode] = useState<string | null>(null);
   const [outputManifest, setOutputManifest] = useState<OutputManifest | null>(null);
   const [outputDirectory, setOutputDirectory] = useState<string | null>(null);
+  const [variantCount, setVariantCount] = useState(1);
+  const [currentVariantBatchId, setCurrentVariantBatchId] = useState<string | null>(null);
+  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
+  const [variantResults, setVariantResults] = useState<Array<{
+    variantId: string;
+    ordinal: number;
+    jobId: string;
+    runId?: string;
+    outputDirectory?: string;
+    story?: Story;
+  }>>([]);
   
   // Current generation job ID
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
@@ -2118,18 +2131,34 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     if (!draftBrief) { Alert.alert('Error', 'Failed to build story brief.'); return; }
     const continuationJobId = getContinuationJobId();
     let preparedGeneration;
+    let preparedVariantBatch;
     let config: PipelineConfig;
     try {
       config = createPipelineConfig();
-      preparedGeneration = prepareGenerationJob({
-        config,
-        draftBrief,
-        sourceAnalysis: updatedSourceAnalysis,
-        seasonPlan: generationSeasonPlan,
-        requestedEpisodes: episodesToGenerate,
-        runId: String(Date.now()),
-        resumeFromJobId: continuationJobId,
-      });
+      if (variantCount > 1) {
+        if (!updatedSourceAnalysis) throw new Error('Variant Batch requires completed source analysis.');
+        if (continuationJobId) throw new Error('Variant Batch starts new runs and cannot resume a continuation job.');
+        preparedVariantBatch = prepareVariantBatch({
+          config,
+          draftBrief,
+          sourceAnalysis: updatedSourceAnalysis,
+          seasonPlan: generationSeasonPlan,
+          requestedEpisodes: episodesToGenerate,
+          runId: String(Date.now()),
+          variantCount,
+        });
+        preparedGeneration = preparedVariantBatch.variants[0];
+      } else {
+        preparedGeneration = prepareGenerationJob({
+          config,
+          draftBrief,
+          sourceAnalysis: updatedSourceAnalysis,
+          seasonPlan: generationSeasonPlan,
+          requestedEpisodes: episodesToGenerate,
+          runId: String(Date.now()),
+          resumeFromJobId: continuationJobId,
+        });
+      }
     } catch (prepareError) {
       Alert.alert('Generation Plan Invalid', prepareError instanceof Error ? prepareError.message : String(prepareError));
       return;
@@ -2154,12 +2183,115 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     setEtaSeconds(null);
     setImageProgress(null);
     setPipelineRuntime(null);
+    setCurrentVariantBatchId(null);
+    setSelectedVariantId(null);
+    setVariantResults([]);
     seenManifestIdsRef.current.clear();
     seenImageJobIdsRef.current.clear();
     generationStartedAtRef.current = Date.now();
     if (USE_SERVER_WORKER) {
       try {
         const workerEpisodeCount = episodesToGenerate.length;
+        if (preparedVariantBatch) {
+          const started = await submitVariantBatch(preparedVariantBatch.request, {
+            proxyUrl: PROXY_CONFIG.getProxyUrl(),
+            credentials: 'include',
+          });
+          setCurrentVariantBatchId(started.batchId);
+          setCurrentJobId(started.children[0]?.jobId || null);
+          setActiveJobId(started.children[0]?.jobId || null);
+          await Promise.all(started.children.map((child) => registerGenJob({
+            id: child.jobId,
+            storyTitle: brief.story.title || 'Untitled Story',
+            friendlyName: child.friendlyName || `${brief.story.title} · Variant ${child.ordinal} of ${variantCount}`,
+            processTitle: child.processTitle,
+            startedAt: new Date().toISOString(),
+            status: 'running',
+            currentPhase: 'queued',
+            progress: 0,
+            episodeCount: workerEpisodeCount,
+            currentEpisode: 1,
+            events: [],
+            variantBatchId: started.batchId,
+            variantId: child.variantId,
+            variantOrdinal: child.ordinal,
+            variantCount,
+          })));
+
+          let batchStatus;
+          while (true) {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const response = await fetch(
+              `${PROXY_CONFIG.getProxyUrl()}/worker-batches/${encodeURIComponent(started.batchId)}`,
+              { credentials: 'include' },
+            );
+            if (!response.ok) throw new Error(`Variant Batch status failed (${response.status})`);
+            batchStatus = await response.json();
+            setLiveProgress(Math.max(0, Math.min(100, Number(batchStatus.progress || 0))));
+            const runningChild = batchStatus.children?.find((child) => child.status === 'running')
+              || batchStatus.children?.find((child) => child.status === 'pending')
+              || batchStatus.children?.[0];
+            setCurrentPhase(runningChild?.currentPhase || batchStatus.status);
+            setPipelineRuntime(buildPipelineRuntimeSnapshot({
+              ...runningChild,
+              id: started.batchId,
+              friendlyName: `${brief.story.title} · Variant Batch (${variantCount})`,
+              progress: batchStatus.progress,
+              status: batchStatus.status,
+            }, started.batchId));
+            await Promise.all((batchStatus.children || []).map((child) => updateGenJob(child.jobId, {
+              status: child.status,
+              friendlyName: child.friendlyName,
+              currentPhase: child.currentPhase || 'queued',
+              progress: Number(child.progress || 0),
+              currentEpisode: Number(child.currentEpisode || 1),
+              episodeCount: Number(child.episodeCount || workerEpisodeCount),
+              outputDir: child.outputDirectory,
+            })));
+            if (['completed', 'failed', 'cancelled', 'paused'].includes(batchStatus.status)) break;
+          }
+
+          const completedChildren = (batchStatus.children || []).filter((child) => child.status === 'completed');
+          if (completedChildren.length === 0) {
+            throw new Error('Variant Batch finished without a completed variant.');
+          }
+          const completedVariants = [];
+          for (const child of completedChildren) {
+            const resultResponse = await fetch(
+              `${PROXY_CONFIG.workerJobs}/${encodeURIComponent(child.jobId)}/result`,
+              { credentials: 'include' },
+            );
+            if (!resultResponse.ok) continue;
+            const result = await resultResponse.json();
+            let story = result.story as Story | undefined;
+            if (result.runId) {
+              const storyResponse = await fetch(
+                `${PROXY_CONFIG.getProxyUrl()}/story-runs/${encodeURIComponent(result.runId)}`,
+                { credentials: 'include' },
+              );
+              if (storyResponse.ok) story = await storyResponse.json();
+            }
+            if (!story) continue;
+            completedVariants.push({
+              variantId: child.variantId,
+              ordinal: child.ordinal || child.variantOrdinal,
+              jobId: child.jobId,
+              runId: result.runId,
+              outputDirectory: result.outputDirectory,
+              story,
+            });
+          }
+          if (completedVariants.length === 0) throw new Error('Completed variants had no readable story packages.');
+          completedVariants.sort((left, right) => left.ordinal - right.ordinal);
+          setVariantResults(completedVariants);
+          setGeneratedStory(completedVariants[0].story);
+          setGeneratedCode(storyToTypeScript(completedVariants[0].story));
+          setOutputDirectory(completedVariants[0].outputDirectory || null);
+          setLiveProgress(100);
+          setEtaSeconds(null);
+          setState('complete');
+          return;
+        }
         let workerJobIdForUpdates: string | null = null;
         const worker = await runWorkerJob<FullPipelineResult>(
           preparedGeneration.request,
@@ -2656,12 +2788,41 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     );
   };
 
+  const selectVariant = async (variantId: string) => {
+    const candidate = variantResults.find((variant) => variant.variantId === variantId);
+    if (!candidate || !currentVariantBatchId || !candidate.story) return;
+    try {
+      const response = await fetch(
+        `${PROXY_CONFIG.getProxyUrl()}/worker-batches/${encodeURIComponent(currentVariantBatchId)}/select`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ variantId }),
+        },
+      );
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.error || `Variant selection failed (${response.status})`);
+      setSelectedVariantId(variantId);
+      setGeneratedStory(candidate.story);
+      setGeneratedCode(storyToTypeScript(candidate.story));
+      setOutputDirectory(candidate.outputDirectory || null);
+      await updateGenJob(candidate.jobId, { outputDir: candidate.outputDirectory });
+      await markSelectedEpisodesCompleted(candidate.story, candidate.jobId, candidate.outputDirectory);
+      onStoryGenerated?.(candidate.story);
+      Alert.alert('Variant Selected', `Variant ${candidate.ordinal} is now the reader-eligible package for this batch.`);
+    } catch (selectionError) {
+      Alert.alert('Variant Not Eligible', selectionError instanceof Error ? selectionError.message : String(selectionError));
+    }
+  };
+
   const resetGenerator = () => {
     setState('config'); setEvents([]); setCurrentCheckpoint(null); setGeneratedStory(null); setGeneratedCode(null); setError(null);
     setOutputManifest(null); setOutputDirectory(null); pipelineRef.current = null; clearDocument();
     setCurrentJobId(null); setActiveJobId(null);
     setSeasonPlan(null); setSourceAnalysis(null); setAnalysisResult(null); setCanonWizardState(null); setSelectedEpisodes([]); setSelectedEpisodeCount(1);
     setLiveProgress(0); setEtaSeconds(null); setImageProgress(null); setPipelineRuntime(null);
+    setVariantCount(1); setCurrentVariantBatchId(null); setSelectedVariantId(null); setVariantResults([]);
     setIsViewingHistory(false); setHistoryJob(undefined);
   };
 
@@ -2733,7 +2894,10 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
     if (currentJobId) {
       if (USE_SERVER_WORKER) {
         try {
-          await fetch(`${PROXY_CONFIG.workerJobs}/${currentJobId}/cancel`, { method: 'POST', credentials: 'include' });
+          const cancelUrl = currentVariantBatchId
+            ? `${PROXY_CONFIG.getProxyUrl()}/worker-batches/${encodeURIComponent(currentVariantBatchId)}/cancel`
+            : `${PROXY_CONFIG.workerJobs}/${currentJobId}/cancel`;
+          await fetch(cancelUrl, { method: 'POST', credentials: 'include' });
         } catch (cancelErr) {
           console.warn('[GeneratorScreen] Failed to cancel worker job:', cancelErr);
         }
@@ -4661,7 +4825,36 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
               onApproveAnchor={styleSetup.approveAnchor}
               onToggleUseDefaults={styleSetup.setUseDefaults}
             />
-	            <View style={styles.configActions}>{!hasSourceInput ? <View style={[styles.executeButton, { opacity: 0.5 }]}><Text style={styles.executeButtonText}>LOAD SOURCE TO CONTINUE</Text></View> : <TouchableOpacity style={[styles.executeButton, sourceAnalysis?.sourceCanon && !canonSetupApproved ? { opacity: 0.5 } : null]} onPress={startGeneration}><Zap size={18} color="white" /><Text style={styles.executeButtonText}>{sourceAnalysis?.sourceCanon && !canonSetupApproved ? 'APPROVE CANON TO CONTINUE' : 'INITIATE GENERATION'}</Text></TouchableOpacity>}<TouchableOpacity style={styles.textButton} onPress={() => setState('config')}><Text style={styles.textButtonText}>BACK TO CONFIG</Text></TouchableOpacity></View>
+	            <View style={styles.variantBatchCard}>
+	              <Text style={styles.configLabel}>RUN MODE</Text>
+	              <View style={styles.variantModeRow}>
+	                <TouchableOpacity
+	                  style={[styles.referenceModeOption, variantCount === 1 && styles.referenceModeOptionActive]}
+	                  onPress={() => setVariantCount(1)}
+	                >
+	                  <Text style={[styles.referenceModeOptionText, variantCount === 1 && styles.referenceModeOptionTextActive]}>SINGLE</Text>
+	                </TouchableOpacity>
+	                <TouchableOpacity
+	                  style={[styles.referenceModeOption, variantCount > 1 && styles.referenceModeOptionActive]}
+	                  onPress={() => setVariantCount(Math.max(2, variantCount))}
+	                >
+	                  <Text style={[styles.referenceModeOptionText, variantCount > 1 && styles.referenceModeOptionTextActive]}>VARIANT BATCH</Text>
+	                </TouchableOpacity>
+	              </View>
+	              <Text style={styles.variantBatchHint}>
+	                {variantCount === 1
+	                  ? 'One worker produces one story package.'
+	                  : `${variantCount} independent workers reuse this locked analysis and season plan, then each produces a complete alternative package.`}
+	              </Text>
+	              {variantCount > 1 && (
+	                <View style={styles.counter}>
+	                  <TouchableOpacity style={styles.counterBtn} onPress={() => setVariantCount(Math.max(2, variantCount - 1))}><Text style={styles.counterBtnText}>−</Text></TouchableOpacity>
+	                  <Text style={styles.counterVal}>{variantCount}</Text>
+	                  <TouchableOpacity style={styles.counterBtn} onPress={() => setVariantCount(Math.min(4, variantCount + 1))}><Text style={styles.counterBtnText}>+</Text></TouchableOpacity>
+	                </View>
+	              )}
+	            </View>
+	            <View style={styles.configActions}>{!hasSourceInput ? <View style={[styles.executeButton, { opacity: 0.5 }]}><Text style={styles.executeButtonText}>LOAD SOURCE TO CONTINUE</Text></View> : <TouchableOpacity style={[styles.executeButton, sourceAnalysis?.sourceCanon && !canonSetupApproved ? { opacity: 0.5 } : null]} onPress={startGeneration}><Zap size={18} color="white" /><Text style={styles.executeButtonText}>{sourceAnalysis?.sourceCanon && !canonSetupApproved ? 'APPROVE CANON TO CONTINUE' : variantCount > 1 ? `START ${variantCount} VARIANTS` : 'INITIATE GENERATION'}</Text></TouchableOpacity>}<TouchableOpacity style={styles.textButton} onPress={() => setState('config')}><Text style={styles.textButtonText}>BACK TO CONFIG</Text></TouchableOpacity></View>
           </View>
         )}
         {(state === 'running' || state === 'checkpoint') && (
@@ -4683,9 +4876,42 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
             <CompleteStep>
               <View style={styles.successHeader}>
                 <CheckCircle2 size={48} color={TERMINAL.colors.primary} />
-                <Text style={styles.completeTitle}>SYNTHESIS COMPLETE</Text>
-                <Text style={styles.completeSubtitle}>NARRATIVE READY FOR DEPLOYMENT</Text>
+                <Text style={styles.completeTitle}>{variantResults.length > 0 ? 'VARIANT BATCH COMPLETE' : 'SYNTHESIS COMPLETE'}</Text>
+                <Text style={styles.completeSubtitle}>
+                  {variantResults.length > 0 && !selectedVariantId ? 'REVIEW AND SELECT ONE PACKAGE' : 'NARRATIVE READY FOR DEPLOYMENT'}
+                </Text>
               </View>
+              {variantResults.length > 0 && (
+                <View style={styles.variantResultsList}>
+                  {variantResults.map((variant) => {
+                    const isSelected = selectedVariantId === variant.variantId;
+                    const isPreviewed = generatedStory === variant.story;
+                    const scenes = variant.story?.episodes.reduce((sum, episode) => sum + episode.scenes.length, 0) || 0;
+                    return (
+                      <View key={variant.variantId} style={[styles.variantResultCard, isPreviewed && styles.variantResultCardPreviewed, isSelected && styles.variantResultCardSelected]}>
+                        <TouchableOpacity onPress={() => {
+                          if (!variant.story) return;
+                          setGeneratedStory(variant.story);
+                          setGeneratedCode(storyToTypeScript(variant.story));
+                          setOutputDirectory(variant.outputDirectory || null);
+                        }}>
+                          <Text style={styles.variantResultTitle}>VARIANT {variant.ordinal}{isSelected ? ' · SELECTED' : ''}</Text>
+                          <Text style={styles.variantResultMeta}>{variant.story?.episodes.length || 0} episodes · {scenes} scenes</Text>
+                          <Text style={styles.variantResultRunId} numberOfLines={1}>{variant.runId || variant.variantId}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.secondaryActionButton, isSelected && styles.variantSelectedButton]}
+                          disabled={isSelected}
+                          onPress={() => { void selectVariant(variant.variantId); }}
+                        >
+                          <CheckCircle2 size={16} color={isSelected ? 'white' : TERMINAL.colors.primary} />
+                          <Text style={isSelected ? styles.executeButtonText : styles.secondaryActionButtonText}>{isSelected ? 'SELECTED' : 'SELECT THIS VARIANT'}</Text>
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
               <View style={styles.storySummaryCard}>
               <View style={styles.summaryRow}>
                 <Text style={styles.summaryLabel}>TITLE</Text>
@@ -4711,7 +4937,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                   <Text style={styles.executeButtonText}>GENERATE IMAGES</Text>
                 </TouchableOpacity>
               )}
-              {onPlayStory && (
+              {onPlayStory && (variantResults.length === 0 || selectedVariantId) && (
                 <TouchableOpacity
                   style={[
                     generatedStory.imagesStatus === 'pending' ? styles.secondaryActionButton : styles.executeButton,
@@ -4722,7 +4948,7 @@ export const GeneratorScreen: React.FC<GeneratorScreenProps> = ({
                   <Text style={generatedStory.imagesStatus === 'pending' ? styles.secondaryActionButtonText : styles.executeButtonText}>PLAY NOW</Text>
                 </TouchableOpacity>
               )}
-              {onViewLibrary && (
+              {onViewLibrary && (variantResults.length === 0 || selectedVariantId) && (
                 <TouchableOpacity style={styles.secondaryActionButton} onPress={onViewLibrary}>
                   <Library size={18} color={TERMINAL.colors.primary} />
                   <Text style={styles.secondaryActionButtonText}>VIEW IN LIBRARY</Text>
@@ -5477,6 +5703,9 @@ const styles = StyleSheet.create({
   outlineNumberText: { fontSize: 12, fontWeight: '900', color: TERMINAL.colors.cyan }, outlineInfo: { flex: 1 },
   outlineTitle: { fontSize: 12, fontWeight: '900', color: 'white', marginBottom: 4, letterSpacing: 0.5 }, outlineSynopsis: { fontSize: 10, color: TERMINAL.colors.muted, lineHeight: 16, fontWeight: '600' },
   generationConfig: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: TERMINAL.colors.primary },
+  variantBatchCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(56,189,248,0.25)', gap: 14, marginTop: 16 },
+  variantModeRow: { flexDirection: 'row', width: '100%', gap: 10 },
+  variantBatchHint: { fontSize: 10, lineHeight: 16, color: TERMINAL.colors.muted, textAlign: 'center', fontWeight: '600' },
   counter: { flexDirection: 'row', alignItems: 'center', marginTop: 16, gap: 30 },
   counterBtn: { width: 44, height: 44, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
   counterBtnText: { fontSize: 24, color: 'white', fontWeight: '300' }, counterVal: { fontSize: 32, fontWeight: '900', color: TERMINAL.colors.primary },
@@ -5488,6 +5717,14 @@ const styles = StyleSheet.create({
   cancelledSubtitle: { fontSize: 12, color: TERMINAL.colors.muted, textAlign: 'center', lineHeight: 18, fontWeight: '600', paddingHorizontal: 20 },
   cancelledActions: { width: '100%', gap: 12 },
   storySummaryCard: { width: '100%', backgroundColor: TERMINAL.colors.bgLight, borderRadius: 24, padding: 24, gap: 16, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' },
+  variantResultsList: { width: '100%', gap: 12, marginBottom: 20 },
+  variantResultCard: { backgroundColor: TERMINAL.colors.bgLight, borderRadius: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', padding: 16, gap: 14 },
+  variantResultCardPreviewed: { borderColor: 'rgba(56,189,248,0.45)' },
+  variantResultCardSelected: { borderColor: TERMINAL.colors.primary, backgroundColor: 'rgba(34,197,94,0.08)' },
+  variantResultTitle: { fontSize: 12, fontWeight: '900', color: 'white', letterSpacing: 1 },
+  variantResultMeta: { fontSize: 10, color: TERMINAL.colors.muted, marginTop: 6, fontWeight: '700' },
+  variantResultRunId: { fontSize: 8, color: TERMINAL.colors.cyan, marginTop: 6, fontWeight: '600' },
+  variantSelectedButton: { backgroundColor: TERMINAL.colors.primary },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, summaryLabel: { fontSize: 10, fontWeight: '900', color: TERMINAL.colors.muted, letterSpacing: 1 }, summaryValue: { fontSize: 12, fontWeight: '900', color: 'white', letterSpacing: 0.5 },
   completeActions: { width: '100%', gap: 12 }, secondaryActionButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 18, borderRadius: 20, borderWidth: 1, borderColor: TERMINAL.colors.primary, gap: 12 },
   secondaryActionButtonText: { fontSize: 12, fontWeight: '900', color: TERMINAL.colors.primary, letterSpacing: 1 },

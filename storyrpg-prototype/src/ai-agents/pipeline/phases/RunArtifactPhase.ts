@@ -9,6 +9,7 @@ import {
 } from '../artifacts';
 import { slugify as idSlugify } from '../../utils/idUtils';
 import type { PipelineContext, PipelinePhase } from './index';
+import type { GenerationRunContext } from '../../server/workerPayload';
 import {
   type ArtifactLoader,
   type ArtifactSaver,
@@ -19,7 +20,10 @@ import {
 } from '../episodeCheckpoints';
 
 export interface RunArtifactPhaseDeps {
-  createOutputDirectory: (storyTitle: string) => Promise<string>;
+  createOutputDirectory: (
+    storyTitle: string,
+    options?: { workerJobId?: string; runContext?: GenerationRunContext },
+  ) => Promise<string>;
   ensureDirectory: (outputDirectory: string) => Promise<void>;
   save: (outputDirectory: string, name: string, data: unknown) => Promise<void>;
   load: <T>(outputDirectory: string, name: string) => T | null;
@@ -28,6 +32,8 @@ export interface RunArtifactPhaseDeps {
 export interface RunArtifactPhaseInput {
   storyTitle: string;
   resumeOutputDirectory?: string;
+  workerJobId?: string;
+  runContext?: GenerationRunContext;
 }
 
 export interface RunArtifactRuntime {
@@ -64,7 +70,10 @@ export class RunArtifactPhase implements PipelinePhase<RunArtifactPhaseInput, Ru
   async run(input: RunArtifactPhaseInput, context: PipelineContext): Promise<RunArtifactRuntime> {
     const outputDirectory = input.resumeOutputDirectory
       ? input.resumeOutputDirectory
-      : await this.deps.createOutputDirectory(input.storyTitle);
+      : await this.deps.createOutputDirectory(input.storyTitle, {
+          workerJobId: input.workerJobId,
+          runContext: input.runContext,
+        });
 
     if (input.resumeOutputDirectory) {
       await this.deps.ensureDirectory(outputDirectory);
@@ -77,6 +86,16 @@ export class RunArtifactPhase implements PipelinePhase<RunArtifactPhaseInput, Ru
     const runId = deriveRunId(outputDirectory, storyId);
     const save: ArtifactSaver = (name, data) => this.deps.save(outputDirectory, name, data);
     const load: ArtifactLoader = <T,>(name: string) => this.deps.load<T>(outputDirectory, name);
+    if (!load('run-metadata.json')) {
+      await save('run-metadata.json', {
+        version: 1,
+        runId,
+        storyId,
+        workerJobId: input.workerJobId,
+        runContext: input.runContext || { kind: 'standard' },
+        createdAt: new Date().toISOString(),
+      });
+    }
     const artifactStore = new ArtifactRevisionStore({ save, load });
     let globalUpstreamRefs: ArtifactRef[] = [];
     const episodeUpstreamRefs = new Map<number, ArtifactRef[]>();

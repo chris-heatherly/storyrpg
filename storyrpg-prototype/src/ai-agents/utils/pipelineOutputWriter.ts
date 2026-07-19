@@ -71,6 +71,7 @@ import {
   readCachedOutputFile,
 } from './webOutputCache';
 import { encodeStory, STORY_SCHEMA_VERSION } from '../codec/storyCodec';
+import type { GenerationRunContext } from '../server/workerPayload';
 
 function hasNodeFs(): boolean {
   return typeof process !== 'undefined'
@@ -621,7 +622,7 @@ export function slugify(text: string): string {
  */
 function getTimestamp(): string {
   const now = new Date();
-  return now.toISOString().replace(/[:.]/g, '-').substring(0, 19);
+  return now.toISOString().replace(/[:.]/g, '-').replace('T', '-').replace('Z', '');
 }
 
 /**
@@ -1378,10 +1379,17 @@ export async function updateOutputManifest(
 /**
  * Create the output directory for a generation run
  */
-export async function createOutputDirectory(storyTitle: string): Promise<string> {
+export async function createOutputDirectory(
+  storyTitle: string,
+  options: { workerJobId?: string; runContext?: GenerationRunContext } = {},
+): Promise<string> {
   const slug = slugify(storyTitle);
   const timestamp = getTimestamp();
-  const dirName = `${slug}_${timestamp}`;
+  const jobSuffix = options.workerJobId ? `_${slugify(options.workerJobId).slice(-18)}` : '';
+  const variantSuffix = options.runContext?.kind === 'variant'
+    ? `_batch-${slugify(options.runContext.batchId).slice(-12)}_v${String(options.runContext.ordinal).padStart(2, '0')}`
+    : '';
+  const dirName = `${slug}_${timestamp}${variantSuffix}${jobSuffix}`;
   const dirPath = getOutputBaseDir() + dirName + '/';
 
   await ensureDirectory(dirPath);
@@ -1804,29 +1812,32 @@ export async function savePipelineOutputs(
   }
 
   if (outputs.qualityCouncilReport) {
-    const councilPath = outputDir + '07d-quality-council-report.json';
+    const councilPath = outputDir + '07d-story-council-report.json';
     const councilSize = await writeJsonFile(councilPath, outputs.qualityCouncilReport);
-    files.push({ name: 'Quality Council Report', path: councilPath, type: 'quality-council', size: councilSize });
+    files.push({ name: 'Story Council Report', path: councilPath, type: 'story-council', size: councilSize });
+    // One-release filesystem compatibility for tooling that still consumes
+    // the pre-candidate-council sidecar name.
+    await writeJsonFile(outputDir + '07d-quality-council-report.json', outputs.qualityCouncilReport);
 
     const choiceReports = outputs.qualityCouncilReport.checkpoints.filter((checkpoint) => checkpoint.checkpoint === 'choice');
     if (choiceReports.length > 0) {
       const choicePath = outputDir + '07e-quality-council-choice-reports.json';
       const choiceSize = await writeJsonFile(choicePath, choiceReports);
-      files.push({ name: 'Quality Council Choice Reports', path: choicePath, type: 'quality-council-choice', size: choiceSize });
+      files.push({ name: 'Story Council Choice Reports', path: choicePath, type: 'quality-council-choice', size: choiceSize });
     }
 
     const routeReports = outputs.qualityCouncilReport.checkpoints.filter((checkpoint) => checkpoint.checkpoint === 'route-playtest');
     if (routeReports.length > 0) {
       const routePath = outputDir + '07f-quality-council-route-playtest.json';
       const routeSize = await writeJsonFile(routePath, routeReports);
-      files.push({ name: 'Quality Council Route Playtest', path: routePath, type: 'quality-council-route-playtest', size: routeSize });
+      files.push({ name: 'Story Council Route Holdout', path: routePath, type: 'quality-council-route-playtest', size: routeSize });
     }
 
     const fusionReports = outputs.qualityCouncilReport.checkpoints.filter((checkpoint) => checkpoint.fusionUsed);
     if (fusionReports.length > 0) {
       const fusionPath = outputDir + '07g-quality-council-fusion-audit.json';
       const fusionSize = await writeJsonFile(fusionPath, fusionReports);
-      files.push({ name: 'Quality Council Fusion Audit', path: fusionPath, type: 'quality-council-fusion', size: fusionSize });
+      files.push({ name: 'Story Council Fusion Holdout', path: fusionPath, type: 'quality-council-fusion', size: fusionSize });
     }
   }
 
@@ -2390,12 +2401,23 @@ export async function savePipelineOutputs(
     baselineComparison,
     createdAt: new Date().toISOString(),
   });
-  const pendingQualityDisposition: QualityDisposition = {
+  const isVariantRun = (outputs.generator?.runContext as GenerationRunContext | undefined)?.kind === 'variant';
+  const pendingQualityDisposition: QualityDisposition & {
+    selectionEligible?: boolean;
+    selectionOriginalBand?: QualityDisposition['band'];
+  } = {
     ...qualityDisposition,
     status: 'held',
     band: qualityDisposition.band === 'block' ? 'block' : 'warn',
     eligibleForReader: false,
-    reasonCodes: [...new Set([...qualityDisposition.reasonCodes, 'promotion_commit_pending'])],
+    reasonCodes: [...new Set([
+      ...qualityDisposition.reasonCodes,
+      isVariantRun ? 'variant_selection_pending' : 'promotion_commit_pending',
+    ])],
+    ...(isVariantRun ? {
+      selectionEligible: qualityDisposition.eligibleForReader,
+      selectionOriginalBand: qualityDisposition.band,
+    } : {}),
   };
   const dispositionPath = outputDir + 'quality-disposition.json';
   const dispositionSize = await writeJsonFile(dispositionPath, pendingQualityDisposition);
@@ -2451,6 +2473,18 @@ export async function savePipelineOutputs(
       finalStoryContractPassed: outputs.finalStoryContractReport?.passed,
       finalStoryContractBlockingIssues: outputs.finalStoryContractReport?.blockingIssues.length,
       ...(outputs.qualityCouncilReport ? {
+        storyCouncilEnabled: true,
+        storyCouncilFindings: outputs.qualityCouncilReport.summary.highConfidenceFindings.length
+          + outputs.qualityCouncilReport.summary.advisoryFindings.length,
+        storyCouncilCandidatesGenerated: outputs.qualityCouncilReport.summary.candidatesGenerated,
+        storyCouncilCandidatesQualified: outputs.qualityCouncilReport.summary.candidatesQualified,
+        storyCouncilSynthesisUsed: outputs.qualityCouncilReport.summary.synthesisUsed,
+        storyCouncilInfrastructureFailures: outputs.qualityCouncilReport.summary.infrastructureFailures,
+        storyCouncilCallsUsed: outputs.qualityCouncilReport.summary.callsUsed,
+        storyCouncilEstimatedTokensUsed: outputs.qualityCouncilReport.summary.estimatedTokensUsed,
+        storyCouncilRemediationsUsed: outputs.qualityCouncilReport.summary.remediationsUsed,
+        storyCouncilFusionUsed: outputs.qualityCouncilReport.summary.fusionUsed,
+        // Deprecated metric aliases retained for existing dashboards.
         qualityCouncilEnabled: true,
         qualityCouncilFindings: outputs.qualityCouncilReport.summary.highConfidenceFindings.length
           + outputs.qualityCouncilReport.summary.advisoryFindings.length,
@@ -2478,15 +2512,16 @@ export async function savePipelineOutputs(
     ? verifyRetainedPackage(outputDir)
     : { verified: false, storyArtifact: `${outputDir}story.json`, manifestArtifact: manifestPath };
   if (retainedPackage.verified) {
-    manifest.summary.qualityDisposition = qualityDisposition;
+    const committedDisposition = isVariantRun ? pendingQualityDisposition : qualityDisposition;
+    manifest.summary.qualityDisposition = committedDisposition;
     await writeJsonFile(manifestPath, manifest);
     // Last atomic write: the catalog treats this sidecar as the promotion pointer.
-    await writeJsonFile(dispositionPath, qualityDisposition);
-    if (qualityDisposition.eligibleForReader) {
+    await writeJsonFile(dispositionPath, committedDisposition);
+    if (committedDisposition.eligibleForReader) {
       commitQualityBaseline(outputDir, {
         version: 1,
         ...baselineCandidate,
-        committedAt: qualityDisposition.createdAt,
+        committedAt: committedDisposition.createdAt,
       });
     }
   }
@@ -2536,8 +2571,8 @@ export async function savePipelineOutputs(
       openerMonotonyPassages: openerMonotony,
       capIds,
       blockingCapCount,
-      promotionBand: qualityDisposition.band,
-      promotionStatus: qualityDisposition.status,
+      promotionBand: manifest.summary.qualityDisposition?.band,
+      promotionStatus: manifest.summary.qualityDisposition?.status,
       durationMs: duration,
       llmCalls: outputs.llmLedger?.totals.calls,
       llmFailures: outputs.llmLedger?.totals.failures,

@@ -10,7 +10,7 @@ import {
   ImageProvider,
   LoraTrainingSettings,
   resolveLoraTrainingSettings,
-  resolveQualityCouncilConfig,
+  resolveStoryCouncilConfig,
   StyleReferenceStrength,
 } from '../config';
 import { resolveImageQaConfig, resolveArtStylePresetProfile } from './imageQaConfig';
@@ -185,20 +185,32 @@ export function buildPipelineConfig(
     extras?.artStyleProfileOverride ??
     resolveArtStylePresetProfile(env) ??
     (artStyle ? resolveArtStyleProfile(artStyle) : undefined);
-  const qualityCouncil = resolveQualityCouncilConfig(env, {
-    enabled: input.generationSettings.qualityCouncilEnabled,
-    mode: input.generationSettings.qualityCouncilMode,
-    runPlanCouncil: input.generationSettings.qualityCouncilRunPlan,
-    runChoiceCouncil: input.generationSettings.qualityCouncilRunChoice,
-    runRoutePlaytestCouncil: input.generationSettings.qualityCouncilRunRoutePlaytest,
-    runFinalCouncil: input.generationSettings.qualityCouncilRunFinal,
+  const storyCouncil = resolveStoryCouncilConfig(env, {
+    enabled: input.generationSettings.storyCouncilEnabled,
+    mode: input.generationSettings.storyCouncilMode,
+    preset: input.generationSettings.storyCouncilPreset,
+    candidateCount: input.generationSettings.storyCouncilCandidateCount,
+    synthesisPolicy: input.generationSettings.storyCouncilSynthesisPolicy,
+    runEpisodeBlueprintCandidates: input.generationSettings.storyCouncilRunEpisodeBlueprints,
+    runSeasonPlanningCandidates: false,
+    runFoundationCandidates: false,
+    runChoiceCandidates: false,
+    runEncounterCandidates: false,
+    runNarrativeScaffoldingCandidates: false,
+    runPlanCouncil: false,
+    runChoiceCouncil: false,
+    runRoutePlaytestCouncil: input.generationSettings.storyCouncilRunRoutePlaytest,
+    runFinalCouncil: input.generationSettings.storyCouncilRunFinal,
     fusion: {
-      enabled: input.generationSettings.qualityCouncilFusionEnabled,
+      enabled: input.generationSettings.storyCouncilFusionEnabled,
       model: input.taskAssignments?.councilFusion?.model || 'openrouter/fusion',
-      onlyWhen: input.generationSettings.qualityCouncilFusionOnlyWhen,
+      onlyWhen: input.generationSettings.storyCouncilFusionOnlyWhen,
     },
-    maxCouncilCallsPerRun: input.generationSettings.qualityCouncilMaxCalls,
-    maxCandidateChoiceSets: input.generationSettings.qualityCouncilMaxChoiceCandidates,
+    maxCouncilCallsPerRun: input.generationSettings.storyCouncilMaxCalls,
+    maxConcurrentCandidates: input.generationSettings.storyCouncilMaxConcurrentCandidates,
+    councilTokenBudget: input.generationSettings.storyCouncilTokenBudget,
+    councilRemediationBudget: input.generationSettings.storyCouncilRemediationBudget,
+    maxCandidateChoiceSets: input.generationSettings.storyCouncilCandidateCount,
   });
 
   // Resolve the provider/model for a given pipeline task. Prefers the per-task
@@ -229,7 +241,7 @@ export function buildPipelineConfig(
     if (provider === 'openrouter' && task === 'councilFusion') {
       return {
         ...agentConfig,
-        model: qualityCouncil.fusion?.model || getScopedLlmModel(provider, model),
+        model: storyCouncil.fusion?.model || getScopedLlmModel(provider, model),
         openRouter: {
           route: 'fusion' as const,
           provider: {
@@ -241,7 +253,7 @@ export function buildPipelineConfig(
     }
     return agentConfig;
   };
-  const councilAgentConfigs = qualityCouncil.enabled
+  const councilAgentConfigs = storyCouncil.enabled
     ? {
         qualityCouncilPlan: buildAgentConfig('councilPlan', { maxTokens: 4096, temperature: 0.25 }),
         qualityCouncilChoice: buildAgentConfig('councilChoice', { maxTokens: 4096, temperature: 0.25 }),
@@ -426,7 +438,9 @@ export function buildPipelineConfig(
       strategy: input.videoSettings.strategy as VideoSettingsConfig['strategy'],
       apiKey: input.geminiApiKey.trim() || undefined,
     },
-    qualityCouncil,
+    storyCouncil,
+    // Worker/checkpoint compatibility during the Quality Council migration.
+    qualityCouncil: storyCouncil,
   };
 }
 

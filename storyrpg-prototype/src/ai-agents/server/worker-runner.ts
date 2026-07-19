@@ -304,7 +304,7 @@ async function runAnalysis(payload: WorkerPayload) {
 
 async function runGeneration(payload: WorkerPayload) {
   if (!payload.generationInput) throw new Error('generationInput is required for generation mode');
-  const { sourceAnalysis, episodeRange, manifest } = payload.generationInput;
+  const { sourceAnalysis, episodeRange, manifest, runContext } = payload.generationInput;
   const incomingBrief = payload.generationInput.brief as unknown as FullCreativeBrief;
   const compiled = compileGenerationBrief({
     draftBrief: incomingBrief,
@@ -336,6 +336,7 @@ async function runGeneration(payload: WorkerPayload) {
     sourceAnalysis: sourceAnalysis as SourceMaterialAnalysis | undefined,
     episodeRange,
     manifest,
+    runContext,
     fallbackEpisode: Number(brief?.episode?.number || 1),
   });
   emit('step_start', { step: 'generation' });
@@ -444,6 +445,10 @@ async function runGeneration(payload: WorkerPayload) {
         ts: typeof cp.timestamp === 'string' ? cp.timestamp : new Date().toISOString(),
       }))
     : [];
+  const outputDirectory = typeof resultObj.outputDirectory === 'string'
+    ? resultObj.outputDirectory as string
+    : pipeline.getCurrentOutputDirectory?.();
+  const runId = outputDirectory ? path.basename(path.resolve(outputDirectory)) : undefined;
 
   const transferPayload = pkg
     ? {
@@ -454,6 +459,9 @@ async function runGeneration(payload: WorkerPayload) {
           error: typeof resultObj.error === 'string' ? (resultObj.error as string) : undefined,
           ...failureTransfer,
         }, { maxEvents: 60 }),
+        outputDirectory,
+        runId,
+        runContext: payload.generationInput?.runContext || { kind: 'standard' },
       }
     : {
         schemaVersion: 3,
@@ -464,6 +472,9 @@ async function runGeneration(payload: WorkerPayload) {
         checkpointSummary,
         success: result.success === true,
         error: typeof resultObj.error === 'string' ? (resultObj.error as string) : undefined,
+        outputDirectory,
+        runId,
+        runContext: payload.generationInput?.runContext || { kind: 'standard' },
         ...failureTransfer,
       };
 
@@ -488,11 +499,7 @@ async function runGeneration(payload: WorkerPayload) {
     }
   }
 
-  const outputDir =
-    typeof resultObj.outputDirectory === 'string'
-      ? (resultObj.outputDirectory as string)
-      : pipeline.getCurrentOutputDirectory?.();
-  await finalizeWorkerLog(outputDir);
+  await finalizeWorkerLog(outputDirectory);
   activeGenerationPipeline = undefined;
 }
 
@@ -649,14 +656,15 @@ async function main() {
   if (payload.mode === 'analysis' || payload.mode === 'generation') {
     const config = payload.config as Record<string, any>;
     const jobContract = config.jobContract ?? config.generation?.jobContract ?? {};
+    const storyCouncilEnabled = (config.storyCouncil ?? config.qualityCouncil)?.enabled === true;
     validateNarrativeJobContract(config, {
       geminiOnly: jobContract.geminiOnly === true,
       textOnly: jobContract.textOnly === true,
-      qualityCouncilEnabled: config.qualityCouncil?.enabled !== false,
+      qualityCouncilEnabled: storyCouncilEnabled,
     });
     const preflight = await narrativeProviderPreflight({
       agents: config.agents ?? {},
-      qualityCouncilEnabled: config.qualityCouncil?.enabled !== false,
+      qualityCouncilEnabled: storyCouncilEnabled,
       imageGenerationEnabled: config.imageGen?.enabled === true,
     });
     emit('pipeline_event', {
@@ -668,7 +676,8 @@ async function main() {
         checked: preflight.checked,
         skipped: preflight.skipped,
         imageGenerationEnabled: config.imageGen?.enabled === true,
-        qualityCouncilEnabled: config.qualityCouncil?.enabled === true,
+        storyCouncilEnabled,
+        qualityCouncilEnabled: storyCouncilEnabled,
       },
     });
   }

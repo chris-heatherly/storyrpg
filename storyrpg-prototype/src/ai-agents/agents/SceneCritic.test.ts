@@ -41,3 +41,40 @@ describe('SceneCritic append-only semantic repair', () => {
     expect(result.data?.rewrittenBeats).toEqual([]);
   });
 });
+
+describe('SceneCritic conditional prose repair', () => {
+  it('accepts variant prose changes only when route conditions are unchanged', async () => {
+    const condition = { type: 'flag', flag: 'trusted_mika', value: true };
+    const critic = new SceneCritic(config);
+    const callLLM = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({
+        sceneId: 's1-1', overallCommentary: '', critiqueNotes: [],
+        rewrittenBeats: [{
+          id: 'b1', text: 'You close the notebook.',
+          textVariants: [{ condition, text: 'You follow Mika into the rain.' }],
+        }],
+      }))
+      .mockResolvedValueOnce(JSON.stringify({
+        sceneId: 's1-1', overallCommentary: '', critiqueNotes: [],
+        rewrittenBeats: [{
+          id: 'b1', text: 'You close the notebook.',
+          textVariants: [{ condition: { ...condition, value: false }, text: 'You follow Mika into the rain.' }],
+        }],
+      }));
+    (critic as any).callLLM = callLLM;
+    const input = {
+      scene: { sceneId: 's1-1', beats: [{
+        id: 'b1', text: 'You close the notebook.',
+        textVariants: [{ condition, text: 'Kylie follows Mika into the rain.' }],
+      }] },
+      flaggedBeatIds: ['b1'],
+    } as never;
+
+    const accepted = await critic.execute(input);
+    const rejected = await critic.execute(input);
+
+    expect(callLLM.mock.calls[0][0][0].content).toContain('textVariants');
+    expect(accepted.data?.rewrittenBeats).toHaveLength(1);
+    expect(rejected.data?.rewrittenBeats).toEqual([]);
+  });
+});

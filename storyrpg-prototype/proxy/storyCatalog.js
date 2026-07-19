@@ -122,7 +122,9 @@ function createStoryCatalog(storiesDir, port) {
   }
 
   function stripGeneratedStoryTimestamp(dirName) {
-    return dirName.replace(/_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$/, '');
+    return dirName
+      .replace(/_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$/, '')
+      .replace(/_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{3}(?:_batch-[^_]+_v\d+)?(?:_[a-z0-9-]+)?$/i, '');
   }
 
   function getImageArtifactSummaryForSlug(dirName) {
@@ -303,6 +305,7 @@ function createStoryCatalog(storiesDir, port) {
       qualityScore: typeof record.qualityDisposition?.score === 'number'
         ? record.qualityDisposition.score
         : Number.NEGATIVE_INFINITY,
+      explicitlySelected: Boolean(record.qualityDisposition?.selectedFromVariantBatch),
     };
   }
 
@@ -311,6 +314,7 @@ function createStoryCatalog(storiesDir, port) {
     const b = recordEpisodeProgress(right);
     return b.maxEpisode - a.maxEpisode
       || b.episodeCount - a.episodeCount
+      || Number(b.explicitlySelected) - Number(a.explicitlySelected)
       || b.qualityScore - a.qualityScore
       || right.mtimeMs - left.mtimeMs;
   }

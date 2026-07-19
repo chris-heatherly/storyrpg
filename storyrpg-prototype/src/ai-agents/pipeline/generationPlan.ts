@@ -75,7 +75,6 @@ export function phaseToPlanKey(phase?: string): string | undefined {
     p.includes('architecture') ||
     p.startsWith('branch') ||
     p === 'content' ||
-    p === 'episode_parallelism' ||
     p.includes('scene') ||
     p.includes('choice') ||
     (p.includes('encounter') && !p.includes('image')) ||

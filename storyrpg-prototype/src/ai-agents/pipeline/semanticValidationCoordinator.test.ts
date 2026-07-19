@@ -559,6 +559,95 @@ describe('reveal-timing enforcement (F1.1)', () => {
   });
 });
 
+describe('evidence-safe forbidden judgments', () => {
+  const endingTask = () => task({
+    id: 'task:escalation-budget:ep1',
+    evidenceAtoms: [{
+      id: 'escalation-budget:ep1:ending-displaced',
+      description: 'A new threat must not displace the protagonist-owned emotional ending.',
+      acceptedPatterns: [],
+      kind: 'semantic',
+      verificationAuthority: 'semantic_judge',
+      polarity: 'forbidden',
+      required: true,
+    }],
+  });
+
+  it('does not turn an evidence-free proposition-present verdict into a content blocker', async () => {
+    const judge = new FakeJudge((claim) => verdict(claim, 'partial'));
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1-final',
+      tasks: [endingTask()],
+      sceneContent: { beats: [{ text: 'You close the laptop and decide the unanswered question can wait until morning.' }] },
+      judge,
+    });
+
+    expect(result.findings.some((finding) => finding.code === 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT')).toBe(false);
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'SEMANTIC_VALIDATION_INCONCLUSIVE' }),
+    ]));
+  });
+
+  it('does not let a lone adjudication create a content miss against non-blocking samples', async () => {
+    let executeCalls = 0;
+    const judge: SemanticRealizationJudgeLike = {
+      identity: () => ({ policyVersion: 'test-v3', provider: 'test', model: 'test-judge' }),
+      execute: async (claims) => {
+        executeCalls += 1;
+        return {
+          success: true,
+          data: { verdicts: claims.map((claim) => verdict(claim, executeCalls === 1 ? 'uncertain' : 'not_fulfilled')) },
+        };
+      },
+      adjudicate: async (claim) => ({
+        success: true,
+        data: { verdicts: [verdict(claim, 'fulfilled', claim.excerpts[0].text)] },
+      }),
+    };
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1-final',
+      tasks: [endingTask()],
+      sceneContent: { beats: [{ text: 'You close the laptop and keep the final decision for yourself.' }] },
+      judge,
+    });
+
+    expect(result.findings.some((finding) => finding.code === 'SEMANTIC_FORBIDDEN_EVIDENCE_PRESENT')).toBe(false);
+    expect(result.receipt.semanticVerdicts?.[0]).toMatchObject({
+      disposition: 'inconclusive',
+      sampleCount: 3,
+    });
+  });
+
+  it('judges ending ownership from chronological terminal beats, not an earlier warning', async () => {
+    const claims: SemanticRealizationClaim[] = [];
+    const judge = new FakeJudge((claim) => {
+      claims.push(claim);
+      return verdict(claim, 'not_fulfilled');
+    });
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1-final',
+      tasks: [endingTask()],
+      sceneContent: { beats: [
+        { id: 'b1', text: 'A warning arrives: other things are watching from the dark.' },
+        { id: 'b2', text: 'You cross the empty club and lock the door.' },
+        { id: 'b3', text: 'You publish the piece under your own name.' },
+        { id: 'b4', text: 'Mika reads it, then raises her glass to your decision.' },
+        { id: 'b5', text: 'You close the laptop and let the unanswered question wait until morning.' },
+      ] },
+      judge,
+    });
+
+    expect(result.findings).toEqual([]);
+    expect(claims[0].excerpts.map((excerpt) => excerpt.text).join(' ')).not.toContain('other things are watching');
+    expect(claims[0].excerpts.map((excerpt) => excerpt.text).join(' ')).toContain('You publish the piece');
+    expect(claims[0].criteria).toHaveLength(3);
+    expect(claims[0].criteria[2]).toContain('warning, question, or future pressure');
+  });
+});
+
 describe('owner-receipt continuity at final regression (W3.2)', () => {
   beforeEach(() => {
     clearSemanticValidationCache();

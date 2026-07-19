@@ -67,6 +67,7 @@ import {
 } from '../utils/canonicalChoiceConsequences';
 import { authorFacingMechanicPressureText } from '../utils/treatmentFieldContracts';
 import { isUnsafeCallbackProse } from '../constants/metaProse';
+import { PovClarityValidator } from '../validators/PovClarityValidator';
 
 /**
  * Bucket C soft-gate decision for the LLM-judged stakes score.
@@ -577,6 +578,16 @@ Before finalizing:
       // Pass the input so we can use blueprint stakes as fallback
       choiceSet = this.normalizeChoiceSet(choiceSet, input);
 
+      const invalidParticipants = this.collectInvalidCanonicalChoiceParticipants(choiceSet, input);
+      if (invalidParticipants.length > 0) {
+        const repaired = await this.repairCanonicalChoiceParticipants(choiceSet, input, invalidParticipants);
+        if (!repaired.success || !repaired.data) {
+          throw new Error(repaired.error || 'ChoiceAuthor participant correction failed.');
+        }
+        choiceSet = repaired.data;
+        rawResponse = repaired.rawResponse ?? rawResponse;
+      }
+
       console.log(`[ChoiceAuthor] Choice set has ${choiceSet.choices?.length || 0} choices`);
 
       // Validate the choices (structural). Production authoring must not synthesize
@@ -653,6 +664,7 @@ Before finalizing:
       if (isGateEnabled('GATE_CHOICE_OUTCOME_TIER_REAUTHOR')) {
         await this.reauthorStubOutcomeTiers(choiceSet, input);
       }
+      await this.reauthorPovOutcomeTiers(choiceSet, input);
       materializeSharedChoiceResolution(choiceSet);
 
       return {
@@ -793,6 +805,7 @@ Before finalizing:
     const choiceResolutionSection = this.buildChoiceResolutionTaskSection(input);
     const requiresSharedResolution = choiceResolutionSection.length > 0;
     const departureHandoffSection = this.buildDepartureHandoffSection(input);
+    const relationshipExample = this.relationshipConsequencePromptExample(input);
 
     return `Return one complete compact ChoiceSet JSON object. The deterministic schema is supplied by the caller; match it exactly. Return ONLY JSON.
 
@@ -835,7 +848,7 @@ Stat checks for relationship/strategic/dilemma:
 
 Consequences:
 - setFlag shape: {"type":"setFlag","flag":"accepted_quartz","value":true}
-- relationship shape: {"type":"relationship","npcId":"char-mihaela-mika-drgan","dimension":"trust","change":5}
+${relationshipExample}
 - changeScore shape: {"type":"changeScore","score":"blog_reach","change":1}
 - never put a flag name in value.
 - never add flag/value fields to relationship or score consequences.
@@ -936,7 +949,9 @@ Return JSON only.`;
     );
     const nonNameTokens = new Set([
       'the', 'this', 'that', 'these', 'those', 'what', 'when', 'where', 'why', 'how',
-      'your', 'her', 'his', 'their', 'our', 'its',
+      'i', 'you', 'he', 'she', 'we', 'they', 'me', 'him', 'her', 'us', 'them',
+      'my', 'your', 'his', 'hers', 'our', 'ours', 'their', 'theirs', 'its',
+      'myself', 'yourself', 'himself', 'herself', 'ourselves', 'themselves',
     ]);
     const issues: string[] = [];
     for (const candidate of candidates) {
@@ -952,7 +967,7 @@ Return JSON only.`;
       if (!actsAsPerson) continue;
       issues.push(
         `Reader-facing choice prose introduces unknown acting character "${candidate}". ` +
-        `Use only the protagonist and canonical scene roster: ${[input.protagonistInfo.name, ...input.npcsInScene.map((npc) => npc.name)].join(', ')}.`,
+        `Use only the protagonist and canonical scene roster: ${Array.from(new Set([input.protagonistInfo.name, ...input.npcsInScene.map((npc) => npc.name)])).join(', ')}.`,
       );
     }
     return issues;
@@ -1385,6 +1400,34 @@ Return ONLY a JSON object with exactly these keys: ${tiers.join(', ')}. Example:
           `[ChoiceAuthor] Generation-time re-author left ${needTiers.length - replaced} stub tier(s) on ` +
           `choice "${choice.id}" — the outcome-text contract gate remains the net.`,
         );
+      }
+    }
+  }
+
+  /** Choice outcomes are narration even when the choice label itself is first-person dialogue. */
+  private async reauthorPovOutcomeTiers(choiceSet: ChoiceSet, input: ChoiceAuthorInput): Promise<void> {
+    const validator = new PovClarityValidator();
+    const tiers = ['success', 'partial', 'failure'] as const;
+    const hasPovBreak = (text: string | undefined): boolean => Boolean(text && (
+      validator.findThirdPersonProtagonistTexts([text], input.protagonistInfo.name).length > 0
+      || validator.findFirstPersonProtagonistTexts([text], input.protagonistInfo.name).length > 0
+    ));
+    for (const choice of choiceSet.choices ?? []) {
+      if (!choice.outcomeTexts) continue;
+      const needTiers = tiers.filter((tier) => hasPovBreak(choice.outcomeTexts?.[tier]));
+      if (needTiers.length === 0) continue;
+      const authored = await this.reauthorOutcomeTexts({
+        choiceText: String(choice.text || choice.id || 'the choice'),
+        stakes: choice.stakesAnnotation,
+        sceneName: input.sceneBlueprint.name,
+        sceneLocation: input.sceneBlueprint.location,
+        needTiers,
+        previousOutcomeTexts: choice.outcomeTexts,
+        repairDirective: `Rewrite protagonist narration in second person (you/your). Never narrate ${input.protagonistInfo.name} in first or third person. Preserve the same action, outcome tier, setting, and participants.`,
+      });
+      for (const tier of needTiers) {
+        const candidate = authored[tier];
+        if (candidate && !hasPovBreak(candidate)) choice.outcomeTexts[tier] = candidate;
       }
     }
   }
@@ -2067,6 +2110,7 @@ Shared resolution may contain only facts invariant across every option. Never ha
       .map(state => `- ${state.canonicalStateId}${state.aliases.length > 0 ? ` (registered aliases: ${state.aliases.join(', ')})` : ''} — source episode ${state.sourceEpisodeNumber}; future use in episode(s) ${state.targetEpisodeNumbers.join(', ')}`)
       .join('\n');
     const routeFlags = input.availableFlags.filter(f => f.name.startsWith('route_'));
+    const relationshipExample = this.relationshipConsequencePromptExample(input);
 
     const scoreList = input.availableScores
       .map(s => `- ${s.name}: ${s.description}`)
@@ -2429,7 +2473,7 @@ Compactness limits:
 
 Canonical consequence examples:
 - setFlag: {"type":"setFlag","flag":"accepted_quartz","value":true}
-- relationship: {"type":"relationship","npcId":"char-mihaela-mika-drgan","dimension":"trust","change":5}
+${relationshipExample}
 - score: {"type":"changeScore","score":"blog_reach","change":1}
 
 CRITICAL REQUIREMENTS:
@@ -2482,6 +2526,7 @@ CRITICAL REQUIREMENTS:
     const choiceResolutionSection = this.buildChoiceResolutionTaskSection(input);
     const requiresSharedResolution = choiceResolutionSection.length > 0;
     const departureHandoffSection = this.buildDepartureHandoffSection(input);
+    const relationshipExample = this.relationshipConsequencePromptExample(input);
 
     return `Create a compact playable ChoiceSet. Return ONLY JSON. The deterministic response schema is supplied by the caller; match that schema exactly and do not invent fields.
 
@@ -2563,7 +2608,7 @@ ${requiresSharedResolution ? '- sharedResolutionText: one or two vivid sentences
 
 ## Consequences
 - setFlag: {"type":"setFlag","flag":"accepted_quartz","value":true}
-- relationship: {"type":"relationship","npcId":"char-mihaela-mika-drgan","dimension":"trust","change":5}
+${relationshipExample}
 - score: {"type":"changeScore","score":"blog_reach","change":1}
 - Never put the flag name in value. Never emit {"type":"setFlag","value":"flag_name"}.
 
@@ -3109,6 +3154,134 @@ Example: {"skillWeights":{"persuasion":1},"difficulty":45}
       || this.relationshipPacingKeysMatch(npc.name, value)
     );
     return matches.length === 1 ? matches[0].id : undefined;
+  }
+
+  private relationshipConsequencePromptExample(input: ChoiceAuthorInput): string {
+    const npc = input.npcsInScene[0];
+    return npc
+      ? `- relationship: {"type":"relationship","npcId":"${npc.id}","dimension":"trust","change":5}\n- Canonical NPC ids: ${input.npcsInScene.map((entry) => `${entry.name}=${entry.id}`).join(', ')}`
+      : '- relationship: do not emit relationship consequences because this scene has no canonical NPC roster.';
+  }
+
+  private collectInvalidCanonicalChoiceParticipants(
+    choiceSet: ChoiceSet,
+    input: ChoiceAuthorInput,
+  ): Array<{ fieldPath: string; value: string; assign: (npcId: string) => void }> {
+    const targets: Array<{ fieldPath: string; value: string; assign: (npcId: string) => void }> = [];
+    const inspect = (value: string | undefined, fieldPath: string, assign: (npcId: string) => void): void => {
+      if (value && !this.canonicalNpcIdForInput(value, input)) targets.push({ fieldPath, value, assign });
+    };
+    const inspectConsequence = (consequence: Consequence, fieldPath: string): void => {
+      if (consequence.type === 'relationship' || consequence.type === 'relationshipEvidence') {
+        inspect(consequence.npcId, `${fieldPath}.npcId`, (npcId) => { consequence.npcId = npcId; });
+      }
+    };
+    const inspectCondition = (condition: unknown, fieldPath: string): void => {
+      if (!condition || typeof condition !== 'object') return;
+      if (Array.isArray(condition)) {
+        condition.forEach((child, index) => inspectCondition(child, `${fieldPath}[${index}]`));
+        return;
+      }
+      const raw = condition as { type?: string; npcId?: string; conditions?: unknown[]; condition?: unknown };
+      if (raw.type === 'relationship' && raw.npcId) {
+        inspect(raw.npcId, `${fieldPath}.npcId`, (npcId) => { raw.npcId = npcId; });
+      }
+      for (const [index, child] of (raw.conditions ?? []).entries()) inspectCondition(child, `${fieldPath}.conditions[${index}]`);
+      if (raw.condition) inspectCondition(raw.condition, `${fieldPath}.condition`);
+    };
+    for (const [choiceIndex, choice] of (choiceSet.choices ?? []).entries()) {
+      const base = `choices[${choiceIndex}]`;
+      for (const [index, consequence] of (choice.consequences ?? []).entries()) {
+        inspectConsequence(consequence, `${base}.consequences[${index}]`);
+      }
+      for (const [index, delayed] of (choice.delayedConsequences ?? []).entries()) {
+        inspectConsequence(delayed.consequence, `${base}.delayedConsequences[${index}].consequence`);
+      }
+      for (const [index, evidence] of (choice.relationshipValueEvidence ?? []).entries()) {
+        inspect(evidence.npcId, `${base}.relationshipValueEvidence[${index}].npcId`, (npcId) => { evidence.npcId = npcId; });
+      }
+      for (const [index, reaction] of (choice.witnessReactions ?? []).entries()) {
+        inspect(reaction.npcId, `${base}.witnessReactions[${index}].npcId`, (npcId) => { reaction.npcId = npcId; });
+      }
+      for (const [index, hint] of (choice.residueHints ?? []).entries()) {
+        inspect(hint.targetNpcId, `${base}.residueHints[${index}].targetNpcId`, (npcId) => { hint.targetNpcId = npcId; });
+      }
+      inspectCondition(choice.conditions, `${base}.conditions`);
+    }
+    return targets;
+  }
+
+  private async repairCanonicalChoiceParticipants(
+    choiceSet: ChoiceSet,
+    input: ChoiceAuthorInput,
+    targets: Array<{ fieldPath: string; value: string; assign: (npcId: string) => void }>,
+  ): Promise<AgentResponse<ChoiceSet>> {
+    const allowedIds = input.npcsInScene.map((npc) => npc.id);
+    if (allowedIds.length === 0) {
+      return { success: false, error: `Choice metadata references NPCs but scene ${input.sceneBlueprint.id} has no canonical NPC roster.` };
+    }
+    const fieldPaths = targets.map((target) => target.fieldPath);
+    const prompt = `Correct ONLY invalid structured NPC ids in an interactive-fiction ChoiceSet. Do not rewrite prose, choices, consequences, geometry, or any other field.
+
+INVALID REFERENCES:
+${targets.map((target) => `- ${target.fieldPath}: ${target.value}`).join('\n')}
+
+CANONICAL ROSTER:
+${input.npcsInScene.map((npc) => `- ${npc.name}: ${npc.id}`).join('\n')}
+
+Return one correction for every invalid field path and no others. Return JSON only.`;
+    try {
+      const rawResponse = await this.callLLM(
+        [{ role: 'user', content: prompt }],
+        2,
+        {
+          jsonSchema: {
+            name: 'choice_participant_correction',
+            maxOutputTokens: 1024,
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['corrections'],
+              properties: {
+                corrections: {
+                  type: 'array',
+                  minItems: targets.length,
+                  maxItems: targets.length,
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['fieldPath', 'npcId'],
+                    properties: {
+                      fieldPath: { type: 'string', enum: fieldPaths },
+                      npcId: { type: 'string', enum: allowedIds },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      );
+      const parsed = this.parseJSON<{ corrections?: Array<{ fieldPath?: string; npcId?: string }> }>(rawResponse);
+      const corrections = parsed.corrections ?? [];
+      const byPath = new Map(corrections.map((correction) => [correction.fieldPath, correction.npcId]));
+      if (corrections.length !== targets.length || byPath.size !== targets.length) {
+        return { success: false, error: 'Choice participant correction did not return exactly one correction per invalid field.', rawResponse };
+      }
+      for (const target of targets) {
+        const npcId = byPath.get(target.fieldPath);
+        if (!npcId || !allowedIds.includes(npcId)) {
+          return { success: false, error: `Choice participant correction omitted or invalidated ${target.fieldPath}.`, rawResponse };
+        }
+      }
+      for (const target of targets) target.assign(byPath.get(target.fieldPath)!);
+      if (this.collectInvalidCanonicalChoiceParticipants(choiceSet, input).length > 0) {
+        return { success: false, error: 'Choice participant correction left invalid NPC references.', rawResponse };
+      }
+      return { success: true, data: choiceSet, rawResponse };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   /** Normalize known aliases in structured choice metadata and reject foreign

@@ -53,6 +53,7 @@ export interface ContractRepairReport {
     beatId?: string;
     /** Exact object path inspected by the validator (for field-owned repair). */
     fieldPath?: string;
+    repairSurface?: import('../../types/narrativeContract').NarrativeRealizationSurface;
     episodeNumber?: number;
     taskId?: string;
     contractId?: string;

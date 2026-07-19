@@ -44,6 +44,7 @@ import { validateCanonicalEpisodeSceneOrder, validateEpisodeArchitectureContract
 import { projectBlueprintOntoLockedEpisodePlan } from '../episodeArchitectureProjection';
 import { captureEpisodeContractSurface, diffEpisodeContractSurface } from '../episodeContractMutationGuard';
 import type { FullCreativeBrief } from '../FullStoryPipeline';
+import type { StoryCouncilRunner } from '../../quality-council/QualityCouncilRunner';
 import { PipelineContext } from './index';
 
 // ========================================
@@ -59,6 +60,8 @@ import { PipelineContext } from './index';
  */
 export interface EpisodeArchitecturePhaseDeps {
   storyArchitect: Pick<StoryArchitect, 'execute'>;
+  storyCouncilCandidateArchitects?: Array<Pick<StoryArchitect, 'execute'>>;
+  storyCouncil?: Pick<StoryCouncilRunner, 'runEpisodeBlueprintTournament'>;
 
   // --- Run-scoped state (accessor-backed) ---
   readonly cachedPipelineMemory: string | null;
@@ -215,11 +218,116 @@ export class EpisodeArchitecturePhase {
       && Boolean(architectureInput.seasonPlanDirectives?.plannedScenes?.length);
     let previousConflictSignature: string | undefined;
     for (let attempt = 1; attempt <= maxArchitectureAttempts; attempt += 1) {
-      result = await withTimeoutAbort(
-        (signal) => this.deps.storyArchitect.execute(architectureInput, 0, { signal }),
-        PIPELINE_TIMEOUTS.storyArchitect,
-        attempt === 1 ? 'StoryArchitect.execute' : `StoryArchitect.execute(branch-repair-${attempt})`,
-      );
+      if (attempt === 1 && this.deps.storyCouncil && !elaborateMode) {
+        const lockedEpisodePlan = brief.seasonPlan?.scenePlan?.episodeEventPlans?.[brief.episode.number];
+        const plannedScenes = brief.seasonPlan?.scenePlan
+          ? scenesForEpisode(brief.seasonPlan.scenePlan, brief.episode.number)
+          : [];
+        const tournament = await this.deps.storyCouncil.runEpisodeBlueprintTournament<EpisodeBlueprint>({
+          stage: 'episode-blueprint',
+          scope: { episodeNumber: brief.episode.number },
+          lockedContext: {
+            episodeNumber: brief.episode.number,
+            sourceKind: architectureInput.sourceKind,
+            seasonAnchors: architectureInput.seasonAnchors,
+            seasonStoryCircle: architectureInput.seasonStoryCircle,
+            episodeStoryCircleRole: architectureInput.episodeStoryCircleRole,
+            episodeEventPlan: lockedEpisodePlan,
+            lockedSceneIds: plannedScenes.map((scene) => scene.id),
+            narrativeContractGraphHash: brief.seasonPlan?.scenePlan?.narrativeContractGraph?.sourceHash,
+          },
+          produce: async (seat) => {
+            const seatNumber = Number.parseInt(seat.authorSeat.match(/(\d+)$/)?.[1] || '1', 10);
+            const candidateAuthors = this.deps.storyCouncilCandidateArchitects?.length
+              ? this.deps.storyCouncilCandidateArchitects
+              : [this.deps.storyArchitect];
+            const candidateAuthor = seat.kind === 'synthesis'
+              ? this.deps.storyArchitect
+              : candidateAuthors[(seatNumber - 1) % candidateAuthors.length];
+            const candidateInput: StoryArchitectInput = {
+              ...architectureInput,
+              userPrompt: [
+                baseArchitectureUserPrompt,
+                'STORY COUNCIL CANDIDATE AUTHORING:',
+                `Seat: ${seat.authorSeat}. Candidate: ${seat.candidateId}.`,
+                seat.directive,
+                seat.kind === 'synthesis' && seat.sourceArtifacts?.length
+                  ? `QUALIFIED FINALIST ARTIFACTS (portable inputs, not fields to concatenate):\n${seat.sourceArtifacts
+                      .map((source) => `${source.candidateId}:\n${JSON.stringify(source.artifact, null, 2).slice(0, 12000)}`)
+                      .join('\n\n')}`
+                  : '',
+                'Work independently from the locked context. Do not add, remove, reorder, or rename canon-owned scene shells.',
+              ].filter(Boolean).join('\n\n'),
+            };
+            const response = await withTimeoutAbort(
+              (signal) => candidateAuthor.execute(candidateInput, 0, { signal }),
+              PIPELINE_TIMEOUTS.storyArchitect,
+              `StoryArchitect.execute(${seat.candidateId})`,
+            );
+            if (!response.success || !response.data || !lockedEpisodePlan) return response;
+            const candidate = JSON.parse(JSON.stringify(response.data)) as EpisodeBlueprint;
+            const projection = projectBlueprintOntoLockedEpisodePlan(candidate, lockedEpisodePlan, plannedScenes);
+            if (projection.missingPlannedSceneIds.length === 0) candidate.scenes = projection.scenes;
+            return { ...response, data: candidate };
+          },
+          qualify: (candidate) => {
+            const plannedSceneById = new Map(plannedScenes.map((scene) => [scene.id, scene]));
+            const projectedScenes = candidate.scenes.map((scene) => {
+              const planned = plannedSceneById.get(scene.id);
+              return {
+                ...scene,
+                relationshipPacing: scene.relationshipPacing?.length
+                  ? scene.relationshipPacing
+                  : planned?.relationshipPacing,
+                sceneEventOwnership: scene.sceneEventOwnership ?? planned?.sceneEventOwnership,
+              };
+            });
+            const conflicts = [
+              ...validateEpisodeArchitectureContract(projectedScenes),
+              ...validateCanonicalEpisodeSceneOrder(projectedScenes, lockedEpisodePlan),
+            ];
+            if (lockedEpisodePlan && conflicts.length === 0 && brief.seasonPlan?.scenePlan?.narrativeContractGraph) {
+              const projectionIssues = [
+                ...reprojectEpisodeEventPlan(
+                  brief.seasonPlan.scenePlan.narrativeContractGraph,
+                  lockedEpisodePlan,
+                  projectedScenes,
+                  brief.episode.number,
+                ),
+                ...validateCanonicalEpisodeBlueprintProjection(
+                  lockedEpisodePlan,
+                  projectedScenes,
+                  brief.episode.number,
+                ),
+              ].filter((issue) => issue.severity === 'error');
+              return {
+                passed: projectionIssues.length === 0,
+                issueCodes: projectionIssues.map((issue) => issue.code),
+                issues: projectionIssues.map((issue) => issue.message),
+              };
+            }
+            return {
+              passed: conflicts.length === 0,
+              issueCodes: conflicts.map((conflict) => conflict.code),
+              issues: conflicts.map((conflict) => conflict.message),
+            };
+          },
+          artifactForJudge: (candidate) => ({
+            arc: candidate.arc,
+            episodeCircle: candidate.episodeCircle,
+            storyCircleRole: candidate.storyCircleRole,
+            episodeEventPlan: candidate.episodeEventPlan,
+            scenes: candidate.scenes,
+          }),
+        });
+        result = tournament.response;
+      } else {
+        result = await withTimeoutAbort(
+          (signal) => this.deps.storyArchitect.execute(architectureInput, 0, { signal }),
+          PIPELINE_TIMEOUTS.storyArchitect,
+          attempt === 1 ? 'StoryArchitect.execute' : `StoryArchitect.execute(branch-repair-${attempt})`,
+        );
+      }
 
       if (result.success && result.data) {
         // StoryArchitect's raw response can omit locked relationship pacing

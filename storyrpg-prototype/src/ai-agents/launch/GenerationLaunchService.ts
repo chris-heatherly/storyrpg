@@ -13,7 +13,12 @@ import {
   type PipelineConfigExtras,
 } from '../config/buildPipelineConfig';
 import {
+  MAX_VARIANTS_PER_BATCH,
+  VARIANT_BATCH_PROTOCOL_VERSION,
   WORKER_JOB_PROTOCOL_VERSION,
+  type GenerationRunContext,
+  type GenerationWorkerJobStartRequest,
+  type VariantBatchStartRequest,
   type WorkerJobStartRequest,
 } from '../server/workerPayload';
 import {
@@ -30,7 +35,7 @@ import {
 export const GENERATION_LAUNCH_SERVICE_VERSION = 1 as const;
 export type ProviderPolicy = 'configured' | 'gemini-only';
 export type AnalysisWorkerJobStartRequest = Extract<WorkerJobStartRequest, { mode: 'analysis' }>;
-export type GenerationWorkerJobStartRequest = Extract<WorkerJobStartRequest, { mode: 'generation' }>;
+export type { GenerationWorkerJobStartRequest } from '../server/workerPayload';
 
 export type GeneratorPipelineConfigInput = Omit<BuildPipelineConfigInput, 'taskAssignments'> & {
   modelFamily: GeneratorLlmProvider;
@@ -44,6 +49,14 @@ export interface PreparedGenerationJob {
   configHash: string;
   manifestHash: string;
   launchServiceVersion: typeof GENERATION_LAUNCH_SERVICE_VERSION;
+}
+
+export interface PreparedVariantBatch {
+  request: VariantBatchStartRequest;
+  variants: PreparedGenerationJob[];
+  batchId: string;
+  sharedAnalysisHash: string;
+  sharedSeasonPlanHash?: string;
 }
 
 function wireClone<T>(value: T): T {
@@ -131,6 +144,7 @@ export function prepareGenerationJob(input: {
   providerPolicy?: ProviderPolicy;
   runId: string;
   resumeFromJobId?: string;
+  runContext?: GenerationRunContext;
 }): PreparedGenerationJob {
   assertProviderPolicy(input.config, input.providerPolicy || 'configured');
   const requestedEpisodes = normalizeRequestedEpisodes(
@@ -184,6 +198,7 @@ export function prepareGenerationJob(input: {
           : undefined,
         episodeRange,
         manifest: wireClone(manifest),
+        runContext: input.runContext ? wireClone(input.runContext) : { kind: 'standard' },
       },
     },
     idempotencyKey: `generation:${brief.story.title}:${manifestHash}:${input.runId}`,
@@ -205,4 +220,70 @@ export function prepareGenerationJob(input: {
     launchServiceVersion: GENERATION_LAUNCH_SERVICE_VERSION,
     request: deepFreeze(request),
   };
+}
+
+export function prepareVariantBatch(input: {
+  config: PipelineConfig;
+  draftBrief: FullCreativeBrief;
+  sourceAnalysis: SourceMaterialAnalysis;
+  seasonPlan?: SeasonPlan | null;
+  protagonistOverride?: Partial<FullCreativeBrief['protagonist']> | null;
+  requestedEpisodes: number[];
+  providerPolicy?: ProviderPolicy;
+  runId: string;
+  variantCount: number;
+}): PreparedVariantBatch {
+  if (!Number.isInteger(input.variantCount) || input.variantCount < 2 || input.variantCount > MAX_VARIANTS_PER_BATCH) {
+    throw new Error(`Variant Batch size must be between 2 and ${MAX_VARIANTS_PER_BATCH}.`);
+  }
+
+  const sharedAnalysisHash = generationArtifactHash(input.sourceAnalysis);
+  const sharedSeasonPlanHash = input.seasonPlan ? generationArtifactHash(input.seasonPlan) : undefined;
+  const batchId = `variant-batch-${generationArtifactHash({
+    runId: input.runId,
+    storyTitle: input.draftBrief.story.title,
+    sharedAnalysisHash,
+    sharedSeasonPlanHash,
+  }).slice(0, 16)}`;
+
+  const variants = Array.from({ length: input.variantCount }, (_, index) => {
+    const ordinal = index + 1;
+    const variantId = `${batchId}-v${String(ordinal).padStart(2, '0')}`;
+    return prepareGenerationJob({
+      config: input.config,
+      draftBrief: input.draftBrief,
+      sourceAnalysis: input.sourceAnalysis,
+      seasonPlan: input.seasonPlan,
+      protagonistOverride: input.protagonistOverride,
+      requestedEpisodes: input.requestedEpisodes,
+      providerPolicy: input.providerPolicy,
+      runId: `${input.runId}:variant:${ordinal}`,
+      runContext: {
+        kind: 'variant',
+        batchId,
+        variantId,
+        ordinal,
+        total: input.variantCount,
+        sharedAnalysisHash,
+        sharedSeasonPlanHash,
+      },
+    });
+  });
+
+  const request: VariantBatchStartRequest = {
+    version: VARIANT_BATCH_PROTOCOL_VERSION,
+    kind: 'variant-batch',
+    idempotencyKey: `variant-batch:${batchId}`,
+    storyTitle: input.draftBrief.story.title || 'Untitled Story',
+    variantCount: input.variantCount,
+    requests: variants.map((variant) => variant.request),
+  };
+
+  return deepFreeze({
+    request,
+    variants,
+    batchId,
+    sharedAnalysisHash,
+    sharedSeasonPlanHash,
+  });
 }

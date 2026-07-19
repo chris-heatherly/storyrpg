@@ -63,6 +63,37 @@ function makeContext(events: PipelineEvent[]): PipelineContext {
 }
 
 describe('EpisodeArchitecturePhase', () => {
+  it('delegates eligible first-attempt architecture to the Story Council tournament', async () => {
+    const execute = vi.fn(async () => ({ success: true, data: makeBlueprint() }));
+    const selected = { ...makeBlueprint(), title: 'Council selection' };
+    const runEpisodeBlueprintTournament = vi.fn(async () => ({
+      response: { success: true, data: selected },
+      decision: {
+        version: 1,
+        stage: 'episode-blueprint',
+        mode: 'select',
+        synthesisUsed: false,
+        candidates: [],
+        infrastructureErrors: [],
+      },
+    }));
+    const deps = makeDeps({
+      storyArchitect: { execute } as any,
+      storyCouncil: { runEpisodeBlueprintTournament } as any,
+    });
+
+    const blueprint = await new EpisodeArchitecturePhase(deps).run(
+      makeBrief(), { worldRules: [], tensions: [] } as any, { characters: [] } as any, makeContext([]),
+    );
+
+    expect(blueprint.title).toBe('Council selection');
+    expect(runEpisodeBlueprintTournament).toHaveBeenCalledWith(expect.objectContaining({
+      stage: 'episode-blueprint',
+      scope: { episodeNumber: 1 },
+    }));
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('returns the blueprint, builds the season choice plan, and emits agent events', async () => {
     const deps = makeDeps();
     const events: PipelineEvent[] = [];

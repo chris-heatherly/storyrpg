@@ -45,6 +45,7 @@ import {
   scenePassesCharacterIntroductionOffPageCheck,
 } from '../validators/CharacterIntroductionValidator';
 import { collectReaderFacingTexts } from '../validators/encounterTextSurfaces';
+import { PovClarityValidator } from '../validators/PovClarityValidator';
 import { contractRepairIssueFingerprint, type ContractRepairHandler, type ContractRepairReport } from './finalContractRepair';
 import { contentTokensForRealization, evaluateMomentRealization, normalizeRealizationText, stopwordsForRealization } from './realizationEvaluator';
 import { missingMomentTokens, requiredMomentFromMessage } from './realizationScoring';
@@ -347,7 +348,14 @@ export function buildSceneRepairDirectorNotes(
     'The final-story contract flagged this scene. Fix EVERY issue below with the smallest coherent prose rewrite. Add missing authored meaning ON-PAGE; remove forbidden meaning without replacing it with another unowned event.',
   ];
   for (const issue of issues) {
-    lines.push(`- ${issue.message ?? 'unspecified finding'}${issue.suggestion ? ` (fix: ${issue.suggestion})` : ''}`);
+    lines.push(`- ${issue.message ?? 'unspecified finding'}${issue.fieldPath ? ` [exact field: ${issue.fieldPath}]` : ''}${issue.suggestion ? ` (fix: ${issue.suggestion})` : ''}`);
+    if (issue.validator === 'PovClarityValidator' && (issue.type === 'pov_break' || issue.type === 'encounter_pov_break')) {
+      lines.push(
+        `  NON-NEGOTIABLE: rewrite the exact flagged ${issue.repairSurface ?? 'narration'} field in natural second person. ` +
+        'If it is a textVariant, return the complete textVariants array with every existing condition preserved byte-for-byte and change only the offending variant text.',
+      );
+      continue;
+    }
     if (issue.validator === 'EmptyPlayableSceneValidator') {
       lines.push(
         '  NON-NEGOTIABLE: this scene currently has NO playable content — its beats are empty scaffolds awaiting prose. ' +
@@ -1004,10 +1012,20 @@ function allMomentsDepicted(
   scene: RepairableStoryScene,
   issues: RepairableIssue[],
   plannedSource?: SceneContractSource,
+  protagonistName?: string,
   deferSemanticPredictionToCanonicalRevalidation = false,
 ): boolean {
   const prose = sceneProseForScoring(scene);
   return plannedSourceMomentsDepicted(scene, plannedSource) && issues.every((issue) => {
+    if (issue.validator === 'PovClarityValidator' && (issue.type === 'pov_break' || issue.type === 'encounter_pov_break')) {
+      const validator = new PovClarityValidator();
+      const texts = repairableBeatsFor(scene).flatMap((beat) => [
+        beat.text,
+        ...((beat as RepairableTextCarrier).textVariants ?? []).map((variant) => variant.text),
+      ]);
+      return validator.findThirdPersonProtagonistTexts(texts, protagonistName).length === 0
+        && validator.findFirstPersonProtagonistTexts(texts, protagonistName).length === 0;
+    }
     if (issue.validator === 'CharacterIntroductionValidator') {
       return characterIntroductionIssuesCleared(scene, [issue]);
     }
@@ -1570,6 +1588,7 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
             scene,
             issues,
             plannedSource,
+            opts.protagonistName,
             opts.deferSemanticPredictionToCanonicalRevalidation === true,
           );
           if (!predictedClear && attempt === 1) {
@@ -1592,6 +1611,7 @@ export function buildSceneProseRepairHandler(opts: SceneProseRepairOptions): Con
             scene,
             issues,
             plannedSource,
+            opts.protagonistName,
             opts.deferSemanticPredictionToCanonicalRevalidation === true,
           );
           opts.emit?.(

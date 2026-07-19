@@ -28,6 +28,7 @@ import {
   StakesLayers,
 } from '../../types';
 import type { StoryVerb } from '../utils/storyVerbs';
+import { buildForbiddenLexicalReveals, formatForbiddenRevealsSection } from '../utils/forbiddenReveals';
 import type { RelationshipEvidenceTag, RelationshipValueAxis } from '../../types/relationshipValue';
 import {
   SourceMaterialAnalysis,
@@ -2102,6 +2103,7 @@ NPC Mentorship available:
 ` : ''}` : ''}
 ${choicePoint.failureBranchPurpose ? `- **Failure Branch Purpose**: ${choicePoint.failureBranchPurpose}` : ''}
 
+${formatForbiddenRevealsSection(buildForbiddenLexicalReveals(input.sceneBlueprint.realizationTasks))}
 ## Characters Present
 **Protagonist**: ${input.protagonistInfo.name} (${input.protagonistInfo.pronouns})
 

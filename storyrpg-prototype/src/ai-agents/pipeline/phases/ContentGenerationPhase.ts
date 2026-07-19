@@ -17,7 +17,7 @@
  */
 
 import { DEFAULT_SKILLS } from '../../../constants/pipeline';
-import { buildForbiddenReveals } from '../../utils/forbiddenReveals';
+import { buildForbiddenLexicalReveals, buildForbiddenReveals } from '../../utils/forbiddenReveals';
 import { BEST_OF_N_DEFAULTS, INCREMENTAL_VALIDATION_DEFAULTS } from '../../../constants/validation';
 import { GrowthCurveEntry, buildGrowthTemplates } from '../../../engine/growthConsequenceBuilder';
 import { ThreadLedger } from '../../../types/narrativeThread';
@@ -2067,11 +2067,17 @@ export class ContentGenerationPhase {
           // G12 (forbidden reveals): the inverse of revealDirectives — ledger facts
           // still withheld at this episode, so the writer cannot burn a season secret
           // early (Carmen unmasked in ep2, the staged rescue confirmed in ep2, …).
-          forbiddenReveals: buildForbiddenReveals(
-            brief.seasonPlan?.informationLedger,
-            brief.episode?.number ?? 1,
-            [...(sceneRealizationBlueprint.revealsInfoIds ?? []), ...(sceneRealizationBlueprint.paysOffInfoIds ?? [])],
-          ),
+          forbiddenReveals: [
+            ...buildForbiddenReveals(
+              brief.seasonPlan?.informationLedger,
+              brief.episode?.number ?? 1,
+              [...(sceneRealizationBlueprint.revealsInfoIds ?? []), ...(sceneRealizationBlueprint.paysOffInfoIds ?? [])],
+            ),
+            // Not-yet-coined names/codewords from this scene's forbidden atoms
+            // ("Mr. Midnight" before s1-6, "The Mountain" before ep2) — the
+            // top-ranked batch defect class was writers never being told.
+            ...buildForbiddenLexicalReveals(sceneRealizationBlueprint.realizationTasks),
+          ],
           // B1 (Season Canon read-back): serve the sealed canon as authoritative
           // "do not contradict" context so prior-episode facts constrain this prose.
           establishedCanon: this.deps.establishedCanonForPrompt(brief.episode?.number),
@@ -4923,11 +4929,14 @@ export class ContentGenerationPhase {
             ?? (leadsToScenes.length > 0 ? new Set(leadsToScenes).size > 1 : undefined),
           priorStateContext,
           episodeSoFarSummary,
-          forbiddenReveals: buildForbiddenReveals(
-            brief.seasonPlan?.informationLedger,
-            brief.episode?.number ?? 1,
-            [...(sceneBlueprint.revealsInfoIds ?? []), ...(sceneBlueprint.paysOffInfoIds ?? [])],
-          ),
+          forbiddenReveals: [
+            ...buildForbiddenReveals(
+              brief.seasonPlan?.informationLedger,
+              brief.episode?.number ?? 1,
+              [...(sceneBlueprint.revealsInfoIds ?? []), ...(sceneBlueprint.paysOffInfoIds ?? [])],
+            ),
+            ...buildForbiddenLexicalReveals(sceneBlueprint.realizationTasks),
+          ],
           memoryContext: await this.memoryContextFor('EncounterArchitect', 'encounter-authoring', brief, sceneBlueprint, ['encounter-structure']),
           storyVerbs: this.deps.deriveStoryVerbsForBrief(brief, worldBible),
           seasonAnchors: brief.seasonPlan?.anchors,

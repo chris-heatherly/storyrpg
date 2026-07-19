@@ -339,3 +339,70 @@ describe('mergeRevalidatedContinuityIssues', () => {
     expect(merged.some((i) => i.tag === 'fresh-s3')).toBe(false);
   });
 });
+
+describe('mergeRewrittenEncounterBeatsIntoStory copy propagation (r129 unclearable-forbidden fix)', () => {
+  it('propagates a beat rewrite into assembly-copied encounter fields that carried the exact old text', () => {
+    // r129: "The shadow in Cismigiu lunged, but The Mountain intervened..." was
+    // copied verbatim from the victory storylet beat into outcomeText,
+    // cost.immediateEffect, and visualContract fields — a beat rewrite left
+    // all six copies carrying the forbidden codename, making the finding
+    // unclearable by its own repair route.
+    const oldText = 'The shadow lunged, but The Mountain intervened, pulling you clear.';
+    const newText = 'The shadow lunged, but the rough-hewn stranger intervened, pulling you clear.';
+    const story = {
+      episodes: [{
+        scenes: [{
+          id: 'enc-1',
+          encounter: {
+            phases: [],
+            storylets: {
+              victory: { beats: [{ id: 'enc-1-svictory-beat-1', text: oldText, visualContract: { visualMoment: oldText, visualNarrative: oldText } }] },
+            },
+            outcomes: {
+              victory: { nextSceneId: 's1-6', outcomeText: oldText, cost: { immediateEffect: oldText } },
+            },
+          },
+        }],
+      }],
+    };
+
+    const merged = mergeRewrittenEncounterBeatsIntoStory(story as never, 'enc-1', [
+      { id: 'enc-1-svictory-beat-1', text: newText },
+    ]);
+
+    expect(merged).toBe(1);
+    const enc = story.episodes[0].scenes[0].encounter as any;
+    expect(enc.storylets.victory.beats[0].text).toBe(newText);
+    expect(enc.outcomes.victory.outcomeText).toBe(newText);
+    expect(enc.outcomes.victory.cost.immediateEffect).toBe(newText);
+    expect(enc.storylets.victory.beats[0].visualContract.visualMoment).toBe(newText);
+    expect(enc.storylets.victory.beats[0].visualContract.visualNarrative).toBe(newText);
+  });
+
+  it('leaves non-identical strings untouched — exact full-string matches only', () => {
+    const oldText = 'The stranger pulls you clear of the shadow.';
+    const story = {
+      episodes: [{
+        scenes: [{
+          id: 'enc-1',
+          encounter: {
+            phases: [],
+            storylets: { victory: { beats: [{ id: 'b1', text: oldText }] } },
+            outcomes: {
+              victory: {
+                outcomeText: `${oldText} You catch your breath.`, // superset, not a copy
+                cost: { immediateEffect: 'You owe him a debt.' },
+              },
+            },
+          },
+        }],
+      }],
+    };
+
+    mergeRewrittenEncounterBeatsIntoStory(story as never, 'enc-1', [{ id: 'b1', text: 'New beat prose replaces the old.' }]);
+
+    const enc = story.episodes[0].scenes[0].encounter as any;
+    expect(enc.outcomes.victory.outcomeText).toBe(`${oldText} You catch your breath.`);
+    expect(enc.outcomes.victory.cost.immediateEffect).toBe('You owe him a debt.');
+  });
+});

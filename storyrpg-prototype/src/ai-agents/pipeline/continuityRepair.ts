@@ -408,6 +408,14 @@ export function mergeRewrittenEncounterBeatsIntoStory(
   const byId = new Map(rewrittenBeats.filter((b) => b.id).map((b) => [b.id as string, b]));
   const consumed = new Set<string>();
   let merged = 0;
+  // Assembly copies storylet beat prose verbatim into sibling encounter fields
+  // (outcomes[tier].outcomeText, cost.immediateEffect, visualContract fields,
+  // ...). A rewrite that only touches the beat leaves those copies carrying
+  // the OLD text — which made forbidden-wording findings unclearable by their
+  // own repair route (batch r129, 2026-07-19: "The Mountain" survived in six
+  // copied fields after every beat rewrite). Track before→after pairs and
+  // propagate to exact-match copies across the encounter after the merge.
+  const rewrittenTextByOriginal = new Map<string, string>();
   const applyToBeat = (beat: MergeableEncounterBeat): void => {
     const rewrite = beat.id ? byId.get(beat.id) : undefined;
     if (!rewrite || typeof rewrite.text !== 'string' || !rewrite.text.trim()) return;
@@ -418,14 +426,33 @@ export function mergeRewrittenEncounterBeatsIntoStory(
       (beat.text === undefined || beat.text === '') &&
       typeof beat.setupText === 'string' && beat.setupText.length > 0;
     if (usesSetupText) {
+      if (beat.setupText && beat.setupText !== rewrite.text) rewrittenTextByOriginal.set(beat.setupText, rewrite.text);
       beat.setupText = rewrite.text;
       if (rewrite.textVariants !== undefined) beat.setupTextVariants = rewrite.textVariants;
     } else {
+      if (typeof beat.text === 'string' && beat.text && beat.text !== rewrite.text) rewrittenTextByOriginal.set(beat.text, rewrite.text);
       beat.text = rewrite.text;
       if (rewrite.textVariants !== undefined) beat.textVariants = rewrite.textVariants;
     }
     consumed.add(beat.id as string);
     merged += 1;
+  };
+  const propagateExactCopies = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) propagateExactCopies(item);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    const record = node as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      const value = record[key];
+      if (typeof value === 'string') {
+        const replacement = rewrittenTextByOriginal.get(value);
+        if (replacement !== undefined) record[key] = replacement;
+      } else {
+        propagateExactCopies(value);
+      }
+    }
   };
   for (const episode of story.episodes ?? []) {
     for (const scene of episode.scenes ?? []) {
@@ -439,6 +466,9 @@ export function mergeRewrittenEncounterBeatsIntoStory(
       for (const storylet of storylets) {
         for (const beat of storylet?.beats ?? []) applyToBeat(beat);
       }
+      // Exact-full-string matches only — this is bookkeeping (keeping copies
+      // consistent with their rewritten source), never new prose authorship.
+      if (rewrittenTextByOriginal.size > 0) propagateExactCopies(scene.encounter);
     }
   }
   reportUnmatchedRewrites(rewrittenBeats, consumed, onUnmatched);

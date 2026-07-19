@@ -1178,12 +1178,32 @@ export class FinalContract {
         const missingMeaningDetail = (finding.missingEvidenceAtoms ?? [])
           .map((atomId) => task?.evidenceAtoms.find((atom) => atom.id === atomId)?.description)
           .filter((description): description is string => Boolean(description));
+        // Forbidden atoms get the SAME enrichment. Without it the repairer was
+        // told only "forbidden evidence for task <opaque-id>: <opaque-atom-id>"
+        // and rewrote blind — batch r128/r129 (2026-07-19) burned every repair
+        // round on "Mr. Midnight"/"The Mountain" premature-codename findings
+        // without the LLM ever being told which term to remove, even though
+        // the atom's description and literal patterns name it exactly.
+        const forbiddenMeaningDetail = (finding.matchedForbiddenAtoms ?? [])
+          .map((atomId) => task?.evidenceAtoms.find((atom) => atom.id === atomId))
+          .filter((atom): atom is NonNullable<typeof atom> => Boolean(atom))
+          .map((atom) => {
+            const patterns = (atom.acceptedPatterns ?? []).filter(Boolean);
+            return patterns.length > 0
+              ? `${atom.description} (remove the exact wording: ${patterns.map((p) => `"${p}"`).join(', ')})`
+              : atom.description;
+          })
+          .filter((description): description is string => Boolean(description));
+        const meaningDetails = [
+          missingMeaningDetail.length > 0 ? `Missing meaning(s): ${missingMeaningDetail.join('; ')}.` : '',
+          forbiddenMeaningDetail.length > 0 ? `Forbidden meaning(s) present — remove them: ${forbiddenMeaningDetail.join('; ')}.` : '',
+        ].filter(Boolean).join(' ');
         const issue = {
           type: 'semantic_realization_violation' as const,
           severity: finding.blocking ? 'error' as const : 'warning' as const,
           disposition: 'confirmed' as const,
-          message: missingMeaningDetail.length > 0
-            ? `${finding.message} Missing meaning(s): ${missingMeaningDetail.join('; ')}.`
+          message: meaningDetails
+            ? `${finding.message} ${meaningDetails}`
             : finding.message,
           validator: 'SemanticRealizationJudge',
           episodeNumber: task?.episodeNumber,
@@ -1205,7 +1225,9 @@ export class FinalContract {
           requiredEvidenceAtoms: task?.evidenceAtoms.filter((atom) => atom.required).map((atom) => atom.id),
           realizationFingerprint: finding.fingerprint,
           matchedForbiddenAtoms: finding.matchedForbiddenAtoms,
-          suggestion: 'Repair the missing meaning on the assigned owner surface; do not copy validator wording into the prose.',
+          suggestion: forbiddenMeaningDetail.length > 0
+            ? 'Remove or rephrase the forbidden wording named above (use a pre-reveal referent like a description of the person instead of the not-yet-coined name); change nothing else. Do not copy validator wording into the prose.'
+            : 'Repair the missing meaning on the assigned owner surface; do not copy validator wording into the prose.',
         };
         if (finding.blocking) r.blockingIssues.push(issue);
         else r.warnings.push(issue);

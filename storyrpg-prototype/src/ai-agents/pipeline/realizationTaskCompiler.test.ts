@@ -209,6 +209,40 @@ describe('compileNarrativeRealizationTasks', () => {
     });
   });
 
+  it('routes choice-dependent event atoms to ChoiceAuthor without requiring a relationship milestone', () => {
+    const sourceText = 'The host tests the newcomer, accepts her, and introduces her to the group.';
+    const graph = {
+      events: [{
+        id: 'event:choice-bond', episodeNumber: 1, sourceOrder: 1, sourceText,
+        sourceContractIds: ['treatment:choice-bond'], realizationMode: 'depiction',
+        ownershipPolicy: 'exactly_one_scene', prerequisiteEventIds: [], targetSceneIds: ['scene-choice'],
+        targetSpineUnitIds: [], ownerSceneId: 'scene-choice', provenance: { source: 'treatment_contract', confidence: 'authoritative' },
+        realizationAtoms: [
+          { id: 'event:choice-bond:setup', description: 'Stage the test', acceptedPatterns: ['tests the newcomer'], sourceText, kind: 'semantic', semanticRole: 'action', prerequisiteAtomIds: [], required: true },
+          { id: 'event:choice-bond:acceptance', description: 'Show reciprocal acceptance', acceptedPatterns: ['accepts her'], sourceText, kind: 'semantic', semanticRole: 'relationship_change', prerequisiteAtomIds: ['event:choice-bond:setup'], required: true },
+          { id: 'event:choice-bond:introduction', description: 'Introduce her to the group', acceptedPatterns: ['introduces her'], sourceText, kind: 'semantic', semanticRole: 'introduction', prerequisiteAtomIds: ['event:choice-bond:acceptance'], required: true },
+        ],
+      }],
+      dependencies: [],
+    } as unknown as NarrativeContractGraph;
+
+    const tasks = compileNarrativeRealizationTasks(graph, [{
+      id: 'scene-choice', episodeNumber: 1, order: 0, kind: 'standard', hasChoice: true,
+      choiceType: 'relationship', relationshipPacing: [],
+    }] as any).filter((task) => task.canonicalEventId === 'event:choice-bond');
+
+    expect(tasks.find((task) => task.ownerStage === 'scene_writer')?.evidenceAtoms).toEqual([
+      expect.objectContaining({ id: 'event:choice-bond:setup', temporalSlot: 'pre_choice' }),
+    ]);
+    expect(tasks.find((task) => task.ownerStage === 'choice_author')).toMatchObject({
+      target: { scope: 'all_choice_outcomes', surfaces: ['choice_outcome'] },
+      evidenceAtoms: [
+        expect.objectContaining({ id: 'event:choice-bond:acceptance', temporalSlot: 'choice_resolution' }),
+        expect.objectContaining({ id: 'event:choice-bond:introduction', temporalSlot: 'choice_resolution' }),
+      ],
+    });
+  });
+
   it('coalesces equivalent repeated planning projections without weakening the task', () => {
     const pacing = {
       id: 'relationship:circle', source: 'treatment', groupId: 'lantern-circle', startStage: 'spark', targetStage: 'trust',

@@ -3,6 +3,8 @@ import {
   compactSceneWriterInput,
   droppedBlockingContracts,
   isSceneWriterCompactRetryReason,
+  isSceneWriterStructuredOutputFailure,
+  sceneWriterTerminalFailureCode,
   shouldRunCompactSceneProtocolRecovery,
   totalContractBlocks,
 } from './sceneWriterInputCompaction';
@@ -134,6 +136,21 @@ describe('sceneWriterInputCompaction', () => {
       'SceneWriter response exceeded raw processing budget',
     )).toBe(false);
     expect(shouldRunCompactSceneProtocolRecovery('Missing variants', 'provider unavailable')).toBe(false);
+  });
+
+  it('recognizes correctable SceneWriter structured-output failures', () => {
+    expect(isSceneWriterStructuredOutputFailure({
+      code: 'structured_output_invalid',
+      retryClass: 'correct_structured_output',
+    })).toBe(true);
+    expect(isSceneWriterStructuredOutputFailure({
+      code: 'prose_realization_failed',
+      retryClass: 'repair_scene_prose',
+    })).toBe(false);
+    expect(sceneWriterTerminalFailureCode({ code: 'structured_output_invalid' }))
+      .toBe('structured_output_invalid');
+    expect(sceneWriterTerminalFailureCode({ code: 'agent_call_failed' }))
+      .toBe('prose_realization_failed');
   });
 
   // R3 (contract-budget honesty): compaction reports WHAT it dropped, and

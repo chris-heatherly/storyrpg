@@ -362,6 +362,8 @@ import {
   compactSceneWriterInput,
   droppedBlockingContracts,
   isSceneWriterCompactRetryReason,
+  isSceneWriterStructuredOutputFailure,
+  sceneWriterTerminalFailureCode,
   shouldRunCompactSceneProtocolRecovery,
   totalContractBlocks,
 } from './sceneWriterInputCompaction';
@@ -384,10 +386,29 @@ export function passedScenePreserveAtoms(
     outcomes.push(verdict.outcome);
     outcomesByTaskAtom.set(key, outcomes);
   }
-  return tasks.flatMap((task) => task.evidenceAtoms.filter((atom) => {
+  return tasks.filter((task) => task.blocking).flatMap((task) => task.evidenceAtoms.filter((atom) => {
     if (atom.polarity === 'forbidden' || targetAtomIds.has(atom.id)) return false;
     const outcomes = outcomesByTaskAtom.get(`${task.id}\u0000${atom.id}`) ?? [];
     return outcomes.length > 0 && outcomes.every((outcome) => outcome === 'pass');
+  }));
+}
+
+export function implicatedForbiddenRepairAtoms(
+  tasks: NarrativeRealizationTask[],
+  targetAtoms: NarrativeEvidenceAtom[],
+  targetTaskIds: ReadonlySet<string>,
+): NarrativeEvidenceAtom[] {
+  const targetEntityIds = new Set(targetAtoms.flatMap((atom) => [
+    ...(atom.subjectIds ?? []),
+    ...(atom.participantIds ?? []),
+  ]));
+  const relationshipTargeted = targetAtoms.some((atom) => atom.semanticRole === 'relationship_change');
+  return tasks.filter((task) => task.blocking).flatMap((task) => task.evidenceAtoms.filter((atom) => {
+    if (atom.polarity !== 'forbidden') return false;
+    if (targetTaskIds.has(task.id)) return true;
+    if (relationshipTargeted && atom.kind === 'relationship_label') return true;
+    return [...(atom.subjectIds ?? []), ...(atom.participantIds ?? [])]
+      .some((id) => targetEntityIds.has(id));
   }));
 }
 
@@ -2690,6 +2711,32 @@ export class ContentGenerationPhase {
             );
           }
 
+          if (
+            (!retrySceneResult.success || !retrySceneResult.data)
+            && isSceneWriterStructuredOutputFailure(retrySceneResult.failure)
+          ) {
+            const structuredRecoveryInput = {
+              ...retrySceneWriterInput,
+              storyContext: {
+                ...retrySceneWriterInput.storyContext,
+                userPrompt: `${retrySceneWriterInput.storyContext.userPrompt || ''}\n\nSTRUCTURED OUTPUT CORRECTION: ${retrySceneResult.error || 'The prior JSON violated the SceneContent schema.'} Return one complete SceneContent object. Every beat id must be unique, every nextBeatId must resolve to exactly one beat, and conflicting prose must never share an id. Preserve the required narrative content while correcting only the output structure.`,
+              },
+              targetBeatCount: Math.min(retrySceneWriterInput.targetBeatCount, 8),
+            };
+            const { input: structuredRecoveryForAuthoring } = compactSceneWriterInput(structuredRecoveryInput);
+            context.emit({
+              type: 'regeneration_triggered',
+              phase: 'scenes',
+              message: `SceneWriter retry for ${sceneBlueprint.id} returned invalid structured output; running one bounded protocol correction`,
+              data: { code: retrySceneResult.failure?.code, reason: retrySceneResult.error },
+            });
+            retrySceneResult = await withTimeout(
+              this.deps.sceneWriter.execute(structuredRecoveryForAuthoring),
+              PIPELINE_TIMEOUTS.llmAgent,
+              `SceneWriter.execute(${sceneBlueprint.id} structured protocol correction)`,
+            );
+          }
+
           if (retrySceneResult.success && retrySceneResult.data) {
             // Retry succeeded — replace the original result so the rest of the loop uses it
             sceneResult = retrySceneResult;
@@ -2699,7 +2746,8 @@ export class ContentGenerationPhase {
               message: `SceneWriter retry succeeded for ${sceneBlueprint.id}`,
             });
           } else {
-            // Retry also failed — fall back to placeholder
+            const terminalFailure = retrySceneResult.failure ?? sceneResult.failure;
+            const terminalFailureCode = sceneWriterTerminalFailureCode(terminalFailure);
             const swFailMsg = `Scene Writer failed on ${sceneBlueprint.id} after retry: ${retrySceneResult.error || sceneResult.error}`;
             console.error(`[Pipeline] ❌ ${swFailMsg}`);
             context.emit({ type: 'warning', phase: 'scenes', message: swFailMsg });
@@ -2721,9 +2769,12 @@ export class ContentGenerationPhase {
               // nothing downstream re-attempts a scene-writer hard-issue
               // failure today (bite-me-r116_2026-07-18T20-48-58).
               failure: {
-                code: 'prose_realization_failed',
+                code: terminalFailureCode,
                 ownerStage: 'scene_writer',
                 retryClass: 'none',
+                issueCodes: terminalFailureCode === 'structured_output_invalid'
+                  ? ['SCENE_WRITER_STRUCTURED_OUTPUT_EXHAUSTED']
+                  : ['SCENE_WRITER_EXHAUSTED'],
                 repairTarget: sceneBlueprint.id,
               },
             });
@@ -2732,10 +2783,12 @@ export class ContentGenerationPhase {
               agent: 'SceneWriter',
               context: { sceneId: sceneBlueprint.id, sceneName: sceneBlueprint.name },
               failure: {
-                code: 'prose_realization_failed',
+                code: terminalFailureCode,
                 ownerStage: 'scene_writer',
-                retryClass: 'repair_scene_prose',
-                issueCodes: ['SCENE_WRITER_EXHAUSTED'],
+                retryClass: terminalFailureCode === 'prose_realization_failed' ? 'repair_scene_prose' : 'none',
+                issueCodes: terminalFailureCode === 'structured_output_invalid'
+                  ? ['SCENE_WRITER_STRUCTURED_OUTPUT_EXHAUSTED']
+                  : ['SCENE_WRITER_EXHAUSTED'],
                 artifactRefs: [],
                 repairTarget: sceneBlueprint.id,
               },
@@ -3094,6 +3147,9 @@ export class ContentGenerationPhase {
             }
           }
           let ownerAtomVerdicts = initialOwnerValidation.semanticReceipt.atomVerdicts ?? [];
+          const protectedOwnerTaskIds = new Set(canonicalSceneWriterTasks
+            .filter((task) => task.blocking)
+            .map((task) => task.id));
           const ownerRepairBudget = buildOwnerRepairBudget(ownerTaskFindings);
           let acceptedRepairCount = 0;
           let stalledRepairAttempts = 0;
@@ -3130,8 +3186,11 @@ export class ContentGenerationPhase {
               ownerAtomVerdicts,
               targetAtomIdSet,
             );
-            const forbiddenAtoms = canonicalSceneWriterTasks.flatMap((task) =>
-              task.evidenceAtoms.filter((atom) => atom.polarity === 'forbidden'));
+            const forbiddenAtoms = implicatedForbiddenRepairAtoms(
+              canonicalSceneWriterTasks,
+              targetAtoms,
+              targetTaskIds,
+            );
             const concurrentFindings = ownerTaskFindings.map((finding) =>
               ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks));
             const requestHash = stableHash({
@@ -3320,6 +3379,7 @@ export class ContentGenerationPhase {
               candidate: retryFindings,
               previousAtomVerdicts: ownerAtomVerdicts,
               candidateAtomVerdicts: retryValidation.semanticReceipt.atomVerdicts ?? [],
+              protectedTaskIds: protectedOwnerTaskIds,
             });
             const adoptCandidate = finalDelta.adopted;
             let finalAdopt = adoptCandidate;
@@ -3346,6 +3406,7 @@ export class ContentGenerationPhase {
                   candidate: resampled,
                   previousAtomVerdicts: ownerAtomVerdicts,
                   candidateAtomVerdicts: resampledValidation.semanticReceipt.atomVerdicts ?? [],
+                  protectedTaskIds: protectedOwnerTaskIds,
                 });
                 finalAdopt = finalDelta.adopted;
               }
@@ -3489,6 +3550,7 @@ export class ContentGenerationPhase {
                 targetFingerprint: ownerTaskFindings[0]?.fingerprint ?? '',
                 previousAtomVerdicts: ownerAtomVerdicts,
                 candidateAtomVerdicts: escalateValidation.semanticReceipt.atomVerdicts ?? [],
+                protectedTaskIds: protectedOwnerTaskIds,
               });
               if (adoptedEscalate) {
                 Object.assign(sceneContent, escalateSnapshot);

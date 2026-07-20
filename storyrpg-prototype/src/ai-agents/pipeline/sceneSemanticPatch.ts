@@ -30,6 +30,22 @@ function assertPatchText(text: string): void {
   if (trimmed.length < 12 || trimmed.length > 1400) {
     throw new Error(`Semantic patch text must contain 12-1400 characters; received ${trimmed.length}.`);
   }
+  if (/^```|```$/m.test(trimmed)) {
+    throw new Error('Semantic patch text must be reader-facing prose, not a fenced payload.');
+  }
+  if (/^\s*[\[{]/.test(trimmed)) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        throw new Error('Semantic patch text must be reader-facing prose, not serialized structured output.');
+      }
+    } catch (error) {
+      if (error instanceof Error && /serialized structured output/.test(error.message)) throw error;
+    }
+  }
+  if (/^\s*(?:BASE SCENE HASH|TARGET TASK|TARGET ATOMS|PATCHABLE SCENE WINDOW|FORBIDDEN CONSTRAINTS)\s*:/im.test(trimmed)) {
+    throw new Error('Semantic patch text must not contain agent-facing patch metadata.');
+  }
 }
 
 /** Applies only structure-safe operations. Every reader-facing word comes from SceneWriter. */
@@ -51,6 +67,8 @@ export function applySceneSemanticPatch(
   const insertedBeatIds: string[] = [];
   const touchedIndexes: number[] = [];
   const originalIndexById = new Map(scene.beats.map((beat, index) => [beat.id, index]));
+  const insertionTailByAnchor = new Map<string, string>();
+  const evidenceBeatIdByOperation = new Map<number, string>();
   let transitionOperations = 0;
 
   for (const [operationIndex, operation] of patch.operations.entries()) {
@@ -59,18 +77,25 @@ export function applySceneSemanticPatch(
       transitionOperations += 1;
       if (transitionOperations > 1) throw new Error('Semantic patch may replace transitionIn only once.');
       candidate.transitionIn = operation.text.trim();
+      evidenceBeatIdByOperation.set(operationIndex, 'transitionIn');
       continue;
     }
     if (operation.op !== 'replace_beat_text' && operation.op !== 'insert_beat_after') {
       throw new Error(`Unsupported semantic patch operation ${String(operation.op)}.`);
     }
     if (!operation.beatId) throw new Error(`${operation.op} requires beatId.`);
-    const beatIndex = candidate.beats.findIndex((beat) => beat.id === operation.beatId);
+    const originalIndex = originalIndexById.get(operation.beatId);
+    if (originalIndex == null) throw new Error(`Semantic patch references beat ${operation.beatId} outside the immutable patch window.`);
+    const insertionAnchorId = operation.op === 'insert_beat_after'
+      ? insertionTailByAnchor.get(operation.beatId) ?? operation.beatId
+      : operation.beatId;
+    const beatIndex = candidate.beats.findIndex((beat) => beat.id === insertionAnchorId);
     if (beatIndex < 0) throw new Error(`Semantic patch references unknown beat ${operation.beatId}.`);
-    touchedIndexes.push(originalIndexById.get(operation.beatId)!);
+    touchedIndexes.push(originalIndex);
     if (operation.op === 'replace_beat_text') {
       candidate.beats[beatIndex].text = operation.text.trim();
       changedBeatIds.push(operation.beatId);
+      evidenceBeatIdByOperation.set(operationIndex, operation.beatId);
       continue;
     }
     const current = candidate.beats[beatIndex];
@@ -82,12 +107,30 @@ export function applySceneSemanticPatch(
     } as GeneratedBeat;
     current.nextBeatId = insertedId;
     candidate.beats.splice(beatIndex + 1, 0, inserted);
+    insertionTailByAnchor.set(operation.beatId, insertedId);
+    evidenceBeatIdByOperation.set(operationIndex, insertedId);
     changedBeatIds.push(operation.beatId, insertedId);
     insertedBeatIds.push(insertedId);
   }
 
   if (touchedIndexes.length > 1 && Math.max(...touchedIndexes) - Math.min(...touchedIndexes) > 1) {
     throw new Error('Semantic patch may change only adjacent beats.');
+  }
+  const candidateBeatIds = new Set(candidate.beats.map((beat) => beat.id));
+  for (const claim of patch.claimedEvidence ?? []) {
+    for (const ref of claim.beatIds ?? []) {
+      const operationMatch = /^operation:(\d+)$/.exec(ref);
+      if (operationMatch) {
+        const operationIndex = Number(operationMatch[1]) - 1;
+        if (!evidenceBeatIdByOperation.has(operationIndex)) {
+          throw new Error(`Semantic patch claimed evidence from unknown operation ${operationMatch[1]}.`);
+        }
+        continue;
+      }
+      if (ref !== 'transitionIn' && !candidateBeatIds.has(ref)) {
+        throw new Error(`Semantic patch claimed evidence from unknown beat ${ref}.`);
+      }
+    }
   }
   candidate.startingBeatId = candidate.beats[0]?.id ?? candidate.startingBeatId;
   return {

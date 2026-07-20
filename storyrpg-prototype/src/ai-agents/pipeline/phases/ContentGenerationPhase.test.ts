@@ -764,12 +764,14 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
     const { passedScenePreserveAtoms } = await import('./ContentGenerationPhase');
     const tasks = [{
       id: 'event-task',
+      blocking: true,
       evidenceAtoms: [
         { id: 'target', polarity: 'required' },
         { id: 'event-pass', polarity: 'required' },
       ],
     }, {
       id: 'presence-task',
+      blocking: true,
       evidenceAtoms: [
         { id: 'full-name', polarity: 'required' },
         { id: 'blocked-label', polarity: 'forbidden' },
@@ -786,6 +788,35 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
       'event-pass',
       'full-name',
     ]);
+  });
+
+  it('sends only blocking forbidden constraints implicated by the repair target', async () => {
+    const { implicatedForbiddenRepairAtoms } = await import('./ContentGenerationPhase');
+    const tasks = [{
+      id: 'event-task', blocking: true, evidenceAtoms: [{
+        id: 'relationship-target', kind: 'semantic', semanticRole: 'relationship_change',
+        participantIds: ['kylie', 'stela'], polarity: 'required',
+      }],
+    }, {
+      id: 'relationship-labels', blocking: true, evidenceAtoms: [{
+        id: 'friend-too-soon', kind: 'relationship_label', polarity: 'forbidden',
+      }],
+    }, {
+      id: 'future-reveal', blocking: true, evidenceAtoms: [{
+        id: 'unrelated-secret', kind: 'semantic', semanticRole: 'information_transfer',
+        participantIds: ['mika'], polarity: 'forbidden',
+      }],
+    }, {
+      id: 'advisory', blocking: false, evidenceAtoms: [{
+        id: 'advisory-forbidden', kind: 'semantic', polarity: 'forbidden',
+      }],
+    }] as any;
+
+    expect(implicatedForbiddenRepairAtoms(
+      tasks,
+      tasks[0].evidenceAtoms,
+      new Set(['event-task']),
+    ).map((atom) => atom.id)).toEqual(['friend-too-soon']);
   });
 
   it('returns owner-stage semantic uncertainty to the repair loop but blocks it at final regression', async () => {

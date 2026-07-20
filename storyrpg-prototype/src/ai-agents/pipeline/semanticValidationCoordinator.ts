@@ -91,6 +91,25 @@ function validJudgeVerdict(
   const evidenceQuotes = verdict.evidenceRefs
     .map((ref) => excerptById.get(ref)?.text.slice(0, 320))
     .filter((quote): quote is string => Boolean(quote));
+  if (verdict.verdict === 'contradicted') {
+    const contradiction = verdict.contradictionEvidence;
+    const contradictionRefValid = Boolean(
+      contradiction
+      && excerptById.has(contradiction.evidenceRef)
+      && verdict.evidenceRefs.includes(contradiction.evidenceRef)
+      && contradiction.oppositeMeaning.trim().length >= 8,
+    );
+    if (!contradictionRefValid) {
+      return {
+        ...verdict,
+        verdict: 'uncertain',
+        evidenceRefs: [],
+        evidenceQuotes: [],
+        missingCriteria: claim.criteria,
+        rationale: 'Contradiction verdict lacked an addressable statement of the mutually exclusive opposite.',
+      };
+    }
+  }
   if ((verdict.verdict === 'fulfilled' || verdict.verdict === 'partial')
     && (verdict.evidenceRefs.length === 0 || !refsValid)) {
     return {

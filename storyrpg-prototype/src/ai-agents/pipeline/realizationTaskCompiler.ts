@@ -258,8 +258,9 @@ function ownerTasksForEvent(
   );
 }
 
-function eventUsesAllRouteChoiceResolution(event: NarrativeEventContract, scene: PlannedScene | undefined): boolean {
+function eventUsesChoiceResolution(event: NarrativeEventContract, scene: PlannedScene | undefined): boolean {
   if (!scene) return false;
+  if (scene.hasChoice || scene.choiceType) return true;
   return (scene.relationshipPacing ?? []).some((contract) => {
     const milestone = contract.milestone;
     return milestone?.routeRealizationPolicy === 'all_routes'
@@ -273,7 +274,7 @@ function partitionEventAtoms(
   scene: PlannedScene | undefined,
 ): { owner: NarrativeEvidenceAtom[]; choiceResolution: NarrativeEvidenceAtom[] } {
   const atoms = genericEventAtoms(event);
-  if (isEncounterScene(scene) || !eventUsesAllRouteChoiceResolution(event, scene)) {
+  if (isEncounterScene(scene) || !eventUsesChoiceResolution(event, scene)) {
     return {
       owner: atoms.map((atom) => ({
         ...atom,

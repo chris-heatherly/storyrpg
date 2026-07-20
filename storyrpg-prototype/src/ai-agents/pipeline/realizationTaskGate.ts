@@ -158,6 +158,7 @@ export function evaluateOwnerRepairCandidate(input: {
   candidate: RealizationTaskGateFinding[];
   previousAtomVerdicts?: NarrativeAtomVerdict[];
   candidateAtomVerdicts?: NarrativeAtomVerdict[];
+  protectedTaskIds?: ReadonlySet<string>;
 }): OwnerRepairCandidateDelta {
   const previousIssues = new Set(input.previous.flatMap(findingIssueKeys));
   const candidateIssues = new Set(input.candidate.flatMap(findingIssueKeys));
@@ -168,7 +169,8 @@ export function evaluateOwnerRepairCandidate(input: {
     (input.candidateAtomVerdicts ?? []).map((verdict) => [verdictKey(verdict), verdict.outcome]),
   );
   const regressedPassedAtomKeys = (input.previousAtomVerdicts ?? [])
-    .filter((verdict) => verdict.outcome === 'pass')
+    .filter((verdict) => verdict.outcome === 'pass'
+      && (!input.protectedTaskIds || input.protectedTaskIds.has(verdict.taskId)))
     .map(verdictKey)
     .filter((key) => candidateVerdicts.get(key) !== 'pass');
 
@@ -188,6 +190,7 @@ export function shouldAdoptOwnerRepairCandidate(input: {
   targetFingerprint: string;
   previousAtomVerdicts?: NarrativeAtomVerdict[];
   candidateAtomVerdicts?: NarrativeAtomVerdict[];
+  protectedTaskIds?: ReadonlySet<string>;
 }): boolean {
   void input.targetFingerprint;
   return evaluateOwnerRepairCandidate(input).adopted;

@@ -426,3 +426,20 @@ export function shouldRunCompactSceneProtocolRecovery(
   return !isSceneWriterCompactRetryReason(initialFailureReason)
     && isSceneWriterCompactRetryReason(retryFailureReason);
 }
+
+export function isSceneWriterStructuredOutputFailure(
+  failure: { code?: string; retryClass?: string } | undefined,
+): boolean {
+  return failure?.code === 'structured_output_invalid'
+    && failure.retryClass === 'correct_structured_output';
+}
+
+export function sceneWriterTerminalFailureCode(
+  failure: { code?: string } | undefined,
+): 'structured_output_invalid' | 'structured_output_truncated' | 'visible_output_starved' | 'prose_realization_failed' {
+  return failure?.code === 'structured_output_invalid'
+    || failure?.code === 'structured_output_truncated'
+    || failure?.code === 'visible_output_starved'
+    ? failure.code
+    : 'prose_realization_failed';
+}

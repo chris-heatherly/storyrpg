@@ -94,4 +94,41 @@ describe('applySceneSemanticPatch', () => {
       expect((error as SemanticPatchOperationLimitError).code).toBe('patch_operation_limit');
     }
   });
+
+  it('preserves authored order when several inserts share one anchor beat', () => {
+    const baseline = scene();
+    const result = applySceneSemanticPatch(baseline, {
+      baseSceneHash: stableHash(baseline), targetTaskId: 'task-1', targetAtomIds: ['atom-1'],
+      operations: [
+        { op: 'insert_beat_after', beatId: 'b2', text: 'Mika asks the question and waits without rescuing Kylie from the silence.' },
+        { op: 'insert_beat_after', beatId: 'b2', text: 'Kylie answers in her own words and lets the answer stand.' },
+        { op: 'insert_beat_after', beatId: 'b2', text: 'Stela accepts the answer and raises her glass to the new alliance.' },
+      ],
+      claimedEvidence: [{ atomId: 'atom-1', beatIds: ['operation:1', 'operation:2', 'operation:3'] }],
+    }, 3);
+
+    expect(result.scene.beats.map((beat) => beat.text)).toEqual([
+      baseline.beats[0].text,
+      baseline.beats[1].text,
+      'Mika asks the question and waits without rescuing Kylie from the silence.',
+      'Kylie answers in her own words and lets the answer stand.',
+      'Stela accepts the answer and raises her glass to the new alliance.',
+      baseline.beats[2].text,
+    ]);
+  });
+
+  it('rejects serialized output and nonexistent evidence references before semantic judging', () => {
+    const baseline = scene();
+    expect(() => applySceneSemanticPatch(baseline, {
+      baseSceneHash: stableHash(baseline), targetTaskId: 'task-1', targetAtomIds: ['atom-1'],
+      operations: [{ op: 'insert_beat_after', beatId: 'b2', text: '{"id":"invented","text":"Kylie accepts the invitation."}' }],
+      claimedEvidence: [{ atomId: 'atom-1', beatIds: ['operation:1'] }],
+    })).toThrow(/serialized structured output/);
+
+    expect(() => applySceneSemanticPatch(baseline, {
+      baseSceneHash: stableHash(baseline), targetTaskId: 'task-1', targetAtomIds: ['atom-1'],
+      operations: [{ op: 'insert_beat_after', beatId: 'b2', text: 'Kylie accepts the invitation in her own words.' }],
+      claimedEvidence: [{ atomId: 'atom-1', beatIds: ['invented-beat-id'] }],
+    })).toThrow(/unknown beat/);
+  });
 });

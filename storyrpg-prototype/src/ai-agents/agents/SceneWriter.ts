@@ -1117,6 +1117,8 @@ ${CHOICE_DENSITY_REQUIREMENTS}
       'Use replace_beat_text when possible. Use insert_beat_after only when the meaning cannot fit naturally in an existing beat.',
       'For required target atoms, make the missing meaning explicit through natural action or dialogue without copying contract language.',
       'For forbidden target atoms, remove the prohibited label or meaning while preserving the earned behavior and every unrelated fact.',
+      'Every operation text value must contain only reader-facing prose, never JSON, markdown fences, field names, or patch metadata.',
+      'In claimedEvidence.beatIds, cite an existing beat id, "transitionIn", or "operation:N" for prose created by the Nth operation. Never invent a beat id.',
       '',
       `BASE SCENE HASH: ${input.baseSceneHash}`,
       `TARGET TASK: ${input.targetTaskId}`,
@@ -1165,6 +1167,22 @@ ${CHOICE_DENSITY_REQUIREMENTS}
         return {
           success: false,
           error: 'Scene semantic patch omitted claimed evidence for a target atom.',
+          rawResponse: response,
+          failure: { code: 'structured_output_invalid', retryClass: 'correct_structured_output', provider: this.config.provider },
+        };
+      }
+      const validEvidenceRefs = new Set<string>([
+        ...patchableBeatIds,
+        'transitionIn',
+        ...patch.operations.map((_, index) => `operation:${index + 1}`),
+      ]);
+      const invalidEvidenceRef = patch.claimedEvidence
+        .flatMap((claim) => claim.beatIds)
+        .find((beatId) => !validEvidenceRefs.has(beatId));
+      if (invalidEvidenceRef) {
+        return {
+          success: false,
+          error: `Scene semantic patch claimed evidence from unknown beat or operation "${invalidEvidenceRef}".`,
           rawResponse: response,
           failure: { code: 'structured_output_invalid', retryClass: 'correct_structured_output', provider: this.config.provider },
         };

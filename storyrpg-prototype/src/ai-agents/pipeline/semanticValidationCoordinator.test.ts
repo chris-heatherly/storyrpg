@@ -184,6 +184,41 @@ describe('semanticValidationCoordinator', () => {
     });
   });
 
+  it('treats an unsupported contradiction category as judge uncertainty', async () => {
+    const judge: SemanticRealizationJudgeLike = {
+      identity: () => ({ policyVersion: 'test-v5', provider: 'test', model: 'test-judge' }),
+      execute: async (claims) => ({
+        success: true,
+        data: { verdicts: claims.map((claim) => verdict(claim, 'contradicted', 'A, this is B.')) },
+      }),
+      adjudicate: async (claim) => ({
+        success: true,
+        data: { verdicts: [verdict(claim, 'contradicted', 'A, this is B.')] },
+      }),
+    };
+
+    const result = await validateSemanticRealizationTasks({
+      sceneId: 's1',
+      tasks: [task({
+        evidenceAtoms: [{
+          id: 'atom:introduction', description: 'The host introduces B to A.',
+          acceptedPatterns: ['introduces B to A'], kind: 'semantic',
+          verificationAuthority: 'semantic_judge', semanticRole: 'introduction', required: true,
+        }],
+      })],
+      sceneContent: { beats: [{ text: 'The host gestures. "A, this is B."' }] },
+      judge,
+    });
+
+    expect(result.findings).toEqual([
+      expect.objectContaining({ code: 'SEMANTIC_VALIDATION_INCONCLUSIVE' }),
+    ]);
+    expect(result.receipt.semanticVerdicts?.[0]).toMatchObject({
+      disposition: 'inconclusive',
+      verdict: 'uncertain',
+    });
+  });
+
   it('does not convert unavailable negative adjudication into a content miss', async () => {
     const judge: SemanticRealizationJudgeLike = {
       identity: () => ({ policyVersion: 'test-v2', provider: 'test', model: 'test-judge' }),

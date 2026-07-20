@@ -128,6 +128,31 @@ describe('validateOwnerRealizationTasks', () => {
     });
   });
 
+  it('does not let an advisory pass veto reduction of a blocking issue', () => {
+    const finding = (atomIds: string[]) => ({
+      fingerprint: `missing:${atomIds.join(',')}`,
+      taskId: 'task:blocking',
+      sceneId: 's1',
+      code: 'SEMANTIC_REALIZATION_MISSING' as const,
+      missingEvidenceAtoms: atomIds,
+    } as any);
+    const delta = evaluateOwnerRepairCandidate({
+      previous: [finding(['required-event'])],
+      candidate: [],
+      protectedTaskIds: new Set(['task:blocking']),
+      previousAtomVerdicts: [
+        { taskId: 'task:blocking', atomId: 'required-event', groupKey: 'owner', authority: 'semantic_judge', outcome: 'miss' },
+        { taskId: 'task:advisory-departure', atomId: 'motivated-exit', groupKey: 'owner', authority: 'semantic_judge', outcome: 'pass' },
+      ],
+      candidateAtomVerdicts: [
+        { taskId: 'task:blocking', atomId: 'required-event', groupKey: 'owner', authority: 'semantic_judge', outcome: 'pass' },
+        { taskId: 'task:advisory-departure', atomId: 'motivated-exit', groupKey: 'owner', authority: 'semantic_judge', outcome: 'miss' },
+      ],
+    });
+
+    expect(delta).toMatchObject({ adopted: true, regressedPassedAtomKeys: [] });
+  });
+
   it('does not let an apparently clean candidate bypass missing atom receipts', () => {
     const previous = [{
       fingerprint: 'missing:b', taskId: 'task:event:1', sceneId: 's1',

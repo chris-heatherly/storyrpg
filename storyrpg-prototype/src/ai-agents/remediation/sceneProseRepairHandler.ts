@@ -408,7 +408,7 @@ export function buildSceneRepairDirectorNotes(
         }
         if (/ending-displaced|final emotional beat belongs to the new threat|displaces the protagonist/i.test(`${issue.message ?? ''} ${forbiddenMeanings.join(' ')}`)) {
           lines.push(
-            '  ENDING OWNERSHIP: rewrite only the terminal coda that displaced the ending. The protagonist\'s authored action, decision, victory, or emotional consequence must remain the final ownership beat. Forward pressure may deepen an existing question but may not introduce a new event.',
+            '  ENDING OWNERSHIP: preserve any allowed warning, reveal, or forward pressure already required by the scene, but place it before the terminal coda. Rewrite only the ending necessary to make the protagonist\'s authored action, decision, victory, emotional consequence, or changed resolve the final ownership beat. Do not delete treatment material merely to clear the ending, and do not introduce a replacement event.',
           );
         }
         continue;

@@ -85,6 +85,19 @@ order or topology.
    Choice-terminal departure and companion handoffs belong to every
    ChoiceAuthor outcome; successor-scene responsiveness is authored and graded
    through the same flag-conditioned text variants the Reader selects.
+   Owner-stage repair is atom-monotonic: a candidate must strictly shrink the
+   unresolved evidence set without losing meaning that already passed on the
+   same route. Accepted atom reduction and true stalls have separate bounded
+   budgets, so a converging `4 -> 2 -> 1 -> 0` repair sequence is not discarded
+   after two useful patches. Positive semantic receipts are scoped to the
+   judge's cited evidence hashes and remain valid through same-scene additive
+   surfaces while those witnesses remain unchanged; changed witnesses and all
+   forbidden atoms are re-judged. Shared choice-resolution misses use an
+   LLM-authored append/prepend patch that preserves accepted shared prose and
+   choice geometry; replacement is reserved for removing forbidden meaning.
+   Twist
+   materialization binds to either ordinary scene beats or EncounterArchitect
+   prose surfaces, matching the artifact that owns reader-facing text.
 5. **Media** — post-story images/video/audio after the text contract passes.
 
 Skip telemetry (debug events): `thread_twist_skipped_authored_lite`,

@@ -697,6 +697,31 @@ describe('ContentGenerationPhase treatment density gate', () => {
 });
 
 describe('ContentGenerationPhase canonical owner transaction', () => {
+  it('budgets accepted convergence separately from true repair stalls', async () => {
+    const { buildOwnerRepairBudget } = await import('./ContentGenerationPhase');
+    const fourAtomBudget = buildOwnerRepairBudget([{
+      taskId: 'task:event',
+      missingEvidenceAtoms: ['atom:1', 'atom:2', 'atom:3'],
+      matchedForbiddenAtoms: ['atom:4'],
+    }] as any);
+
+    expect(fourAtomBudget).toEqual({
+      initialIssueCount: 4,
+      maxAcceptedRepairs: 4,
+      maxStalls: 2,
+      maxPatchCalls: 6,
+    });
+    expect(buildOwnerRepairBudget([{
+      taskId: 'task:event',
+      missingEvidenceAtoms: ['atom:1'],
+    }] as any)).toEqual({
+      initialIssueCount: 1,
+      maxAcceptedRepairs: 1,
+      maxStalls: 2,
+      maxPatchCalls: 3,
+    });
+  });
+
   it('turns semantic roles into observable, content-agnostic repair craft', async () => {
     const { ownerRealizationCraftInstruction } = await import('./ContentGenerationPhase');
 
@@ -712,6 +737,27 @@ describe('ContentGenerationPhase canonical owner transaction', () => {
       id: 'forbidden', description: 'Do not reveal the secret.', acceptedPatterns: [],
       kind: 'semantic', semanticRole: 'information_transfer', polarity: 'forbidden', required: true,
     })).toBe('');
+  });
+
+  it('repairs ending ownership without deleting allowed forward pressure', async () => {
+    const { ownerRealizationRepairFeedback } = await import('./ContentGenerationPhase');
+    const feedback = ownerRealizationRepairFeedback({
+      taskId: 'task:escalation-budget:ep1',
+      message: 'The terminal emotional beat belongs to a new threat.',
+      matchedForbiddenAtoms: ['escalation-budget:ep1:ending-displaced'],
+    } as any, [{
+      id: 'task:escalation-budget:ep1',
+      evidenceAtoms: [{
+        id: 'escalation-budget:ep1:ending-displaced',
+        description: 'A new threat must not displace the protagonist-owned ending.',
+        polarity: 'forbidden',
+        verificationAuthority: 'semantic_judge',
+      }],
+    }] as any);
+
+    expect(feedback).toContain('Preserve any allowed warning, reveal, or forward pressure');
+    expect(feedback).toContain('place it before the terminal coda');
+    expect(feedback).toContain('do not delete treatment material');
   });
 
   it('protects every currently satisfied scene atom during a focused patch', async () => {

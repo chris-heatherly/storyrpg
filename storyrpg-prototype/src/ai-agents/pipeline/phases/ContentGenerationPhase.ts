@@ -257,6 +257,8 @@ import {
   type ProducerBlockerFinding,
 } from '../producerBlockerChecks';
 import {
+  evaluateOwnerRepairCandidate,
+  narrativeAtomCraftInstruction,
   prioritizeOwnerRepairFindings,
   shouldAdoptOwnerRepairCandidate,
   type RealizationTaskGateFinding,
@@ -340,6 +342,7 @@ import {
   planEpisodeThreadsAndTwist,
   sceneActiveThreads,
   sceneTwistDirectives,
+  validateTwistPlanTargets,
 } from '../threadTwistPlanning';
 import {
   CharacterArcTrackerLike,
@@ -365,25 +368,8 @@ import {
 import { PipelineContext } from './index';
 
 export function ownerRealizationCraftInstruction(atom: NarrativeEvidenceAtom): string {
-  if (atom.polarity === 'forbidden') return '';
-  switch (atom.semanticRole) {
-    case 'relationship_change':
-      return ' Show an observable relationship turn on-page: one participant makes a personal bid, the other accepts or reciprocates it, and their behavior establishes a new footing. Politeness, a smile, generic welcome, or an unaccepted offer alone is not a relationship change.';
-    case 'introduction':
-      return ' Stage the named introducer actively identifying the participants to one another while they are present; a mention, arrival, or self-introduction by someone else is insufficient.';
-    case 'information_transfer':
-      return ' Stage the specified source participant communicating the information to its recipient on-page; a bare reference or a different speaker carrying the information is insufficient.';
-    case 'state_change':
-      return ' Show the prior state, the causal turn, and observable evidence of the resulting state rather than only naming the intended result.';
-    case 'decision':
-      return ' Show the participant making or committing to the decision, not merely considering options or receiving an invitation.';
-    case 'aftermath':
-      return ' Show a concrete consequence occurring after the triggering event; recollection or summary of the trigger alone is insufficient.';
-    case 'action':
-      return ' Stage the action through completion in the current scene rather than describing a plan, attempt, or prior summary.';
-    default:
-      return '';
-  }
+  const instruction = narrativeAtomCraftInstruction(atom);
+  return instruction ? ` ${instruction}` : '';
 }
 
 export function passedScenePreserveAtoms(
@@ -405,7 +391,29 @@ export function passedScenePreserveAtoms(
   }));
 }
 
-function ownerRealizationRepairFeedback(
+export interface OwnerRepairBudget {
+  initialIssueCount: number;
+  maxAcceptedRepairs: number;
+  maxStalls: number;
+  maxPatchCalls: number;
+}
+
+export function buildOwnerRepairBudget(findings: RealizationTaskGateFinding[]): OwnerRepairBudget {
+  const issueKeys = new Set(findings.flatMap((finding) => [
+    ...(finding.missingEvidenceAtoms ?? []).map((atomId) => `${finding.taskId}:required:${atomId}`),
+    ...(finding.matchedForbiddenAtoms ?? []).map((atomId) => `${finding.taskId}:forbidden:${atomId}`),
+  ]));
+  const initialIssueCount = Math.max(1, issueKeys.size || findings.length);
+  const maxAcceptedRepairs = Math.min(4, initialIssueCount);
+  return {
+    initialIssueCount,
+    maxAcceptedRepairs,
+    maxStalls: 2,
+    maxPatchCalls: Math.min(6, maxAcceptedRepairs + 2),
+  };
+}
+
+export function ownerRealizationRepairFeedback(
   finding: RealizationTaskGateFinding,
   tasks: NarrativeRealizationTask[] | undefined,
 ): string {
@@ -423,7 +431,10 @@ function ownerRealizationRepairFeedback(
         : atom.temporalSlot === 'owner_event' || atom.semanticRole === 'action'
           ? ' Dramatize the action while it happens; do not begin after it is complete or summarize it as prior activity.'
           : '';
-      return `${atom.polarity === 'forbidden' ? 'DO NOT COMMUNICATE' : 'MEANING TO REALIZE'}: ${atom.description}.${temporalInstruction}${ownerRealizationCraftInstruction(atom)}`;
+      const endingOwnershipInstruction = atom.polarity === 'forbidden' && atom.id.endsWith(':ending-displaced')
+        ? ' Preserve any allowed warning, reveal, or forward pressure already required by the scene, but place it before the terminal coda. End on the protagonist\'s authored action, decision, victory, consequence, or changed resolve; do not delete treatment material merely to clear the ending.'
+        : '';
+      return `${atom.polarity === 'forbidden' ? 'DO NOT COMMUNICATE' : 'MEANING TO REALIZE'}: ${atom.description}.${temporalInstruction}${endingOwnershipInstruction}${ownerRealizationCraftInstruction(atom)}`;
     }
     return `${atom.polarity === 'forbidden' ? 'AVOID' : 'REQUIRE'} ${authority}: ${atom.acceptedPatterns.join(' / ')}`;
   });
@@ -1339,12 +1350,31 @@ export class ContentGenerationPhase {
           message: 'thread_twist_skipped_authored_lite: using ESC-compiled obligations',
         });
         this.seedCompiledThreadTwistFromEsc(blueprint, ttEpisode, context, brief);
+        const compiledTwistPlan = this.deps.episodeTwistPlans.get(ttEpisode);
+        const compiledTwistValidation = validateTwistPlanTargets(compiledTwistPlan, blueprint.scenes ?? []);
+        if (!compiledTwistValidation.valid) {
+          throw new PipelineError(
+            compiledTwistValidation.reason ?? `Episode ${ttEpisode} compiled an invalid twist plan.`,
+            'episode_architecture',
+            {
+              agent: 'NarrativeContractCompiler',
+              context: { episodeNumber: ttEpisode, twistPlan: compiledTwistPlan },
+              failure: {
+                code: 'episode_plan_invalid',
+                ownerStage: 'episode_plan',
+                retryClass: 'recompile_episode_plan',
+                issueCodes: ['TWIST_PLAN_TARGET_INVALID'],
+                repairTarget: `episode-${ttEpisode}`,
+              },
+            },
+          );
+        }
       } else if (isThreadTwistPlanningEnabled(context.config.generation)) {
       await Promise.all([
         this.memoryContextFor('ThreadPlanner', 'thread-planning', brief, undefined, ['thread-ledger']),
         this.memoryContextFor('TwistArchitect', 'twist-planning', brief, undefined, ['twist-plan']),
       ]);
-      const { threadLedger, twistPlan } = await planEpisodeThreadsAndTwist({
+      const { threadLedger, twistPlan: proposedTwistPlan } = await planEpisodeThreadsAndTwist({
         enabled: true,
         threadPlanner: this.deps.getThreadPlanner(),
         twistArchitect: this.deps.getTwistArchitect(),
@@ -1356,6 +1386,15 @@ export class ContentGenerationPhase {
         priorThreads: openPriorThreads(this.deps.seasonThreadLedger, ttEpisode),
         emitWarning: (message) => context.emit({ type: 'warning', phase: 'content', message }),
       });
+      const proposedTwistValidation = validateTwistPlanTargets(proposedTwistPlan, blueprint.scenes ?? []);
+      const twistPlan = proposedTwistValidation.valid ? proposedTwistPlan : undefined;
+      if (!proposedTwistValidation.valid) {
+        context.emit({
+          type: 'warning',
+          phase: 'content',
+          message: `TwistArchitect plan rejected before prose generation: ${proposedTwistValidation.reason}`,
+        });
+      }
       if (threadLedger) mergeIntoSeasonLedger(this.deps.seasonThreadLedger, threadLedger, ttEpisode);
       if (twistPlan) this.deps.episodeTwistPlans.set(ttEpisode, twistPlan);
       // B4: planned foreshadow/misdirect beats become advisory judge-verified
@@ -2987,6 +3026,9 @@ export class ContentGenerationPhase {
             targetFingerprint: string;
             resolvedFingerprints?: string[];
             introducedFingerprints?: string[];
+            resolvedIssueKeys?: string[];
+            introducedIssueKeys?: string[];
+            regressedPassedAtomKeys?: string[];
             adopted?: boolean;
             error?: string;
             failure?: AgentResponse<unknown>['failure'];
@@ -3052,13 +3094,20 @@ export class ContentGenerationPhase {
             }
           }
           let ownerAtomVerdicts = initialOwnerValidation.semanticReceipt.atomVerdicts ?? [];
-          let authoredRepairAttempts = 0;
+          const ownerRepairBudget = buildOwnerRepairBudget(ownerTaskFindings);
+          let acceptedRepairCount = 0;
+          let stalledRepairAttempts = 0;
           let patchCallAttempts = 0;
           let capacityTier: 'standard' | 'expanded' = 'standard';
           let priorPatchFeedback: string[] = [];
           const executedPatchRequestHashes = new Set<string>();
           let lastPatchFailure: AgentResponse<unknown>['failure'] | undefined;
-          while (authoredRepairAttempts < 2 && patchCallAttempts < 4 && ownerTaskFindings.length > 0) {
+          while (
+            acceptedRepairCount < ownerRepairBudget.maxAcceptedRepairs
+            && stalledRepairAttempts < ownerRepairBudget.maxStalls
+            && patchCallAttempts < ownerRepairBudget.maxPatchCalls
+            && ownerTaskFindings.length > 0
+          ) {
             const repairTarget = ownerTaskFindings[0];
             const feedback = ownerTaskFindings
               .map((finding) => `- ${ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks)}`)
@@ -3124,8 +3173,8 @@ export class ContentGenerationPhase {
             context.emit({
               type: 'regeneration_triggered',
               phase: 'scenes',
-              message: `Scene ${sceneBlueprint.id} is repairing canonical realization fingerprint ${repairTarget.fingerprint} (call ${patchCallAttempts}, authored ${authoredRepairAttempts + 1}/2, ${capacityTier})`,
-              data: { repairTarget, findings: ownerTaskFindings, requestHash, capacityTier },
+              message: `Scene ${sceneBlueprint.id} is repairing canonical realization fingerprint ${repairTarget.fingerprint} (call ${patchCallAttempts}/${ownerRepairBudget.maxPatchCalls}, accepted ${acceptedRepairCount}/${ownerRepairBudget.maxAcceptedRepairs}, stalls ${stalledRepairAttempts}/${ownerRepairBudget.maxStalls}, ${capacityTier})`,
+              data: { repairTarget, findings: ownerTaskFindings, requestHash, capacityTier, ownerRepairBudget },
             });
             // Capacity scales with the amount of missing work, not a constant:
             // enough room for one edit per missing atom plus one connective edit.
@@ -3147,7 +3196,7 @@ export class ContentGenerationPhase {
                 maxOperations: semanticPatchOperationLimit,
               }),
               PIPELINE_TIMEOUTS.llmAgent,
-              `SceneWriter.executeSemanticPatch(${sceneBlueprint.id} owner-realization-retry-${authoredRepairAttempts + 1})`,
+              `SceneWriter.executeSemanticPatch(${sceneBlueprint.id} owner-realization-call-${patchCallAttempts})`,
             );
             if (!ownerTaskRetry.success || !ownerTaskRetry.data) {
               lastPatchFailure = ownerTaskRetry.failure;
@@ -3175,7 +3224,7 @@ export class ContentGenerationPhase {
                 capacityTier = 'expanded';
                 continue;
               }
-              if (ownerTaskRetry.failure?.retryClass === 'correct_structured_output' && patchCallAttempts < 4) {
+              if (ownerTaskRetry.failure?.retryClass === 'correct_structured_output' && patchCallAttempts < ownerRepairBudget.maxPatchCalls) {
                 priorPatchFeedback = [ownerTaskRetry.error || 'Return the exact immutable patch target identifiers.'];
                 continue;
               }
@@ -3183,7 +3232,7 @@ export class ContentGenerationPhase {
             }
             lastPatchFailure = undefined;
             if (ownerTaskRetry.data.targetAtomIds.some((atomId) => !targetAtomIds.includes(atomId))) continue;
-            const authoredAttempt = authoredRepairAttempts + 1;
+            const authoredAttempt = acceptedRepairCount + 1;
             let appliedPatch: ReturnType<typeof applySceneSemanticPatch>;
             try {
               appliedPatch = applySceneSemanticPatch(
@@ -3212,14 +3261,13 @@ export class ContentGenerationPhase {
               });
               continue;
             }
-            authoredRepairAttempts += 1;
-            const attempt = authoredRepairAttempts;
+            const attempt = acceptedRepairCount + 1;
             const candidateSnapshot = appliedPatch.scene;
             const candidateHash = stableHash(candidateSnapshot);
             if (outputDirectory) {
-              await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-owner-repair-candidate-${attempt}.json`, {
+              await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-owner-repair-candidate-${patchCallAttempts}.json`, {
                 schemaVersion: 1, episodeNumber: densityEpisodeNumber, sceneId: sceneBlueprint.id,
-                attempt, candidateHash, patch: ownerTaskRetry.data,
+                attempt: patchCallAttempts, authoredAttempt: attempt, candidateHash, patch: ownerTaskRetry.data,
                 changedBeatIds: appliedPatch.changedBeatIds, insertedBeatIds: appliedPatch.insertedBeatIds,
                 candidate: candidateSnapshot,
               });
@@ -3267,11 +3315,13 @@ export class ContentGenerationPhase {
                 },
               );
             }
-            const adoptCandidate = shouldAdoptOwnerRepairCandidate({
+            let finalDelta = evaluateOwnerRepairCandidate({
               previous: ownerTaskFindings,
               candidate: retryFindings,
-              targetFingerprint: repairTarget.fingerprint,
+              previousAtomVerdicts: ownerAtomVerdicts,
+              candidateAtomVerdicts: retryValidation.semanticReceipt.atomVerdicts ?? [],
             });
+            const adoptCandidate = finalDelta.adopted;
             let finalAdopt = adoptCandidate;
             let finalFindings = retryFindings;
             let finalAtomVerdicts = retryValidation.semanticReceipt.atomVerdicts ?? [];
@@ -3291,11 +3341,13 @@ export class ContentGenerationPhase {
                 const resampled = resampledValidation.findings.filter((finding) => finding.blocking);
                 finalFindings = resampled;
                 finalAtomVerdicts = resampledValidation.semanticReceipt.atomVerdicts ?? [];
-                finalAdopt = shouldAdoptOwnerRepairCandidate({
+                finalDelta = evaluateOwnerRepairCandidate({
                   previous: ownerTaskFindings,
                   candidate: resampled,
-                  targetFingerprint: repairTarget.fingerprint,
+                  previousAtomVerdicts: ownerAtomVerdicts,
+                  candidateAtomVerdicts: resampledValidation.semanticReceipt.atomVerdicts ?? [],
                 });
+                finalAdopt = finalDelta.adopted;
               }
             }
             const previousFingerprints = new Set(ownerTaskFindings.map((finding) => finding.fingerprint));
@@ -3312,16 +3364,20 @@ export class ContentGenerationPhase {
               targetFingerprint: repairTarget.fingerprint,
               resolvedFingerprints,
               introducedFingerprints,
+              resolvedIssueKeys: finalDelta.resolvedIssueKeys,
+              introducedIssueKeys: finalDelta.introducedIssueKeys,
+              regressedPassedAtomKeys: finalDelta.regressedPassedAtomKeys,
               adopted: finalAdopt,
             });
             // Capacity tier is monotonic within a scene's repair loop: once the
             // work has proven too large for standard, do not shrink the budget.
             if (outputDirectory) {
-              await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-owner-repair-attempt-${attempt}.json`, {
+              await saveEarlyDiagnostic(outputDirectory, `episode-${densityEpisodeNumber}-scene-${sceneBlueprint.id}-owner-repair-attempt-${patchCallAttempts}.json`, {
                 schemaVersion: 2,
                 episodeNumber: densityEpisodeNumber,
                 sceneId: sceneBlueprint.id,
-                attempt,
+                attempt: patchCallAttempts,
+                authoredAttempt: attempt,
                 repairTarget,
                 previousFindings: ownerTaskFindings,
                 candidateFindings: finalFindings,
@@ -3329,6 +3385,7 @@ export class ContentGenerationPhase {
                 replayVerified: true,
                 resolvedFingerprints,
                 introducedFingerprints,
+                repairDelta: finalDelta,
                 adopted: finalAdopt,
                 candidateHash,
                 patch: ownerTaskRetry.data,
@@ -3340,6 +3397,8 @@ export class ContentGenerationPhase {
               });
             }
             if (finalAdopt) {
+              acceptedRepairCount += 1;
+              stalledRepairAttempts = 0;
               Object.assign(sceneContent, candidateSnapshot);
               sceneContent.sceneId = sceneBlueprint.id;
               sceneContent.sceneName = sceneContent.sceneName || sceneBlueprint.name;
@@ -3351,6 +3410,7 @@ export class ContentGenerationPhase {
               ownerAtomVerdicts = finalAtomVerdicts;
               priorPatchFeedback = [];
             } else {
+              stalledRepairAttempts += 1;
               priorPatchFeedback = finalFindings.map((finding) =>
                 ownerRealizationRepairFeedback(finding, canonicalSceneWriterTasks));
             }
@@ -3414,22 +3474,26 @@ export class ContentGenerationPhase {
               escalateSnapshot.settingContext = sceneSettingContext;
               escalateSnapshot.requiredBeats = sceneRealizationBlueprint.requiredBeats;
               escalateSnapshot.signatureMoment = sceneRealizationBlueprint.signatureMoment;
-              const escalateFindings = (await this.validateNarrativeRealization({
+              const escalateValidation = await this.validateNarrativeRealization({
                 sceneId: sceneBlueprint.id,
                 tasks: canonicalSceneWriterTasks,
                 sceneContent: escalateSnapshot,
                 mode: 'owner',
                 currentStage: 'scene_writer',
                 candidateHash: stableHash(escalateSnapshot),
-              })).findings.filter((finding) => finding.blocking);
+              });
+              const escalateFindings = escalateValidation.findings.filter((finding) => finding.blocking);
               const adoptedEscalate = shouldAdoptOwnerRepairCandidate({
                 previous: ownerTaskFindings,
                 candidate: escalateFindings,
                 targetFingerprint: ownerTaskFindings[0]?.fingerprint ?? '',
-              }) || escalateFindings.length === 0;
+                previousAtomVerdicts: ownerAtomVerdicts,
+                candidateAtomVerdicts: escalateValidation.semanticReceipt.atomVerdicts ?? [],
+              });
               if (adoptedEscalate) {
                 Object.assign(sceneContent, escalateSnapshot);
                 ownerTaskFindings = prioritizeOwnerRepairFindings(escalateFindings, canonicalSceneWriterTasks);
+                ownerAtomVerdicts = escalateValidation.semanticReceipt.atomVerdicts ?? [];
                 await this.deps.recordRemediationSafe({
                   rule: 'scene_full_regen',
                   scope: 'scene',
@@ -3468,7 +3532,7 @@ export class ContentGenerationPhase {
                 context: {
                   sceneId: sceneBlueprint.id,
                   findings: ownerTaskFindings,
-                  retryBudget: 2,
+                  retryBudget: ownerRepairBudget,
                   patchCallAttempts,
                   repairHistory: ownerRepairHistory,
                   lastPatchFailure,
@@ -3733,9 +3797,9 @@ export class ContentGenerationPhase {
             };
 
             const maxChoiceAuthorAttempts = 3;
-            const choiceRealizationFindings = async (choiceSet: ChoiceSet | undefined): Promise<RealizationTaskGateFinding[]> =>
+            const choiceRealizationValidation = async (choiceSet: ChoiceSet | undefined) =>
               choiceSet
-                ? (await this.validateNarrativeRealization({
+                ? this.validateNarrativeRealization({
                     sceneId: sceneBlueprint.id,
                     tasks: sceneBlueprint.realizationTasks,
                     sceneContent,
@@ -3743,96 +3807,168 @@ export class ContentGenerationPhase {
                     mode: 'owner',
                     currentStage: 'choice_author',
                     candidateHash: stableHash(choiceSet),
-                  })).findings
-                : [];
+                  })
+                : undefined;
             let choiceAuthorAttempt = 1;
             let choiceResult = await authorChoices(choiceAuthorInput, `ChoiceAuthor.execute(${sceneBlueprint.id})`);
-            let choiceOwnerBlockers = choiceResult.success && choiceResult.data
-              ? (await choiceRealizationFindings(choiceResult.data)).filter((finding) => finding.blocking)
-              : [];
+            let choiceValidation = choiceResult.success && choiceResult.data
+              ? await choiceRealizationValidation(choiceResult.data)
+              : undefined;
+            let choiceOwnerBlockers = choiceValidation?.findings.filter((finding) => finding.blocking) ?? [];
+            let choiceAtomVerdicts = choiceValidation?.semanticReceipt.atomVerdicts ?? [];
             let choiceProducerBlockers = choiceResult.success && choiceResult.data
               ? validateChoiceProducerOutput(sceneBlueprint.id, choiceResult.data)
               : [];
-            let focusedSharedResolutionAttempts = 0;
+            let focusedSharedResolutionAuthoredAttempts = 0;
+            let focusedSharedResolutionCallAttempts = 0;
+            let focusedSharedResolutionStalls = 0;
+            let focusedSharedResolutionCapacity: 'standard' | 'expanded' = 'standard';
+            const focusedSharedResolutionRequestHashes = new Set<string>();
             const isSharedResolutionFinding = (finding: RealizationTaskGateFinding): boolean => {
               const task = sceneBlueprint.realizationTasks?.find((candidate) => candidate.id === finding.taskId);
               return task?.ownerStage === 'choice_author' && task.target.scope === 'all_choice_outcomes';
             };
-            const findingMissCount = (findings: RealizationTaskGateFinding[]): number => findings.reduce(
-              (total, finding) => total + Math.max(
-                1,
-                (finding.missingEvidenceAtoms?.length ?? 0) + (finding.matchedForbiddenAtoms?.length ?? 0),
-              ),
-              0,
-            );
             const hasOnlySharedResolutionBlockers = (): boolean =>
               choiceOwnerBlockers.length > 0
               && choiceOwnerBlockers.every(isSharedResolutionFinding)
               && choiceProducerBlockers.length === 0;
+            const forbiddenChoiceAtomIds = new Set((sceneBlueprint.realizationTasks ?? [])
+              .filter((task) => task.ownerStage === 'choice_author')
+              .flatMap((task) => task.evidenceAtoms
+                .filter((atom) => atom.polarity === 'forbidden')
+                .map((atom) => atom.id)));
             const tryFocusedSharedResolutionRepair = async (): Promise<void> => {
-              if (
-                focusedSharedResolutionAttempts >= 2
-                || !choiceResult.success
-                || !choiceResult.data
-                || !hasOnlySharedResolutionBlockers()
-              ) return;
-              focusedSharedResolutionAttempts += 1;
-              const feedback = choiceOwnerBlockers
-                .map((finding) => ownerRealizationRepairFeedback(finding, sceneBlueprint.realizationTasks))
-                .join('; ');
-              context.emit({
-                type: 'debug',
-                phase: 'choices',
-                message: `Repairing only ${sceneBlueprint.id} shared choice resolution (${focusedSharedResolutionAttempts}/2); preserving valid options, consequences, and outcome tiers.`,
-              });
-              let repaired;
-              try {
-                repaired = await withTimeout(
-                  this.deps.choiceAuthor.repairSharedResolution(choiceAuthorInput, choiceResult.data, feedback),
-                  PIPELINE_TIMEOUTS.llmAgent,
-                  `ChoiceAuthor.repairSharedResolution(${sceneBlueprint.id})`,
-                );
-              } catch (error) {
-                context.emit({
-                  type: 'warning',
-                  phase: 'choices',
-                  message: `Focused shared-resolution repair threw for ${sceneBlueprint.id}: ${error instanceof Error ? error.message : String(error)}.`,
+              while (
+                focusedSharedResolutionAuthoredAttempts < 3
+                && focusedSharedResolutionCallAttempts < 5
+                && focusedSharedResolutionStalls < 2
+                && choiceResult.success
+                && choiceResult.data
+                && hasOnlySharedResolutionBlockers()
+              ) {
+                const remainingAtomIds = [...new Set(choiceOwnerBlockers.flatMap((finding) => [
+                  ...(finding.missingEvidenceAtoms ?? []),
+                  ...(finding.matchedForbiddenAtoms ?? []),
+                ]))];
+                const remainingAtomIdSet = new Set(remainingAtomIds);
+                const preserveAtomIds = [...new Set(choiceAtomVerdicts
+                  .filter((verdict) => verdict.outcome === 'pass'
+                    && !remainingAtomIdSet.has(verdict.atomId)
+                    && !forbiddenChoiceAtomIds.has(verdict.atomId))
+                  .map((verdict) => verdict.atomId))];
+                const feedback = choiceOwnerBlockers
+                  .map((finding) => ownerRealizationRepairFeedback(finding, sceneBlueprint.realizationTasks))
+                  .join('; ');
+                const requestHash = stableHash({
+                  baseResolution: choiceResult.data.sharedResolutionText ?? '',
+                  remainingAtomIds,
+                  preserveAtomIds,
+                  feedback,
+                  capacityTier: focusedSharedResolutionCapacity,
                 });
-                return;
-              }
-              if (!repaired.success || !repaired.data) {
+                if (focusedSharedResolutionRequestHashes.has(requestHash)) {
+                  if (focusedSharedResolutionCapacity === 'standard') {
+                    focusedSharedResolutionCapacity = 'expanded';
+                    context.emit({
+                      type: 'debug',
+                      phase: 'choices',
+                      message: `Shared-resolution repair for ${sceneBlueprint.id} repeated without accepted progress; escalating patch capacity once.`,
+                    });
+                    continue;
+                  }
+                  context.emit({
+                    type: 'warning',
+                    phase: 'choices',
+                    message: `Shared-resolution repair for ${sceneBlueprint.id} reached a repeated expanded request; stopping at the true stall boundary.`,
+                  });
+                  break;
+                }
+                focusedSharedResolutionRequestHashes.add(requestHash);
+                focusedSharedResolutionCallAttempts += 1;
                 context.emit({
-                  type: 'warning',
+                  type: 'debug',
                   phase: 'choices',
-                  message: `Focused shared-resolution repair failed for ${sceneBlueprint.id}: ${repaired.error ?? 'no data'}.`,
+                  message: `Repairing only ${sceneBlueprint.id} shared choice resolution (call ${focusedSharedResolutionCallAttempts}/5, accepted ${focusedSharedResolutionAuthoredAttempts}/3, stalls ${focusedSharedResolutionStalls}/2, ${focusedSharedResolutionCapacity}); preserving valid options, consequences, outcome tiers, and passed meanings.`,
                 });
-                return;
-              }
-              const repairedOwnerBlockers = (await choiceRealizationFindings(repaired.data)).filter((finding) => finding.blocking);
-              const repairedProducerBlockers = validateChoiceProducerOutput(sceneBlueprint.id, repaired.data);
-              const improved = repairedProducerBlockers.length === 0
-                && findingMissCount(repairedOwnerBlockers) < findingMissCount(choiceOwnerBlockers);
-              if (!improved) {
+                let repaired;
+                try {
+                  repaired = await withTimeout(
+                    this.deps.choiceAuthor.repairSharedResolution(
+                      choiceAuthorInput,
+                      choiceResult.data,
+                      feedback,
+                      {
+                        remainingAtomIds,
+                        preserveAtomIds,
+                        capacityTier: focusedSharedResolutionCapacity,
+                      },
+                    ),
+                    PIPELINE_TIMEOUTS.llmAgent,
+                    `ChoiceAuthor.repairSharedResolution(${sceneBlueprint.id})`,
+                  );
+                } catch (error) {
+                  context.emit({
+                    type: 'warning',
+                    phase: 'choices',
+                    message: `Focused shared-resolution repair threw for ${sceneBlueprint.id}: ${error instanceof Error ? error.message : String(error)}.`,
+                  });
+                  continue;
+                }
+                if (!repaired.success || !repaired.data) {
+                  context.emit({
+                    type: 'warning',
+                    phase: 'choices',
+                    message: `Focused shared-resolution repair failed for ${sceneBlueprint.id}: ${repaired.error ?? 'no data'}.`,
+                  });
+                  continue;
+                }
+                const repairedValidation = await choiceRealizationValidation(repaired.data);
+                const repairedOwnerBlockers = repairedValidation?.findings.filter((finding) => finding.blocking) ?? [];
+                const repairedAtomVerdicts = repairedValidation?.semanticReceipt.atomVerdicts ?? [];
+                const repairedProducerBlockers = validateChoiceProducerOutput(sceneBlueprint.id, repaired.data);
+                const improved = repairedProducerBlockers.length === 0
+                  && shouldAdoptOwnerRepairCandidate({
+                    previous: choiceOwnerBlockers,
+                    candidate: repairedOwnerBlockers,
+                    targetFingerprint: choiceOwnerBlockers[0]?.fingerprint ?? '',
+                    previousAtomVerdicts: choiceAtomVerdicts,
+                    candidateAtomVerdicts: repairedAtomVerdicts,
+                  });
+                if (!improved) {
+                  focusedSharedResolutionStalls += 1;
+                  context.emit({
+                    type: 'warning',
+                    phase: 'choices',
+                    message: `Focused shared-resolution repair for ${sceneBlueprint.id} was not atom-monotonic; retaining the prior valid choice geometry and passed meanings.`,
+                  });
+                  continue;
+                }
+                focusedSharedResolutionAuthoredAttempts += 1;
+                focusedSharedResolutionStalls = 0;
+                choiceResult = repaired;
+                choiceValidation = repairedValidation;
+                choiceOwnerBlockers = repairedOwnerBlockers;
+                choiceAtomVerdicts = repairedAtomVerdicts;
+                choiceProducerBlockers = repairedProducerBlockers;
+                const residualAtomCount = new Set(repairedOwnerBlockers.flatMap((finding) => [
+                  ...(finding.missingEvidenceAtoms ?? []),
+                  ...(finding.matchedForbiddenAtoms ?? []),
+                ])).size;
                 context.emit({
-                  type: 'warning',
+                  type: choiceOwnerBlockers.length === 0 ? 'debug' : 'warning',
                   phase: 'choices',
-                  message: `Focused shared-resolution repair for ${sceneBlueprint.id} did not reduce canonical misses; retaining the prior valid choice geometry.`,
+                  message: choiceOwnerBlockers.length === 0
+                    ? `Focused shared-resolution repair satisfied ${sceneBlueprint.id} without regenerating its choices.`
+                    : `Focused shared-resolution repair reduced ${sceneBlueprint.id} to ${residualAtomCount} residual canonical atom(s); continuing from the accepted passage.`,
                 });
-                return;
               }
-              choiceResult = repaired;
-              choiceOwnerBlockers = repairedOwnerBlockers;
-              choiceProducerBlockers = repairedProducerBlockers;
-              context.emit({
-                type: choiceOwnerBlockers.length === 0 ? 'debug' : 'warning',
-                phase: 'choices',
-                message: choiceOwnerBlockers.length === 0
-                  ? `Focused shared-resolution repair satisfied ${sceneBlueprint.id} without regenerating its choices.`
-                  : `Focused shared-resolution repair reduced ${sceneBlueprint.id} to ${findingMissCount(choiceOwnerBlockers)} remaining canonical miss(es).`,
-              });
             };
             await tryFocusedSharedResolutionRepair();
-            while ((!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0) && choiceAuthorAttempt < maxChoiceAuthorAttempts) {
+            while (
+              (!choiceResult.success || !choiceResult.data || choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0)
+              && !hasOnlySharedResolutionBlockers()
+              && choiceAuthorAttempt < maxChoiceAuthorAttempts
+            ) {
               choiceAuthorAttempt++;
               const realizationFeedback = choiceOwnerBlockers.length > 0 || choiceProducerBlockers.length > 0
                 ? [
@@ -3852,9 +3988,11 @@ export class ContentGenerationPhase {
                 },
               };
               choiceResult = await authorChoices(retryFeedbackInput, `ChoiceAuthor.execute(${sceneBlueprint.id} retry-${choiceAuthorAttempt})`);
-              choiceOwnerBlockers = choiceResult.success && choiceResult.data
-                ? (await choiceRealizationFindings(choiceResult.data)).filter((finding) => finding.blocking)
-                : [];
+              choiceValidation = choiceResult.success && choiceResult.data
+                ? await choiceRealizationValidation(choiceResult.data)
+                : undefined;
+              choiceOwnerBlockers = choiceValidation?.findings.filter((finding) => finding.blocking) ?? [];
+              choiceAtomVerdicts = choiceValidation?.semanticReceipt.atomVerdicts ?? [];
               choiceProducerBlockers = choiceResult.success && choiceResult.data
                 ? validateChoiceProducerOutput(sceneBlueprint.id, choiceResult.data)
                 : [];
@@ -3882,9 +4020,10 @@ export class ContentGenerationPhase {
                 },
                 `ChoiceAuthor.execute(${sceneBlueprint.id} branch-regen)`,
               );
-              const branchRegenBlockers = branchRegen.success && branchRegen.data
-                ? (await choiceRealizationFindings(branchRegen.data)).filter((finding) => finding.blocking)
-                : [];
+              const branchRegenValidation = branchRegen.success && branchRegen.data
+                ? await choiceRealizationValidation(branchRegen.data)
+                : undefined;
+              const branchRegenBlockers = branchRegenValidation?.findings.filter((finding) => finding.blocking) ?? [];
               const branchRegenProducerBlockers = branchRegen.success && branchRegen.data
                 ? validateChoiceProducerOutput(sceneBlueprint.id, branchRegen.data)
                 : [];
@@ -4039,7 +4178,8 @@ export class ContentGenerationPhase {
               );
             }
             choiceResult.data = preparedChoiceSet;
-            const choiceAdvisories = (await choiceRealizationFindings(choiceResult.data)).filter((finding) => !finding.blocking);
+            const choiceAdvisories = (await choiceRealizationValidation(choiceResult.data))
+              ?.findings.filter((finding) => !finding.blocking) ?? [];
             if (choiceAdvisories.length > 0) {
               context.emit({
                 type: 'warning',
@@ -5054,6 +5194,10 @@ export class ContentGenerationPhase {
           })),
           canonicalEventEvidenceRequirements: sceneBlueprint.canonicalEvidenceRequirements,
           realizationTasks: sceneBlueprint.realizationTasks,
+          twistDirectives: sceneTwistDirectives(
+            this.deps.episodeTwistPlans.get(episodeNumber ?? brief.episode.number),
+            sceneBlueprint.id,
+          ),
           signatureMoment: sceneBlueprint.signatureMoment,
           centralConflict: sceneBlueprint.encounterCentralConflict || plannedEnc?.centralConflict,
           encounterSpineProfile: sceneBlueprint.encounterProfile
@@ -5950,6 +6094,7 @@ export class ContentGenerationPhase {
           this.deps.episodeTwistPlans.get(episodeNumber ?? brief.episode.number),
           sceneContents.find((scene) => scene.sceneId === sceneBlueprint.id)
             ?? ({ sceneId: sceneBlueprint.id, beats: [] } as unknown as SceneContent),
+          encounters.get(sceneBlueprint.id),
         );
         if (twistBinding.status === 'invalid') {
           throw new PipelineError(
@@ -5959,8 +6104,8 @@ export class ContentGenerationPhase {
               context: { sceneId: sceneBlueprint.id, twistBinding },
               failure: {
                 code: 'prose_realization_failed',
-                ownerStage: 'scene_content',
-                retryClass: 'repair_scene_prose',
+                ownerStage: sceneBlueprint.isEncounter ? 'encounter_architect' : 'scene_writer',
+                retryClass: sceneBlueprint.isEncounter ? 'repair_encounter_route' : 'repair_scene_prose',
                 issueCodes: ['TWIST_MATERIALIZATION_FAILED'],
                 repairTarget: sceneBlueprint.id,
               },
@@ -5968,10 +6113,13 @@ export class ContentGenerationPhase {
           );
         }
         if (twistBinding.status === 'bound') {
+          const surfaceDetail = twistBinding.surfaceKind === 'encounter_beat'
+            ? ` (${twistBinding.surfaceKind})`
+            : '';
           context.emit({
             type: 'debug',
             phase: 'content',
-            message: `Bound planned twist ${twistBinding.role} to ${sceneBlueprint.id}/${twistBinding.beatId} before commit.`,
+            message: `Bound planned twist ${twistBinding.role} to ${sceneBlueprint.id}/${twistBinding.beatId}${surfaceDetail} before commit.`,
           });
         }
         completedScene = sceneContents.find((scene) => scene.sceneId === sceneBlueprint.id);

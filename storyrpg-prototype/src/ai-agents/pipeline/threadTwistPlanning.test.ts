@@ -16,6 +16,7 @@ import {
   mergeIntoSeasonLedger,
   materializeTwistPlan,
   materializeTwistSceneBeforeCommit,
+  validateTwistPlanTargets,
   openPriorThreads,
   sceneActiveThreads,
   sceneTwistDirectives,
@@ -404,6 +405,31 @@ describe('materializeTwistPlan', () => {
     });
   });
 
+  it('binds an encounter-owned twist role to encounter prose without inventing a scene beat', () => {
+    const plan = makeTwistPlan({
+      foreshadowSceneId: 'encounter-1',
+      twistSceneId: 's1-2',
+      foreshadowBeatId: 'planned-foreshadow',
+    });
+    const scene = {
+      sceneId: 'encounter-1', sceneName: 'The Test', startingBeatId: '', beats: [],
+      moodProgression: [], charactersInvolved: [], keyMoments: [], continuityNotes: [],
+    } as SceneContent;
+    const encounter = {
+      sceneId: 'encounter-1',
+      description: 'The room tightens around the unspoken test.',
+      beats: [{ id: 'encounter-beat-1', setupText: 'Mika flinches when the old club is named.' }],
+    };
+
+    expect(materializeTwistSceneBeforeCommit(plan, scene, encounter)).toMatchObject({
+      status: 'bound', role: 'foreshadow', beatId: 'encounter-beat-1', surfaceKind: 'encounter_beat',
+    });
+    expect(scene.beats).toEqual([]);
+    expect(encounter.beats[0]).toMatchObject({ plotPointType: 'setup', twistKind: 'revelation' });
+    expect(plan.surfaceBindings?.foreshadow).toEqual({ kind: 'encounter_beat', id: 'encounter-beat-1' });
+    expect(plan.realization).toBeUndefined();
+  });
+
   it('binds placeholder plan ids to concrete generated beats and marks setup/reveal', () => {
     const plan = makeTwistPlan({
       foreshadowBeatId: 'planned-foreshadow',
@@ -493,5 +519,21 @@ describe('materializeTwistPlan', () => {
     ]);
 
     expect(result.status).toBe('invalid');
+  });
+});
+
+describe('validateTwistPlanTargets', () => {
+  it('rejects missing and backward owner topology before prose generation', () => {
+    const scenes = [{ id: 's1-1' }, { id: 's1-2' }];
+    expect(validateTwistPlanTargets(makeTwistPlan({ twistSceneId: 'missing' }), scenes)).toMatchObject({
+      valid: false,
+      reason: expect.stringContaining('missing scene'),
+    });
+    expect(validateTwistPlanTargets(makeTwistPlan({
+      foreshadowSceneId: 's1-2', twistSceneId: 's1-1',
+    }), scenes)).toMatchObject({
+      valid: false,
+      reason: expect.stringContaining('must precede'),
+    });
   });
 });

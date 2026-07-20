@@ -109,4 +109,31 @@ describe('TwistQualityValidator', () => {
       ),
     ).toBe(true);
   });
+
+  it('recognizes an encounter-owned foreshadow binding as a planned prose surface', () => {
+    const result = new TwistQualityValidator().validate({
+      sceneContents: [
+        makeScene('enc-1', []),
+        makeScene('scene-2', [makeBeat('reveal', 'revelation')]),
+      ],
+      twistPlan: {
+        episodeId: 'ep-1', headline: 'The name changes everything.', kind: 'revelation',
+        foreshadowSceneId: 'enc-1', foreshadowBeatId: 'enc-beat-1',
+        twistSceneId: 'scene-2', twistBeatId: 'reveal',
+        rationale: 'The earlier flinch prepares the reveal.', directives: [],
+        surfaceBindings: {
+          foreshadow: { kind: 'encounter_beat', id: 'enc-beat-1' },
+          twist: { kind: 'scene_beat', id: 'reveal' },
+        },
+      },
+    });
+
+    expect(result.metrics).toMatchObject({
+      twistPresent: true,
+      foreshadowPresent: true,
+      foreshadowPrecedesReveal: true,
+      matchesPlan: true,
+    });
+    expect(result.valid).toBe(true);
+  });
 });

@@ -1262,6 +1262,24 @@ describe('authored anchor (G12)', () => {
     expect(prompt).toContain('positions the poison');
   });
 
+  it('routes an encounter-owned twist directive into encounter prose prompts', () => {
+    const architect = new EncounterArchitect(config);
+    const twistInput: EncounterArchitectInput = {
+      ...input,
+      twistDirectives: [{
+        twistKind: 'revelation',
+        beatRole: 'setup',
+        hint: 'Eros flinches when the sealed room is named.',
+      }],
+    };
+    const section = (architect as any).buildAuthoredAnchorSection(twistInput) as string;
+    const prompt = (architect as any).buildReliablePrompt(twistInput) as string;
+
+    expect(section).toContain('TWIST REALIZATION');
+    expect(section).toContain('Eros flinches when the sealed room is named.');
+    expect(prompt).toContain('REQUIRED ON ENCOUNTER PROSE');
+  });
+
   it('detects a sustained set piece from the authored anchor fields', () => {
     const architect = new EncounterArchitect(config);
     const sustained: EncounterArchitectInput = {

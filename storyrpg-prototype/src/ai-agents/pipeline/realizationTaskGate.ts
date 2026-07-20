@@ -1,4 +1,5 @@
 import type {
+  NarrativeEvidenceAtom,
   NarrativeRealizationOwnerStage,
   NarrativeRealizationTask,
 } from '../../types/narrativeContract';
@@ -51,6 +52,31 @@ export interface EvidenceMatchDiagnostic {
   missingTerms: string[];
 }
 
+export function narrativeAtomCraftInstruction(atom: NarrativeEvidenceAtom): string {
+  if (atom.polarity === 'forbidden') return '';
+  const participants = atom.participantIds?.length
+    ? ` Required participant ids: ${atom.participantIds.join(', ')}.`
+    : '';
+  switch (atom.semanticRole) {
+    case 'relationship_change':
+      return `Show an observable relationship turn on-page: one participant makes a personal bid, the other accepts or reciprocates it, and their behavior establishes a new footing. Politeness, a smile, generic welcome, a toast, a group label, or an unaccepted offer alone is not a relationship change.${participants}`;
+    case 'introduction':
+      return 'Stage the named introducer actively identifying the participants to one another while they are present; a mention, arrival, or self-introduction by someone else is insufficient.';
+    case 'information_transfer':
+      return 'Stage the specified source participant communicating the information to its recipient on-page; a bare reference or a different speaker carrying the information is insufficient.';
+    case 'state_change':
+      return 'Show the prior state, the causal turn, and observable evidence of the resulting state rather than only naming the intended result.';
+    case 'decision':
+      return 'Show the participant making or committing to the decision, not merely considering options or receiving an invitation.';
+    case 'aftermath':
+      return 'Show a concrete consequence occurring after the triggering event; recollection or summary of the trigger alone is insufficient.';
+    case 'action':
+      return 'Stage the action through completion in the current scene rather than describing a plan, attempt, or prior summary.';
+    default:
+      return '';
+  }
+}
+
 export function prioritizeOwnerRepairFindings(
   findings: RealizationTaskGateFinding[],
   tasks: NarrativeRealizationTask[],
@@ -100,27 +126,71 @@ export function totalTaskMissCount(findings: RealizationTaskGateFinding[]): numb
   return total;
 }
 
+function findingIssueKeys(finding: RealizationTaskGateFinding): string[] {
+  const required = (finding.missingEvidenceAtoms ?? []).map((atomId) =>
+    `${finding.taskId}::required::${atomId}`);
+  const forbidden = (finding.matchedForbiddenAtoms ?? []).map((atomId) =>
+    `${finding.taskId}::forbidden::${atomId}`);
+  if (required.length > 0 || forbidden.length > 0) return [...required, ...forbidden];
+  return [`${findingScopeKey(finding)}::${finding.fingerprint}`];
+}
+
+function verdictKey(verdict: NarrativeAtomVerdict): string {
+  return `${verdict.taskId}::${verdict.groupKey}::${verdict.atomId}`;
+}
+
+export interface OwnerRepairCandidateDelta {
+  adopted: boolean;
+  resolvedIssueKeys: string[];
+  introducedIssueKeys: string[];
+  regressedPassedAtomKeys: string[];
+}
+
 /**
- * Best-candidate hill-climb acceptance. A previously satisfied task may never
- * become a new blocker; within that guard a candidate is adopted when it
- * clears its target without raising total misses, OR when it makes strict net
- * progress (fewer total misses) even if the target fingerprint persists —
- * partial wins advance the baseline instead of being discarded and re-fought.
- * Atom fingerprints may still move within a task because a rewrite can resolve
- * one clause while exposing another.
+ * Monotonic owner-repair acceptance. Missing/forbidden evidence must shrink as
+ * a set, never merely as a count, and an atom that passed on a concrete route
+ * may not become miss/inconclusive/unavailable on that same route. This lets a
+ * patch move evidence between prose beats while preventing the live failure
+ * class where fixing clause B silently erased already-satisfied clause A.
  */
+export function evaluateOwnerRepairCandidate(input: {
+  previous: RealizationTaskGateFinding[];
+  candidate: RealizationTaskGateFinding[];
+  previousAtomVerdicts?: NarrativeAtomVerdict[];
+  candidateAtomVerdicts?: NarrativeAtomVerdict[];
+}): OwnerRepairCandidateDelta {
+  const previousIssues = new Set(input.previous.flatMap(findingIssueKeys));
+  const candidateIssues = new Set(input.candidate.flatMap(findingIssueKeys));
+  const introducedIssueKeys = [...candidateIssues].filter((key) => !previousIssues.has(key));
+  const resolvedIssueKeys = [...previousIssues].filter((key) => !candidateIssues.has(key));
+
+  const candidateVerdicts = new Map(
+    (input.candidateAtomVerdicts ?? []).map((verdict) => [verdictKey(verdict), verdict.outcome]),
+  );
+  const regressedPassedAtomKeys = (input.previousAtomVerdicts ?? [])
+    .filter((verdict) => verdict.outcome === 'pass')
+    .map(verdictKey)
+    .filter((key) => candidateVerdicts.get(key) !== 'pass');
+
+  return {
+    adopted: introducedIssueKeys.length === 0
+      && regressedPassedAtomKeys.length === 0
+      && resolvedIssueKeys.length > 0,
+    resolvedIssueKeys,
+    introducedIssueKeys,
+    regressedPassedAtomKeys,
+  };
+}
+
 export function shouldAdoptOwnerRepairCandidate(input: {
   previous: RealizationTaskGateFinding[];
   candidate: RealizationTaskGateFinding[];
   targetFingerprint: string;
+  previousAtomVerdicts?: NarrativeAtomVerdict[];
+  candidateAtomVerdicts?: NarrativeAtomVerdict[];
 }): boolean {
-  const previousTaskIds = new Set(input.previous.map((finding) => finding.taskId));
-  if (input.candidate.some((finding) => !previousTaskIds.has(finding.taskId))) return false;
-  const previousMisses = totalTaskMissCount(input.previous);
-  const candidateMisses = totalTaskMissCount(input.candidate);
-  const candidateFingerprints = new Set(input.candidate.map((finding) => finding.fingerprint));
-  if (!candidateFingerprints.has(input.targetFingerprint)) return candidateMisses <= previousMisses;
-  return candidateMisses < previousMisses;
+  void input.targetFingerprint;
+  return evaluateOwnerRepairCandidate(input).adopted;
 }
 
 function outcomeTierForTask(task: NarrativeRealizationTask): string | undefined {

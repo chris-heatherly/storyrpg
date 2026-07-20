@@ -61,6 +61,7 @@ import {
   materializeSharedChoiceResolution,
   withReplacedSharedChoiceResolution,
 } from '../pipeline/choiceSharedResolution';
+import { narrativeAtomCraftInstruction } from '../pipeline/realizationTaskGate';
 import { normalizeChoiceStatCheck } from '../utils/statCheckNormalization';
 import {
   normalizeCanonicalConsequences,
@@ -1016,36 +1017,57 @@ Return JSON only.`;
     input: ChoiceAuthorInput,
     choiceSet: ChoiceSet,
     feedback: string,
+    repairContract?: {
+      remainingAtomIds: string[];
+      preserveAtomIds: string[];
+      capacityTier?: 'standard' | 'expanded';
+    },
   ): Promise<AgentResponse<ChoiceSet>> {
     const tasks = this.choiceResolutionTasks(input);
     if (tasks.length === 0) {
       return { success: false, error: 'No canonical shared choice-resolution task is assigned to this scene.' };
     }
-    const requirements = tasks.flatMap((task) => task.evidenceAtoms.map((atom) => {
-      const craft = atom.semanticRole === 'relationship_change'
-        ? 'Show an observable personal bid and reciprocal acceptance; a label or group name alone is insufficient.'
-        : atom.semanticRole === 'state_change'
-          ? 'Show the prior state, causal turn, and changed state.'
-          : atom.semanticRole === 'action'
-            ? 'Stage the named actor completing the action on-page.'
-            : 'Make the required meaning observable on-page.';
-      return `- ${atom.description}: ${craft}`;
-    }));
+    const allTaskAtoms = tasks.flatMap((task) => task.evidenceAtoms);
+    const requestedAtomIds = repairContract?.remainingAtomIds?.length
+      ? repairContract.remainingAtomIds
+      : allTaskAtoms.map((atom) => atom.id);
+    const remainingAtomIds = new Set(requestedAtomIds);
+    const preserveAtomIds = new Set(repairContract?.preserveAtomIds ?? []);
+    const requirements = allTaskAtoms.map((atom) => {
+      const craft = narrativeAtomCraftInstruction(atom) || 'Make the required meaning observable on-page.';
+      const disposition = remainingAtomIds.has(atom.id)
+        ? 'MISSING — ADD'
+        : preserveAtomIds.has(atom.id)
+          ? 'PASSING — PRESERVE'
+          : 'REQUIRED';
+      return `- [${disposition}] ${atom.description}: ${craft}`;
+    });
+    const targetsForbiddenMeaning = allTaskAtoms.some((atom) =>
+      remainingAtomIds.has(atom.id) && atom.polarity === 'forbidden');
+    const currentResolution = choiceSet.sharedResolutionText?.trim() ?? '';
+    const allowedOperations: Array<'append' | 'prepend' | 'replace'> = !currentResolution || targetsForbiddenMeaning
+      ? ['replace']
+      : ['append', 'prepend'];
     const blockedLabels = Array.from(new Set(
       (input.sceneBlueprint.relationshipPacing ?? []).flatMap((contract) => contract.blockedLabels ?? []),
     ));
-    const prompt = `Rewrite ONLY the shared post-choice resolution passage for this interactive-fiction choice set.
+    const capacityTier = repairContract?.capacityTier ?? 'standard';
+    const prompt = `Author a PATCH ONLY for the shared post-choice resolution passage in this interactive-fiction choice set.
 
-The passage is shown after every option and every success/partial/failure result. It must preserve route invariance while completing every required meaning once. Write one or two concise, fiction-first sentences. Do not mention tasks, contracts, validation, choices, outcomes, stats, or mechanics.
+The passage is shown after every option and every success/partial/failure result. It must preserve route invariance while completing every required meaning once. Return only the minimum new reader-facing sentence or sentences needed for meanings marked MISSING — ADD. Do not repeat or paraphrase the passing passage. Do not mention tasks, contracts, validation, choices, outcomes, stats, or mechanics.
 
 CURRENT PASSAGE:
-${choiceSet.sharedResolutionText ?? '(missing)'}
+${currentResolution || '(missing)'}
 
 VALIDATION FEEDBACK:
 ${feedback}
 
 REQUIRED MEANINGS:
 ${requirements.join('\n')}
+
+Do not remove or weaken any meaning marked PASSING — PRESERVE. Concentrate the patch on meanings marked MISSING — ADD.
+Allowed operation: ${allowedOperations.join(' or ')}.
+${capacityTier === 'expanded' ? 'EXPANDED PATCH CAPACITY: use up to two concise sentences so each required participant can perform a distinct bid or reciprocal response.' : 'STANDARD PATCH CAPACITY: prefer one concise sentence.'}
 
 SCENE CONTEXT:
 - Protagonist: ${input.protagonistInfo.name}
@@ -1054,15 +1076,16 @@ SCENE CONTEXT:
 - Choice beat: ${input.beatText}
 ${blockedLabels.length > 0 ? `- Relationship labels not yet earned: ${blockedLabels.join(', ')}` : ''}
 
-Return JSON only: {"sharedResolutionText":"..."}`;
+Return JSON only with the exact target atom ids:
+{"operation":"${allowedOperations[0]}","patchText":"...","targetAtomIds":${JSON.stringify(requestedAtomIds)},"claimedEvidenceAtomIds":${JSON.stringify(requestedAtomIds)}}`;
     try {
       const rawResponse = await this.callLLM(
         [{ role: 'user', content: prompt }],
         2,
         {
           jsonSchema: {
-            name: 'choice_shared_resolution_repair',
-            description: 'A focused authored repair for one route-invariant choice payoff.',
+            name: 'choice_shared_resolution_patch',
+            description: 'A focused authored patch for one route-invariant choice payoff.',
             maxOutputTokens: 512,
             // r116 (2026-07-18): a bare 512-token cap with no outputBudget made
             // this call infeasible on thinking-enabled Gemini models — with no
@@ -1083,22 +1106,61 @@ Return JSON only: {"sharedResolutionText":"..."}`;
             schema: {
               type: 'object',
               additionalProperties: false,
-              required: ['sharedResolutionText'],
+              required: ['operation', 'patchText', 'targetAtomIds', 'claimedEvidenceAtomIds'],
               properties: {
-                sharedResolutionText: { type: 'string', minLength: 20, maxLength: 600 },
+                operation: { type: 'string', enum: allowedOperations },
+                patchText: { type: 'string', minLength: 20, maxLength: 480 },
+                targetAtomIds: {
+                  type: 'array', minItems: requestedAtomIds.length, maxItems: requestedAtomIds.length,
+                  items: { type: 'string', enum: requestedAtomIds },
+                },
+                claimedEvidenceAtomIds: {
+                  type: 'array', minItems: requestedAtomIds.length, maxItems: requestedAtomIds.length,
+                  items: { type: 'string', enum: requestedAtomIds },
+                },
               },
             },
           },
         },
       );
-      const parsed = this.parseJSON<{ sharedResolutionText?: string }>(rawResponse);
-      const resolution = parsed.sharedResolutionText?.trim();
-      if (!resolution) {
+      const parsed = this.parseJSON<{
+        operation?: 'append' | 'prepend' | 'replace';
+        patchText?: string;
+        targetAtomIds?: string[];
+        claimedEvidenceAtomIds?: string[];
+      }>(rawResponse);
+      const patchText = parsed.patchText?.trim();
+      if (!patchText || !parsed.operation) {
         return { success: false, error: 'Focused shared-resolution repair returned no prose.', rawResponse };
       }
-      if (isUnsafeCallbackProse(resolution)) {
+      const exactAtomSet = (values: string[] | undefined): boolean => {
+        const returned = new Set(values ?? []);
+        return returned.size === requestedAtomIds.length
+          && requestedAtomIds.every((atomId) => returned.has(atomId));
+      };
+      if (!allowedOperations.includes(parsed.operation)
+        || !exactAtomSet(parsed.targetAtomIds)
+        || !exactAtomSet(parsed.claimedEvidenceAtomIds)) {
+        return {
+          success: false,
+          error: 'Focused shared-resolution patch changed its immutable operation or target atom set.',
+          rawResponse,
+          failure: { code: 'structured_output_invalid', retryClass: 'correct_structured_output', provider: this.config.provider },
+        };
+      }
+      if (isUnsafeCallbackProse(patchText)) {
         return { success: false, error: 'Focused shared-resolution repair returned authoring or system prose.', rawResponse };
       }
+      const joinPassages = (left: string, right: string): string => {
+        if (!left) return right;
+        if (!right) return left;
+        return `${left}${/[.!?\u2026\u201d]$/.test(left) ? ' ' : '. '}${right}`;
+      };
+      const resolution = parsed.operation === 'append'
+        ? joinPassages(currentResolution, patchText)
+        : parsed.operation === 'prepend'
+          ? joinPassages(patchText, currentResolution)
+          : patchText;
       const candidate = withReplacedSharedChoiceResolution(choiceSet, resolution);
       try {
         this.assertCandidateAccepted(candidate, input);
@@ -1124,7 +1186,13 @@ Return JSON only: {"sharedResolutionText":"..."}`;
     return `## Canonical Shared Choice Resolution
 Write one fiction-first sharedResolutionText passage that happens after any option resolves and before the route continues. It must naturally realize every requirement below. Do not paste task ids or planning labels. This passage is authored once and will be shown on every option and every outcome tier.
 - Keep sharedResolutionText to the MINIMAL invariant fact (what is now true on every route). The emotional texture belongs in each option's own outcomeTexts, which must stay tier-distinct — never let the shared passage carry so much that every outcome reads identical regardless of what the player chose.
-${tasks.flatMap((task) => task.evidenceAtoms.map((atom) => `- ${atom.description}: use a natural realization equivalent to ${atom.acceptedPatterns.join(' / ')}`)).join('\n')}`;
+${tasks.flatMap((task) => task.evidenceAtoms.map((atom) => {
+  const craft = narrativeAtomCraftInstruction(atom);
+  const acceptedLanguage = atom.acceptedPatterns.length > 0
+    ? ` Natural equivalents include: ${atom.acceptedPatterns.join(' / ')}.`
+    : '';
+  return `- ${atom.description}.${craft ? ` ${craft}` : ''}${acceptedLanguage}`;
+})).join('\n')}`;
   }
 
   /**

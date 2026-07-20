@@ -50,6 +50,11 @@ export interface TwistPlan {
     twistKind: TwistKind;
     hint: string;
   }>;
+  /** Generator-only owner-surface bindings accumulated during sequential sealing. */
+  surfaceBindings?: {
+    foreshadow?: { kind: 'scene_beat' | 'encounter_beat'; id: string };
+    twist?: { kind: 'scene_beat' | 'encounter_beat'; id: string };
+  };
   /**
    * Deterministic post-authoring reconciliation. A planned twist is either
    * bound to concrete generated beat ids or explicitly deferred by a bounded
@@ -57,8 +62,10 @@ export interface TwistPlan {
    */
   realization?: {
     status: 'materialized' | 'deferred';
-    foreshadowBeatId?: string;
-    twistBeatId?: string;
+      foreshadowBeatId?: string;
+      twistBeatId?: string;
+    foreshadowSurface?: { kind: 'scene_beat' | 'encounter_beat'; id: string };
+    twistSurface?: { kind: 'scene_beat' | 'encounter_beat'; id: string };
     deferredUntilEpisode?: number;
     reason?: string;
   };

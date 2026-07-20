@@ -3,6 +3,7 @@ import path from 'path';
 import { describe, expect, it } from 'vitest';
 import {
   collectNarrativeTaskEvidenceTextGroups,
+  evaluateOwnerRepairCandidate,
   prioritizeOwnerRepairFindings,
   shouldAdoptOwnerRepairCandidate,
   validateOwnerRealizationTasks,
@@ -73,7 +74,7 @@ describe('validateOwnerRealizationTasks', () => {
     })).toBe(false);
   });
 
-  it('adopts when total task misses do not increase even if evidence atoms change', () => {
+  it('requires the unresolved atom set to shrink without swapping in new misses', () => {
     const finding = (fingerprint: string, atomIds: string[]) => ({
       fingerprint,
       taskId: 'task:event:1',
@@ -90,11 +91,57 @@ describe('validateOwnerRealizationTasks', () => {
       previous: [finding('missing:a,b,c', ['a', 'b', 'c'])],
       candidate: [finding('missing:d', ['d'])],
       targetFingerprint: 'missing:a,b,c',
-    })).toBe(true);
+    })).toBe(false);
     expect(shouldAdoptOwnerRepairCandidate({
       previous: [finding('missing:a', ['a'])],
       candidate: [finding('missing:a,b,c', ['a', 'b', 'c'])],
       targetFingerprint: 'missing:a',
+    })).toBe(false);
+  });
+
+  it('rejects a candidate that regresses an atom which previously passed', () => {
+    const finding = (atomIds: string[]) => ({
+      fingerprint: `missing:${atomIds.join(',')}`,
+      taskId: 'task:event:1',
+      sceneId: 's1',
+      code: 'SEMANTIC_REALIZATION_MISSING' as const,
+      missingEvidenceAtoms: atomIds,
+    } as any);
+    const delta = evaluateOwnerRepairCandidate({
+      previous: [finding(['b', 'c'])],
+      candidate: [finding(['c'])],
+      previousAtomVerdicts: [
+        { taskId: 'task:event:1', atomId: 'a', groupKey: 'owner', authority: 'semantic_judge', outcome: 'pass' },
+        { taskId: 'task:event:1', atomId: 'b', groupKey: 'owner', authority: 'semantic_judge', outcome: 'miss' },
+        { taskId: 'task:event:1', atomId: 'c', groupKey: 'owner', authority: 'semantic_judge', outcome: 'miss' },
+      ],
+      candidateAtomVerdicts: [
+        { taskId: 'task:event:1', atomId: 'a', groupKey: 'owner', authority: 'semantic_judge', outcome: 'miss' },
+        { taskId: 'task:event:1', atomId: 'b', groupKey: 'owner', authority: 'semantic_judge', outcome: 'pass' },
+        { taskId: 'task:event:1', atomId: 'c', groupKey: 'owner', authority: 'semantic_judge', outcome: 'miss' },
+      ],
+    });
+    expect(delta).toMatchObject({
+      adopted: false,
+      resolvedIssueKeys: ['task:event:1::required::b'],
+      regressedPassedAtomKeys: ['task:event:1::owner::a'],
+    });
+  });
+
+  it('does not let an apparently clean candidate bypass missing atom receipts', () => {
+    const previous = [{
+      fingerprint: 'missing:b', taskId: 'task:event:1', sceneId: 's1',
+      code: 'SEMANTIC_REALIZATION_MISSING' as const, missingEvidenceAtoms: ['b'],
+    }] as any;
+    expect(shouldAdoptOwnerRepairCandidate({
+      previous,
+      candidate: [],
+      targetFingerprint: 'missing:b',
+      previousAtomVerdicts: [
+        { taskId: 'task:event:1', atomId: 'a', groupKey: 'owner', authority: 'semantic_judge', outcome: 'pass' },
+        { taskId: 'task:event:1', atomId: 'b', groupKey: 'owner', authority: 'semantic_judge', outcome: 'miss' },
+      ],
+      candidateAtomVerdicts: [],
     })).toBe(false);
   });
 

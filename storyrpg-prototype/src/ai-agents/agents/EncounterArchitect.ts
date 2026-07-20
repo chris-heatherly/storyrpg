@@ -220,6 +220,12 @@ export interface EncounterArchitectInput {
   }>;
   /** Immutable owner-stage realization tasks projected from the canonical graph. */
   realizationTasks?: NarrativeRealizationTask[];
+  /** Twist role assigned to this encounter's own reader-facing prose surface. */
+  twistDirectives?: Array<{
+    twistKind: 'reversal' | 'revelation' | 'betrayal' | 'reframe';
+    beatRole: 'setup' | 'twist' | 'satisfaction';
+    hint: string;
+  }>;
   /** A single staged signature device/image the encounter must show. */
   signatureMoment?: string;
   /**
@@ -1182,7 +1188,8 @@ export class EncounterArchitect extends BaseAgent {
     );
     const evidence = input.canonicalEventEvidenceRequirements ?? [];
     const realizationTasks = (input.realizationTasks ?? []).filter((task) => task.ownerStage === 'encounter_architect');
-    if (!input.centralConflict?.trim() && !input.signatureMoment?.trim() && beats.length === 0 && evidence.length === 0 && realizationTasks.length === 0) {
+    const twistDirectives = input.twistDirectives ?? [];
+    if (!input.centralConflict?.trim() && !input.signatureMoment?.trim() && beats.length === 0 && evidence.length === 0 && realizationTasks.length === 0 && twistDirectives.length === 0) {
       return '';
     }
     const lines: string[] = [
@@ -1222,6 +1229,16 @@ export class EncounterArchitect extends BaseAgent {
       );
       for (const task of realizationTasks) {
         lines.push(`- ${task.id}: ${describeNarrativeEvidenceTarget(task.target)}; evidence=${task.evidenceAtoms.map((atom) => atom.acceptedPatterns.join(' / ')).join(' | ')}`);
+      }
+    }
+    if (twistDirectives.length > 0) {
+      lines.push(
+        '',
+        '## TWIST REALIZATION (REQUIRED ON ENCOUNTER PROSE)',
+        'Realize each directive naturally in setupText, an encounter beat, or an outcome. Do not mention planning labels.',
+      );
+      for (const directive of twistDirectives) {
+        lines.push(`- ${directive.beatRole} / ${directive.twistKind}: ${directive.hint}`);
       }
     }
     if (this.isSustainedSetPieceInput(input)) {

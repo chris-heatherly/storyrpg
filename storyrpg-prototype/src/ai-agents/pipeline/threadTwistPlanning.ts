@@ -110,7 +110,58 @@ export interface TwistSceneBindingResult {
   status: 'not_planned' | 'not_owner' | 'bound' | 'invalid';
   role?: 'foreshadow' | 'reveal';
   beatId?: string;
+  surfaceKind?: 'scene_beat' | 'encounter_beat';
   reason?: string;
+}
+
+export interface TwistPlanTargetValidation {
+  valid: boolean;
+  reason?: string;
+}
+
+/** Validate twist topology before any owner prose is generated. */
+export function validateTwistPlanTargets(
+  plan: TwistPlan | undefined,
+  scenes: Array<{ id: string }>,
+): TwistPlanTargetValidation {
+  if (!plan) return { valid: true };
+  const sceneIndex = new Map(scenes.map((scene, index) => [scene.id, index]));
+  const foreshadowIndex = sceneIndex.get(plan.foreshadowSceneId);
+  const revealIndex = sceneIndex.get(plan.twistSceneId);
+  if (foreshadowIndex === undefined || revealIndex === undefined) {
+    return {
+      valid: false,
+      reason: `Twist plan references missing scene(s): foreshadow=${plan.foreshadowSceneId}, reveal=${plan.twistSceneId}.`,
+    };
+  }
+  if (foreshadowIndex >= revealIndex) {
+    return {
+      valid: false,
+      reason: `Twist foreshadow scene ${plan.foreshadowSceneId} must precede reveal scene ${plan.twistSceneId}.`,
+    };
+  }
+  const danglingDirective = (plan.directives ?? []).find((directive) => !sceneIndex.has(directive.sceneId));
+  if (danglingDirective) {
+    return {
+      valid: false,
+      reason: `Twist directive references missing scene ${danglingDirective.sceneId}.`,
+    };
+  }
+  return { valid: true };
+}
+
+interface TwistBindableEncounterBeat {
+  id: string;
+  setupText?: string;
+  escalationText?: string;
+  plotPointType?: 'setup' | 'twist' | 'revelation';
+  twistKind?: TwistKind;
+}
+
+interface TwistBindableEncounter {
+  sceneId: string;
+  description?: string;
+  beats?: TwistBindableEncounterBeat[];
 }
 
 /**
@@ -121,6 +172,7 @@ export interface TwistSceneBindingResult {
 export function materializeTwistSceneBeforeCommit(
   plan: TwistPlan | undefined,
   scene: SceneContent,
+  encounter?: TwistBindableEncounter,
 ): TwistSceneBindingResult {
   if (!plan) return { status: 'not_planned' };
   const isForeshadow = scene.sceneId === plan.foreshadowSceneId;
@@ -135,20 +187,25 @@ export function materializeTwistSceneBeforeCommit(
 
   const role = isForeshadow ? 'foreshadow' : 'reveal';
   const plannedBeatId = isForeshadow ? plan.foreshadowBeatId : plan.twistBeatId;
-  const beat = scene.beats.find((candidate) => candidate.id === plannedBeatId)
+  const sceneBeat = scene.beats.find((candidate) => candidate.id === plannedBeatId)
     || (isForeshadow
       ? scene.beats.find((candidate) => !candidate.isChoicePoint) || scene.beats[0]
       : [...scene.beats].reverse().find((candidate) => !candidate.isChoicePoint) || scene.beats[scene.beats.length - 1]);
+  const encounterBeats = encounter?.sceneId === scene.sceneId ? encounter.beats ?? [] : [];
+  const encounterBeat = encounterBeats.find((candidate) => candidate.id === plannedBeatId)
+    || (isForeshadow ? encounterBeats[0] : encounterBeats[encounterBeats.length - 1]);
+  const beat = sceneBeat ?? encounterBeat;
   if (!beat) {
     return {
       status: 'invalid',
       role,
-      reason: `Twist ${role} scene ${scene.sceneId} has no generated prose beat to bind.`,
+      reason: `Twist ${role} scene ${scene.sceneId} has no generated scene or encounter prose beat to bind.`,
     };
   }
 
   beat.plotPointType = isForeshadow ? 'setup' : plan.kind === 'revelation' ? 'revelation' : 'twist';
   beat.twistKind = plan.kind;
+  const surfaceKind = sceneBeat ? 'scene_beat' as const : 'encounter_beat' as const;
   if (isForeshadow) plan.foreshadowBeatId = beat.id;
   else plan.twistBeatId = beat.id;
   plan.directives = plan.directives.map((directive) => {
@@ -159,13 +216,24 @@ export function materializeTwistSceneBeforeCommit(
     return ownsRole ? { ...directive, beatId: beat.id } : directive;
   });
   if (isReveal) {
+    plan.surfaceBindings = {
+      ...plan.surfaceBindings,
+      twist: { kind: surfaceKind, id: beat.id },
+    };
     plan.realization = {
       status: 'materialized',
       foreshadowBeatId: plan.foreshadowBeatId,
       twistBeatId: beat.id,
+      foreshadowSurface: plan.surfaceBindings.foreshadow,
+      twistSurface: { kind: surfaceKind, id: beat.id },
+    };
+  } else {
+    plan.surfaceBindings = {
+      ...plan.surfaceBindings,
+      foreshadow: { kind: surfaceKind, id: beat.id },
     };
   }
-  return { status: 'bound', role, beatId: beat.id };
+  return { status: 'bound', role, beatId: beat.id, surfaceKind };
 }
 
 /**

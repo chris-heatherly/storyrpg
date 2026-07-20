@@ -54,6 +54,38 @@ export class TwistQualityValidator extends BaseValidator {
         flat.push({ sceneIndex, sceneId: sc.sceneId, beatIndex, beat });
       });
     });
+    const appendBoundEncounterMarker = (
+      role: 'foreshadow' | 'twist',
+      sceneId: string | undefined,
+      binding: { kind: 'scene_beat' | 'encounter_beat'; id: string } | undefined,
+    ): void => {
+      if (!binding || binding.kind !== 'encounter_beat' || !sceneId) return;
+      if (flat.some((entry) => entry.sceneId === sceneId && entry.beat.id === binding.id)) return;
+      const sceneIndex = input.sceneContents.findIndex((scene) => scene.sceneId === sceneId);
+      if (sceneIndex < 0) return;
+      flat.push({
+        sceneIndex,
+        sceneId,
+        beatIndex: role === 'foreshadow' ? 0 : Number.MAX_SAFE_INTEGER,
+        beat: {
+          id: binding.id,
+          text: '',
+          plotPointType: role === 'foreshadow'
+            ? 'setup'
+            : input.twistPlan?.kind === 'revelation' ? 'revelation' : 'twist',
+        } as GeneratedBeat,
+      });
+    };
+    appendBoundEncounterMarker(
+      'foreshadow',
+      input.twistPlan?.foreshadowSceneId,
+      input.twistPlan?.surfaceBindings?.foreshadow,
+    );
+    appendBoundEncounterMarker(
+      'twist',
+      input.twistPlan?.twistSceneId,
+      input.twistPlan?.surfaceBindings?.twist,
+    );
 
     const reveals = flat.filter(
       b => b.beat.plotPointType === 'twist' || b.beat.plotPointType === 'revelation',

@@ -119,12 +119,42 @@ describe('ChoiceAuthor.validateChoices', () => {
     expect(ordinary.required).not.toContain('sharedResolutionText');
   });
 
+  it('gives initial shared-resolution authoring the same relationship evidence standard as repair', () => {
+    const author = new ChoiceAuthor(config);
+    const section = (author as any).buildChoiceResolutionTaskSection(makeInput({
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'The Test',
+        realizationTasks: [{
+          id: 'task:event:alliance:choice-resolution',
+          ownerStage: 'choice_author',
+          target: { scope: 'all_choice_outcomes', surfaces: ['choice_outcome'] },
+          evidenceAtoms: [{
+            id: 'bond',
+            description: 'The three become friends.',
+            acceptedPatterns: ['choose friendship'],
+            semanticRole: 'relationship_change',
+            participantIds: ['alex', 'stela', 'mika'],
+          }],
+        }],
+      },
+    }));
+
+    expect(section).toContain('one participant makes a personal bid');
+    expect(section).toContain('the other accepts or reciprocates it');
+    expect(section).toContain('Required participant ids: alex, stela, mika');
+    expect(section).toContain('Natural equivalents include: choose friendship');
+  });
+
   it('repairs only the shared route-invariant payoff and preserves authored choices', async () => {
     const prompts: string[] = [];
     BaseAgent.setLlmTransportOverride(async (request) => {
       prompts.push(request.messages.map((message) => String(message.content)).join('\n'));
       return JSON.stringify({
-        sharedResolutionText: 'Mika lets the test end in laughter; all three choose friendship and name it the Lantern Circle.',
+        operation: 'append',
+        patchText: 'You finish the test by asking to stay; the other two answer by making room, and all three choose friendship.',
+        targetAtomIds: ['test', 'bond'],
+        claimedEvidenceAtomIds: ['test', 'bond'],
       });
     });
     const author = new ChoiceAuthor(config);
@@ -161,21 +191,36 @@ describe('ChoiceAuthor.validateChoices', () => {
       },
     });
 
-    const result = await author.repairSharedResolution(input, choiceSet, 'The passage names the group but omits the test and reciprocal friendship.');
+    const result = await author.repairSharedResolution(
+      input,
+      choiceSet,
+      'The passage names the group but omits the test and reciprocal friendship.',
+      { remainingAtomIds: ['test', 'bond'], preserveAtomIds: ['name'] },
+    );
 
     expect(result.success).toBe(true);
-    expect(prompts[0]).toContain('Rewrite ONLY the shared post-choice resolution passage');
-    expect(prompts[0]).toContain('observable personal bid and reciprocal acceptance');
+    expect(prompts[0]).toContain('Author a PATCH ONLY');
+    expect(prompts[0]).toContain('one participant makes a personal bid');
+    expect(prompts[0]).toContain('the other accepts or reciprocates it');
+    expect(prompts[0]).toContain('[MISSING — ADD] The three become friends.');
+    expect(prompts[0]).toContain('[PASSING — PRESERVE] They form the Lantern Circle.');
+    expect(prompts[0]).toContain('Allowed operation: append or prepend.');
     expect(result.data?.choices.map((choice: any) => choice.text)).toEqual(choiceSet.choices.map((choice: any) => choice.text));
     expect(result.data?.choices[0].outcomeTexts?.success).toContain('Success 1.');
     expect(result.data?.choices[0].outcomeTexts?.success).toContain('all three choose friendship');
-    expect(result.data?.choices[0].outcomeTexts?.success).not.toContain('They name it the Lantern Circle.');
+    expect(result.data?.choices[0].outcomeTexts?.success).toContain('They name it the Lantern Circle.');
+    expect(result.data?.sharedResolutionText).toBe(
+      'They name it the Lantern Circle. You finish the test by asking to stay; the other two answer by making room, and all three choose friendship.',
+    );
     BaseAgent.setLlmTransportOverride(null);
   });
 
   it('rejects an unknown acting character introduced by a focused shared-resolution repair', async () => {
     BaseAgent.setLlmTransportOverride(async () => JSON.stringify({
-      sharedResolutionText: 'Mateo smiles and declares that the three of you are friends now.',
+      operation: 'append',
+      patchText: 'Mateo smiles and declares that the three of you are friends now.',
+      targetAtomIds: ['bond'],
+      claimedEvidenceAtomIds: ['bond'],
     }));
     const author = new ChoiceAuthor(config);
     const input = makeInput({

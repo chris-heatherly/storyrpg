@@ -70,7 +70,10 @@ function verdict(
 }
 
 describe('semanticValidationCoordinator', () => {
-  beforeEach(() => clearSemanticValidationCache());
+  beforeEach(() => {
+    clearSemanticValidationCache();
+    clearOwnerAtomReceiptsForTest();
+  });
 
   it('accepts a clear paraphrase without requiring validator vocabulary', async () => {
     const prose = 'They lift chipped glasses. “To us,” Mika says, and the Dusk Club is born.';
@@ -655,6 +658,52 @@ describe('owner-receipt continuity at final regression (W3.2)', () => {
   });
 
   const ownerProse = 'A tall stranger steps from the fog and hauls the assailant off you.';
+
+  it('preserves a cited positive witness across owner-stage edits to unrelated prose', async () => {
+    const clubTask = task();
+    const ownerJudge = new FakeJudge((claim) => {
+      const evidence = claim.excerpts.find((excerpt) => excerpt.text.includes('Dusk Club'))!;
+      return {
+        id: claim.id,
+        verdict: 'fulfilled',
+        evidenceRefs: [evidence.id],
+        evidenceQuotes: [evidence.text],
+        missingCriteria: [],
+        rationale: 'The cited sentence realizes the group formation.',
+      };
+    });
+    await validateSemanticRealizationTasks({
+      sceneId: 's1',
+      tasks: [clubTask],
+      sceneContent: { beats: [
+        { text: 'Rain taps against the dark window.' },
+        { text: 'The Dusk Club is born over three raised glasses.' },
+      ] },
+      mode: 'owner',
+      currentStage: 'scene_writer',
+      judge: ownerJudge,
+    });
+
+    // Prove this is receipt continuity rather than the ordinary consensus
+    // cache: only the owner witness survives this reset.
+    clearSemanticValidationCache();
+    const flippyJudge = new FakeJudge((claim) => verdict(claim, 'not_fulfilled'));
+    const candidate = await validateSemanticRealizationTasks({
+      sceneId: 's1',
+      tasks: [clubTask],
+      sceneContent: { beats: [
+        { text: 'Morning traffic rattles the bookshop windows.' },
+        { text: 'The Dusk Club is born over three raised glasses.' },
+        { text: 'A new choice waits at the edge of the table.' },
+      ] },
+      mode: 'owner',
+      currentStage: 'scene_writer',
+      judge: flippyJudge,
+    });
+
+    expect(candidate.findings).toEqual([]);
+    expect(flippyJudge.calls).toBe(0);
+  });
 
   it('honors a confirmed owner receipt when assembly only ADDED excerpts (run 2026-07-16T03-12-37)', async () => {
     const rescueTask = task({

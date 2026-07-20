@@ -80,6 +80,11 @@ order or topology.
    receipt. Episode and final text contracts are read-only regression nets.
    A blocker invalidates the owning scene and dependent suffix (or routes an
    architectural class to plan regeneration); it never reopens a sealed scene.
+   Source-required choice semantics are hard-pinned while ordinary taxonomy is
+   reallocated against the feasible episode slice before prose generation.
+   Choice-terminal departure and companion handoffs belong to every
+   ChoiceAuthor outcome; successor-scene responsiveness is authored and graded
+   through the same flag-conditioned text variants the Reader selects.
 5. **Media** — post-story images/video/audio after the text contract passes.
 
 Skip telemetry (debug events): `thread_twist_skipped_authored_lite`,

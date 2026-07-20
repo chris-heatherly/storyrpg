@@ -29,6 +29,19 @@ describe('producer blocker ownership', () => {
     expect(route?.retryBudget).toBe(1);
   });
 
+  it('blocks legacy callback and encounter defaults on their producer surfaces', () => {
+    expect(validateChoiceProducerOutput('s1', {
+      choices: [{ reminderPlan: { immediate: 'Someone opens a door, withholds a truth, or shifts their tone before the moment passes.' } }],
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'unsafe_fallback_prose', fieldPath: 'choiceSet.choices[0].reminderPlan.immediate' }),
+    ]));
+    expect(validateEncounterProducerOutput('enc-1', {
+      escalationTriggers: [{ effect: { narrativeText: 'The situation turns critical — one wrong move now and it all goes the wrong way.' } }],
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'unsafe_fallback_prose', fieldPath: 'encounter.escalationTriggers[0].effect.narrativeText' }),
+    ]));
+  });
+
   it('runs metadata hygiene after LLM output and clears the inspected path', () => {
     const scene = {
       location: 'archive',

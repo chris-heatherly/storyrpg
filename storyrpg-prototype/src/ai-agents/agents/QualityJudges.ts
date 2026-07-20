@@ -27,6 +27,8 @@ import {
   buildProseCraftReportJsonSchema,
   buildResponsivenessReportJsonSchema,
 } from '../schemas/qaReportSchemas';
+import { DEFAULT_IDENTITY_PROFILE, type PlayerState } from '../../types';
+import { selectTextVariant } from '../../engine/templateProcessor';
 
 // ============================================
 // SHARED
@@ -427,13 +429,40 @@ export function buildResponsivenessProbes(
     if (scene?.sceneId) sceneById.set(scene.sceneId, scene);
   });
 
-  const downstreamFor = (nextSceneId?: string): string | undefined => {
+  const routeStateFor = (choice: ChoiceSet['choices'][number]): PlayerState => {
+    const flags: Record<string, boolean> = {};
+    for (const consequence of choice.consequences ?? []) {
+      const raw = consequence as unknown as { type?: string; flag?: string; value?: unknown };
+      if ((raw.type === 'setFlag' || raw.type === 'flag') && raw.flag) {
+        flags[raw.flag] = raw.value !== false;
+      }
+    }
+    if (choice.tintFlag) flags[choice.tintFlag] = true;
+    return {
+      characterName: 'Player',
+      characterPronouns: 'they/them',
+      attributes: { charm: 0, wit: 0, courage: 0, empathy: 0, resolve: 0, resourcefulness: 0 },
+      skills: {}, relationships: {}, flags, scores: {}, tags: new Set(),
+      identityProfile: { ...DEFAULT_IDENTITY_PROFILE }, pendingConsequences: [], inventory: [],
+      currentStoryId: null, currentEpisodeId: null, currentSceneId: null, completedEpisodes: [],
+    };
+  };
+
+  const downstreamFor = (
+    nextSceneId: string | undefined,
+    choice: ChoiceSet['choices'][number],
+  ): string | undefined => {
     if (!nextSceneId) return undefined;
     const scene = sceneById.get(nextSceneId);
     if (!scene) return undefined;
+    const routeState = routeStateFor(choice);
     const text = (scene.beats ?? [])
       .slice(0, DOWNSTREAM_EXCERPT_BEATS)
-      .map((beat) => (typeof beat?.text === 'string' ? beat.text : ''))
+      .map((beat) => selectTextVariant(
+        typeof beat?.text === 'string' ? beat.text : '',
+        beat.textVariants,
+        routeState,
+      ))
       .join(' ')
       .trim();
     return text ? `${text.slice(0, DOWNSTREAM_EXCERPT_CHARS)}${text.length > DOWNSTREAM_EXCERPT_CHARS ? '…' : ''}` : undefined;
@@ -447,7 +476,10 @@ export function buildResponsivenessProbes(
         outcomeSuccess: typeof choice?.outcomeTexts?.success === 'string' ? choice.outcomeTexts.success : undefined,
         outcomeFailure: typeof choice?.outcomeTexts?.failure === 'string' ? choice.outcomeTexts.failure : undefined,
         nextSceneId: typeof choice?.nextSceneId === 'string' ? choice.nextSceneId : undefined,
-        downstreamExcerpt: downstreamFor(typeof choice?.nextSceneId === 'string' ? choice.nextSceneId : undefined),
+        downstreamExcerpt: downstreamFor(
+          typeof choice?.nextSceneId === 'string' ? choice.nextSceneId : undefined,
+          choice,
+        ),
       }))
       .filter((option) => option.choiceText.length > 0);
     if (options.length < 2) return undefined;

@@ -311,6 +311,30 @@ describe('compileNarrativeRealizationTasks', () => {
     });
   });
 
+  it('routes a choice-terminal departure to every ChoiceAuthor outcome', () => {
+    const graph = {
+      events: [], dependencies: [],
+      transitionContracts: [{
+        id: 'transition:club-to-park-choice', episodeNumber: 1, fromSceneId: 'club', toSceneId: 'park',
+        fromLocation: 'Club', toLocation: 'Park', bridgePolicy: 'orientation_only',
+        locationRequirement: { canonicalValue: 'Park', acceptedAliases: [], required: true },
+        requiredBridgeEvidence: ['Park'], stateContracts: [], blocking: true, sourceContractIds: [],
+      }],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 'club', episodeNumber: 1, order: 0, kind: 'standard', hasChoice: true, choiceType: 'relationship' },
+      { id: 'park', episodeNumber: 1, order: 1, kind: 'encounter', encounter: {} },
+    ] as any);
+
+    expect(tasks.find((task) => task.id === 'task:transition:club-to-park-choice:departure')).toMatchObject({
+      sceneId: 'club',
+      ownerStage: 'choice_author',
+      repairHandler: 'choice_reauthor',
+      target: { scope: 'all_choice_outcomes', surfaces: ['choice_outcome'] },
+      evidenceAtoms: [expect.objectContaining({ temporalSlot: 'choice_resolution' })],
+    });
+  });
+
   it('r115 gap analysis (2026-07-18): blocks unexplained companion dropout before entering an encounter', () => {
     // Live regression: s1-5 ends with the whole group ("Come on. Let's walk,
     // the air in Cismigiu is better") heading toward Cismigiu together, but
@@ -374,6 +398,28 @@ describe('compileNarrativeRealizationTasks', () => {
     expect(companion).toBeDefined();
     expect(companion!.evidenceAtoms[0].description).toContain('Stela Pavel');
     expect(companion!.evidenceAtoms[0].description).not.toContain('Kylie Marinescu');
+  });
+
+  it('routes companion parting through every outcome when the source scene ends on a choice', () => {
+    const graph = {
+      events: [], dependencies: [],
+      transitionContracts: [{
+        id: 'transition:choice-companions', episodeNumber: 1, fromSceneId: 'club', toSceneId: 'attack',
+        fromLocation: 'Club', toLocation: 'Park', bridgePolicy: 'orientation_only',
+        locationRequirement: { canonicalValue: 'Park', acceptedAliases: [], required: true },
+        requiredBridgeEvidence: ['Park'], stateContracts: [], blocking: true, sourceContractIds: [],
+      }],
+    } as unknown as NarrativeContractGraph;
+    const tasks = compileNarrativeRealizationTasks(graph, [
+      { id: 'club', episodeNumber: 1, order: 0, kind: 'standard', hasChoice: true, choiceType: 'relationship', npcsInvolved: ['Kylie', 'Mika'] },
+      { id: 'attack', episodeNumber: 1, order: 1, kind: 'encounter', encounter: {}, npcsInvolved: ['Kylie'] },
+    ] as any, 'Kylie');
+
+    expect(tasks.find((task) => task.id === 'task:transition:choice-companions:companion-continuity')).toMatchObject({
+      ownerStage: 'choice_author',
+      target: { scope: 'all_choice_outcomes', surfaces: ['choice_outcome'] },
+      evidenceAtoms: [expect.objectContaining({ temporalSlot: 'choice_resolution' })],
+    });
   });
 
   it('compiles no companion-continuity task when the arrival is not an encounter, or the departing scene has no companions beyond the protagonist fixture', () => {

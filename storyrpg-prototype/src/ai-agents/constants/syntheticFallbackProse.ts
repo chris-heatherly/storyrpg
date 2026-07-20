@@ -30,6 +30,16 @@ const REWRITE_AS_PROSE =
 
 export const SYNTHETIC_FALLBACK_PROSE_PATTERNS: SyntheticFallbackPattern[] = [
   {
+    label: 'legacy callback reminder: opens a door',
+    pattern: /\bSomeone opens a door, withholds a truth, or shifts their tone before the moment passes\b/i,
+    suggestion: 'Re-author the reminder from the concrete choice and its immediate dramatic residue.',
+  },
+  {
+    label: 'legacy encounter escalation: situation turns critical',
+    pattern: /\bThe situation turns critical\s*[—-]\s*one wrong move now and it all goes the wrong way\b/i,
+    suggestion: 'Re-author escalation from the encounter\'s concrete pressure, opposition, and narrative style.',
+  },
+  {
     label: 'synthetic lead-in: pressure mounting',
     pattern: /\bPressure is already mounting around you as this moment opens\b/i,
     suggestion: REWRITE_AS_PROSE,

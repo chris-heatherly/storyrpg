@@ -135,6 +135,8 @@ describe('ChoiceAuthor.validateChoices', () => {
         text: `Answer the test in way ${index}`,
         choiceType: 'expression',
         consequences: [],
+        reactionText: `Mika studies answer ${index}.`,
+        tintFlag: 'tint:curiosity',
         outcomeTexts: {
           success: `Success ${index}. They name it the Lantern Circle.`,
           partial: `Partial ${index}. They name it the Lantern Circle.`,
@@ -168,6 +170,44 @@ describe('ChoiceAuthor.validateChoices', () => {
     expect(result.data?.choices[0].outcomeTexts?.success).toContain('Success 1.');
     expect(result.data?.choices[0].outcomeTexts?.success).toContain('all three choose friendship');
     expect(result.data?.choices[0].outcomeTexts?.success).not.toContain('They name it the Lantern Circle.');
+    BaseAgent.setLlmTransportOverride(null);
+  });
+
+  it('rejects an unknown acting character introduced by a focused shared-resolution repair', async () => {
+    BaseAgent.setLlmTransportOverride(async () => JSON.stringify({
+      sharedResolutionText: 'Mateo smiles and declares that the three of you are friends now.',
+    }));
+    const author = new ChoiceAuthor(config);
+    const input = makeInput({
+      npcsInScene: [{ id: 'mika', name: 'Mika', pronouns: 'she/her' }],
+      sceneBlueprint: {
+        id: 'scene-1',
+        name: 'The Test',
+        choicePoint: { type: 'expression', stakes: { want: 'belong', cost: 'risk rejection', identity: 'answer honestly' } },
+        realizationTasks: [{
+          id: 'task:event:alliance:choice-resolution',
+          ownerStage: 'choice_author',
+          target: { scope: 'all_choice_outcomes', surfaces: ['choice_outcome'] },
+          evidenceAtoms: [{ id: 'bond', description: 'The group becomes friends.', semanticRole: 'relationship_change' }],
+        }],
+      },
+    });
+    const choiceSet = makeChoiceSet({
+      sharedResolutionText: 'Mika accepts the bond.',
+      choices: [1, 2, 3].map((index) => ({
+        id: `c${index}`,
+        text: `Answer in way ${index}`,
+        choiceType: 'expression',
+        consequences: [],
+        reactionText: `Mika studies answer ${index}.`,
+        tintFlag: 'tint:curiosity',
+        outcomeTexts: { success: `Mika accepts answer ${index}.`, partial: `Mika weighs answer ${index}.`, failure: `Mika questions answer ${index}.` },
+      })),
+    });
+
+    const result = await author.repairSharedResolution(input, choiceSet, 'Make the friendship reciprocal.');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('unknown acting character "Mateo"');
     BaseAgent.setLlmTransportOverride(null);
   });
 
@@ -228,6 +268,53 @@ describe('ChoiceAuthor.validateChoices', () => {
 
     const issues = author.collectChoiceAuthoringCompletenessIssues(makeChoiceSet({ choiceType: 'relationship', choices }), input);
     expect(issues).toContain('Two or more non-expression options have identical visible route residue; author distinct immediate reactions/outcomes before convergence.');
+  });
+
+  it('rewrites only cosmetic aftermath fields and preserves choice geometry', async () => {
+    const responses = [
+      { verdict: 'cosmetic', npcReaction: 'static', feedback: 'Every option produces the same response.' },
+      {
+        revisions: [1, 2, 3].map((index) => ({
+          choiceId: `c${index}`,
+          reactionText: `Mika answers route ${index} with a distinct gesture.`,
+          outcomeTexts: {
+            success: `Route ${index} earns a clean, distinct response from Mika.`,
+            partial: `Route ${index} leaves Mika visibly uncertain but engaged.`,
+            failure: `Route ${index} makes Mika pull back before reconsidering.`,
+          },
+        })),
+      },
+    ];
+    BaseAgent.setLlmTransportOverride(async () => JSON.stringify(responses.shift()));
+    const author: any = new ChoiceAuthor(config);
+    const input = makeInput({
+      npcsInScene: [{ id: 'mika', name: 'Mika', pronouns: 'she/her' }],
+      sceneBlueprint: {
+        id: 'scene-1', name: 'The Test', location: 'club',
+        choicePoint: { type: 'strategic', stakes: { want: 'pass', cost: 'lose trust', identity: 'choose an approach' } },
+        routeRealizationContract: { requiresVisibleResidue: true },
+      },
+    });
+    const original = makeChoiceSet({
+      choiceType: 'strategic',
+      choices: [1, 2, 3].map((index) => ({
+        id: `c${index}`,
+        text: `Take strategic route ${index}`,
+        choiceType: 'strategic',
+        consequences: [{ type: 'setFlag', flag: `route_${index}`, value: true }],
+        statCheck: { skillWeights: { perception: 1 }, difficulty: 45 },
+        reactionText: 'Mika gives the same nod.',
+        tintFlag: 'tint:curiosity',
+        outcomeTexts: { success: 'The same response lands.', partial: 'The same response lands.', failure: 'The same response lands.' },
+        residueHints: [{ description: `Route ${index} remains visible.` }],
+      })),
+    });
+
+    const repaired = await author.repairWeakResponsiveness(original, input);
+    expect(repaired.choices.map((choice: any) => choice.text)).toEqual(original.choices.map((choice: any) => choice.text));
+    expect(repaired.choices.map((choice: any) => choice.consequences)).toEqual(original.choices.map((choice: any) => choice.consequences));
+    expect(repaired.choices[0].reactionText).toContain('route 1');
+    BaseAgent.setLlmTransportOverride(null);
   });
 
   it('normalizes stat-check difficulty and skill weights before returning choices', async () => {

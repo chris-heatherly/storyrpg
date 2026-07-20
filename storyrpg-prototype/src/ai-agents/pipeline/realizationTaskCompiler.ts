@@ -17,11 +17,25 @@ import { entityTokensMatch } from '../utils/entityIdentity';
 type SceneOwnedTaskKind = 'event' | 'premise' | 'presence' | 'transition' | 'story_circle' | 'relationship';
 
 interface TaskExecutionTarget {
-  ownerStage: Exclude<NarrativeRealizationOwnerStage, 'choice_author'>;
+  ownerStage: NarrativeRealizationOwnerStage;
   repairHandler: NarrativeRealizationTask['repairHandler'];
   artifactPath?: string;
   surfaces: NarrativeRealizationSurface[];
   temporalSlot: NonNullable<NarrativeEvidenceAtom['temporalSlot']>;
+}
+
+function choiceOwnsTerminalTransition(scene: PlannedScene | undefined): boolean {
+  return Boolean(scene && scene.kind !== 'encounter' && (scene.hasChoice || scene.choiceType));
+}
+
+function choiceTransitionExecutionTarget(scene: PlannedScene, episodeNumber: number): TaskExecutionTarget {
+  return {
+    ownerStage: 'choice_author',
+    repairHandler: 'choice_reauthor',
+    artifactPath: `episodes[${episodeNumber}].scenes[${scene.id}].choices`,
+    surfaces: ['choice_outcome'],
+    temporalSlot: 'choice_resolution',
+  };
 }
 
 function isEncounterScene(scene: PlannedScene | undefined): boolean {
@@ -1410,11 +1424,13 @@ export function compileNarrativeRealizationTasks(
     const locationChanges = Boolean(transition.locationRequirement?.required)
       && (!transition.fromLocation || !departureDestination || transition.fromLocation !== departureDestination);
     if (fromScene && locationChanges) {
-      const departureExecution = resolveTaskExecutionTarget({
-        scene: fromScene,
-        episodeNumber: transition.episodeNumber,
-        kind: 'transition',
-      });
+      const departureExecution = choiceOwnsTerminalTransition(fromScene)
+        ? choiceTransitionExecutionTarget(fromScene, transition.episodeNumber)
+        : resolveTaskExecutionTarget({
+            scene: fromScene,
+            episodeNumber: transition.episodeNumber,
+            kind: 'transition',
+          });
       tasks.push({
         id: `task:${transition.id}:departure`,
         contractId: transition.id,
@@ -1437,7 +1453,9 @@ export function compileNarrativeRealizationTasks(
           required: true,
           verificationAuthority: 'semantic_judge',
         }],
-        target: { scope: 'owner', surfaces: departureExecution.surfaces },
+        target: departureExecution.ownerStage === 'choice_author'
+          ? { scope: 'all_choice_outcomes', surfaces: departureExecution.surfaces }
+          : { scope: 'owner', surfaces: departureExecution.surfaces },
         sourceContractIds: [...transition.sourceContractIds],
         blocking: false,
       });
@@ -1475,11 +1493,13 @@ export function compileNarrativeRealizationTasks(
         .map((name) => name.trim())
         .filter((name) => name.length > 0 && !(protagonistName && entityTokensMatch(name, protagonistName)));
       if (companions.length > 0) {
-        const companionExecution = resolveTaskExecutionTarget({
-          scene: fromScene,
-          episodeNumber: transition.episodeNumber,
-          kind: 'transition',
-        });
+        const companionExecution = choiceOwnsTerminalTransition(fromScene)
+          ? choiceTransitionExecutionTarget(fromScene, transition.episodeNumber)
+          : resolveTaskExecutionTarget({
+              scene: fromScene,
+              episodeNumber: transition.episodeNumber,
+              kind: 'transition',
+            });
         tasks.push({
           id: `task:${transition.id}:companion-continuity`,
           contractId: transition.id,
@@ -1500,7 +1520,9 @@ export function compileNarrativeRealizationTasks(
             required: true,
             verificationAuthority: 'semantic_judge',
           }],
-          target: { scope: 'owner', surfaces: companionExecution.surfaces },
+          target: companionExecution.ownerStage === 'choice_author'
+            ? { scope: 'all_choice_outcomes', surfaces: companionExecution.surfaces }
+            : { scope: 'owner', surfaces: companionExecution.surfaces },
           sourceContractIds: [...transition.sourceContractIds],
           blocking: true,
         });

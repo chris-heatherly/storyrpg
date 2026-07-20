@@ -1376,35 +1376,6 @@ export class EncounterArchitect extends BaseAgent {
   }
 
   /**
-   * Style-aware fallback escalation narrative. A romance/social encounter that
-   * escalates with the combat string "The situation becomes critical!" reads as a
-   * genre break (gen-5 audit). Resolve the encounter's narrative style the same way
-   * {@link describeEncounterStyleFocus} does and return text that escalates in that
-   * register (emotional irreversibility for romance, rupture for social, …).
-   */
-  private defaultEscalationNarrative(style?: EncounterNarrativeStyle, type?: EncounterType): string {
-    const resolved = style || (type === 'combat' || type === 'chase' ? 'action' : type === 'stealth' || type === 'heist' ? 'stealth' : type === 'investigation' || type === 'puzzle' ? 'mystery' : type === 'romantic' ? 'romantic' : type === 'social' || type === 'negotiation' ? 'social' : type === 'survival' || type === 'exploration' ? 'adventure' : 'dramatic');
-    switch (resolved) {
-      case 'action':
-        return 'The situation turns critical — one wrong move now and it all goes the wrong way.';
-      case 'romantic':
-        return 'The moment tips toward the irreversible — one more step and there is no taking it back.';
-      case 'social':
-        return 'The room tightens — the conversation is one wrong word away from rupture.';
-      case 'stealth':
-        return 'Exposure is seconds away — the margin for a clean exit is almost gone.';
-      case 'mystery':
-        return 'The thread pulls taut — the truth is close, and so is the cost of reaching it.';
-      case 'adventure':
-        return 'Conditions turn against you — the way through is narrowing fast.';
-      case 'dramatic':
-        return 'The pressure peaks — what is said or done now cannot be undone.';
-      default:
-        return 'The pressure peaks and the easy way out closes.';
-    }
-  }
-
-  /**
    * Phase-appropriate fallback for an encounter beat that the LLM left without
    * `setupText`. Keeps the staged middle from rendering blank while staying generic
    * enough that it can never satisfy an authored required/signature beat (the
@@ -3122,23 +3093,10 @@ RULES:
       }));
     }
 
-    // Ensure escalation triggers. The narrative text is STYLE-AWARE: a flat
-    // "The situation becomes critical!" is a combat-template string that leaked into
-    // romance/social encounters (gen-5 audit). Romance escalates by emotional
-    // irreversibility, social by rupture, etc. — so the fallback now matches the
-    // encounter's style instead of always sounding like a fight.
-    if (!structure.escalationTriggers) {
-      structure.escalationTriggers = [
-        {
-          id: 'threat-75',
-          condition: { type: 'threat_threshold', value: 75 },
-          effect: {
-            narrativeText: this.defaultEscalationNarrative(structure.encounterStyle, structure.encounterType),
-            threatBonus: 1
-          }
-        }
-      ];
-    }
+    // Escalation prose is an EncounterArchitect-owned surface. Preserve an
+    // omitted optional list as empty; deterministic genre templates must never
+    // become reader-facing run-survival content.
+    if (!Array.isArray(structure.escalationTriggers)) structure.escalationTriggers = [];
 
     // Ensure information visibility
     if (!structure.informationVisibility) {

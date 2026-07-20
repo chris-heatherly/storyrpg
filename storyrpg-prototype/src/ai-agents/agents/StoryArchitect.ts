@@ -3954,6 +3954,10 @@ Remember: The encounter is the heart. Design outward from it.
       episodeSynopsis: scene.description || scene.narrativeFunction || scene.name,
     } as StoryArchitectInput);
     const existingChoice = scene.choicePoint;
+    const reminderImmediate = existingChoice?.reminderPlan?.immediate
+      || (residue[0] ? this.fictionFirstImmediateResidue(residue[0]) : undefined);
+    const reminderShortTerm = existingChoice?.reminderPlan?.shortTerm
+      || (residue[0] ? this.fictionFirstShortTermResidue(residue[0]) : undefined);
 
     scene.choicePoint = {
       ...(existingChoice || {}),
@@ -3972,15 +3976,17 @@ Remember: The encounter is the heart. Design outward from it.
       description: `Treatment-defined pressure: ${pressure}`,
       optionHints: options.length >= 2 ? options : [pressure],
       consequenceDomain: existingChoice?.consequenceDomain || this.inferChoiceConsequenceDomain(pressure, guidance),
-      reminderPlan: {
-        immediate: existingChoice?.reminderPlan?.immediate || 'Someone opens a door, withholds a truth, or shifts their tone before the moment passes.',
-        shortTerm: existingChoice?.reminderPlan?.shortTerm || 'The next room has to move around what just changed.',
-        ...(existingChoice?.reminderPlan?.later
-          ? { later: existingChoice.reminderPlan.later }
-          : residue[0]
-            ? { later: this.fictionFirstLaterResidue(residue[0]) }
-            : {}),
-      },
+      ...((reminderImmediate && reminderShortTerm) ? {
+        reminderPlan: {
+          immediate: reminderImmediate,
+          shortTerm: reminderShortTerm,
+          ...(existingChoice?.reminderPlan?.later
+            ? { later: existingChoice.reminderPlan.later }
+            : residue[0]
+              ? { later: this.fictionFirstLaterResidue(residue[0]) }
+              : {}),
+        },
+      } : {}),
       expectedResidue: Array.from(new Set([
         ...(existingChoice?.expectedResidue || []),
         ...residue,

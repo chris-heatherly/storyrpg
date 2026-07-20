@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   allocateChoiceTypeCounts,
   assignChoiceTypes,
+  missingPlannedChoiceTypes,
   planSkillRotation,
   DEFAULT_CHOICE_TYPE_TARGET,
   type ChoiceType,
@@ -160,6 +161,28 @@ describe('assignChoiceTypes', () => {
     const types = s.map((x) => x.choicePoint!.type);
     expect(types).toContain('dilemma');
     expect(types).toContain('strategic'); // preserved — donor was expression/relationship, not strategic
+  });
+
+  it('does not add a dilemma by erasing the only season-required strategic slot', () => {
+    const s = scenes(3);
+    const slice = { expression: 1, relationship: 1, strategic: 1, dilemma: 0 };
+    assignChoiceTypes(s, DEFAULT_CHOICE_TYPE_TARGET, slice);
+    expect(s.map((scene) => scene.choicePoint.type).sort()).toEqual([
+      'expression',
+      'relationship',
+      'strategic',
+    ]);
+    expect(missingPlannedChoiceTypes(s, slice)).toEqual([]);
+  });
+
+  it('reports a season-required type when hard pins consume every compatible slot', () => {
+    const s = [
+      { id: 'a', authoredChoiceType: 'relationship' as ChoiceType, choicePoint: { type: 'relationship' as ChoiceType } },
+      { id: 'b', authoredChoiceType: 'relationship' as ChoiceType, choicePoint: { type: 'relationship' as ChoiceType } },
+    ];
+    const slice = { expression: 0, relationship: 1, strategic: 1, dilemma: 0 };
+    assignChoiceTypes(s, DEFAULT_CHOICE_TYPE_TARGET, slice);
+    expect(missingPlannedChoiceTypes(s, slice)).toEqual(['strategic']);
   });
 
   it('routes the guaranteed dilemma onto a branching choice point when present', () => {

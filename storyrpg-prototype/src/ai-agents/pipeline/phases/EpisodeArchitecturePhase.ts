@@ -27,7 +27,7 @@ import { withTimeoutAbort, PIPELINE_TIMEOUTS } from '../../utils/withTimeout';
 import { classifyArchitectGateWarnings } from '../../remediation/architectGatePolicy';
 import { gateEnabledPredicate } from '../../remediation/gateDefaults';
 import { buildSeasonPlanDirectives } from '../planningHelpers';
-import { assignChoiceTypes } from '../choiceTypePlanner';
+import { assignChoiceTypes, missingPlannedChoiceTypes } from '../choiceTypePlanner';
 import { reconcileRelationshipPacingWithChoiceTypes } from '../relationshipPacingChoiceTypeReconciliation';
 import {
   episodeTypeCounts,
@@ -715,9 +715,12 @@ export class EpisodeArchitecturePhase {
         .map((scene) => {
           const hasGroupFormation = (scene.relationshipPacing ?? [])
             .some((contract) => contract.milestone?.kind === 'group_formation');
-          return [scene.id, scene.choiceType ?? (hasGroupFormation ? 'relationship' : undefined)] as const;
+          // Only source-required semantics are hard pins. Ordinary scene-plan
+          // taxonomy is a soft allocation and must remain available to satisfy
+          // the episode's season-level type budget.
+          return [scene.id, hasGroupFormation ? 'relationship' : undefined] as const;
         })
-        .filter((entry): entry is readonly [string, 'expression' | 'relationship' | 'strategic' | 'dilemma'] => Boolean(entry[1])),
+        .filter((entry): entry is readonly [string, 'relationship'] => entry[1] === 'relationship'),
     );
     for (const scene of result!.data.scenes) {
       const authoredChoiceType = plannedChoiceTypeByScene.get(scene.id);
@@ -729,6 +732,24 @@ export class EpisodeArchitecturePhase {
       }
     }
     const choiceTypeChanges = assignChoiceTypes(result!.data.scenes as never, undefined, episodeSlice).filter((r) => r.from !== r.to);
+    const missingChoiceTypes = missingPlannedChoiceTypes(result!.data.scenes as never, episodeSlice);
+    if (missingChoiceTypes.length > 0) {
+      throw new PipelineError(
+        `Episode ${brief.episode.number} cannot realize its planned choice taxonomy: missing [${missingChoiceTypes.join(', ')}] after hard authored pins.`,
+        'episode_architecture',
+        {
+          agent: 'ChoiceTypePlanner',
+          context: { episodeNumber: brief.episode.number, episodeSlice, missingChoiceTypes },
+          failure: {
+            code: 'episode_plan_invalid',
+            ownerStage: 'episode_plan',
+            retryClass: 'none',
+            issueCodes: ['CHOICE_TYPE_PLAN_UNREALIZABLE'],
+            repairTarget: 'episode-choice-taxonomy',
+          },
+        },
+      );
+    }
     if (choiceTypeChanges.length > 0) {
       context.emit({ type: 'debug', phase: 'episode_architecture', message: `Rebalanced ${choiceTypeChanges.length} choice-point type(s) toward target taxonomy` });
     }

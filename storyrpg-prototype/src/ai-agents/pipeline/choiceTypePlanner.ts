@@ -54,6 +54,25 @@ interface PlannableScene {
 
 const ORDER: ChoiceType[] = ['expression', 'relationship', 'strategic', 'dilemma'];
 
+export function missingPlannedChoiceTypes(
+  scenes: PlannableScene[],
+  seasonCounts?: Record<ChoiceType, number>,
+): ChoiceType[] {
+  if (!seasonCounts) return [];
+  const choicePointCount = scenes.filter((scene) => !scene.isEncounter && scene.choicePoint).length;
+  const requiredTypes = ORDER.filter((type) => (seasonCounts[type] ?? 0) > 0);
+  // A coarse season budget may name more categories than this episode has
+  // physical choice points. Presence conformance is blocking only when the
+  // requested distinct taxonomy is structurally realizable.
+  if (requiredTypes.length > choicePointCount) return [];
+  const realized = new Set(
+    scenes
+      .filter((scene) => !scene.isEncounter && scene.choicePoint?.type)
+      .map((scene) => scene.choicePoint!.type!),
+  );
+  return requiredTypes.filter((type) => !realized.has(type));
+}
+
 /**
  * Largest-remainder allocation of `n` items across the four types in the given
  * proportions. Always sums to exactly `n`.
@@ -215,7 +234,10 @@ export function assignChoiceTypes(
     // prefer the highest-target type (expression > relationship > strategic) so the
     // rarer types survive. 'strategic' is the last resort, only if it's the lone donor.
     const donor = (['expression', 'relationship', 'strategic'] as ChoiceType[])
-      .filter((t) => counts[t] > 0)
+      // Preserve one slot for every type explicitly required by the episode
+      // slice. The dramatic-core default may spend surplus capacity, but it
+      // may not erase the season plan's only strategic/relationship slot.
+      .filter((t) => counts[t] > ((seasonCounts?.[t] ?? 0) > 0 ? 1 : 0))
       .sort((a, b) => counts[b] - counts[a])[0];
     if (donor) {
       counts[donor] -= 1;

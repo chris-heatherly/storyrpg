@@ -126,6 +126,23 @@ describe('buildResponsivenessProbes', () => {
     expect(probes[1].options[0].outcomeSuccess).toBe('She softens.');
   });
 
+  it('projects each option through matching successor text variants', () => {
+    const successor = scene('s2', ['The room holds its breath.']);
+    successor.beats[0].textVariants = [
+      { condition: { type: 'flag', flag: 'answered_boldly', value: true }, text: 'Mika grins at the nerve of your answer.' },
+      { condition: { type: 'flag', flag: 'answered_gently', value: true }, text: 'Mika lowers her voice to meet your gentleness.' },
+    ];
+    const probes = buildResponsivenessProbes([scene('s1', ['Choose.']), successor], [
+      choiceSet('s1', 'b1', [
+        { text: 'Answer boldly', nextSceneId: 's2', consequences: [{ type: 'setFlag', flag: 'answered_boldly', value: true }] },
+        { text: 'Answer gently', nextSceneId: 's2', consequences: [{ type: 'setFlag', flag: 'answered_gently', value: true }] },
+      ]),
+    ]);
+
+    expect(probes[0].options[0].downstreamExcerpt).toContain('grins');
+    expect(probes[0].options[1].downstreamExcerpt).toContain('lowers her voice');
+  });
+
   it('caps the probe count', () => {
     const sets = Array.from({ length: 10 }, (_, i) => choiceSet(`s${i}`, `b${i}`, [
       { text: 'A', nextSceneId: 's2' },

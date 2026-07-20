@@ -665,7 +665,12 @@ Before finalizing:
         await this.reauthorStubOutcomeTiers(choiceSet, input);
       }
       await this.reauthorPovOutcomeTiers(choiceSet, input);
+      choiceSet = await this.repairWeakResponsiveness(choiceSet, input);
       materializeSharedChoiceResolution(choiceSet);
+
+      // No repair path is privileged: the exact candidate returned to the
+      // pipeline must satisfy the same owner contract as the first draft.
+      this.assertCandidateAccepted(choiceSet, input);
 
       return {
         success: true,
@@ -923,6 +928,25 @@ Return JSON only.`;
     return issues;
   }
 
+  /** One acceptance funnel for initial output and every focused/full repair. */
+  private collectCandidateAcceptanceIssues(choiceSet: ChoiceSet, input: ChoiceAuthorInput): string[] {
+    return Array.from(new Set([
+      ...this.collectChoiceAuthoringCompletenessIssues(choiceSet, input),
+      ...this.collectInvalidCanonicalChoiceParticipants(choiceSet, input)
+        .map((issue) => `${issue.fieldPath} references unknown canonical participant "${issue.value}".`),
+      ...this.collectBlockedRelationshipLabelIssues(choiceSet, input),
+    ]));
+  }
+
+  private assertCandidateAccepted(choiceSet: ChoiceSet, input: ChoiceAuthorInput): void {
+    this.validateChoices(choiceSet, input, { allowSyntheticReaderTextFallbacks: false });
+    this.validateAuthoredFlagSemantics(choiceSet, input);
+    const issues = this.collectCandidateAcceptanceIssues(choiceSet, input);
+    if (issues.length > 0) {
+      throw new Error(`ChoiceAuthor candidate failed final owner acceptance: ${issues.join('; ')}`);
+    }
+  }
+
   /**
    * Choice prose is a closed-cast owner surface. This deliberately checks only
    * name-shaped tokens used in human-action syntax; capitalized places, titles,
@@ -1025,6 +1049,7 @@ ${requirements.join('\n')}
 
 SCENE CONTEXT:
 - Protagonist: ${input.protagonistInfo.name}
+- Allowed scene cast: ${[input.protagonistInfo.name, ...input.npcsInScene.map((npc) => npc.name)].join(', ')}
 - Scene: ${input.sceneBlueprint.name}
 - Choice beat: ${input.beatText}
 ${blockedLabels.length > 0 ? `- Relationship labels not yet earned: ${blockedLabels.join(', ')}` : ''}
@@ -1075,9 +1100,14 @@ Return JSON only: {"sharedResolutionText":"..."}`;
         return { success: false, error: 'Focused shared-resolution repair returned authoring or system prose.', rawResponse };
       }
       const candidate = withReplacedSharedChoiceResolution(choiceSet, resolution);
-      const labelIssues = this.collectBlockedRelationshipLabelIssues(candidate, input);
-      if (labelIssues.length > 0) {
-        return { success: false, error: labelIssues.join('; '), rawResponse };
+      try {
+        this.assertCandidateAccepted(candidate, input);
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+          rawResponse,
+        };
       }
       return { success: true, data: candidate, rawResponse };
     } catch (error) {
@@ -3909,6 +3939,122 @@ Return one correction for every invalid field path and no others. Return JSON on
   }
 
   /**
+   * One interpretive, owner-local swap test for route-significant choices.
+   * Deterministic code selects the surface and adopts only a fully valid
+   * candidate; the LLM alone decides whether the prose is cosmetic/static.
+   */
+  private async repairWeakResponsiveness(
+    choiceSet: ChoiceSet,
+    input: ChoiceAuthorInput,
+  ): Promise<ChoiceSet> {
+    if (
+      choiceSet.choiceType === 'expression'
+      || !input.sceneBlueprint.routeRealizationContract?.requiresVisibleResidue
+      || choiceSet.choices.length < 2
+    ) return choiceSet;
+
+    const optionSurfaces = choiceSet.choices.map((choice) => ({
+      choiceId: choice.id,
+      choiceText: choice.text,
+      reactionText: choice.reactionText,
+      outcomeTexts: choice.outcomeTexts,
+      residueHints: choice.residueHints?.map((hint) => hint.description),
+    }));
+    try {
+      const assessmentRaw = await this.callLLM(
+        [{ role: 'user', content: [
+          'Audit one interactive-fiction choice set for reader-visible responsiveness.',
+          'Use the swap test: if two options can exchange their reactions and outcomes without becoming incoherent, they are cosmetic.',
+          'When scene NPCs are present, require at least one option-specific change in behavior, dialogue, posture, or attitude; metadata and flags do not count.',
+          `Allowed cast: ${[input.protagonistInfo.name, ...input.npcsInScene.map((npc) => npc.name)].join(', ')}`,
+          `Options: ${JSON.stringify(optionSurfaces)}`,
+          'Return JSON only.',
+        ].join('\n') }],
+        3,
+        {
+          jsonSchema: {
+            name: 'choice_responsiveness_assessment',
+            description: 'Focused prose responsiveness assessment.',
+            outputBudget: { visibleTokens: 256, reasoningProfile: 'minimal', safetyTokens: 64 },
+            schema: {
+              type: 'object', additionalProperties: false,
+              required: ['verdict', 'npcReaction', 'feedback'],
+              properties: {
+                verdict: { type: 'string', enum: ['divergent', 'cosmetic'] },
+                npcReaction: { type: 'string', enum: ['reactive', 'static', 'no_npcs'] },
+                feedback: { type: 'string', minLength: 1, maxLength: 500 },
+              },
+            },
+          },
+        },
+      );
+      const assessment = this.parseJSON<{ verdict?: string; npcReaction?: string; feedback?: string }>(assessmentRaw);
+      if (assessment.verdict !== 'cosmetic' && assessment.npcReaction !== 'static') return choiceSet;
+
+      const choiceIds = choiceSet.choices.map((choice) => choice.id);
+      const repairRaw = await this.callLLM(
+        [{ role: 'user', content: [
+          'Rewrite only the immediate reader-facing aftermath for this choice set.',
+          'Keep every choice label, id, route, consequence, stat check, relationship stage, and shared invariant fact unchanged.',
+          'Make each reaction and success/partial/failure outcome specific enough to fail the swap test. When an allowed NPC is present, vary their behavior or dialogue in response to the selected action.',
+          `Allowed cast: ${[input.protagonistInfo.name, ...input.npcsInScene.map((npc) => npc.name)].join(', ')}`,
+          `Assessment feedback: ${assessment.feedback ?? 'The options read interchangeably.'}`,
+          `Choice set: ${JSON.stringify(optionSurfaces)}`,
+          'Return JSON only.',
+        ].join('\n') }],
+        3,
+        {
+          jsonSchema: {
+            name: 'choice_responsiveness_repair',
+            description: 'Focused option aftermath rewrites.',
+            outputBudget: { visibleTokens: 1200, reasoningProfile: 'minimal', safetyTokens: 192, totalCeiling: 3072 },
+            schema: {
+              type: 'object', additionalProperties: false, required: ['revisions'],
+              properties: {
+                revisions: {
+                  type: 'array', minItems: choiceIds.length, maxItems: choiceIds.length,
+                  items: {
+                    type: 'object', additionalProperties: false,
+                    required: ['choiceId', 'reactionText', 'outcomeTexts'],
+                    properties: {
+                      choiceId: { type: 'string', enum: choiceIds },
+                      reactionText: { type: 'string', minLength: 8, maxLength: 300 },
+                      outcomeTexts: {
+                        type: 'object', additionalProperties: false,
+                        required: ['success', 'partial', 'failure'],
+                        properties: {
+                          success: { type: 'string', minLength: 8, maxLength: 300 },
+                          partial: { type: 'string', minLength: 8, maxLength: 300 },
+                          failure: { type: 'string', minLength: 8, maxLength: 300 },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      );
+      const repair = this.parseJSON<{ revisions?: Array<{ choiceId?: string; reactionText?: string; outcomeTexts?: GeneratedChoice['outcomeTexts'] }> }>(repairRaw);
+      const revisions = new Map((repair.revisions ?? []).map((revision) => [revision.choiceId, revision]));
+      if (revisions.size !== choiceIds.length) return choiceSet;
+      const candidate = JSON.parse(JSON.stringify(choiceSet)) as ChoiceSet;
+      for (const choice of candidate.choices) {
+        const revision = revisions.get(choice.id);
+        if (!revision?.reactionText || !revision.outcomeTexts) return choiceSet;
+        choice.reactionText = revision.reactionText;
+        choice.outcomeTexts = revision.outcomeTexts;
+      }
+      this.assertCandidateAccepted(candidate, input);
+      return candidate;
+    } catch (error) {
+      console.warn(`[ChoiceAuthor] Responsiveness repair kept the accepted choice set: ${error instanceof Error ? error.message : String(error)}`);
+      return choiceSet;
+    }
+  }
+
+  /**
    * Execute a revision pass to fix identified issues
    */
   private async executeRevision(
@@ -4005,7 +4151,7 @@ Return ONLY valid JSON, no markdown, no extra text.
       revisedChoiceSet = this.normalizeChoiceSet(revisedChoiceSet, input);
 
       // Validate structural requirements
-      this.validateChoices(revisedChoiceSet, input, { allowSyntheticReaderTextFallbacks: false });
+      this.assertCandidateAccepted(revisedChoiceSet, input);
 
       console.log(`[ChoiceAuthor] Revision complete`);
       return {

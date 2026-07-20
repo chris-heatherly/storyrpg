@@ -96,6 +96,7 @@ const VISIBLE_TEXT_KEYS = new Set([
   'text', 'reactionText', 'lockedText', 'narrativeText', 'outcomeText',
   'setupText', 'escalationText', 'description', 'victory', 'defeat',
   'visibleCost', 'visibleComplication', 'immediateEffect', 'lingeringEffect',
+  'immediate', 'shortTerm', 'later',
 ]);
 const COVERAGE_KEYS = new Set([
   'visualThread', 'relationshipBlocking', 'coverageReason', 'reason',
